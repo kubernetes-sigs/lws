@@ -1,0 +1,38 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  labels:
+    app.kubernetes.io/name: leaderworkerset
+    app.kubernetes.io/instance: leaderworkerset-multi-template
+    app.kubernetes.io/part-of: leader-worker-set
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: leader-worker-set
+  name: leaderworkerset-multi-template
+spec:
+  replicas: 3
+  leaderWorkerTemplate:
+    leaderTemplate:
+      spec:
+        containers:
+        - name: nginx2
+          image: nginx:1.14.2
+          resources:
+            limits:
+              cpu: "100m"
+            requests:
+              cpu: "50m"
+          ports:
+          - containerPort: 8080
+    size: 4
+    workerTemplate:
+      spec:
+        containers:
+        - name: nginx
+          image: nginx:1.14.2
+          resources:
+            limits:
+              cpu: "100m"
+            requests:
+              cpu: "50m"
+          ports:
+          - containerPort: 8080
