@@ -2,6 +2,8 @@
 
 LeaderWorkerSet: An API for deploying a group of pods as a unit of replication
 
+## Design
+
 ## Community, discussion, contribution, and support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
