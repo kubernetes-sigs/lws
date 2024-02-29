@@ -31,8 +31,8 @@ source "${CODEGEN_PKG}/kube_codegen.sh"
 # (https://github.com/kubernetes/code-generator/issues/165).
 # Here, we create the soft link named "x-k8s.io" to the parent directory of
 # LeaderWorkerSet to ensure the layout required by the kube_codegen.sh script.
-ln -s .. sigs.k8s.io
-trap "rm sigs.k8s.io" EXIT
+mkdir sigs.k8s.io && ln -s $REPO_ROOT sigs.k8s.io/leader-worker-set
+trap "rm -rf sigs.k8s.io" EXIT
 
 kube::codegen::gen_helpers \
     --input-pkg-root sigs.k8s.io/leader-worker-set/api \
