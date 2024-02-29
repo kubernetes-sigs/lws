@@ -71,6 +71,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]stri
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) Conditions(conditions []metav1.Condition) *LeaderWorkerSetWrapper {
+	lwsWrapper.Status.Conditions = conditions
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
@@ -81,6 +86,7 @@ func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 			Spec: leaderworkerset.LeaderWorkerSetSpec{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{},
 			},
+			Status: leaderworkerset.LeaderWorkerSetStatus{},
 		},
 	}
 }
@@ -90,6 +96,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Name = "test-sample"
 	lws.Namespace = nsName
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
+	lws.Status = leaderworkerset.LeaderWorkerSetStatus{}
 	lws.Spec.Replicas = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{}
 	lws.Spec.LeaderWorkerTemplate.Size = pointer.Int32(4)
