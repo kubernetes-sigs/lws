@@ -27,9 +27,9 @@ import (
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	rest "k8s.io/client-go/rest"
-	v1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/applyconfiguration/leaderworkerset/v1"
-	scheme "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned/scheme"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
+	scheme "sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
 )
 
 // LeaderWorkerSetsGetter has a method to return a LeaderWorkerSetInterface.

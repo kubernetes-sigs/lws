@@ -28,8 +28,8 @@ import (
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/leader-worker-set/pkg/webhook"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podwebhook "sigs.k8s.io/lws/pkg/webhook"
 )
 
 func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {

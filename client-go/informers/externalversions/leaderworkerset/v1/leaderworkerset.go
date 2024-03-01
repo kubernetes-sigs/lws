@@ -25,10 +25,10 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	versioned "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned"
-	internalinterfaces "sigs.k8s.io/leader-worker-set/client-go/informers/externalversions/internalinterfaces"
-	v1 "sigs.k8s.io/leader-worker-set/client-go/listers/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	versioned "sigs.k8s.io/lws/client-go/clientset/versioned"
+	internalinterfaces "sigs.k8s.io/lws/client-go/informers/externalversions/internalinterfaces"
+	v1 "sigs.k8s.io/lws/client-go/listers/leaderworkerset/v1"
 )
 
 // LeaderWorkerSetInformer provides access to a shared informer and lister for

@@ -1,4 +1,4 @@
-module sigs.k8s.io/leader-worker-set
+module sigs.k8s.io/lws
 
 go 1.21
 
