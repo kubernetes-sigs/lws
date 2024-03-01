@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/leader-worker-set/internal/webhook"
+	podwebhook "sigs.k8s.io/leader-worker-set/pkg/webhook"
 	testutils "sigs.k8s.io/leader-worker-set/test/testutils"
 )
 

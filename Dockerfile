@@ -14,10 +14,10 @@ RUN go mod download
 # Copy the go source
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
-COPY internal/controller/ internal/controller/
-COPY internal/cert/ internal/cert/
-COPY internal/webhook/ internal/webhook/
-COPY internal/commonutils internal/commonutils
+COPY pkg/controller/ pkg/controller/
+COPY pkg/cert/ pkg/cert/
+COPY pkg/webhook/ pkg/webhook/
+COPY pkg/commonutils pkg/commonutils
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command
