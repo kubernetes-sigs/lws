@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	"sigs.k8s.io/leader-worker-set/internal/commonutils"
+	"sigs.k8s.io/leader-worker-set/pkg/commonutils"
 )
 
 type PodWebhook struct {

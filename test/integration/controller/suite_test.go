@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	controller "sigs.k8s.io/leader-worker-set/internal/controller"
+	controller "sigs.k8s.io/leader-worker-set/pkg/controller"
 	//+kubebuilder:scaffold:imports
 )
 

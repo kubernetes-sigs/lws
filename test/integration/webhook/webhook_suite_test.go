@@ -45,7 +45,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/leader-worker-set/internal/webhook"
+	podwebhook "sigs.k8s.io/leader-worker-set/pkg/webhook"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
