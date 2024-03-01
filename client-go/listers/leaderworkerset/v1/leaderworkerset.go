@@ -21,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
-	v1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // LeaderWorkerSetLister helps list LeaderWorkerSets.

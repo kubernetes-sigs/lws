@@ -32,10 +32,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	"sigs.k8s.io/leader-worker-set/pkg/cert"
-	"sigs.k8s.io/leader-worker-set/pkg/controller"
-	"sigs.k8s.io/leader-worker-set/pkg/webhook"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/cert"
+	"sigs.k8s.io/lws/pkg/controller"
+	"sigs.k8s.io/lws/pkg/webhook"
 	//+kubebuilder:scaffold:imports
 )
 

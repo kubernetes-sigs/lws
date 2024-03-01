@@ -18,8 +18,8 @@ limitations under the License.
 package leaderworkerset
 
 import (
-	internalinterfaces "sigs.k8s.io/leader-worker-set/client-go/informers/externalversions/internalinterfaces"
-	v1 "sigs.k8s.io/leader-worker-set/client-go/informers/externalversions/leaderworkerset/v1"
+	internalinterfaces "sigs.k8s.io/lws/client-go/informers/externalversions/internalinterfaces"
+	v1 "sigs.k8s.io/lws/client-go/informers/externalversions/leaderworkerset/v1"
 )
 
 // Interface provides access to each of this group's versions.

@@ -23,7 +23,7 @@ import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	serializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 var scheme = runtime.NewScheme()

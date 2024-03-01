@@ -19,7 +19,7 @@ package v1
 
 import (
 	v1 "k8s.io/api/core/v1"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // LeaderWorkerTemplateApplyConfiguration represents an declarative configuration of the LeaderWorkerTemplate type for use

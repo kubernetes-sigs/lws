@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
