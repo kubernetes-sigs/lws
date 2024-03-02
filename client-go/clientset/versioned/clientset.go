@@ -24,7 +24,7 @@ import (
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned/typed/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/clientset/versioned/typed/leaderworkerset/v1"
 )
 
 type Interface interface {

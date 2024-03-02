@@ -25,8 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	testutils "sigs.k8s.io/leader-worker-set/test/testutils"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func() {

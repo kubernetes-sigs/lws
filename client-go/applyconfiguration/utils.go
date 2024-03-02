@@ -19,8 +19,8 @@ package applyconfiguration
 
 import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
-	v1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/applyconfiguration/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no

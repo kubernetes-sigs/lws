@@ -21,7 +21,7 @@ import (
 	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 type LeaderWorkerSetWrapper struct {

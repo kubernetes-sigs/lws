@@ -35,14 +35,14 @@ ln -s .. sigs.k8s.io
 trap "rm sigs.k8s.io" EXIT
 
 kube::codegen::gen_helpers \
-    --input-pkg-root sigs.k8s.io/leader-worker-set/api \
+    --input-pkg-root sigs.k8s.io/lws/api \
     --output-base "${REPO_ROOT}" \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
 kube::codegen::gen_client \
     --with-watch \
     --with-applyconfig \
-    --input-pkg-root sigs.k8s.io/leader-worker-set/api \
+    --input-pkg-root sigs.k8s.io/lws/api \
     --output-base "$REPO_ROOT" \
-    --output-pkg-root sigs.k8s.io/leader-worker-set/client-go \
+    --output-pkg-root sigs.k8s.io/lws/client-go \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"

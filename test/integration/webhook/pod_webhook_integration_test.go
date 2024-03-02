@@ -26,9 +26,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/leader-worker-set/internal/webhook"
-	testutils "sigs.k8s.io/leader-worker-set/test/testutils"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podwebhook "sigs.k8s.io/lws/pkg/webhook"
+	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", func() {

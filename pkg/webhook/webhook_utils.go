@@ -25,8 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	commonutils "sigs.k8s.io/leader-worker-set/internal/commonutils"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	commonutils "sigs.k8s.io/lws/pkg/commonutils"
 )
 
 var (

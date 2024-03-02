@@ -27,8 +27,8 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	testutils "sigs.k8s.io/leader-worker-set/test/testutils"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {

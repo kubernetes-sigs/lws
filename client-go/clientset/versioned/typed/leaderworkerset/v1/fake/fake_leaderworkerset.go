@@ -27,8 +27,8 @@ import (
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
-	v1 "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/applyconfiguration/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 )
 
 // FakeLeaderWorkerSets implements LeaderWorkerSetInterface

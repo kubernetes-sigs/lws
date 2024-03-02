@@ -50,10 +50,10 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) \
-	  rbac:roleName=manager-role output:rbac:artifacts:config=config/rbac\
-    crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases\
-    webhook output:webhook:artifacts:config=config/webhook\
-    paths="./..."
+		rbac:roleName=manager-role output:rbac:artifacts:config=config/rbac \
+		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
+		webhook output:webhook:artifacts:config=config/webhook \
+		paths="./..."
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
@@ -164,7 +164,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.2.1
-CONTROLLER_TOOLS_VERSION ?= v0.13.0
+CONTROLLER_TOOLS_VERSION ?= v0.14.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary. If wrong version is installed, it will be removed before downloading.

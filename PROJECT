@@ -5,8 +5,8 @@
 domain: x-k8s.io
 layout:
 - go.kubebuilder.io/v4
-projectName: leader-worker-set
-repo: sigs.k8s.io/leader-worker-set
+projectName: lws
+repo: sigs.k8s.io/lws
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: x-k8s.io
   group: leaderworkerset
   kind: LeaderWorkerSet
-  path: sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1
+  path: sigs.k8s.io/lws/api/leaderworkerset/v1
   version: v1
   webhooks:
     defaulting: true

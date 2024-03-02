@@ -29,7 +29,7 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
-	leaderworkerset "sigs.k8s.io/leader-worker-set/api/leaderworkerset/v1"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 var (

@@ -18,7 +18,7 @@ limitations under the License.
 package v1
 
 import (
-	internalinterfaces "sigs.k8s.io/leader-worker-set/client-go/informers/externalversions/internalinterfaces"
+	internalinterfaces "sigs.k8s.io/lws/client-go/informers/externalversions/internalinterfaces"
 )
 
 // Interface provides access to all the informers in this group version.

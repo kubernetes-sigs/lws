@@ -23,9 +23,9 @@ import (
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/testing"
-	clientset "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned"
-	leaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned/typed/leaderworkerset/v1"
-	fakeleaderworkersetv1 "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned/typed/leaderworkerset/v1/fake"
+	clientset "sigs.k8s.io/lws/client-go/clientset/versioned"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/clientset/versioned/typed/leaderworkerset/v1"
+	fakeleaderworkersetv1 "sigs.k8s.io/lws/client-go/clientset/versioned/typed/leaderworkerset/v1/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.

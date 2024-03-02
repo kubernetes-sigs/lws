@@ -20,7 +20,7 @@ package fake
 import (
 	rest "k8s.io/client-go/rest"
 	testing "k8s.io/client-go/testing"
-	v1 "sigs.k8s.io/leader-worker-set/client-go/clientset/versioned/typed/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/client-go/clientset/versioned/typed/leaderworkerset/v1"
 )
 
 type FakeLeaderworkersetV1 struct {
