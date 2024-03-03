@@ -1,5 +1,3 @@
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.28.3
 
@@ -15,6 +13,13 @@ endif
 # scaffolded by default. However, you might want to replace it to use other
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
+
+GIT_TAG ?= $(shell git describe --tags --dirty --always)
+# Image URL to use all building/pushing image targets
+IMAGE_REGISTRY ?= gcr.io/k8s-staging-lws
+IMAGE_NAME := lws
+IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
+IMG ?= $(IMAGE_REPO):$(GIT_TAG)
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
