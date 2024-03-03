@@ -11,6 +11,8 @@ spec:
     kind: LeaderWorkerSet
     listKind: LeaderWorkerSetList
     plural: leaderworkersets
+    shortNames:
+    - lws
     singular: leaderworkerset
   scope: Namespaced
   versions:
