@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	acceleratorutils "sigs.k8s.io/lws/pkg/commonutils/accelerators"
+	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
 func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {

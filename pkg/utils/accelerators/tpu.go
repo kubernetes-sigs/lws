@@ -23,7 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 var (

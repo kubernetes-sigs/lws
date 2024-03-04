@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 // PodReconciler reconciles a LeaderWorkerSet object

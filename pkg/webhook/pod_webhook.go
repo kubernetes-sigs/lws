@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	acceleratorutils "sigs.k8s.io/lws/pkg/commonutils/accelerators"
-	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
+	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 type PodWebhook struct {

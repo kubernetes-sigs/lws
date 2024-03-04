@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 const (
