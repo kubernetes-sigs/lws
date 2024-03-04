@@ -3,6 +3,10 @@
 LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across devices. 
 Design and proposal can be found here: http://bit.ly/k8s-LWS.
 
+## Architecture
+
+![image](https://github.com/kubernetes-sigs/lws/assets/9022859/afe68191-609c-4b34-b992-107838002e0a)
+
 ## Feature overview
 
 - **Group of Pods as a unit:** A tightly managed group of pods that represent a “super pod” with the requirements
