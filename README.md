@@ -1,4 +1,4 @@
-# lws
+# The LeaderWorkerSet API (LWS)
 
 LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across devices. 
 Design and proposal can be found here: http://bit.ly/k8s-LWS.
