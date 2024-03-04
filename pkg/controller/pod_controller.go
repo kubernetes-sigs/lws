@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/commonutils"
+	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
 )
 
 // PodReconciler reconciles a LeaderWorkerSet object
@@ -148,7 +148,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}
 	var leader corev1.Pod
 	if !leaderPod(pod) {
-		leaderPodName, ordinal := commonutils.GetParentNameAndOrdinal(pod.Name)
+		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if ordinal == -1 {
 			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
 		}

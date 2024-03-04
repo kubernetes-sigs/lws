@@ -28,8 +28,9 @@ import (
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/lws/pkg/webhook"
+	acceleratorutils "sigs.k8s.io/lws/pkg/commonutils/accelerators"
 )
 
 func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
@@ -170,7 +171,7 @@ func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
 	containers = append(containers, pod.Spec.InitContainers...)
 	for _, container := range containers {
 		for _, env := range container.Env {
-			if env.Name == podwebhook.TpuWorkerHostNames || env.Name == podwebhook.TpuWorkerId {
+			if env.Name == acceleratorutils.TpuWorkerHostNames || env.Name == acceleratorutils.TpuWorkerId {
 				return true
 			}
 		}
@@ -181,14 +182,14 @@ func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
 func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 	for _, container := range pod.Spec.Containers {
 		for _, env := range container.Env {
-			if env.Name == podwebhook.TpuWorkerHostNames {
+			if env.Name == acceleratorutils.TpuWorkerHostNames {
 				if env.Value != envVal {
-					return fmt.Errorf("incorrect env value for %s, expect %s, got %s", podwebhook.TpuWorkerHostNames, envVal, env.Value)
+					return fmt.Errorf("incorrect env value for %s, expect %s, got %s", acceleratorutils.TpuWorkerHostNames, envVal, env.Value)
 				}
 			}
-			if env.Name == podwebhook.TpuWorkerId {
+			if env.Name == acceleratorutils.TpuWorkerId {
 				if env.Value != pod.Labels[leaderworkerset.WorkerIndexLabelKey] {
-					return fmt.Errorf("incorrect env value for %s", podwebhook.TpuWorkerId)
+					return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
 				}
 			}
 		}

@@ -28,7 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/commonutils"
+	acceleratorutils "sigs.k8s.io/lws/pkg/commonutils/accelerators"
+	statefulsetutils "sigs.k8s.io/lws/pkg/commonutils/statefulset"
 )
 
 type PodWebhook struct {
@@ -103,7 +104,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		// add group index label to group pods
 		_, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 		if !found {
-			_, groupIndex := commonutils.GetParentNameAndOrdinal(pod.Name)
+			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if groupIndex == -1 {
 				return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 			}
@@ -124,7 +125,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 	} else if !found {
 		// since leader pods will have the label already, we expect only worker pods here
-		_, workerIndex := commonutils.GetParentNameAndOrdinal(pod.Name)
+		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if workerIndex == -1 {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
@@ -132,7 +133,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	}
 
 	// injecting env vars if needed
-	if podRequestsTPUs(pod.Spec) {
+	if acceleratorutils.PodRequestsTPUs(pod.Spec) {
 		size, exist := pod.Annotations[leaderworkerset.SizeAnnotationKey]
 		if !exist {
 			return fmt.Errorf("size annotation is unexpectedly missing for pod %s", pod.Name)
@@ -141,7 +142,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if err != nil {
 			return err
 		}
-		if err := addTPUVariables(pod, podCount); err != nil {
+		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
 			return err
 		}
 	}
