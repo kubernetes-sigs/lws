@@ -71,6 +71,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]stri
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) Conditions(conditions []metav1.Condition) *LeaderWorkerSetWrapper {
+	lwsWrapper.Status.Conditions = conditions
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
