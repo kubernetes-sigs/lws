@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/commonutils"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 const (
@@ -180,7 +180,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.Lea
 			if groupIndexLabel == "" {
 				return fmt.Errorf("worker statefulset should have label leaderworkerset.sigs.k8s.io/group-index")
 			}
-			if _, groupIndex := commonutils.GetParentNameAndOrdinal(sts.Name); groupIndexLabel != strconv.Itoa(groupIndex) {
+			if _, groupIndex := statefulsetutils.GetParentNameAndOrdinal(sts.Name); groupIndexLabel != strconv.Itoa(groupIndex) {
 				return fmt.Errorf("group index label mismatch for worker statefulset %s", sts.Name)
 			}
 			if sts.Labels[leaderworkerset.GroupUniqueHashLabelKey] == "" {
@@ -194,7 +194,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.Lea
 			if groupIndexLabel == "" {
 				return fmt.Errorf("worker statefulset should have label leaderworkerset.sigs.k8s.io/group-index")
 			}
-			if _, groupIndex := commonutils.GetParentNameAndOrdinal(sts.Name); groupIndexLabel != strconv.Itoa(groupIndex) {
+			if _, groupIndex := statefulsetutils.GetParentNameAndOrdinal(sts.Name); groupIndexLabel != strconv.Itoa(groupIndex) {
 				return fmt.Errorf("group index label mismatch for worker statefulset %s", sts.Name)
 			}
 			if sts.Labels[leaderworkerset.GroupUniqueHashLabelKey] == "" {
