@@ -260,8 +260,8 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 			// Available and both are true. Must be mutually exclusive.
 			if exclusiveConditionTypes(curCondition, newCondition) &&
 				(newCondition.Status == metav1.ConditionTrue) && (curCondition.Status == metav1.ConditionTrue) {
-				// Progressing is true and Availalbe is true. Prevent this.
-				curCondition.Status = metav1.ConditionFalse
+				// Progressing is true and Available is true. Prevent this.
+				lws.Status.Conditions[i].Status = metav1.ConditionFalse
 				shouldUpdate = true
 			}
 		}
