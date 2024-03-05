@@ -394,6 +394,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Creating resources, with 0 groups ready of total 2 groups", lws.Namespace)
 						// Force groups to ready.
 						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Creating resources")
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "all replicas are ready")
 						testing.ValidateLatestEvent(ctx, k8sClient, "AllGroupsReady", corev1.EventTypeNormal, "all replicas are ready, with 2 groups ready of total 2 groups", lws.Namespace)
 						// Force a reconcile. Refetch most recent version of LWS, increase replicas.
@@ -413,6 +414,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							},
 						}, patch)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Creating resources")
+						testing.ExpectLeaderWorkerSetUnAvailable(ctx, k8sClient, lws, "all replicas are ready")
 						// Check most recent event.
 						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Creating resources, with 2 groups ready of total 3 groups", lws.Namespace)
 					},

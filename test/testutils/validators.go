@@ -237,7 +237,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.Lea
 }
 
 func ExpectLeaderWorkerSetProgressing(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
-	ginkgo.By(fmt.Sprintf("checking leaderworkerset status is: %s", leaderworkerset.LeaderWorkerSetProgressing))
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetProgressing))
 	condition := metav1.Condition{
 		Type:    string(leaderworkerset.LeaderWorkerSetProgressing),
 		Status:  metav1.ConditionTrue,
@@ -245,11 +245,32 @@ func ExpectLeaderWorkerSetProgressing(ctx context.Context, k8sClient client.Clie
 	}
 	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
 }
+
+func ExpectLeaderWorkerSetNotProgressing(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is false", leaderworkerset.LeaderWorkerSetProgressing))
+	condition := metav1.Condition{
+		Type:    string(leaderworkerset.LeaderWorkerSetProgressing),
+		Status:  metav1.ConditionFalse,
+		Message: message,
+	}
+	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
+}
+
 func ExpectLeaderWorkerSetAvailable(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
-	ginkgo.By(fmt.Sprintf("checking leaderworkerset status is: %s", leaderworkerset.LeaderWorkerSetAvailable))
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetAvailable))
 	condition := metav1.Condition{
 		Type:    string(leaderworkerset.LeaderWorkerSetAvailable),
 		Status:  metav1.ConditionTrue,
+		Message: message,
+	}
+	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
+}
+
+func ExpectLeaderWorkerSetUnAvailable(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is false", leaderworkerset.LeaderWorkerSetAvailable))
+	condition := metav1.Condition{
+		Type:    string(leaderworkerset.LeaderWorkerSetAvailable),
+		Status:  metav1.ConditionFalse,
 		Message: message,
 	}
 	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
