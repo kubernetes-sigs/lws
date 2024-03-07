@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
@@ -45,8 +46,9 @@ type LeaderWorkerSetReconciler struct {
 }
 
 var (
-	lwsOwnerKey = ".metadata.controller"
-	apiGVStr    = leaderworkerset.GroupVersion.String()
+	lwsOwnerKey  = ".metadata.controller"
+	apiGVStr     = leaderworkerset.GroupVersion.String()
+	fieldManager = "leader-worker-set"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -226,7 +228,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				log.Error(err, "Fetching leader pod")
 				return false, err
 			}
-			if podRunningAndReady(&leaderPod) {
+			if podutils.PodRunningAndReady(&leaderPod) {
 				// set to progressing.
 				readyCount++
 			}
