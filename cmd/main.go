@@ -34,8 +34,8 @@ import (
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
-	"sigs.k8s.io/lws/pkg/controller"
-	"sigs.k8s.io/lws/pkg/webhook"
+	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/webhooks"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
+	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
 	}
 
@@ -123,7 +123,7 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
 	setupLog.Info("waiting for the cert generation to complete")
 	<-certsReady
 	setupLog.Info("certs ready")
-	if err := (&controller.LeaderWorkerSetReconciler{
+	if err := (&controllers.LeaderWorkerSetReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Record: mgr.GetEventRecorderFor("leaderworkerset"),
@@ -132,17 +132,17 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
 		os.Exit(1)
 	}
 	// Set up pod reconciler.
-	podController := controller.NewPodReconciler(mgr.GetClient(), mgr.GetScheme())
+	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme())
 	if err := podController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pod")
 		os.Exit(1)
 	}
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := (&leaderworkersetv1.LeaderWorkerSet{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr); err != nil {
 			setupLog.Error(err, "unable to create leaderworkerset webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}
-		if err := webhook.NewPodWebhook(mgr).SetupWebhookWithManager(mgr); err != nil {
+		if err := webhooks.SetupPodWebhook(mgr); err != nil {
 			setupLog.Error(err, "unable to create pod webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}

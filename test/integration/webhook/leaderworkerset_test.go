@@ -12,7 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package webhook
+
+package webhookstest
 
 import (
 	"context"
@@ -69,7 +70,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return lwsWrapper
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
-				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(1).RestartPolicy(leaderworkerset.Default)
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(1).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
 			},
 		}),
 		ginkgo.Entry("apply defaulting logic for size", &testDefaultingCase{
@@ -79,7 +80,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return lwsWrapper
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
-				return testutils.BuildLeaderWorkerSet(ns.Name).Size(1).RestartPolicy(leaderworkerset.Default)
+				return testutils.BuildLeaderWorkerSet(ns.Name).Size(1).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
 			},
 		}),
 		ginkgo.Entry("defaulting logic won't apply when shouldn't", &testDefaultingCase{
@@ -87,7 +88,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2)
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
-				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).RestartPolicy(leaderworkerset.Default)
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
 			},
 		}),
 		ginkgo.Entry("defaulting logic applies when leaderworkertemplate.restartpolicy is not set", &testDefaultingCase{
@@ -95,7 +96,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2)
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
-				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).RestartPolicy(leaderworkerset.Default)
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
 			},
 		}),
 		ginkgo.Entry("defaulting logic won't apply when leaderworkertemplate.restartpolicy is set", &testDefaultingCase{

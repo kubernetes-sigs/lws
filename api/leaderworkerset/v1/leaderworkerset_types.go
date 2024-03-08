@@ -106,7 +106,7 @@ const (
 
 	// Default will follow the same behavior as the StatefulSet where only the failed pod
 	// will be restarted on failure and other pods in the group will not be impacted.
-	Default RestartPolicyType = "Default"
+	DefaultRestartPolicy RestartPolicyType = "Default"
 )
 
 // LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet

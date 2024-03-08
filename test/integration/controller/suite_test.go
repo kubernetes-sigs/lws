@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllertest
+package controllerstest
 
 import (
 	"context"
@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	controller "sigs.k8s.io/lws/pkg/controller"
+	"sigs.k8s.io/lws/pkg/controllers"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -94,14 +94,14 @@ var _ = BeforeSuite(func() {
 		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
-	lwsController := controller.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("leaderworkerset"))
+	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("leaderworkerset"))
 
-	err = controller.SetupIndexes(k8sManager.GetFieldIndexer())
+	err = controllers.SetupIndexes(k8sManager.GetFieldIndexer())
 	Expect(err).ToNot(HaveOccurred())
 	err = lwsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	podController := controller.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme())
+	podController := controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme())
 	err = podController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package webhook
+package webhookstest
 
 import (
 	"context"
@@ -45,7 +45,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/lws/pkg/webhook"
+	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -133,10 +133,10 @@ var _ = BeforeSuite(func() {
 
 	/*err = controller.SetupIndexes(mgr.GetFieldIndexer())
 	Expect(err).NotTo(HaveOccurred())*/
-	err = (&leaderworkerset.LeaderWorkerSet{}).SetupWebhookWithManager(mgr)
+	err = webhooks.SetupLeaderWorkerSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = podwebhook.NewPodWebhook(mgr).SetupWebhookWithManager(mgr)
+	err = webhooks.SetupPodWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	//+kubebuilder:scaffold:webhook
 

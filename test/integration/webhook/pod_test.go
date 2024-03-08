@@ -12,7 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package webhook
+
+package webhookstest
 
 import (
 	"context"
@@ -27,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	podwebhook "sigs.k8s.io/lws/pkg/webhook"
+	"sigs.k8s.io/lws/pkg/webhooks"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
@@ -364,7 +365,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
 				}
-				podwebhook.SetExclusiveAffinities(pod, "uniquehash")
+				webhooks.SetExclusiveAffinities(pod, "uniquehash")
 				return *pod
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
