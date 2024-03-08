@@ -1,3 +1,6 @@
+# Use go.mod go version as a single source of truth of GO version.
+GO_VERSION := $(shell awk '/^go /{print $$2}' go.mod|head -n1)
+
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.28.3
 
@@ -16,10 +19,26 @@ CONTAINER_TOOL ?= docker
 
 GIT_TAG ?= $(shell git describe --tags --dirty --always)
 # Image URL to use all building/pushing image targets
+DOCKER_BUILDX_CMD ?= docker buildx
+IMAGE_BUILD_CMD ?= $(DOCKER_BUILDX_CMD) build
+IMAGE_BUILD_EXTRA_OPTS ?=
 IMAGE_REGISTRY ?= gcr.io/k8s-staging-lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
+
+# Use distroless as minimal base image to package the manager binary
+# Refer to https://github.com/GoogleContainerTools/distroless for more details
+BASE_IMAGE ?= gcr.io/distroless/static:nonroot
+BUILDER_IMAGE ?= golang:$(GO_VERSION)
+CGO_ENABLED ?= 0
+
+ifdef EXTRA_TAG
+IMAGE_EXTRA_TAG ?= $(IMAGE_REPO):$(EXTRA_TAG)
+endif
+ifdef IMAGE_EXTRA_TAG
+IMAGE_BUILD_EXTRA_OPTS += -t $(IMAGE_EXTRA_TAG)
+endif
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -112,16 +131,18 @@ build: manifests fmt vet ## Build manager binary.
 run: manifests fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+.PHONY: image-build
+image-build:
+	$(IMAGE_BUILD_CMD) -t $(IMG) \
+		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
+		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
+		--build-arg CGO_ENABLED=$(CGO_ENABLED) \
+		$(PUSH) \
+		$(IMAGE_BUILD_EXTRA_OPTS) ./
 
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
+.PHONY: image-push
+image-push: PUSH=--push
+image-push: image-build
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
