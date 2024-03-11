@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package controllers
 
 import (
 	"testing"
@@ -100,7 +100,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				}).Replica(1).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(2).
-				RestartPolicy(leaderworkerset.Default).Obj(),
+				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -156,7 +156,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 				Size(2).
-				RestartPolicy(leaderworkerset.Default).Obj(),
+				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),

@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllertest
+package controllers
 
 import (
 	"context"
@@ -436,7 +436,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is Default", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.Default).Replica(1).Size(3)
+				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.DefaultRestartPolicy).Replica(1).Size(3)
 			},
 			updates: []*update{
 				{
