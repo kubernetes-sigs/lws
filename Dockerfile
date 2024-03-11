@@ -19,9 +19,9 @@ RUN go mod download
 # Copy the go source
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
-COPY pkg/controller/ pkg/controller/
+COPY pkg/controllers/ pkg/controllers/
 COPY pkg/cert/ pkg/cert/
-COPY pkg/webhook/ pkg/webhook/
+COPY pkg/webhooks/ pkg/webhooks/
 COPY pkg/utils pkg/utils
 
 # Build

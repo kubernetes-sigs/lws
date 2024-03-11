@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,6 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
+	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
@@ -297,4 +301,115 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 		}
 	}
 	return nil
+}
+
+// constructLeaderStatefulSetApplyConfiguration constructs the apply configuration for the leader StatefulSet
+func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+	var podTemplateSpec corev1.PodTemplateSpec
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+	} else {
+		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+	}
+	// construct pod template spec configuration
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
+	if err != nil {
+		return nil, err
+	}
+	var podTemplateApplyConfiguration coreapplyv1.PodTemplateSpecApplyConfiguration
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &podTemplateApplyConfiguration)
+	if err != nil {
+		return nil, err
+	}
+	podTemplateApplyConfiguration.WithLabels(map[string]string{
+		leaderworkerset.WorkerIndexLabelKey: "0",
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+	})
+	podAnnotations := make(map[string]string)
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
+	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+	// construct statefulset apply configuration
+	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
+		WithSpec(appsapplyv1.StatefulSetSpec().
+			WithServiceName(lws.Name).
+			WithReplicas(*lws.Spec.Replicas).
+			WithPodManagementPolicy(appsv1.ParallelPodManagement).
+			WithTemplate(&podTemplateApplyConfiguration).
+			WithServiceName(lws.Name).
+			WithSelector(metaapplyv1.LabelSelector().
+				WithMatchLabels(map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+				}))).
+		WithLabels(map[string]string{
+			leaderworkerset.SetNameLabelKey: lws.Name,
+		})
+	return statefulSetConfig, nil
+}
+
+func makeCondition(available bool) metav1.Condition {
+	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
+	reason := "GroupsAreProgressing"
+	message := "Creating resources"
+
+	if available {
+		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
+		reason = "AllGroupsReady"
+		message = "all replicas are ready"
+	}
+
+	condition := metav1.Condition{
+		Type:               condtype,
+		Status:             metav1.ConditionStatus(corev1.ConditionTrue),
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            message,
+	}
+	return condition
+}
+
+func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Condition) bool {
+	newCondition.LastTransitionTime = metav1.Now()
+	found := false
+	shouldUpdate := false
+
+	// Precondition: newCondition has status true.
+	for i, curCondition := range lws.Status.Conditions {
+		if newCondition.Type == curCondition.Type {
+			if newCondition.Status != curCondition.Status {
+				// the conditions match but one is true and one is false. Update the stored condition
+				// with the new condition.
+				lws.Status.Conditions[i] = newCondition
+				shouldUpdate = true
+			}
+			// if both are true or both are false, do nothing.
+			found = true
+		} else {
+			// if the conditions are not of the same type, do nothing unless one is Progressing and one is
+			// Available and both are true. Must be mutually exclusive.
+			if exclusiveConditionTypes(curCondition, newCondition) &&
+				(newCondition.Status == metav1.ConditionTrue) && (curCondition.Status == metav1.ConditionTrue) {
+				// Progressing is true and Available is true. Prevent this.
+				lws.Status.Conditions[i].Status = metav1.ConditionFalse
+				shouldUpdate = true
+			}
+		}
+	}
+	// condition doesn't exist, update only if the status is true
+	if newCondition.Status == metav1.ConditionTrue && !found {
+		lws.Status.Conditions = append(lws.Status.Conditions, newCondition)
+		shouldUpdate = true
+	}
+	return shouldUpdate
+}
+
+func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Condition) bool {
+	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetProgressing)) ||
+		(condition1.Type == string(leaderworkerset.LeaderWorkerSetProgressing) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
+		return true
+	}
+	return false
 }
