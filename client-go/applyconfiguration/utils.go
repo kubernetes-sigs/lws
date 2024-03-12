@@ -36,6 +36,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &leaderworkersetv1.LeaderWorkerSetStatusApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerTemplate"):
 		return &leaderworkersetv1.LeaderWorkerTemplateApplyConfiguration{}
+	case v1.SchemeGroupVersion.WithKind("RollingUpdateConfiguration"):
+		return &leaderworkersetv1.RollingUpdateConfigurationApplyConfiguration{}
+	case v1.SchemeGroupVersion.WithKind("RolloutStrategy"):
+		return &leaderworkersetv1.RolloutStrategyApplyConfiguration{}
 
 	}
 	return nil
