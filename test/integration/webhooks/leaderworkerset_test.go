@@ -24,9 +24,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
@@ -105,6 +107,35 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
+			},
+		}),
+		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).RolloutStrategy(leaderworkerset.RolloutStrategy{}) // unset rollout strategy
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
+			},
+		}),
+		ginkgo.Entry("wouldn't apply with default rollout strategy when configured", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).
+					RolloutStrategy(leaderworkerset.RolloutStrategy{
+						Type: v1.RollingUpdateStrategyType,
+						RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+							MaxUnavailable: intstr.FromInt32(2),
+							MaxSurge:       intstr.FromString("20%"),
+						}})
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.DefaultRestartPolicy).
+					RolloutStrategy(leaderworkerset.RolloutStrategy{
+						Type: v1.RollingUpdateStrategyType,
+						RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+							MaxUnavailable: intstr.FromInt32(2),
+							MaxSurge:       intstr.FromString("20%"),
+						}})
 			},
 		}),
 	)
@@ -207,16 +238,24 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: true,
 		}),
-		ginkgo.Entry("set restart polciy should succeed", &testValidationCase{
+		ginkgo.Entry("set restart policy should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
 			},
 			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("set restart polciy should fail when value is invalid", &testValidationCase{
+		ginkgo.Entry("set restart policy should fail when value is invalid", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.LeaderWorkerTemplate.RestartPolicy = "invalidValue"
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set invalid rolloutStrategyType should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.Type = "invalidValue"
 				return lws
 			},
 			lwsCreationShouldFail: true,
