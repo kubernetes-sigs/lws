@@ -19,6 +19,10 @@ Design and proposal can be found here: http://bit.ly/k8s-LWS.
 - **Topology-aware placement:** Opt-in support for pods in the same group to be co-located in the same topology.
 - **All-or-nothing restart for failure handling:** Opt-in support for all pods in the group to be recreated if one pod in the group failed or one container in the pods is restarted.
 
+## Installation
+
+Read the [installation guide](/docs/setup/install.md) to learn more.
+
 ## Community, discussion, contribution, and support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
