@@ -38,7 +38,7 @@ following command:
 kubectl apply --server-side -k github.com/kubernetes-sigs/lws/config/default?ref=main
 ```
 
-The controller runs in the `leader-worker-set-system` namespace.
+The controller runs in the `lws-system` namespace.
 
 ## Uninstall
 
