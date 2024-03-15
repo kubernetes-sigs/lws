@@ -52,7 +52,7 @@ type LeaderWorkerSetReconciler struct {
 var (
 	lwsOwnerKey  = ".metadata.controller"
 	apiGVStr     = leaderworkerset.GroupVersion.String()
-	fieldManager = "leader-worker-set"
+	fieldManager = "lws"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {

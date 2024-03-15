@@ -22,14 +22,14 @@ import (
 )
 
 const (
-	serviceName             = "leader-worker-set-webhook-service"
-	secretName              = "leader-worker-set-webhook-server-cert"
-	secretNamespace         = "leader-worker-set-system"
+	serviceName             = "lws-webhook-service"
+	secretName              = "lws-webhook-server-cert"
+	secretNamespace         = "lws-system"
 	certDir                 = "/tmp/k8s-webhook-server/serving-certs"
-	validateWebhookConfName = "leader-worker-set-validating-webhook-configuration"
-	mutatingWebhookConfName = "leader-worker-set-mutating-webhook-configuration"
-	caName                  = "leader-worker-set-ca"
-	caOrg                   = "leader-worker-set"
+	validateWebhookConfName = "lws-validating-webhook-configuration"
+	mutatingWebhookConfName = "lws-mutating-webhook-configuration"
+	caName                  = "lws-ca"
+	caOrg                   = "lws"
 )
 
 // dnsName is the format of <service name>.<namespace>.svc

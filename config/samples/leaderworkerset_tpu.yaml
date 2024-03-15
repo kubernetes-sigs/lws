@@ -4,9 +4,9 @@ metadata:
   labels:
     app.kubernetes.io/name: leaderworkerset
     app.kubernetes.io/instance: leaderworkerset-sample
-    app.kubernetes.io/part-of: leader-worker-set
+    app.kubernetes.io/part-of: lws
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/created-by: leader-worker-set
+    app.kubernetes.io/created-by: lws
   name: leaderworkerset-sample
 spec:
   replicas: 3
