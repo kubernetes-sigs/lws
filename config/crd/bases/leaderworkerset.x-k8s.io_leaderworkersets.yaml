@@ -7656,6 +7656,7 @@ spec:
                       Number of pods to create. It is the total number of pods in each group.
                       The minimum is 1 which represent the leader. When set to 1, the leader
                       pod is created for each group as well as a 0-replica StatefulSet for the workers.
+                      Default to 1.
                     format: int32
                     type: integer
                   workerTemplate:
@@ -15249,7 +15250,6 @@ spec:
                         type: object
                     type: object
                 required:
-                - size
                 - workerTemplate
                 type: object
               replicas:
@@ -15260,10 +15260,67 @@ spec:
                   the rest of the group and expose them as a summary custom metric representing the whole
                   group.
                   On scale down, the leader pod as well as the workers statefulset will be deleted.
+                  Default to 1.
                 format: int32
                 type: integer
+              rolloutStrategy:
+                description: |-
+                  RolloutStrategy defines the strategy that will be applied to update replicas
+                  when a revision is made to the leaderWorkerTemplate.
+                properties:
+                  rollingUpdateConfiguration:
+                    description: RollingUpdateConfiguration defines the parameters
+                      to be used when type is RollingUpdateStrategyType.
+                    properties:
+                      maxSurge:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 1
+                        description: |-
+                          The maximum number of replicas that can be scheduled above the original number of
+                          replicas.
+                          Value can be an absolute number (ex: 5) or a percentage of total replicas at
+                          the start of the update (ex: 10%).
+                          This can not be 0 if MaxUnavailable is 0.
+                          Absolute number is calculated from percentage by rounding up.
+                          By default, a value of 1 is used.
+                          Example: when this is set to 30%, the new replicas can be scaled up by 30%
+                          immediately when the rolling update starts. Once old replicas have been killed,
+                          new replicas can be scaled up further, ensuring that total number of replicas running
+                          at any time during the update is at most 130% of original replicas.
+                        x-kubernetes-int-or-string: true
+                      maxUnavailable:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 1
+                        description: |-
+                          The maximum number of replica that can be unavailable during the update.
+                          Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+                          Absolute number is calculated from percentage by rounding down.
+                          This can not be 0 if MaxSurge is 0.
+                          By default, a fixed value of 1 is used.
+                          Example: when this is set to 30%, the old replicas can be scaled down by 30%
+                          immediately when the rolling update starts. Once new replicas are ready, old replicas
+                          can be scaled down further, followed by scaling up the new replicas, ensuring
+                          that at least 70% of original number of replicas are available at all times
+                          during the update.
+                        x-kubernetes-int-or-string: true
+                    type: object
+                  type:
+                    default: RollingUpdate
+                    description: Type defines the rollout strategy, it can only be
+                      “RollingUpdate” for now.
+                    enum:
+                    - RollingUpdate
+                    type: string
+                required:
+                - type
+                type: object
             required:
             - leaderWorkerTemplate
+            - rolloutStrategy
             type: object
           status:
             description: LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet

@@ -18,10 +18,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 type LeaderWorkerSetWrapper struct {
@@ -66,6 +68,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) RestartPolicy(policy leaderworkerset.R
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) RolloutStrategy(strategy leaderworkerset.RolloutStrategy) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.RolloutStrategy = strategy
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]string) *LeaderWorkerSetWrapper {
 	lwsWrapper.Annotations = annotations
 	return lwsWrapper
@@ -101,6 +108,14 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
+	// Manually set this for we didn't enable webhook in controller tests.
+	lws.Spec.RolloutStrategy = v1.RolloutStrategy{
+		Type: v1.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt32(1),
+		},
+	}
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}

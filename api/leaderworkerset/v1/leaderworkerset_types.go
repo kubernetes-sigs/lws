@@ -19,6 +19,7 @@ package v1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 const (
@@ -67,10 +68,16 @@ type LeaderWorkerSetSpec struct {
 	// the rest of the group and expose them as a summary custom metric representing the whole
 	// group.
 	// On scale down, the leader pod as well as the workers statefulset will be deleted.
+	// Default to 1.
+	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// LeaderWorkerTemplate defines the template for leader/worker pods
 	LeaderWorkerTemplate LeaderWorkerTemplate `json:"leaderWorkerTemplate"`
+
+	// RolloutStrategy defines the strategy that will be applied to update replicas
+	// when a revision is made to the leaderWorkerTemplate.
+	RolloutStrategy RolloutStrategy `json:"rolloutStrategy"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -89,11 +96,70 @@ type LeaderWorkerTemplate struct {
 	// Number of pods to create. It is the total number of pods in each group.
 	// The minimum is 1 which represent the leader. When set to 1, the leader
 	// pod is created for each group as well as a 0-replica StatefulSet for the workers.
-	Size *int32 `json:"size"`
+	// Default to 1.
+	// +optional
+	Size *int32 `json:"size,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 }
+
+// RolloutStrategy defines the strategy that the leaderWorkerSet controller
+// will use to perform replica updates.
+type RolloutStrategy struct {
+	// Type defines the rollout strategy, it can only be “RollingUpdate” for now.
+	//
+	// +kubebuilder:validation:Enum={RollingUpdate}
+	// +kubebuilder:default=RollingUpdate
+	Type RolloutStrategyType `json:"type"`
+
+	// RollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
+	// +optional
+	RollingUpdateConfiguration *RollingUpdateConfiguration `json:"rollingUpdateConfiguration,omitempty"`
+}
+
+// RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
+type RollingUpdateConfiguration struct {
+	// The maximum number of replica that can be unavailable during the update.
+	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+	// Absolute number is calculated from percentage by rounding down.
+	// This can not be 0 if MaxSurge is 0.
+	// By default, a fixed value of 1 is used.
+	// Example: when this is set to 30%, the old replicas can be scaled down by 30%
+	// immediately when the rolling update starts. Once new replicas are ready, old replicas
+	// can be scaled down further, followed by scaling up the new replicas, ensuring
+	// that at least 70% of original number of replicas are available at all times
+	// during the update.
+	//
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:default=1
+	MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
+
+	// The maximum number of replicas that can be scheduled above the original number of
+	// replicas.
+	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
+	// the start of the update (ex: 10%).
+	// This can not be 0 if MaxUnavailable is 0.
+	// Absolute number is calculated from percentage by rounding up.
+	// By default, a value of 1 is used.
+	// Example: when this is set to 30%, the new replicas can be scaled up by 30%
+	// immediately when the rolling update starts. Once old replicas have been killed,
+	// new replicas can be scaled up further, ensuring that total number of replicas running
+	// at any time during the update is at most 130% of original replicas.
+	//
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:default=1
+	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
+}
+
+type RolloutStrategyType string
+
+const (
+	// RollingUpdateStrategyType indicates that replicas will be updated one by one(defined
+	// by RollingUpdateConfiguration), the latter one will not start the update until the
+	// former one(leader+workers) is ready.
+	RollingUpdateStrategyType RolloutStrategyType = "RollingUpdate"
+)
 
 type RestartPolicyType string
 

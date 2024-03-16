@@ -24,6 +24,7 @@ import (
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -63,6 +64,16 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 	}
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
+	}
+
+	if lws.Spec.RolloutStrategy.Type == "" {
+		lws.Spec.RolloutStrategy.Type = v1.RollingUpdateStrategyType
+	}
+	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt32(1),
+		}
 	}
 	return nil
 }
