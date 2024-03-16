@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -234,7 +234,7 @@ func ValidatePodExclusivePlacementTerms(pod corev1.Pod) bool {
 
 func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, count int32) {
 	gomega.Eventually(func() error {
-		lws.Spec.Replicas = pointer.Int32(count)
+		lws.Spec.Replicas = ptr.To[int32](count)
 		return k8sClient.Update(ctx, lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

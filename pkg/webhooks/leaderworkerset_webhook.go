@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -57,10 +57,10 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
 	if lws.Spec.Replicas == nil {
-		lws.Spec.Replicas = pointer.Int32(1)
+		lws.Spec.Replicas = ptr.To[int32](1)
 	}
 	if lws.Spec.LeaderWorkerTemplate.Size == nil {
-		lws.Spec.LeaderWorkerTemplate.Size = pointer.Int32(1)
+		lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
 	}
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy

@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -410,7 +410,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 								Name:      lws.Name,
 							},
 							Spec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: pointer.Int32(3),
+								Replicas: ptr.To[int32](3),
 							},
 						}, patch)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Creating resources")

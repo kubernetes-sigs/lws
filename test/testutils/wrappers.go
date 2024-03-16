@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -104,7 +103,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
 	lws.Spec.Replicas = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{}
-	lws.Spec.LeaderWorkerTemplate.Size = pointer.Int32(4)
+	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](4)
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
