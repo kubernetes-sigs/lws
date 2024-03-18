@@ -12,7 +12,7 @@ spec:
     leaderTemplate:
       metadata:
         labels:
-            app: leader-pod
+            app: saxml-admin
       spec:
         serviceAccountName: sax-sa
         nodeSelector:
@@ -97,3 +97,4 @@ spec:
               google.com/tpu: 4
             limits:
               google.com/tpu: 4
+              
