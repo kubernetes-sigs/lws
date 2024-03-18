@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
@@ -222,7 +223,35 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
-		ginkgo.Entry("Pod requesting TPUs in lws with size 5 will have env var populated in worker pod (the 3rd worker)", &testDefaultingCase{
+		ginkgo.Entry("Worker Pod requesting TPUs in lws, leader too", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-3",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "3",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "5",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Worker Pod requesting TPUs in lws, leader doesn't", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -243,7 +272,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				if !testutils.HasTPUEnvVarsPopulated(got) {
 					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
 				}
-				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
 					return err
 				}
 				return nil
@@ -260,7 +289,8 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.WorkerIndexLabelKey: "1",
 						},
 						Annotations: map[string]string{
-							leaderworkerset.SizeAnnotationKey: "2",
+							leaderworkerset.SizeAnnotationKey:                "2",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
@@ -290,7 +320,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "1",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {

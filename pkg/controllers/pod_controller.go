@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -238,7 +239,7 @@ func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1
 }
 
 // constructWorkerStatefulSetApplyConfiguration constructs the apply configuration for the leader StatefulSet
-func constructWorkerStatefulSetApplyConfiguration(pod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
@@ -251,20 +252,21 @@ func constructWorkerStatefulSetApplyConfiguration(pod corev1.Pod, lws leaderwork
 		return nil, err
 	}
 	labelMap := map[string]string{
-		leaderworkerset.GroupIndexLabelKey:      pod.Labels[leaderworkerset.GroupIndexLabelKey],
+		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
-		leaderworkerset.GroupUniqueHashLabelKey: pod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
+		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 	}
 	podTemplateApplyConfiguration.WithLabels(labelMap)
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = pod.Name
+	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
+	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	// construct statefulset apply configuration
-	statefulSetConfig := appsapplyv1.StatefulSet(pod.Name, pod.Namespace).
+	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
 			WithReplicas(*lws.Spec.LeaderWorkerTemplate.Size - 1).
