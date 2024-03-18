@@ -73,9 +73,6 @@ spec:
     workerTemplate:
       spec:
         serviceAccountName: sax-sa
-        nodeSelector:
-          cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
-          cloud.google.com/gke-tpu-topology: 4x8
         containers:
         - name: sax-model-server
           image: us-docker.pkg.dev/cloud-tpu-images/inference/sax-model-server:nightly
