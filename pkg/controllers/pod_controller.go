@@ -32,7 +32,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -134,7 +134,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// TODO b/316776287 add E2E test for SSA
 	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
 		FieldManager: fieldManager,
-		Force:        pointer.Bool(true),
+		Force:        ptr.To[bool](true),
 	})
 	if err != nil {
 		return ctrl.Result{}, err
