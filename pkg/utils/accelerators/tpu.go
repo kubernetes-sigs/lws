@@ -22,14 +22,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 var (
-	TpuResourceName    = corev1.ResourceName("google.com/tpu")
-	TpuWorkerHostNames = "TPU_WORKER_HOSTNAMES"
-	TpuWorkerId        = "TPU_WORKER_ID"
+	TpuResourceName                 = corev1.ResourceName("google.com/tpu")
+	TpuWorkerHostNames              = "TPU_WORKER_HOSTNAMES"
+	TpuWorkerId                     = "TPU_WORKER_ID"
+	LeaderRequestsTPUsAnnotationKey = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
 )
 
 // PodRequestsTPUs returns true if the pod requesting TPUs
@@ -89,29 +90,33 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 			return nil
 		}
 	}
+
+	leaderName := pod.Name
+	tpuWorkerId := 0
 	var hostnames []string
-	if workerIndex, found := pod.Labels[leaderworkerset.WorkerIndexLabelKey]; found {
-		leaderName := ""
-		if workerIndex == "0" {
-			// hostname for leader pod, leaderPodName.Subdomain
-			hostnames = append(hostnames, fmt.Sprintf("%s.%s", pod.Name, pod.Spec.Subdomain))
-			leaderName = pod.Name
-		} else {
-			// hostname for leader pod
-			leaderName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-			if leaderName == "" {
-				return fmt.Errorf("parsing parent name from pod %s", pod.Name)
-			}
-			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		}
-		for i := 1; i <= size-1; i++ {
-			// hostname for worker pod, leaderPodName-Index.Subdomain
-			hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
-		}
+	if podutils.LeaderPod(*pod) {
+		// if this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0
+		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
 	} else {
-		// if worker identity label is missing, do nothing
-		return nil
+		leaderName, tpuWorkerId = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		if leaderName == "" {
+			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
+		}
+		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
+			// The leader requests TPUs, and so it will be added to the hostnames and will get TPU_WORKER_ID=0
+			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
+		} else {
+			// The leader doesn't request TPUs, and so it is only the workers that will be assigned
+			// TPU_WORKER_ID, and so we have to shift the IDs by 1 since the leader is not a TPU worker.
+			tpuWorkerId = tpuWorkerId - 1
+		}
 	}
+
+	for i := 1; i <= size-1; i++ {
+		// hostname for worker pod, leaderPodName-Index.Subdomain
+		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
+	}
+
 	container.Env = append(container.Env,
 		corev1.EnvVar{
 			Name:  TpuWorkerHostNames,
@@ -119,8 +124,15 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		},
 		corev1.EnvVar{
 			Name:  TpuWorkerId,
-			Value: pod.Labels[leaderworkerset.WorkerIndexLabelKey],
+			Value: fmt.Sprint(tpuWorkerId),
 		},
 	)
 	return nil
+}
+
+// AddTPUAnnotations adds TPU specific annotations.
+func AddTPUAnnotations(leaderPod corev1.Pod, annotations map[string]string) {
+	if PodRequestsTPUs(leaderPod.Spec) {
+		annotations[LeaderRequestsTPUsAnnotationKey] = "true"
+	}
 }

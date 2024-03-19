@@ -31,6 +31,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -94,8 +95,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	}
 
 	// adding labels for pods
-	index, found := pod.Labels[leaderworkerset.WorkerIndexLabelKey]
-	if found && index == "0" {
+	if podutils.LeaderPod(*pod) {
 		// add group index label to group pods
 		_, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 		if !found {
@@ -118,8 +118,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if foundEpKey && !exclusiveAffinityApplied(*pod) {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
-	} else if !found {
-		// since leader pods will have the label already, we expect only worker pods here
+	} else {
 		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if workerIndex == -1 {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)

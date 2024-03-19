@@ -188,9 +188,18 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 				}
 			}
 			if env.Name == acceleratorutils.TpuWorkerId {
-				if env.Value != pod.Labels[leaderworkerset.WorkerIndexLabelKey] {
-					return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
+				if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" ||
+					pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
+					if env.Value != pod.Labels[leaderworkerset.WorkerIndexLabelKey] {
+						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
+					}
+				} else {
+					index, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
+					if env.Value != fmt.Sprint(index-1) {
+						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
+					}
 				}
+
 			}
 		}
 	}

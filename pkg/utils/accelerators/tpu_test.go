@@ -62,24 +62,15 @@ func TestAddTPUVariables(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/worker-index": "3",
 					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
 				},
 			},
 			size:                       5,
 			hasWorkerIndexLabelKey:     true,
 			expectedTpuWorkerHostNames: "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default",
 			expectedTpuWorkerId:        "3",
-		},
-		{
-			name: "No Worker Index included",
-			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
-				ObjectMeta: v1.ObjectMeta{
-					Name:      "test-sample-1-3",
-					Namespace: "default",
-				},
-			},
-			size:                   1,
-			hasWorkerIndexLabelKey: false,
 		},
 	}
 
