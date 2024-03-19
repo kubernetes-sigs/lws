@@ -19,6 +19,10 @@ kubectl apply -f configmaplws.yaml
 
 ## Deploy LeaderWorkerSet Deployment
 
+We use LeaderWorkerSet to deploy two group of Saxml model servers on two TPU multi-host pod slice. 
+On the leader pod, we deployed Sax admin server and the http server. The Sax model server is on the 
+worker pods. 
+
 Apply the `leader-worker-set.yaml` manifest:
 ```shell
 kubectl apply -f leader-worker-set.yaml
