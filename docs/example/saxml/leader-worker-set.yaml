@@ -7,7 +7,7 @@ metadata:
 spec:
   replicas: 2
   leaderWorkerTemplate:
-    size: 8
+    size: 9
     restartPolicy: RecreateGroupOnPodRestart
     leaderTemplate:
       metadata:
@@ -18,6 +18,10 @@ spec:
         nodeSelector:
           cloud.google.com/gke-tpu-topology: 4x8
           cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+        tolerations: 
+        - key: "google.com/tpu"
+          operator: "Exists"
+          effect: "NoSchedule"
         containers:
         - name: sax-admin-server
           image: us-docker.pkg.dev/cloud-tpu-images/inference/sax-admin-server:nightly
@@ -31,27 +35,7 @@ spec:
               fieldRef: 
                 fieldPath: metadata.name 
           - name: SAX_GCS_BUCKET
-            value: BUCKET_NAME
-        - name: sax-model-server
-          image: us-docker.pkg.dev/cloud-tpu-images/inference/sax-model-server:nightly
-          args: ["--port=10001", "--platform_chip=tpuv5e"]
-          ports:
-          - containerPort: 10001
-          - containerPort: 8471
-          securityContext:
-            privileged: true
-          env:
-          - name: SAX_REPLICA_NAME
-            valueFrom:
-              fieldRef: 
-                fieldPath: metadata.name 
-          - name: SAX_GCS_BUCKET
-            value: BUCKET_NAME
-          resources:
-            requests:
-              google.com/tpu: 4
-            limits:
-              google.com/tpu: 4
+            value: GCS_BUCKET
         - name: sax-http
           image: gcr.io/tpu-vm-gke-testing/saxml-lws-testing-modified/httpserver-merged:latest
           volumeMounts:
@@ -65,7 +49,7 @@ spec:
               fieldRef: 
                 fieldPath: metadata.name 
           - name: SAX_GCS_BUCKET
-            value: BUCKET_NAME
+            value: GCS_BUCKET
         volumes:
         - name: publish-config
           configMap:
@@ -73,6 +57,9 @@ spec:
     workerTemplate:
       spec:
         serviceAccountName: sax-sa
+        nodeSelector:
+          cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+          cloud.google.com/gke-tpu-topology: 4x8
         containers:
         - name: sax-model-server
           image: us-docker.pkg.dev/cloud-tpu-images/inference/sax-model-server:nightly
@@ -88,10 +75,11 @@ spec:
               fieldRef: 
                 fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/leader-name'] 
           - name: SAX_GCS_BUCKET
-            value: BUCKET_NAME
+            value: GCS_BUCKET
           resources:
             requests:
               google.com/tpu: 4
             limits:
               google.com/tpu: 4
+
               
