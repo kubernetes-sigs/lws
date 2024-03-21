@@ -17,19 +17,18 @@ the HTTP Server will unpublish the model that was loaded, and publish a model th
 Apply the `configmap.yaml` manifest:
 
 ```shell
-kubectl apply -f configmaplws.yaml
+kubectl apply -f configmap.yaml
 ```
 
 
 ## Deploy LeaderWorkerSet Deployment
 
-We use LeaderWorkerSet to deploy two group of Saxml model servers on two TPU multi-host pod slice. 
-On the leader pod, we deployed Sax admin server and the http server. The Sax model server is on the 
-worker pods. 
+We use LeaderWorkerSet to deploy two Saxml model replicas on two TPU multi-host pod slices. 
+On the leader pod, the leader pod runs the Sax admin and the http servers, while the workers run the Sax model servers.
 
-Apply the `leader-worker-set.yaml` manifest:
+Apply the `lws.yaml` manifest:
 ```shell
-kubectl apply -f leader-worker-set.yaml
+kubectl apply -f lws.yaml
 ```
 
 Verify the status of the SaxML Deployment
@@ -63,10 +62,10 @@ saxml-multi-host-1-7              1/1     Running   0          3m12s
 
 ## Deploy LoadBalancer
 
-Apply the `lws-lb.yaml` manifest
+Apply the `service.yaml` manifest
 
 ```shell
-kubectl apply -f lws-lb.yaml
+kubectl apply -f service.yaml
 ```
 
 Wait for the service to have an external IP address assigned
@@ -78,7 +77,7 @@ kubectl get svc
 The output should be similar to the following
 ```shell
 NAME           TYPE         CLUSTER-IP      EXTERNAL-IP      PORT(S)       AGE
-lws-http-lb  LoadBalancer   10.68.56.41    10.182.0.187   8888:31876/TCP   56s
+saxml  LoadBalancer   10.68.56.41    10.182.0.187   8888:31876/TCP   56s
 
 ```
 

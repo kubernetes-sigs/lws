@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: lws-http-lb
+  name: saxml
 spec:
   selector:
     app: leader-pod
