@@ -53,7 +53,7 @@ spec:
         volumes:
         - name: publish-config
           configMap:
-            name: configmaplws
+            name: saxml-model
     workerTemplate:
       spec:
         serviceAccountName: sax-sa

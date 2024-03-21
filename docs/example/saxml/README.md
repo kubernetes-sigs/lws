@@ -25,7 +25,7 @@ kubectl apply -f configmap.yaml
 We use LeaderWorkerSet to deploy two Saxml model replicas on two TPU multi-host pod slices. 
 On the leader pod, the leader pod runs the Sax admin and the http servers, while the workers run the Sax model servers.
 
-Apply the `lws.yaml` manifest:
+Replace the GCS_BUCKET with the name of your GCS bucket and apply the `lws.yaml` manifest:
 ```shell
 kubectl apply -f lws.yaml
 ```
