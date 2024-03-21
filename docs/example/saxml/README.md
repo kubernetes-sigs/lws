@@ -1,6 +1,6 @@
 # Deploy SaxML Multihost with LWS on GKE
 
-In the example, we will use LeaderWorkerSet to deploy a multi-host inference instance on TPUs with Saxml. You could use the steps [here](https://cloud.google.com/kubernetes-engine/docs/tutorials/tpu-multihost-saxml#before-you-begin) to setup your TPU clusters, node pools, gcs bucket,and configure workload access. 
+In this example, we will use LeaderWorkerSet to deploy a multi-host inference instance on TPUs with Saxml. You could use the steps [here](https://cloud.google.com/kubernetes-engine/docs/tutorials/tpu-multihost-saxml#before-you-begin) to setup your TPU clusters, node pools, GCS bucket, and configure workload access. 
 
 ## Install LeaderWorkerSet
 
@@ -11,8 +11,7 @@ Follow the step-by-step guide on how to install LWS. [View installation guide](h
 ![image](https://github.com/kubernetes-sigs/lws/assets/86417275/2c4a9abd-f988-4f2e-ad3f-c7b03f0b6485)
 
 ## Deploy ConfigMap with model configuration
-The ConfigMap contains where the model will be loaded, what model it is, and the checkpoint that will be used. If the model information on the ConfigMap is updated, t
-the HTTP Server will unpublish the model that was loaded, and publish a model that reflects the new model information.
+The ConfigMap contains where the model will be loaded, what model it is, and the checkpoint that will be used. If the model information on the ConfigMap is updated, the HTTP Server will unpublish the model that was loaded, and publish a model that reflects the new model information.
 
 Apply the `configmap.yaml` manifest:
 
