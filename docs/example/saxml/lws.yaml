@@ -37,7 +37,7 @@ spec:
           - name: SAX_GCS_BUCKET
             value: GCS_BUCKET
         - name: sax-http
-          image: gcr.io/tpu-vm-gke-testing/saxml-lws-testing-modified/httpserver-merged:latest
+          image: us-docker.pkg.dev/cloud-tpu-images/inference/sax-http:nightly
           volumeMounts:
             - name: publish-config
               mountPath: /publish/config 
