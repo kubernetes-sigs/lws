@@ -30,3 +30,4 @@ spec:
               cpu: "50m"
           ports:
           - containerPort: 8080
+          
