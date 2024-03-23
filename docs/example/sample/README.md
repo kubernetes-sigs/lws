@@ -21,5 +21,5 @@ LWS expose a scale endpoint for HPA to trigger scaling. An example HPA yaml for 
 
 
 ## Exclusive Placement
-LeaderWorkerSet supports exclusive placement through node affinity/anti-affinity where pods in the same group will be scheduled on the same topology domain (ex, GKE node pool), but on different nodes. In the context of GKE node pool, this ensures 1:1 pod-to-node mapping and 1:1 podgroup-to-nodepool mapping.
+LeaderWorkerSet supports exclusive placement through pod affinity/anti-affinity where pods in the same group will be scheduled on the same accelerator island (such as a TPU slice or a GPU clique), but on different nodes. This ensures 1:1 LWS replica to accelerator island placement.
 This feature can be enabled by adding the exclusive topology annotation **leaderworkerset.sigs.k8s.io/exclusive-topology:** as shown [here](lws-exclusive-placement.yaml)
