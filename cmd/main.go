@@ -123,11 +123,12 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
 	setupLog.Info("waiting for the cert generation to complete")
 	<-certsReady
 	setupLog.Info("certs ready")
-	if err := (&controllers.LeaderWorkerSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Record: mgr.GetEventRecorderFor("leaderworkerset"),
-	}).SetupWithManager(mgr); err != nil {
+
+	if err := controllers.NewLeaderWorkerSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("leaderworkerset"),
+	).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)
 	}

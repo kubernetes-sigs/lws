@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
@@ -99,6 +100,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
+					leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(lws),
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -120,7 +122,30 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	return nil
 }
 
-func GetLeaderSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, sts *appsv1.StatefulSet) {
+// UpdateLeaderPods will only update the leader Pods' template-revision-hash.
+func UpdateLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) error {
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(0),
+	})
+	var podList corev1.PodList
+	if err := k8sClient.List(ctx, &podList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+
+	hash := utils.LeaderWorkerTemplateHash(lws)
+
+	for i := range podList.Items {
+		podList.Items[i].Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+		if err := k8sClient.Update(ctx, &podList.Items[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, sts *appsv1.StatefulSet) {
 	gomega.Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts); err != nil {
 			return err
@@ -133,21 +158,41 @@ func GetLeaderSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8s
 func SetPodGroupsToReady(stsList []appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, ctx context.Context) {
 	for i, sts := range stsList {
 		if sts.Name != lws.Name {
-			stsList[i].Status.ReadyReplicas = *stsList[i].Spec.Replicas
-			stsList[i].Status.Replicas = *stsList[i].Spec.Replicas
-			gomega.Expect(k8sClient.Status().Update(ctx, &stsList[i])).Should(gomega.Succeed())
-
-			var leaderPod corev1.Pod
-			gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: stsList[i].Name}, &leaderPod)).Should(gomega.Succeed())
-			leaderPod.Status.Phase = corev1.PodRunning
-			condition := corev1.PodCondition{
-				Type:   corev1.PodReady,
-				Status: corev1.ConditionTrue,
-			}
-			leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
-			gomega.Expect(k8sClient.Status().Update(ctx, &leaderPod)).Should(gomega.Succeed())
+			SetPodGroupToReady(ctx, k8sClient, &stsList[i], lws)
 		}
 	}
+}
+
+// SetPodGroupsToReady set one podGroup in the stsList all to ready state.
+func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) {
+	hash := utils.LeaderWorkerTemplateHash(lws)
+
+	sts.Status.ReadyReplicas = *sts.Spec.Replicas
+	sts.Status.Replicas = *sts.Spec.Replicas
+	sts.Status.CurrentRevision = ""
+	sts.Status.UpdateRevision = ""
+	gomega.Expect(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
+
+	var leaderPod corev1.Pod
+	gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod)).Should(gomega.Succeed())
+
+	leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+	gomega.Expect(k8sClient.Update(ctx, &leaderPod)).Should(gomega.Succeed())
+
+	leaderPod.Status.Phase = corev1.PodRunning
+	condition := corev1.PodCondition{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}
+	leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
+	gomega.Expect(k8sClient.Status().Update(ctx, &leaderPod)).Should(gomega.Succeed())
+}
+
+// SetStatefulsetToUnReady set statefulset to unready.
+func SetStatefulsetToUnReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet) {
+	sts.Status.CurrentRevision = "fuz"
+	sts.Status.UpdateRevision = "bar"
+	gomega.Expect(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
 }
 
 func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, condition metav1.Condition) (bool, error) {
@@ -245,6 +290,26 @@ func ValidatePodExclusivePlacementTerms(pod corev1.Pod) bool {
 func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, count int32) {
 	gomega.Eventually(func() error {
 		lws.Spec.Replicas = ptr.To[int32](count)
+		return k8sClient.Update(ctx, lws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels == nil {
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{}
+		}
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+		return k8sClient.Update(ctx, lws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func UpdateWorkerTemplate(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		if lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels == nil {
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{}
+		}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
 		return k8sClient.Update(ctx, lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

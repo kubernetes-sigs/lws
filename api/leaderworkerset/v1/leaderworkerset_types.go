@@ -49,6 +49,11 @@ const (
 
 	// Worker pods will have an annotation that is the leader pod's name.
 	LeaderPodNameAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-name"
+
+	// SHAed leaderWorkerTemplate value for version tracking.
+	// This will be applied to all API objects including:
+	// leaderStatefulset, leaderPods, workerStatefulsets, workerPods.
+	TemplateRevisionHashKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -123,7 +128,7 @@ type RollingUpdateConfiguration struct {
 	// The maximum number of replica that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
-	// This can not be 0 if MaxSurge is 0.
+	// This can not be 0 because it will pass through to statefulset which doesn't allow 0 value.
 	// By default, a fixed value of 1 is used.
 	// Example: when this is set to 30%, the old replicas can be scaled down by 30%
 	// immediately when the rolling update starts. Once new replicas are ready, old replicas
@@ -139,16 +144,15 @@ type RollingUpdateConfiguration struct {
 	// replicas.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
 	// the start of the update (ex: 10%).
-	// This can not be 0 if MaxUnavailable is 0.
 	// Absolute number is calculated from percentage by rounding up.
-	// By default, a value of 1 is used.
+	// By default, a value of 0 is used.
 	// Example: when this is set to 30%, the new replicas can be scaled up by 30%
 	// immediately when the rolling update starts. Once old replicas have been killed,
 	// new replicas can be scaled up further, ensuring that total number of replicas running
 	// at any time during the update is at most 130% of original replicas.
 	//
 	// +kubebuilder:validation:XIntOrString
-	// +kubebuilder:default=1
+	// +kubebuilder:default=0
 	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
