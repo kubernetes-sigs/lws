@@ -117,7 +117,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return testutils.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.DefaultRestartPolicy)
 			},
 		}),
-		ginkgo.Entry("wouldn't apply with default rollout strategy when configured", &testDefaultingCase{
+		ginkgo.Entry("wouldn't apply default rollout strategy when configured", &testDefaultingCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -193,15 +193,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("update with invalid replicas should fail (larger than maxInt32)", &testValidationCase{
-			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
-				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(100000).Size(1)
-			},
-			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](100000000)
-			},
-			updateShouldFail: true,
-		}),
 		ginkgo.Entry("update with invalid replicas should fail (number is negative)", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
@@ -211,7 +202,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: true,
 		}),
-		ginkgo.Entry("number of worker replicas can't be updated", &testValidationCase{
+		ginkgo.Entry("number of size can not be updated", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
 			},
@@ -229,14 +220,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
-		ginkgo.Entry("not allowlisted fields of spec are immutable", &testValidationCase{
+		ginkgo.Entry("leader/workerTemplate can be updated", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name)
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = testutils.MakeWorkerPodSpec()
 				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = testutils.MakeLeaderPodSpec()
 			},
-			updateShouldFail: true,
+			updateShouldFail: false,
 		}),
 		ginkgo.Entry("set restart policy should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
@@ -256,6 +248,22 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.Type = "invalidValue"
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set invalid maxUnavailable with int number should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(10)
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set invalid maxUnavailable with percentage should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("200%")
 				return lws
 			},
 			lwsCreationShouldFail: true,

@@ -17,8 +17,6 @@ package webhooks
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"strconv"
 
@@ -30,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
@@ -144,14 +143,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 }
 
 func genGroupUniqueKey(ns string, podName string) string {
-	return sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
-}
-
-// sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
-func sha1Hash(s string) string {
-	h := sha1.New()
-	h.Write([]byte(s))
-	return hex.EncodeToString(h.Sum(nil))
+	return utils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
 }
 
 // SetExclusiveAffinities set the node affinity/anti-affinity for the leader pod

@@ -19,6 +19,8 @@ package statefulset
 import (
 	"regexp"
 	"strconv"
+
+	appsv1 "k8s.io/api/apps/v1"
 )
 
 var (
@@ -40,4 +42,10 @@ func GetParentNameAndOrdinal(name string) (string, int) {
 		ordinal = int(i)
 	}
 	return parent, ordinal
+}
+
+// StatefulsetReady checks whether a sts is ready.
+func StatefulsetReady(sts appsv1.StatefulSet) bool {
+	return *sts.Spec.Replicas == sts.Status.Replicas &&
+		sts.Status.CurrentRevision == sts.Status.UpdateRevision
 }
