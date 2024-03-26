@@ -254,3 +254,8 @@ artifacts: kustomize
 	mkdir -p artifacts
 	$(KUSTOMIZE) build config/default -o artifacts/manifests.yaml
 	@$(call clean-manifests)
+
+.PHONY: prometheus
+prometheus:
+	kubectl apply --server-side -k config/prometheus
+

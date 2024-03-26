@@ -1,2 +1,7 @@
-resources:
-- monitor.yaml
+# This overlay builds the prometheus component to be used in combination 
+# with other overlays. 
+
+namespace: lws-system
+
+resources: 
+- ../components/prometheus
