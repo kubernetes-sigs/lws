@@ -52,11 +52,11 @@ func LeaderPod(pod corev1.Pod) bool {
 }
 
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
-func PodRunningAndReady(pod *corev1.Pod) bool {
+func PodRunningAndReady(pod corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && podReady(pod)
 }
 
-func podReady(pod *corev1.Pod) bool {
+func podReady(pod corev1.Pod) bool {
 	return podReadyConditionTrue(pod.Status)
 }
 

@@ -104,7 +104,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet)
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
 	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
-		// check if the leader pod is scheduleds
+		// check if the leader pod is scheduled.
 		if pod.Spec.NodeName == "" {
 			log.V(2).Info(fmt.Sprintf("Pod %q is not scheduled yet", pod.Name))
 			return ctrl.Result{}, nil
@@ -251,10 +251,16 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if err != nil {
 		return nil, err
 	}
+	selectorMap := map[string]string{
+		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
+	}
 	labelMap := map[string]string{
 		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
+		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
 	}
 	podTemplateApplyConfiguration.WithLabels(labelMap)
 	podAnnotations := make(map[string]string)
@@ -274,7 +280,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).
 			WithSelector(metaapplyv1.LabelSelector().
-				WithMatchLabels(labelMap))).
+				WithMatchLabels(selectorMap))).
 		WithLabels(labelMap)
 	return statefulSetConfig, nil
 }

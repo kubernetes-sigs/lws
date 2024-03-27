@@ -23,16 +23,24 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
+	hash1 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
+		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
+	hash2 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
+
 	tests := []struct {
 		name            string
 		lws             *leaderworkerset.LeaderWorkerSet
@@ -42,6 +50,13 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			name: "1 replica, size 1, with empty leader template, exclusive placement disabled",
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(1).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
@@ -54,7 +69,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name": "test-sample",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -68,8 +84,9 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":         "test-sample",
-								"leaderworkerset.sigs.k8s.io/worker-index": "0",
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -88,6 +105,9 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					},
 					ServiceName:         ptr.To[string]("test-sample"),
 					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
 				},
 			},
 		},
@@ -97,6 +117,13 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				Annotation(map[string]string{
 					"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
 				}).Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(2).
 				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
@@ -109,7 +136,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name": "test-sample",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -123,8 +151,9 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":         "test-sample",
-								"leaderworkerset.sigs.k8s.io/worker-index": "0",
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -144,6 +173,9 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					},
 					ServiceName:         ptr.To[string]("test-sample"),
 					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
 				},
 			},
 		},
@@ -152,6 +184,13 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
 			}).Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 				Size(2).
@@ -165,7 +204,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name": "test-sample",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -179,8 +219,9 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":         "test-sample",
-								"leaderworkerset.sigs.k8s.io/worker-index": "0",
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -199,13 +240,16 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					},
 					ServiceName:         ptr.To[string]("test-sample"),
 					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
 				},
 			},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws)
+			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0)
 			if err != nil {
 				t.Errorf("failed with error: %s", err.Error())
 			}
