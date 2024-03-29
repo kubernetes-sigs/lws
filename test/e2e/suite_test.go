@@ -101,8 +101,7 @@ func LwsReadyForTesting(client client.Client) {
 
 	// Delete this leaderworkerset before beginning tests.
 	Expect(client.Delete(ctx, leaderWorkerSetSpec))
-	var leaderWorkerSetStruct leaderworkerset.LeaderWorkerSet
 	Eventually(func() error {
-		return client.Get(ctx, types.NamespacedName{Name: leaderWorkerSetSpec.Name, Namespace: leaderWorkerSetSpec.Namespace}, &leaderWorkerSetStruct)
+		return client.Get(ctx, types.NamespacedName{Name: leaderWorkerSetSpec.Name, Namespace: leaderWorkerSetSpec.Namespace}, &leaderworkerset.LeaderWorkerSet{})
 	}).ShouldNot(Succeed())
 }
