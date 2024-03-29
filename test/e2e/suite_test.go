@@ -91,18 +91,18 @@ func LwsReadyForTesting(client client.Client) {
 	By("waiting for webhooks to come up")
 
 	// To verify that webhooks are ready, let's create a simple lws.
-	lws := testutils.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
+	leaderWorkerSetSpec := testutils.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
 
 	// Once the creation succeeds, that means the webhooks are ready
 	// and we can begin testing.
 	Eventually(func() error {
-		return client.Create(ctx, lws)
+		return client.Create(ctx, leaderWorkerSetSpec)
 	}, timeout, interval).Should(Succeed())
 
 	// Delete this leaderworkerset before beginning tests.
-	Expect(client.Delete(ctx, lws))
+	Expect(client.Delete(ctx, leaderWorkerSetSpec))
 	var leaderWorkerSetStruct leaderworkerset.LeaderWorkerSet
 	Eventually(func() error {
-		return client.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSetStruct)
+		return client.Get(ctx, types.NamespacedName{Name: leaderWorkerSetSpec.Name, Namespace: leaderWorkerSetSpec.Namespace}, &leaderWorkerSetStruct)
 	}).ShouldNot(Succeed())
 }
