@@ -88,7 +88,7 @@ var _ = AfterSuite(func() {
 })
 
 func LwsReadyForTesting(client client.Client) {
-	By("waiting for ")
+	By("waiting for webhooks to come up")
 
 	// To verify that webhooks are ready, let's create a simple lws.
 	lws := testutils.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
