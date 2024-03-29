@@ -17,24 +17,25 @@ package e2e
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
+	"sigs.k8s.io/lws/test/testutils"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -59,26 +60,11 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 	ctx, cancel = context.WithCancel(context.Background())
 
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-
-		// The BinaryAssetsDirectory is only required if you want to run the tests directly
-		// without calling the makefile target test. If not informed it will look for the
-		// default path defined in controller-runtime which is /usr/local/kubebuilder/.
-		// Note that you must have the required binaries setup under the bin directory to perform
-		// the tests directly. When we run make test it will be setup and used automatically.
-		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s", fmt.Sprintf("1.28.3-%s-%s", runtime.GOOS, runtime.GOARCH)),
-	}
-
-	var err error
 	// cfg is defined in this file globally.
-	cfg, err = testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
+	cfg = config.GetConfigOrDie()
 	Expect(cfg).NotTo(BeNil())
 
-	err = leaderworkerset.AddToScheme(scheme.Scheme)
+	err := leaderworkerset.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = admissionv1.AddToScheme(scheme.Scheme)
@@ -93,11 +79,30 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	LwsSetReadyForTesting(k8sClient)
 })
 
 var _ = AfterSuite(func() {
 	cancel()
-	By("tearing down the test environment")
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
 })
+
+func LwsSetReadyForTesting(client client.Client) {
+	By("waiting for ")
+
+	// To verify that webhooks are ready, let's create a simple lws.
+	lws := testutils.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
+
+	// Once the creation succeeds, that means the webhooks are ready
+	// and we can begin testing.
+	Eventually(func() error {
+		return client.Create(ctx, lws)
+	}, timeout, interval).Should(Succeed())
+
+	// Delete this leaderworkerset before beginning tests.
+	Expect(client.Delete(ctx, lws))
+	var leaderWorkerSetStruct leaderworkerset.LeaderWorkerSet
+	Eventually(func() error {
+		return client.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSetStruct)
+	}).ShouldNot(Succeed())
+}
