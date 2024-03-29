@@ -80,14 +80,14 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
-	LwsSetReadyForTesting(k8sClient)
+	LwsReadyForTesting(k8sClient)
 })
 
 var _ = AfterSuite(func() {
 	cancel()
 })
 
-func LwsSetReadyForTesting(client client.Client) {
+func LwsReadyForTesting(client client.Client) {
 	By("waiting for ")
 
 	// To verify that webhooks are ready, let's create a simple lws.
