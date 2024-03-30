@@ -302,7 +302,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	return nil
 }
 
-// constructLeaderStatefulSetApplyConfiguration constructs the apply configuration for the leader StatefulSet
+// constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
 func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {

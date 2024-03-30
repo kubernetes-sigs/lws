@@ -238,7 +238,7 @@ func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1
 	return nil
 }
 
-// constructWorkerStatefulSetApplyConfiguration constructs the apply configuration for the leader StatefulSet
+// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
 func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
