@@ -26,7 +26,7 @@ import (
 	testing "sigs.k8s.io/lws/test/testutils"
 )
 
-var _ = Describe("lws", func() {
+var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 	// Each test runs in a separate namespace.
 	var ns *corev1.Namespace
