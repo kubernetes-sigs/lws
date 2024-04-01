@@ -828,10 +828,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Update the worker template.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var leaderworkerset leaderworkerset.LeaderWorkerSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset)).To(gomega.Succeed())
-						leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
-						gomega.Expect(k8sClient.Update(ctx, &leaderworkerset)).To(gomega.Succeed())
+						gomega.Eventually(func() error {
+							var leaderworkerset leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+								return err
+							}
+							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+							return k8sClient.Update(ctx, &leaderworkerset)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
@@ -856,9 +860,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					// Update the replicas during rolling update.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						var leaderworkerset leaderworkerset.LeaderWorkerSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset)).To(gomega.Succeed())
-						leaderworkerset.Spec.Replicas = ptr.To[int32](6)
-						gomega.Expect(k8sClient.Update(ctx, &leaderworkerset)).To(gomega.Succeed())
+
+						gomega.Eventually(func() error {
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+								return err
+							}
+							leaderworkerset.Spec.Replicas = ptr.To[int32](6)
+							return k8sClient.Update(ctx, &leaderworkerset)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 
 						var leaderSts appsv1.StatefulSet
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaderworkerset.Name, Namespace: leaderworkerset.Namespace}, &leaderSts)).To(gomega.Succeed())

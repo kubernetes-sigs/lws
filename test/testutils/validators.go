@@ -280,7 +280,9 @@ func ExpectStatefulsetPartitionEqualTo(ctx context.Context, k8sClient client.Cli
 	ginkgo.By("checking statefulset partition")
 	gomega.Eventually(func() bool {
 		var sts appsv1.StatefulSet
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts); err != nil {
+			return false
+		}
 		return *sts.Spec.UpdateStrategy.RollingUpdate.Partition == partition
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }

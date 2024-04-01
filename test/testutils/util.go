@@ -167,25 +167,31 @@ func SetPodGroupsToReady(stsList []appsv1.StatefulSet, lws *leaderworkerset.Lead
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) {
 	hash := utils.LeaderWorkerTemplateHash(lws)
 
-	sts.Status.ReadyReplicas = *sts.Spec.Replicas
-	sts.Status.Replicas = *sts.Spec.Replicas
-	sts.Status.CurrentRevision = ""
-	sts.Status.UpdateRevision = ""
-	gomega.Expect(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
+	gomega.Eventually(func() error {
+		sts.Status.ReadyReplicas = *sts.Spec.Replicas
+		sts.Status.Replicas = *sts.Spec.Replicas
+		sts.Status.CurrentRevision = ""
+		sts.Status.UpdateRevision = ""
+		return k8sClient.Status().Update(ctx, sts)
+	}, Timeout, Interval).Should(gomega.Succeed())
 
 	var leaderPod corev1.Pod
 	gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod)).Should(gomega.Succeed())
 
-	leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
-	gomega.Expect(k8sClient.Update(ctx, &leaderPod)).Should(gomega.Succeed())
+	gomega.Eventually(func() error {
+		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+		return k8sClient.Update(ctx, &leaderPod)
+	}, Timeout, Interval).Should(gomega.Succeed())
 
-	leaderPod.Status.Phase = corev1.PodRunning
-	condition := corev1.PodCondition{
-		Type:   corev1.PodReady,
-		Status: corev1.ConditionTrue,
-	}
-	leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
-	gomega.Expect(k8sClient.Status().Update(ctx, &leaderPod)).Should(gomega.Succeed())
+	gomega.Eventually(func() error {
+		leaderPod.Status.Phase = corev1.PodRunning
+		condition := corev1.PodCondition{
+			Type:   corev1.PodReady,
+			Status: corev1.ConditionTrue,
+		}
+		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
+		return k8sClient.Status().Update(ctx, &leaderPod)
+	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
 // SetStatefulsetToUnReady set statefulset to unready.
