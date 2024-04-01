@@ -22,11 +22,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestContainerRestared(t *testing.T) {
+func TestContainerRestarted(t *testing.T) {
 	tests := []struct {
-		name                    string
-		pod                     corev1.Pod
-		expectRestaredContainer bool
+		name                     string
+		pod                      corev1.Pod
+		expectRestartedContainer bool
 	}{
 		{
 			name: "Pod in running phase, InitContainerStatuses has restart count > 0",
@@ -38,7 +38,7 @@ func TestContainerRestared(t *testing.T) {
 					}},
 				},
 			},
-			expectRestaredContainer: true,
+			expectRestartedContainer: true,
 		},
 		{
 			name: "Pod in pending phase, InitContainerStatuses has restart count > 0",
@@ -50,7 +50,7 @@ func TestContainerRestared(t *testing.T) {
 					}},
 				},
 			},
-			expectRestaredContainer: true,
+			expectRestartedContainer: true,
 		},
 		{
 			name: "Pod in running phase, ContainerStatuses has restart count > 0",
@@ -62,7 +62,7 @@ func TestContainerRestared(t *testing.T) {
 					}},
 				},
 			},
-			expectRestaredContainer: true,
+			expectRestartedContainer: true,
 		},
 		{
 			name: "Pod in Failed status",
@@ -89,9 +89,9 @@ func TestContainerRestared(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			containerRestared := ContainerRestarted(tc.pod)
-			if containerRestared != tc.expectRestaredContainer {
-				t.Errorf("Expected value %t, got %t", tc.expectRestaredContainer, containerRestared)
+			containerRestarted := ContainerRestarted(tc.pod)
+			if containerRestarted != tc.expectRestartedContainer {
+				t.Errorf("Expected value %t, got %t", tc.expectRestartedContainer, containerRestarted)
 			}
 		})
 	}
