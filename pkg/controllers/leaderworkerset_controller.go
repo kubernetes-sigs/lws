@@ -34,7 +34,7 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -59,7 +59,7 @@ var (
 
 const (
 	lwsOwnerKey  = ".metadata.controller"
-	fieldManager = "leader-worker-set"
+	fieldManager = "lws"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -181,33 +181,29 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 	})
 }
 
-// leaderTemplate() here indicates the leaderTemplate or the workerTemplate
-// if leaderTemplate is nil.
-// - if leader template updated, we'll roll out the whole lws.
-// - if leader template is nil, and worker template updated, we'll roll out the whole lws.
-// - if leader template is nil, but we update with
-
 // Rolling update will always wait for the former replica ready then process the next one,
-// we didn't consider rollout strategy type here for we only support rollingUpdate now,
+// we didn't consider rollout strategy type here since we only support rollingUpdate now,
 // once we have more policies, we should update the logics here.
 // Possible scenarios:
 //   - When sts is under creation, partition is always 0 because pods are created in parallelism, rolling update is not fit here.
 //   - When sts is rolling update, the partition will start from the last index to the 0 index step by maxUnavailable.
-//   - When sts is rolling update, replicas scaled up, the partition will not change until scaling ended.
-//   - When sts is rolling update, replicas scaled down, the partition will not change unless (replicas-scaleDownedSize) < partition,
-//     partition will be reset to (replicas-scaleDownedSize).
+//   - When sts is rolling update, replicas increases, we'll delay the rolling update until scaling ended,
+//     Partition will not change, new replicas will apply with new template to avoid recreation.
+//   - When sts is rolling update, replicas decreases, the partition will not change until newReplicas < Partition,
+//     Partition will be reset to newReplicas.
+//   - When sts is ready to roll update and replica increases the same time, we'll delay the rolling update until scaling ended.
+//   - When sts is ready to roll update and replica decreases the same time, we'll start the rolling update together with scaling.
 //
 // When all set, the partition should always be zero.
 func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, error) {
 	sts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil {
+		// If sts not created yet, all partitions should be updated.
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
 		return 0, err
-	}
-
-	// If sts not created yet, all partitions should be updated.
-	if apierrors.IsNotFound(err) {
-		return 0, nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
@@ -219,11 +215,19 @@ func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *lead
 
 	// Indicates a new rolling update here.
 	if templateUpdated(sts, lws) {
+		// Processing scaling up/down first prior to rolling update.
+		// When scaling up, update the Partition to the statefulset replicas
+		// When scaling down, update the Partition to the new replicas.
 		if replicasUpdated(sts, lws) {
 			return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
 		} else {
 			return replicas - int32(rollingStep), nil
 		}
+	}
+
+	// Replicas changes during rolling update.
+	if replicasUpdated(sts, lws) {
+		return min(partition, *lws.Spec.Replicas), nil
 	}
 
 	// Otherwise always return 0.
@@ -241,6 +245,7 @@ func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *lead
 
 	var finishedPart int32
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
+
 stop:
 	for i := replicas - 1; i >= 0; i-- {
 		for j := len(stsList.Items) - 1; j >= 0; j-- {
@@ -249,7 +254,7 @@ stop:
 				// TODO: quick sort the pods and statefulsets first, which will be faster than API requests.
 				// Or only construct workerStatefulset until leaderPod is ready.
 
-				// Rolling update happens only when the former group of pods(leaderPod+workerStatefulset) are all ready
+				// Rolling update happens only when all the former groups of pods(leaderPod+workerStatefulset) are all ready
 				// then we'll go process the next group.
 				// Compare the templateRevisionHash to make sure that we're checking the right object.
 
@@ -258,13 +263,13 @@ stop:
 					break stop
 				}
 
-				pod := &corev1.Pod{}
-				if err := r.Get(ctx, types.NamespacedName{Name: nominatedName, Namespace: lws.Namespace}, pod); err != nil {
+				leaderPod := &corev1.Pod{}
+				if err := r.Get(ctx, types.NamespacedName{Name: nominatedName, Namespace: lws.Namespace}, leaderPod); err != nil {
 					return 0, err
 				}
 
-				podTemplateHash := pod.Labels[leaderworkerset.TemplateRevisionHashKey]
-				if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(*pod)) {
+				podTemplateHash := leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey]
+				if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(*leaderPod)) {
 					break stop
 				}
 
@@ -274,7 +279,9 @@ stop:
 		}
 	}
 
-	return utils.NonZeroValue(replicas - int32(rollingStep) - finishedPart), nil
+	// When updated replicas become not ready again or scaled up replicas haven't ready yet,
+	// we'll not modify the Partition field. That means Partition is one-transition to make it simple.
+	return min(partition, utils.NonZeroValue(replicas-int32(rollingStep)-finishedPart)), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition int32) error {
@@ -304,7 +311,7 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 	// TODO b/316776287 add E2E test for SSA
 	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
 		FieldManager: fieldManager,
-		Force:        pointer.Bool(true),
+		Force:        ptr.To[bool](true),
 	})
 	if err != nil {
 		log.Error(err, "Using server side apply to update leader statefulset")

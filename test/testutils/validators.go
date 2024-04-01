@@ -278,9 +278,11 @@ func ExpectLeaderWorkerSetAvailable(ctx context.Context, k8sClient client.Client
 
 func ExpectStatefulsetPartitionEqualTo(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, partition int32) {
 	ginkgo.By("checking statefulset partition")
-	var sts appsv1.StatefulSet
-	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-	gomega.Equal(*sts.Spec.UpdateStrategy.RollingUpdate.Partition == partition)
+	gomega.Eventually(func() bool {
+		var sts appsv1.StatefulSet
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+		return *sts.Spec.UpdateStrategy.RollingUpdate.Partition == partition
+	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
 func ExpectLeaderWorkerSetUnavailable(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
