@@ -28,19 +28,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// log is for logging in this package.
-var leaderworkersetlog = logf.Log.WithName("leaderworkerset-resource")
-
 type LeaderWorkerSetWebhook struct{}
 
-// SetupWebhookWithManager will setup the manager to manage the webhooks
+// SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
 func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&v1.LeaderWorkerSet{}).
