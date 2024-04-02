@@ -122,29 +122,6 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	return nil
 }
 
-// UpdateLeaderPods will only update the leader Pods' template-revision-hash.
-func UpdateLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) error {
-	podSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(0),
-	})
-	var podList corev1.PodList
-	if err := k8sClient.List(ctx, &podList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return err
-	}
-
-	hash := utils.LeaderWorkerTemplateHash(lws)
-
-	for i := range podList.Items {
-		podList.Items[i].Labels[leaderworkerset.TemplateRevisionHashKey] = hash
-		if err := k8sClient.Update(ctx, &podList.Items[i]); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, sts *appsv1.StatefulSet) {
 	gomega.Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts); err != nil {
@@ -154,36 +131,60 @@ func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorker
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-// SetPodGroupsToReady set the podgroup listed in the stsList all to ready state
-func SetPodGroupsToReady(stsList []appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, ctx context.Context) {
-	for i, sts := range stsList {
+// SetPodGroupsToReady set all podGroups of the leaderWorkerSet to ready state.
+func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	stsSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	})
+	// update the condition based on the status of all statefulsets owned by the lws.
+	var stsList appsv1.StatefulSetList
+	gomega.Eventually(func() (int, error) {
+		if err := k8sClient.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
+			return -1, err
+		}
+		return len(stsList.Items), nil
+	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas + 1)))
+
+	for i, sts := range stsList.Items {
 		if sts.Name != lws.Name {
-			SetPodGroupToReady(ctx, k8sClient, &stsList[i], lws)
+			SetPodGroupToReady(ctx, k8sClient, &stsList.Items[i], lws)
 		}
 	}
 }
 
-// SetPodGroupsToReady set one podGroup in the stsList all to ready state.
-func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) {
+// SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
+func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulset *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) {
 	hash := utils.LeaderWorkerTemplateHash(lws)
 
 	gomega.Eventually(func() error {
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulset.Name, Namespace: statefulset.Namespace}, &sts); err != nil {
+			return err
+		}
+
 		sts.Status.ReadyReplicas = *sts.Spec.Replicas
 		sts.Status.Replicas = *sts.Spec.Replicas
 		sts.Status.CurrentRevision = ""
 		sts.Status.UpdateRevision = ""
-		return k8sClient.Status().Update(ctx, sts)
+		return k8sClient.Status().Update(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
-	var leaderPod corev1.Pod
-	gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod)).Should(gomega.Succeed())
-
 	gomega.Eventually(func() error {
+		var leaderPod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: statefulset.Namespace, Name: statefulset.Name}, &leaderPod); err != nil {
+			return err
+		}
+
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
 	gomega.Eventually(func() error {
+		var leaderPod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: statefulset.Namespace, Name: statefulset.Name}, &leaderPod); err != nil {
+			return err
+		}
+
 		leaderPod.Status.Phase = corev1.PodRunning
 		condition := corev1.PodCondition{
 			Type:   corev1.PodReady,
@@ -300,23 +301,33 @@ func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leade
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+
 		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels == nil {
 			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{}
 		}
 		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
-		return k8sClient.Update(ctx, lws)
+		return k8sClient.Update(ctx, &lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func UpdateWorkerTemplate(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+func UpdateWorkerTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+
 		if lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels == nil {
 			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{}
 		}
 		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
-		return k8sClient.Update(ctx, lws)
+		return k8sClient.Update(ctx, &lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 

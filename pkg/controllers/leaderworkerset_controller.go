@@ -88,7 +88,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
-	partition, err := r.rollPartition(ctx, lws)
+	partition, err := r.rollingUpdatePartition(ctx, lws)
 	if err != nil {
 		log.Error(err, "rolling partition error")
 		return ctrl.Result{}, err
@@ -181,21 +181,23 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 	})
 }
 
-// Rolling update will always wait for the former replica ready then process the next one,
+// Rolling update will always wait for the former replica to be ready then process the next one,
 // we didn't consider rollout strategy type here since we only support rollingUpdate now,
-// once we have more policies, we should update the logics here.
+// once we have more policies, we should update the logic here.
 // Possible scenarios:
-//   - When sts is under creation, partition is always 0 because pods are created in parallelism, rolling update is not fit here.
-//   - When sts is rolling update, the partition will start from the last index to the 0 index step by maxUnavailable.
-//   - When sts is rolling update, replicas increases, we'll delay the rolling update until scaling ended,
-//     Partition will not change, new replicas will apply with new template to avoid recreation.
-//   - When sts is rolling update, replicas decreases, the partition will not change until newReplicas < Partition,
-//     Partition will be reset to newReplicas.
-//   - When sts is ready to roll update and replica increases the same time, we'll delay the rolling update until scaling ended.
-//   - When sts is ready to roll update and replica decreases the same time, we'll start the rolling update together with scaling.
+//   - When sts is under creation, partition is always 0 because pods are created in parallel, rolling update is not relevant here.
+//   - When sts is in rolling update, the partition will start from the last index to the index 0 processing in maxUnavailable step.
+//   - When sts is in rolling update, and Replicas increases, we'll delay the rolling update until the scaling up is done,
+//     Partition will not change, new replicas are created using the new template from the get go.
+//   - When sts is rolling update, and Replicas decreases, the partition will not change until new Replicas < Partition,
+//     in which case Partition will be reset to the new Replicas value.
+//   - When sts is ready for a rolling update and Replicas increases at the same time, we'll delay the rolling update until
+//     the scaling up is done.
+//   - When sts is ready for a rolling update and Replicas decreases at the same time, we'll start the rolling update
+//     together with scaling down.
 //
-// When all set, the partition should always be zero.
-func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, error) {
+// At rest, Partition should always be zero.
+func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, error) {
 	sts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
 	if err != nil {
@@ -216,8 +218,6 @@ func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *lead
 	// Indicates a new rolling update here.
 	if templateUpdated(sts, lws) {
 		// Processing scaling up/down first prior to rolling update.
-		// When scaling up, update the Partition to the statefulset replicas
-		// When scaling down, update the Partition to the new replicas.
 		if replicasUpdated(sts, lws) {
 			return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
 		} else {
@@ -230,10 +230,13 @@ func (r *LeaderWorkerSetReconciler) rollPartition(ctx context.Context, lws *lead
 		return min(partition, *lws.Spec.Replicas), nil
 	}
 
-	// Otherwise always return 0.
+	// If Partition is 0, it means it's under creation or rolling update is done or
+	// just running normally, return 0 directly under these cases.
 	if partition == 0 {
 		return 0, nil
 	}
+
+	// Calculating the Partition during rolling update.
 
 	stsSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
@@ -279,8 +282,8 @@ stop:
 		}
 	}
 
-	// When updated replicas become not ready again or scaled up replicas haven't ready yet,
-	// we'll not modify the Partition field. That means Partition is one-transition to make it simple.
+	// When updated replicas become not ready again or scaled up replicas are not ready yet,
+	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
 	return min(partition, utils.NonZeroValue(replicas-int32(rollingStep)-finishedPart)), nil
 }
 
@@ -482,7 +485,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 func makeCondition(available bool) metav1.Condition {
 	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
 	reason := "GroupsAreProgressing"
-	message := "Replicas are processing"
+	message := "Replicas are progressing"
 
 	if available {
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)

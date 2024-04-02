@@ -335,18 +335,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -359,22 +348,11 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
-						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are processing")
-						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are processing, with 0 groups ready of total 2 groups", lws.Namespace)
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
 						// Force groups to ready.
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
-						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are processing")
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
+						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ValidateLatestEvent(ctx, k8sClient, "AllGroupsReady", corev1.EventTypeNormal, "All replicas are ready, with 2 groups ready of total 2 groups", lws.Namespace)
 						// Force a reconcile. Refetch most recent version of LWS, increase replicas.
@@ -393,10 +371,10 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 								Replicas: ptr.To[int32](3),
 							},
 						}, patch)
-						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are processing")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						// Check most recent event.
-						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are processing, with 2 groups ready of total 3 groups", lws.Namespace)
+						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are progressing, with 2 groups ready of total 3 groups", lws.Namespace)
 					},
 				},
 			},
@@ -482,8 +460,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						}, testing.Timeout, testing.Interval).Should(gomega.Equal(2))
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are processing")
-						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are processing, with 0 groups ready of total 2 groups", lws.Namespace)
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ValidateLatestEvent(ctx, k8sClient, "GroupsAreProgressing", corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
 					},
 				},
 			},
@@ -497,7 +475,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.Status().Update(ctx, lws)).Should(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are processing")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 					},
 				},
 			},
@@ -507,15 +485,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var stsList appsv1.StatefulSetList
-						gomega.Eventually(func() int {
-							stsSelector := client.MatchingLabels(map[string]string{
-								leaderworkerset.SetNameLabelKey: lws.Name,
-							})
-							k8sClient.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace))
-							return len(stsList.Items)
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
-						testing.SetPodGroupsToReady(stsList.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -534,18 +504,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Set lws to available condition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(5))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -609,26 +568,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Rolling update all the replicas will make the leader statefulset ready again.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(5))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
-						k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace))
-						for _, sts := range lwssts.Items {
-							if sts.Name == lws.Name {
-								continue
-							}
-							var pod corev1.Pod
-							gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &pod)).Should(gomega.Succeed())
-						}
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
@@ -647,18 +587,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Set lws to available condition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(5))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -724,7 +653,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("rolling update with both template and replicas changed", &testCase{
+		ginkgo.Entry("rolling update with both worker template and number of replicas changed", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
@@ -732,18 +661,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Set lws to available condition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(5))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -769,24 +687,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						// When scaling up the Replicas, Partition will not change, so the new created Pods will apply with the new template.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
 					},
 				},
 				{
 					// Set all groups to ready.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(7))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
@@ -805,18 +713,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Set lws to available condition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(5))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -883,18 +780,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					// Set all groups to ready.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						stsSelector := client.MatchingLabels(map[string]string{
-							leaderworkerset.SetNameLabelKey: lws.Name,
-						})
-						// update the condition based on the status of all statefulsets owned by the lws.
-						var lwssts appsv1.StatefulSetList
-						gomega.Eventually(func() (int, error) {
-							if err := k8sClient.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-								return -1, err
-							}
-							return len(lwssts.Items), nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(7))
-						testing.SetPodGroupsToReady(lwssts.Items, lws, k8sClient, ctx)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)

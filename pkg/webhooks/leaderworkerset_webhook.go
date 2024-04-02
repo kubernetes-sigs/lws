@@ -105,13 +105,12 @@ func (r *LeaderWorkerSetWebhook) generalValidate(ctx context.Context, obj runtim
 	var allErrs field.ErrorList
 	// Ensure replicas and groups number are valid
 	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must greater or equal to 0"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
 	}
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must greater than 1"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
 	}
 	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
-		// allErrs = append(allErrs, fmt.Errorf("the product of replicas and worker replicas must not exceed %d for lws '%s'", math.MaxInt32, lws.Name))
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.DefaultRestartPolicy && lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {

@@ -193,6 +193,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
+		ginkgo.Entry("update with invalid replicas should fail (larger than maxInt32)", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(100000).Size(1)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](100000000)
+			},
+			updateShouldFail: true,
+		}),
 		ginkgo.Entry("update with invalid replicas should fail (number is negative)", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
