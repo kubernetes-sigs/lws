@@ -50,7 +50,7 @@ ARTIFACTS ?= $(PROJECT_DIR)/bin
 
 INTEGRATION_TARGET ?= ./test/integration/...
 
-E2E_KIND_VERSION ?= kindest/node:v1.25.1
+E2E_KIND_VERSION ?= kindest/node:v1.27.1
 USE_EXISTING_CLUSTER ?= false
 
 # For local testing, we should allow user to use different kind cluster name
