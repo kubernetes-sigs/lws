@@ -22,7 +22,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	testing "sigs.k8s.io/lws/test/testutils"
 )
 
@@ -47,17 +46,13 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		}, timeout, interval).Should(BeTrue())
 	})
 
+	AfterEach(func() {
+		Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(Succeed())
+	})
+
 	It("Can deploy lws", func() {
-		leaderWorkerSetSpec := testing.BuildLeaderWorkerSet(ns.Name).Replica(3).Obj()
-
-		Expect(k8sClient.Create(ctx, leaderWorkerSetSpec)).To(Succeed())
-
-		var leaderWorkerSetStruct leaderworkerset.LeaderWorkerSet
-		Eventually(func() error {
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSetSpec.Name, Namespace: ns.Name}, &leaderWorkerSetStruct); err != nil {
-				return err
-			}
-			return nil
-		}, testing.Timeout, testing.Interval).Should(Succeed())
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
+		Expect(k8sClient.Create(ctx, lws)).To(Succeed())
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "all replicas are ready")
 	})
 })

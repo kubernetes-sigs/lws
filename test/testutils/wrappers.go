@@ -103,7 +103,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
 	lws.Spec.Replicas = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{}
-	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](4)
+	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
@@ -168,7 +168,7 @@ func MakeLeaderPodSpec() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "worker",
-				Image: "busybox",
+				Image: "nginx:1.14.2",
 			},
 		},
 	}
