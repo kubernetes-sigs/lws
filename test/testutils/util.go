@@ -157,19 +157,6 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 	hash := utils.LeaderWorkerTemplateHash(lws)
 
 	gomega.Eventually(func() error {
-		var sts appsv1.StatefulSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulset.Name, Namespace: statefulset.Namespace}, &sts); err != nil {
-			return err
-		}
-
-		sts.Status.ReadyReplicas = *sts.Spec.Replicas
-		sts.Status.Replicas = *sts.Spec.Replicas
-		sts.Status.CurrentRevision = ""
-		sts.Status.UpdateRevision = ""
-		return k8sClient.Status().Update(ctx, &sts)
-	}, Timeout, Interval).Should(gomega.Succeed())
-
-	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: statefulset.Namespace, Name: statefulset.Name}, &leaderPod); err != nil {
 			return err
@@ -192,6 +179,19 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 		}
 		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
 		return k8sClient.Status().Update(ctx, &leaderPod)
+	}, Timeout, Interval).Should(gomega.Succeed())
+
+	gomega.Eventually(func() error {
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulset.Name, Namespace: statefulset.Namespace}, &sts); err != nil {
+			return err
+		}
+
+		sts.Status.ReadyReplicas = *sts.Spec.Replicas
+		sts.Status.Replicas = *sts.Spec.Replicas
+		sts.Status.CurrentRevision = ""
+		sts.Status.UpdateRevision = ""
+		return k8sClient.Status().Update(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
