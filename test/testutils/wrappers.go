@@ -168,7 +168,7 @@ func MakeLeaderPodSpec() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "worker",
-				Image: "busybox",
+				Image: "nginx:1.14.2",
 			},
 		},
 	}

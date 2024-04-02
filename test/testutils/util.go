@@ -22,6 +22,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -246,4 +247,18 @@ func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leade
 		lws.Spec.Replicas = ptr.To[int32](count)
 		return k8sClient.Update(ctx, lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// DeleteNamespace deletes all objects the tests typically create in the namespace.
+func DeleteNamespace(ctx context.Context, c client.Client, ns *corev1.Namespace) error {
+	if ns == nil {
+		return nil
+	}
+	if err := c.DeleteAllOf(ctx, &leaderworkerset.LeaderWorkerSet{}, client.InNamespace(ns.Name)); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }

@@ -191,7 +191,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("worker"),
-									Image:     ptr.To[string]("busybox"),
+									Image:     ptr.To[string]("nginx:1.14.2"),
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
 							},
