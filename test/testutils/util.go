@@ -311,7 +311,7 @@ func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWo
 		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels == nil {
 			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{}
 		}
-		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Name = "new-leader-name"
 		return k8sClient.Update(ctx, &lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
@@ -326,7 +326,7 @@ func UpdateWorkerTemplate(ctx context.Context, k8sClient client.Client, leaderWo
 		if lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels == nil {
 			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{}
 		}
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "new-worker-name"
 		return k8sClient.Update(ctx, &lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

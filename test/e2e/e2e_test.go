@@ -53,6 +53,21 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 	It("Can deploy lws", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
 		Expect(k8sClient.Create(ctx, lws)).To(Succeed())
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "all replicas are ready")
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+	})
+
+	It("Can rolling update lws", func() {
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
+		Expect(k8sClient.Create(ctx, lws)).To(Succeed())
+
+		// Wait for leaderWorkerSet ready then update it.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		// Wait for leaderWorkerSet ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectValidPods(ctx, k8sClient, lws)
 	})
 })
