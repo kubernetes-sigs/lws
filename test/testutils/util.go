@@ -147,20 +147,23 @@ func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *lead
 
 	for i, sts := range stsList.Items {
 		if sts.Name != lws.Name {
-			SetPodGroupToReady(ctx, k8sClient, &stsList.Items[i], lws)
+			SetPodGroupToReady(ctx, k8sClient, stsList.Items[i].Name, lws)
 		}
 	}
 }
 
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
-func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulset *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) {
-	hash := utils.LeaderWorkerTemplateHash(lws)
-
+func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: statefulset.Namespace, Name: statefulset.Name}, &leaderPod); err != nil {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: statefulsetName}, &leaderPod); err != nil {
 			return err
 		}
+
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
+			return err
+		}
+		hash := utils.LeaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
 		return k8sClient.Update(ctx, &leaderPod)
@@ -168,7 +171,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 
 	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: statefulset.Namespace, Name: statefulset.Name}, &leaderPod); err != nil {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: statefulsetName}, &leaderPod); err != nil {
 			return err
 		}
 
@@ -183,7 +186,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulset.Name, Namespace: statefulset.Namespace}, &sts); err != nil {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
 			return err
 		}
 

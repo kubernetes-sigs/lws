@@ -187,6 +187,9 @@ type LeaderWorkerSetStatus struct {
 	// ReadyReplicas track the number of groups that are in ready state.
 	ReadyReplicas int `json:"readyReplicas,omitempty"`
 
+	// UpdatedReplicas track the number of groups that have been updated.
+	UpdatedReplicas int `json:"updatedReplicas,omitempty"`
+
 	// Replicas track the active total number of groups.
 	Replicas int `json:"replicas,omitempty"`
 

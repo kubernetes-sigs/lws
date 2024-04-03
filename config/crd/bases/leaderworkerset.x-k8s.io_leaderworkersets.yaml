@@ -15407,6 +15407,10 @@ spec:
               replicas:
                 description: Replicas track the active total number of groups.
                 type: integer
+              updatedReplicas:
+                description: UpdatedReplicas track the number of groups that have
+                  been updated.
+                type: integer
             type: object
         type: object
     served: true

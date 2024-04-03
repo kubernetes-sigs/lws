@@ -346,6 +346,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount := 0
+	updatedCount := 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -354,8 +355,10 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			continue
 		}
 
+		var replicaReady bool
 		// this is the worker statefulset.
-		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && statefulsetutils.StatefulsetReady(sts) {
+		if statefulsetutils.StatefulsetReady(sts) {
+
 			// the worker pods are OK.
 			// need to check leader pod for this group.
 			var leaderPod corev1.Pod
@@ -363,9 +366,12 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				log.Error(err, "Fetching leader pod")
 				return false, err
 			}
-			if leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && podutils.PodRunningAndReady(leaderPod) {
-				// set to progressing.
+			if podutils.PodRunningAndReady(leaderPod) {
+				replicaReady = true
 				readyCount++
+			}
+			if replicaReady && sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+				updatedCount++
 			}
 		}
 	}
@@ -375,7 +381,12 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		updateStatus = true
 	}
 
-	condition := makeCondition(readyCount == int(*lws.Spec.Replicas))
+	if lws.Status.UpdatedReplicas != updatedCount {
+		lws.Status.UpdatedReplicas = updatedCount
+		updateStatus = true
+	}
+
+	condition := makeCondition(updatedCount == int(*lws.Spec.Replicas))
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
