@@ -376,13 +376,13 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 	}
 
-	if lws.Status.ReadyReplicas != readyCount {
-		lws.Status.ReadyReplicas = readyCount
+	if lws.Status.ReadyReplicas != int32(readyCount) {
+		lws.Status.ReadyReplicas = int32(readyCount)
 		updateStatus = true
 	}
 
-	if lws.Status.UpdatedReplicas != updatedCount {
-		lws.Status.UpdatedReplicas = updatedCount
+	if lws.Status.UpdatedReplicas != int32(updatedCount) {
+		lws.Status.UpdatedReplicas = int32(updatedCount)
 		updateStatus = true
 	}
 
@@ -409,8 +409,8 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 
 	// retrieve the current number of replicas -- the number of leaders
 	replicas := int(*sts.Spec.Replicas)
-	if lws.Status.Replicas != replicas {
-		lws.Status.Replicas = replicas
+	if lws.Status.Replicas != int32(replicas) {
+		lws.Status.Replicas = int32(replicas)
 		updateStatus = true
 	}
 

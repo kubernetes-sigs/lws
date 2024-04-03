@@ -185,13 +185,13 @@ type LeaderWorkerSetStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// ReadyReplicas track the number of groups that are in ready state.
-	ReadyReplicas int `json:"readyReplicas,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
 	// UpdatedReplicas track the number of groups that have been updated.
-	UpdatedReplicas int `json:"updatedReplicas,omitempty"`
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 
 	// Replicas track the active total number of groups.
-	Replicas int `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas,omitempty"`
 
 	// HPAPodSelector for pods that belong to the LeaderWorkerSet object, this is
 	// needed for HPA to know what pods belong to the LeaderWorkerSet object. Here

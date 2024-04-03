@@ -287,7 +287,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var scale v1.Scale
 						gomega.Expect(k8sClient.SubResource("scale").Get(ctx, lws, &scale)).To(gomega.Succeed())
 						gomega.Expect(int32(scale.Spec.Replicas)).To(gomega.Equal(*lws.Spec.Replicas))
-						gomega.Expect(int(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
+						gomega.Expect(int32(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
 						gomega.Expect(lws.Status.HPAPodSelector).To(gomega.Equal("leaderworkerset.sigs.k8s.io/name=test-sample,leaderworkerset.sigs.k8s.io/worker-index=0"))
 					},
 				},
@@ -301,7 +301,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var scale v1.Scale
 						gomega.Expect(k8sClient.SubResource("scale").Get(ctx, lws, &scale)).To(gomega.Succeed())
 						gomega.Expect(int32(scale.Spec.Replicas)).To(gomega.Equal(*lws.Spec.Replicas))
-						gomega.Expect(int(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
+						gomega.Expect(int32(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
 						gomega.Expect(lws.Status.HPAPodSelector).To(gomega.Equal("leaderworkerset.sigs.k8s.io/name=test-sample,leaderworkerset.sigs.k8s.io/worker-index=0"))
 					},
 				},
@@ -319,13 +319,13 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.SubResource("scale").Update(ctx, lwsUnstructed, client.WithSubResourceBody(scaleUnstructed))).To(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() (int, error) {
+						gomega.Eventually(func() (int32, error) {
 							var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet); err != nil {
 								return -1, err
 							}
 							return leaderWorkerSet.Status.Replicas, nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(int32(3)))
 					},
 				},
 			},
@@ -451,13 +451,13 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() (int, error) {
+						gomega.Eventually(func() (int32, error) {
 							var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet); err != nil {
 								return -1, err
 							}
 							return leaderWorkerSet.Status.Replicas, nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(2))
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(int32(2)))
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")

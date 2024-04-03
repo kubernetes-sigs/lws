@@ -328,10 +328,10 @@ func ExpectLeaderWorkerSetStatusReplicas(ctx context.Context, k8sClient client.C
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
 			return err
 		}
-		if lws.Status.ReadyReplicas != readyReplicas {
+		if lws.Status.ReadyReplicas != int32(readyReplicas) {
 			return fmt.Errorf("readyReplicas in status not match, want: %d, got %d", readyReplicas, lws.Status.ReadyReplicas)
 		}
-		if lws.Status.UpdatedReplicas != updatedReplicas {
+		if lws.Status.UpdatedReplicas != int32(updatedReplicas) {
 			return fmt.Errorf("updatedReplicas in status not match, want: %d, got %d", updatedReplicas, lws.Status.UpdatedReplicas)
 		}
 		return nil
