@@ -236,7 +236,21 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 		return 0, nil
 	}
 
-	// Calculating the Partition during rolling update.
+	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
+
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return 0, err
+	}
+	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
+	// the leader pod and the corresponding work statefulset has the same index.
+	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
+		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, leaderPodList.Items, int(replicas))
 
 	stsSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
@@ -246,40 +260,32 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 		return 0, err
 	}
 
+	// It can happen that the statefulset is recreating, then the sts list is less than
+	// the length, which also indicates that the missing statefulset is not ready.
+	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
+		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, stsList.Items, int(replicas))
+
 	var finishedPart int32
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
-stop:
 	for i := replicas - 1; i >= 0; i-- {
-		for j := len(stsList.Items) - 1; j >= 0; j-- {
-			nominatedName := fmt.Sprintf("%s-%d", lws.Name, i)
-			if stsList.Items[j].Name == nominatedName {
-				// TODO: quick sort the pods and statefulsets first, which will be faster than API requests.
-				// Or only construct workerStatefulset until leaderPod is ready.
-
-				// Rolling update happens only when all the former groups of pods(leaderPod+workerStatefulset) are all ready
-				// then we'll go process the next group.
-				// Compare the templateRevisionHash to make sure that we're checking the right object.
-
-				stsTemplateHash := stsList.Items[j].Labels[leaderworkerset.TemplateRevisionHashKey]
-				if !(stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(stsList.Items[j])) {
-					break stop
-				}
-
-				leaderPod := &corev1.Pod{}
-				if err := r.Get(ctx, types.NamespacedName{Name: nominatedName, Namespace: lws.Namespace}, leaderPod); err != nil {
-					return 0, err
-				}
-
-				podTemplateHash := leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey]
-				if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(*leaderPod)) {
-					break stop
-				}
-
-				finishedPart++
-				break
-			}
+		nominatedName := fmt.Sprintf("%s-%d", lws.Name, i)
+		if nominatedName != sortedPods[i].Name || nominatedName != sortedSts[i].Name {
+			break
 		}
+
+		podTemplateHash := sortedPods[i].Labels[leaderworkerset.TemplateRevisionHashKey]
+		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[i])) {
+			break
+		}
+
+		stsTemplateHash := sortedSts[i].Labels[leaderworkerset.TemplateRevisionHashKey]
+		if !(stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(sortedSts[i])) {
+			break
+		}
+
+		finishedPart++
 	}
 
 	// When updated replicas become not ready again or scaled up replicas are not ready yet,

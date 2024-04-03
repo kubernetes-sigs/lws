@@ -20,6 +20,9 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
@@ -40,4 +43,25 @@ func NonZeroValue(value int32) int32 {
 func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
 	return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
 		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
+}
+
+// SortByIndex returns an ascending list, the length of the list is always specified by the parameter.
+func SortByIndex[T appsv1.StatefulSet | corev1.Pod | int](indexFunc func(T) (int, error), items []T, length int) []T {
+	result := make([]T, length)
+
+	for _, item := range items {
+		index, err := indexFunc(item)
+		if err != nil {
+			// When no index found, continue, this can happen when
+			// statefulset doesn't have the index.
+			continue
+		}
+
+		if index >= length {
+			continue
+		}
+		result[index] = item
+	}
+
+	return result
 }
