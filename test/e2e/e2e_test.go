@@ -64,10 +64,10 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 
-		// Wait for leaderWorkerSet ready again.
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 		testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 		testing.ExpectValidPods(ctx, k8sClient, lws)
+		// Wait for leaderWorkerSet ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 })

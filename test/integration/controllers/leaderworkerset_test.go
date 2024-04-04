@@ -838,9 +838,6 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							leaderworkerset.Spec.Replicas = ptr.To[int32](3)
 							return k8sClient.Update(ctx, &leaderworkerset)
 						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
-
-						var leaderSts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaderworkerset.Name, Namespace: leaderworkerset.Namespace}, &leaderSts)).To(gomega.Succeed())
 						// Manually delete leader pods here because we have no statefulset controller.
 						testing.DeleteLeaderPods(ctx, k8sClient, leaderworkerset)
 					},

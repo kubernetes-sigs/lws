@@ -247,7 +247,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 		return 0, err
 	}
 	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
-	// the leader pod and the corresponding work statefulset has the same index.
+	// the leader pod and the corresponding worker statefulset has the same index.
 	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
 		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, leaderPodList.Items, int(replicas))
@@ -260,8 +260,6 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 		return 0, err
 	}
 
-	// It can happen that the statefulset is recreating, then the sts list is less than
-	// the length, which also indicates that the missing statefulset is not ready.
 	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, stsList.Items, int(replicas))
@@ -271,6 +269,8 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 
 	for i := replicas - 1; i >= 0; i-- {
 		nominatedName := fmt.Sprintf("%s-%d", lws.Name, i)
+		// It can happen that the leader pod or the worker statefulset hasn't created yet
+		// or under rebuilding, which also indicates not ready.
 		if nominatedName != sortedPods[i].Name || nominatedName != sortedSts[i].Name {
 			break
 		}

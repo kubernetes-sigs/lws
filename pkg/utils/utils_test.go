@@ -44,6 +44,13 @@ func Test_SortByIndex(t *testing.T) {
 			indexFunc: func(index int) (int, error) { return index, nil },
 			want:      []int{0, 1, 0, 3},
 		},
+		{
+			name:      "inputs larger than the length",
+			inputs:    []int{3, 0, 2, 5, 6, 7, 4},
+			length:    4,
+			indexFunc: func(index int) (int, error) { return index, nil },
+			want:      []int{0, 0, 2, 3},
+		},
 	}
 
 	for _, tc := range testCases {
