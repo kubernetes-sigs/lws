@@ -15276,17 +15276,16 @@ spec:
                         anyOf:
                         - type: integer
                         - type: string
-                        default: 1
+                        default: 0
                         description: |-
                           The maximum number of replicas that can be scheduled above the original number of
                           replicas.
                           Value can be an absolute number (ex: 5) or a percentage of total replicas at
                           the start of the update (ex: 10%).
-                          This can not be 0 if MaxUnavailable is 0.
                           Absolute number is calculated from percentage by rounding up.
-                          By default, a value of 1 is used.
+                          By default, a value of 0 is used.
                           Example: when this is set to 30%, the new replicas can be scaled up by 30%
-                          immediately when the rolling update starts. Once old replicas have been killed,
+                          immediately when the rolling update starts. Once old replicas have been deleted,
                           new replicas can be scaled up further, ensuring that total number of replicas running
                           at any time during the update is at most 130% of original replicas.
                         x-kubernetes-int-or-string: true
@@ -15296,10 +15295,10 @@ spec:
                         - type: string
                         default: 1
                         description: |-
-                          The maximum number of replica that can be unavailable during the update.
+                          The maximum number of replicas that can be unavailable during the update.
                           Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
                           Absolute number is calculated from percentage by rounding down.
-                          This can not be 0 if MaxSurge is 0.
+                          This can not be 0 because it will pass through to statefulset which doesn't allow 0 value.
                           By default, a fixed value of 1 is used.
                           Example: when this is set to 30%, the old replicas can be scaled down by 30%
                           immediately when the rolling update starts. Once new replicas are ready, old replicas

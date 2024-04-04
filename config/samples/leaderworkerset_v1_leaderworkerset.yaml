@@ -9,6 +9,11 @@ metadata:
     app.kubernetes.io/created-by: lws
   name: leaderworkerset-sample
 spec:
+  rolloutStrategy:
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
   replicas: 3
   leaderWorkerTemplate:
     size: 4

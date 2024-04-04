@@ -32,11 +32,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 const (
-	Timeout  = 1 * time.Minute
+	Timeout  = 30 * time.Second
 	Interval = time.Millisecond * 250
 )
 
@@ -85,12 +86,18 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, lws *lead
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func ExpectValidLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
+func ExpectValidLeaderStatefulSet(ctx context.Context, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
 	gomega.Eventually(func() error {
+		// Always got the latest lws.
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
 		var sts appsv1.StatefulSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts); err != nil {
 			return err
 		}
+
 		// check labels and annotations
 		if sts.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return errors.New("leader StatefulSet should have label leaderworkerset.sigs.k8s.io/name")
@@ -110,6 +117,10 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.Lead
 		}
 		if sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return fmt.Errorf("leader statefulset pod template misses leaderworkerset label")
+		}
+		hash := utils.LeaderWorkerTemplateHash(&lws)
+		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
+			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
@@ -137,8 +148,9 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.Lead
 		}
 		// check pod template has correct label
 		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
-			leaderworkerset.SetNameLabelKey:     lws.Name,
-			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.SetNameLabelKey:         lws.Name,
+			leaderworkerset.WorkerIndexLabelKey:     "0",
+			leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(&lws),
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}
@@ -150,8 +162,14 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.Lead
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, leaderPodScheduled bool) {
+func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, leaderPodScheduled bool) {
 	gomega.Eventually(func() error {
+		// Always got the latest lws.
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+
 		var statefulSetList appsv1.StatefulSetList
 		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
@@ -214,6 +232,10 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.Lea
 			if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
+			hash := utils.LeaderWorkerTemplateHash(&lws)
+			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
+				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
+			}
 			if sts.Spec.ServiceName != lws.Name {
 				return errors.New("worker StatefulSet service name should match leaderWorkerSet name")
 			}
@@ -230,6 +252,50 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.Lea
 			// we can't do a full diff of the pod template since there will be default fields added to pod template
 			if podTemplateSpec.Spec.Containers[0].Name != sts.Spec.Template.Spec.Containers[0].Name {
 				return errors.New("pod template is not updated, expect " + podTemplateSpec.Spec.Containers[0].Name + ", got " + sts.Spec.Template.Spec.Containers[0].Name)
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// This should only be used in e2e test, since integration test will not consider workerPods.
+func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
+			return err
+		}
+
+		hash := utils.LeaderWorkerTemplateHash(lws)
+		labelSelector := client.MatchingLabels(map[string]string{
+			leaderworkerset.SetNameLabelKey:         lws.Name,
+			leaderworkerset.TemplateRevisionHashKey: hash,
+		})
+
+		var podList corev1.PodList
+		if err := k8sClient.List(ctx, &podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
+			return err
+		}
+
+		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
+			return errors.New("pod number not right")
+		}
+
+		var leaderTemplateSpec corev1.PodTemplateSpec
+		// if leader template is nil, use worker template
+		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+		} else {
+			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+		}
+
+		workerTemplateSpec := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+
+		for _, pod := range podList.Items {
+			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" && pod.Spec.Containers[0].Name != leaderTemplateSpec.Spec.Containers[0].Name {
+				return errors.New("container name not right")
+			}
+			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" && pod.Spec.Containers[0].Name != workerTemplateSpec.Spec.Containers[0].Name {
+				return errors.New("container name not right")
 			}
 		}
 		return nil
@@ -266,7 +332,18 @@ func ExpectLeaderWorkerSetAvailable(ctx context.Context, k8sClient client.Client
 	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
 }
 
-func ExpectLeaderWorkerSetUnAvailable(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
+func ExpectStatefulsetPartitionEqualTo(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, partition int32) {
+	ginkgo.By("checking statefulset partition")
+	gomega.Eventually(func() bool {
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts); err != nil {
+			return false
+		}
+		return *sts.Spec.UpdateStrategy.RollingUpdate.Partition == partition
+	}, Timeout, Interval).Should(gomega.Equal(true))
+}
+
+func ExpectLeaderWorkerSetUnavailable(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
 	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is false", leaderworkerset.LeaderWorkerSetAvailable))
 	condition := metav1.Condition{
 		Type:    string(leaderworkerset.LeaderWorkerSetAvailable),

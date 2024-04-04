@@ -65,9 +65,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index": "1",
-						"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/group-index":            "1",
+						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -82,9 +83,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-								"leaderworkerset.sigs.k8s.io/group-index": "1",
-								"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/group-index":            "1",
+								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -115,10 +117,11 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      "test-sample",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index": "0",
-						"leaderworkerset.sigs.k8s.io/name":         "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":  "1",
-						"leaderworkerset.sigs.k8s.io/group-key":    "test-key",
+						"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/group-index":            "1",
+						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 					},
 				},
 			},
@@ -137,9 +140,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index": "1",
-						"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/group-index":            "1",
+						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -154,9 +158,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-								"leaderworkerset.sigs.k8s.io/group-index": "1",
-								"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/group-index":            "1",
+								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -192,7 +197,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			if diff := cmp.Diff(tc.wantStatefulSetConfig, statefulSetConfig); diff != "" {
 				t.Errorf("unexpected StatefulSet apply operation %s", diff)
 			}
-
 		})
 	}
 }

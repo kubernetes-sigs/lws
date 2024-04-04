@@ -18,11 +18,10 @@ package webhooks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -68,7 +67,7 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
-			MaxSurge:       intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt32(0),
 		}
 	}
 	return nil
@@ -80,42 +79,49 @@ var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	lws := obj.(*v1.LeaderWorkerSet)
-	var allErrs []error
-	// Ensure replicas and groups number are valid
-	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
-		allErrs = append(allErrs, fmt.Errorf("the Replicas %d is invalid", lws.Spec.Replicas))
-	}
-	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
-		allErrs = append(allErrs, fmt.Errorf("the Size %d is invalid", lws.Spec.LeaderWorkerTemplate.Size))
-	}
-	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
-		allErrs = append(allErrs, fmt.Errorf("the product of replicas and worker replicas must not exceed %d for lws '%s'", math.MaxInt32, lws.Name))
-	}
-	if lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.DefaultRestartPolicy && lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {
-		allErrs = append(allErrs, fmt.Errorf("invalid value for leaderworkertemplate.restartpolicy %s", lws.Spec.LeaderWorkerTemplate.RestartPolicy))
-	}
-	return nil, errors.Join(allErrs...)
+	warnings, allErrs := r.generalValidate(ctx, obj)
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	var allErrs []error
-	newLws := newObj.(*v1.LeaderWorkerSet)
+	warnings, allErrs := r.generalValidate(ctx, newObj)
+
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
-	if newLws.Spec.Replicas != nil && *newLws.Spec.Replicas < 0 {
-		allErrs = append(allErrs, fmt.Errorf("the Replicas %d is invalid", newLws.Spec.Replicas))
-	}
-	newLwsClone := newLws.DeepCopy()
-	// Replicas can be mutated
-	newLwsClone.Spec.Replicas = oldLws.Spec.Replicas
-	if !apiequality.Semantic.DeepEqual(oldLws.Spec, newLwsClone.Spec) {
-		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"), "updates to leaderworkerset spec for fields other than 'replicas' are forbidden"))
-	}
-	return nil, errors.Join(allErrs...)
+	newLws := newObj.(*v1.LeaderWorkerSet)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	return nil, nil
+}
+
+func (r *LeaderWorkerSetWebhook) generalValidate(ctx context.Context, obj runtime.Object) (admission.Warnings, field.ErrorList) {
+	lws := obj.(*v1.LeaderWorkerSet)
+	specPath := field.NewPath("spec")
+
+	var allErrs field.ErrorList
+	// Ensure replicas and groups number are valid
+	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+	}
+	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
+	}
+	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
+	}
+	if lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.DefaultRestartPolicy && lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "restartPolicy"), lws.Spec.LeaderWorkerTemplate.RestartPolicy, "only support [Default, RecreateGroupOnPodRestart]"))
+
+	}
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		value, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(*lws.Spec.Replicas), false)
+		if err != nil || value > int(*lws.Spec.Replicas) {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable"), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, "maxUnavailable must not greater than replicas"))
+		}
+	}
+	return nil, allErrs
 }

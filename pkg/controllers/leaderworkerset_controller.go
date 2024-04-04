@@ -23,10 +23,12 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -39,7 +41,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
@@ -50,13 +54,20 @@ type LeaderWorkerSetReconciler struct {
 }
 
 var (
+	apiGVStr = leaderworkerset.GroupVersion.String()
+)
+
+const (
 	lwsOwnerKey  = ".metadata.controller"
-	apiGVStr     = leaderworkerset.GroupVersion.String()
 	fieldManager = "lws"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
-	return &LeaderWorkerSetReconciler{Client: client, Scheme: scheme, Record: record}
+	return &LeaderWorkerSetReconciler{
+		Client: client,
+		Scheme: scheme,
+		Record: record,
+	}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -77,44 +88,14 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
-	// construct the statefulset apply configuration
-	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws)
+	partition, err := r.rollingUpdatePartition(ctx, lws)
 	if err != nil {
-		log.Error(err, "Constructing StatefulSet apply configuration.")
-		return ctrl.Result{}, err
-	}
-	if err := setControllerReferenceWithStatefulSet(lws, leaderStatefulSetApplyConfig, r.Scheme); err != nil {
-		log.Error(err, "Setting controller reference.")
-		return ctrl.Result{}, nil
-	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(leaderStatefulSetApplyConfig)
-	if err != nil {
-		log.Error(err, "Converting StatefulSet configuration to json.")
-		return ctrl.Result{}, err
-	}
-	patch := &unstructured.Unstructured{
-		Object: obj,
-	}
-	// Use server side apply and add fieldmanager to the lws owned fields
-	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
-	// these fields to the ones desired by the lws controller
-	// TODO b/316776287 add E2E test for SSA
-	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        ptr.To[bool](true),
-	})
-	if err != nil {
-		log.Error(err, "Using server side apply to update leader statefulset")
+		log.Error(err, "rolling partition error")
 		return ctrl.Result{}, err
 	}
 
-	stsSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	})
-	var lwssts appsv1.StatefulSetList
-	if err := r.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-		log.Error(err, "Fetching statefulsets managed by leaderworkerset instance")
-		return ctrl.Result{}, nil
+	if err := r.SSAWithStatefulset(ctx, lws, partition); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Create headless service if it does not exist.
@@ -200,6 +181,155 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 	})
 }
 
+// Rolling update will always wait for the former replica to be ready then process the next one,
+// we didn't consider rollout strategy type here since we only support rollingUpdate now,
+// once we have more policies, we should update the logic here.
+// Possible scenarios:
+//   - When sts is under creation, partition is always 0 because pods are created in parallel, rolling update is not relevant here.
+//   - When sts is in rolling update, the partition will start from the last index to the index 0 processing in maxUnavailable step.
+//   - When sts is in rolling update, and Replicas increases, we'll delay the rolling update until the scaling up is done,
+//     Partition will not change, new replicas are created using the new template from the get go.
+//   - When sts is rolling update, and Replicas decreases, the partition will not change until new Replicas < Partition,
+//     in which case Partition will be reset to the new Replicas value.
+//   - When sts is ready for a rolling update and Replicas increases at the same time, we'll delay the rolling update until
+//     the scaling up is done.
+//   - When sts is ready for a rolling update and Replicas decreases at the same time, we'll start the rolling update
+//     together with scaling down.
+//
+// At rest, Partition should always be zero.
+func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, error) {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
+	if err != nil {
+		// If sts not created yet, all partitions should be updated.
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+	replicas := *lws.Spec.Replicas
+	rollingStep, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(replicas), false)
+	if err != nil {
+		return 0, err
+	}
+
+	// Indicates a new rolling update here.
+	if templateUpdated(sts, lws) {
+		// Processing scaling up/down first prior to rolling update.
+		if replicasUpdated(sts, lws) {
+			return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
+		} else {
+			return replicas - int32(rollingStep), nil
+		}
+	}
+
+	// Replicas changes during rolling update.
+	if replicasUpdated(sts, lws) {
+		return min(partition, *lws.Spec.Replicas), nil
+	}
+
+	// If Partition is 0, it means it's under creation or rolling update is done or
+	// just running normally, return 0 directly under these cases.
+	if partition == 0 {
+		return 0, nil
+	}
+
+	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
+
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return 0, err
+	}
+	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
+	// the leader pod and the corresponding worker statefulset has the same index.
+	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
+		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, leaderPodList.Items, int(replicas))
+
+	stsSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	})
+	var stsList appsv1.StatefulSetList
+	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return 0, err
+	}
+
+	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
+		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, stsList.Items, int(replicas))
+
+	var finishedPart int32
+	templateHash := utils.LeaderWorkerTemplateHash(lws)
+
+	for i := replicas - 1; i >= 0; i-- {
+		nominatedName := fmt.Sprintf("%s-%d", lws.Name, i)
+		// It can happen that the leader pod or the worker statefulset hasn't created yet
+		// or under rebuilding, which also indicates not ready.
+		if nominatedName != sortedPods[i].Name || nominatedName != sortedSts[i].Name {
+			break
+		}
+
+		podTemplateHash := sortedPods[i].Labels[leaderworkerset.TemplateRevisionHashKey]
+		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[i])) {
+			break
+		}
+
+		stsTemplateHash := sortedSts[i].Labels[leaderworkerset.TemplateRevisionHashKey]
+		if !(stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(sortedSts[i])) {
+			break
+		}
+
+		finishedPart++
+	}
+
+	// When updated replicas become not ready again or scaled up replicas are not ready yet,
+	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
+	return min(partition, utils.NonZeroValue(replicas-int32(rollingStep)-finishedPart)), nil
+}
+
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition int32) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	// construct the statefulset apply configuration
+	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition)
+	if err != nil {
+		log.Error(err, "Constructing StatefulSet apply configuration.")
+		return err
+	}
+	if err := setControllerReferenceWithStatefulSet(lws, leaderStatefulSetApplyConfig, r.Scheme); err != nil {
+		log.Error(err, "Setting controller reference.")
+		return err
+	}
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(leaderStatefulSetApplyConfig)
+	if err != nil {
+		log.Error(err, "Converting StatefulSet configuration to json.")
+		return err
+	}
+	patch := &unstructured.Unstructured{
+		Object: obj,
+	}
+	// Use server side apply and add fieldmanager to the lws owned fields
+	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
+	// these fields to the ones desired by the lws controller
+	// TODO b/316776287 add E2E test for SSA
+	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        ptr.To[bool](true),
+	})
+	if err != nil {
+		log.Error(err, "Using server side apply to update leader statefulset")
+		return err
+	}
+
+	return nil
+}
+
 // updates the condition of the leaderworkerset to either Progressing or Available.
 func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -216,14 +346,16 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount := 0
+	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
 	for _, sts := range lwssts.Items {
 		if sts.Name == lws.Name {
 			continue
 		}
+
 		// this is the worker statefulset.
-		if sts.Status.ReadyReplicas == *sts.Spec.Replicas {
+		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && statefulsetutils.StatefulsetReady(sts) {
 			// the worker pods are OK.
 			// need to check leader pod for this group.
 			var leaderPod corev1.Pod
@@ -231,7 +363,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				log.Error(err, "Fetching leader pod")
 				return false, err
 			}
-			if podutils.PodRunningAndReady(&leaderPod) {
+			if leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && podutils.PodRunningAndReady(leaderPod) {
 				// set to progressing.
 				readyCount++
 			}
@@ -303,7 +435,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition int32) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
@@ -320,9 +452,12 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	if err != nil {
 		return nil, err
 	}
+
+	templateHash := utils.LeaderWorkerTemplateHash(lws)
 	podTemplateApplyConfiguration.WithLabels(map[string]string{
-		leaderworkerset.WorkerIndexLabelKey: "0",
-		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey:     "0",
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.TemplateRevisionHashKey: templateHash,
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
@@ -330,6 +465,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
@@ -337,14 +473,17 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithReplicas(*lws.Spec.Replicas).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
-			WithServiceName(lws.Name).
+			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
+				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).WithPartition(partition),
+			)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(map[string]string{
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
 				}))).
 		WithLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey: lws.Name,
+			leaderworkerset.SetNameLabelKey:         lws.Name,
+			leaderworkerset.TemplateRevisionHashKey: templateHash,
 		})
 	return statefulSetConfig, nil
 }
@@ -352,12 +491,12 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 func makeCondition(available bool) metav1.Condition {
 	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
 	reason := "GroupsAreProgressing"
-	message := "Creating resources"
+	message := "Replicas are progressing"
 
 	if available {
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
-		message = "all replicas are ready"
+		message = "All replicas are ready"
 	}
 
 	condition := metav1.Condition{
@@ -411,4 +550,12 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 		return true
 	}
 	return false
+}
+
+func templateUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
+	return sts.Labels[leaderworkerset.TemplateRevisionHashKey] != utils.LeaderWorkerTemplateHash(lws)
+}
+
+func replicasUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
+	return *sts.Spec.Replicas != *lws.Spec.Replicas
 }

@@ -29,13 +29,18 @@ type LeaderWorkerSetWrapper struct {
 	leaderworkerset.LeaderWorkerSet
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) Obj() *leaderworkerset.LeaderWorkerSet {
+	return &lwsWrapper.LeaderWorkerSet
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Replica(count int) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.Replicas = ptr.To[int32](int32(count))
 	return lwsWrapper
 }
 
-func (lwsWrapper *LeaderWorkerSetWrapper) Obj() *leaderworkerset.LeaderWorkerSet {
-	return &lwsWrapper.LeaderWorkerSet
+func (lwsWrapper *LeaderWorkerSetWrapper) MaxUnavailable(value int) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(value)
+	return lwsWrapper
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) Size(count int) *LeaderWorkerSetWrapper {
@@ -112,7 +117,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		Type: v1.RollingUpdateStrategyType,
 		RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
-			MaxSurge:       intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt32(0),
 		},
 	}
 	return &LeaderWorkerSetWrapper{
