@@ -94,7 +94,7 @@ curl --request POST \
  --header "Content-type: application/json" \
 -s ${LB_IP}:${PORT}/generate --data \
 '{
-  "model": "/sax/test/lmcloudspmd175b32test",
+  "model": "/sax/cell/lmcloudspmd175b32test",
   "query": "How many days are in a week?"
 }'
 ```
