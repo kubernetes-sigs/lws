@@ -86,16 +86,16 @@ func GetPods(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClien
 func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
 	// delete pods with the highest indexes
 	var leaders corev1.PodList
-	Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).To(Succeed())
+	Eventually(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).Should(Succeed())
 	// we don't have "slice" package before go1.21, could only manually delete pods with largest index
 	for i := range leaders.Items {
 		index, _ := strconv.Atoi(leaders.Items[i].Name[len(leaders.Items[i].Name)-1:])
 		if index >= int(*lws.Spec.Replicas) {
-			Expect(k8sClient.Delete(ctx, &leaders.Items[i])).To(Succeed())
+			Eventually(k8sClient.Delete(ctx, &leaders.Items[i])).Should(Succeed())
 			// delete worker statefulset on behalf of kube-controller-manager
 			var sts appsv1.StatefulSet
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaders.Items[i].Name, Namespace: lws.Namespace}, &sts)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, &sts)).To(Succeed())
+			Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaders.Items[i].Name, Namespace: lws.Namespace}, &sts)).Should(Succeed())
+			Eventually(k8sClient.Delete(ctx, &sts)).Should(Succeed())
 		}
 	}
 }
@@ -224,7 +224,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 func SetStatefulsetToUnReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet) {
 	sts.Status.CurrentRevision = "fuz"
 	sts.Status.UpdateRevision = "bar"
-	Expect(k8sClient.Status().Update(ctx, sts)).Should(Succeed())
+	Eventually(k8sClient.Status().Update(ctx, sts)).Should(Succeed())
 }
 
 func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, condition metav1.Condition) (bool, error) {
