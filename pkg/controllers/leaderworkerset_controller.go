@@ -355,7 +355,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			continue
 		}
 
-		var replicaReady bool
 		// this is the worker statefulset.
 		if statefulsetutils.StatefulsetReady(sts) {
 
@@ -367,11 +366,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				return false, err
 			}
 			if podutils.PodRunningAndReady(leaderPod) {
-				replicaReady = true
 				readyCount++
-			}
-			if replicaReady && sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
-				updatedCount++
+
+				if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+					updatedCount++
+				}
 			}
 		}
 	}
