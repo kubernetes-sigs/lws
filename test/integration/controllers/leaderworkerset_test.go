@@ -287,7 +287,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var scale v1.Scale
 						gomega.Expect(k8sClient.SubResource("scale").Get(ctx, lws, &scale)).To(gomega.Succeed())
 						gomega.Expect(int32(scale.Spec.Replicas)).To(gomega.Equal(*lws.Spec.Replicas))
-						gomega.Expect(int(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
+						gomega.Expect(int32(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
 						gomega.Expect(lws.Status.HPAPodSelector).To(gomega.Equal("leaderworkerset.sigs.k8s.io/name=test-sample,leaderworkerset.sigs.k8s.io/worker-index=0"))
 					},
 				},
@@ -301,7 +301,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var scale v1.Scale
 						gomega.Expect(k8sClient.SubResource("scale").Get(ctx, lws, &scale)).To(gomega.Succeed())
 						gomega.Expect(int32(scale.Spec.Replicas)).To(gomega.Equal(*lws.Spec.Replicas))
-						gomega.Expect(int(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
+						gomega.Expect(int32(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
 						gomega.Expect(lws.Status.HPAPodSelector).To(gomega.Equal("leaderworkerset.sigs.k8s.io/name=test-sample,leaderworkerset.sigs.k8s.io/worker-index=0"))
 					},
 				},
@@ -319,13 +319,13 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.SubResource("scale").Update(ctx, lwsUnstructed, client.WithSubResourceBody(scaleUnstructed))).To(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() (int, error) {
+						gomega.Eventually(func() (int32, error) {
 							var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet); err != nil {
 								return -1, err
 							}
 							return leaderWorkerSet.Status.Replicas, nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(int32(3)))
 					},
 				},
 			},
@@ -451,13 +451,13 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() (int, error) {
+						gomega.Eventually(func() (int32, error) {
 							var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet); err != nil {
 								return -1, err
 							}
 							return leaderWorkerSet.Status.Replicas, nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(2))
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(int32(2)))
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
@@ -511,45 +511,43 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 				{
 					// Check the rolling update initial state.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var leaderworkerset leaderworkerset.LeaderWorkerSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset)).To(gomega.Succeed())
-						testing.UpdateLeaderTemplate(ctx, k8sClient, &leaderworkerset)
+						testing.UpdateLeaderTemplate(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
 				},
 				{
 					// Rolling update 1 replica.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
 					},
 				},
 				{
 					// Update the 1-index replica will not change the partition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-1", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
 					},
 				},
 				{
@@ -563,6 +561,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{
@@ -575,6 +574,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 			},
@@ -594,61 +594,57 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 				{
 					// Update the worker template.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var leaderworkerset leaderworkerset.LeaderWorkerSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset)).To(gomega.Succeed())
-						testing.UpdateWorkerTemplate(ctx, k8sClient, &leaderworkerset)
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
 				},
 				{
 					// Rolling update index-3 replica.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
 					},
 				},
 				{
 					// Rolling update index-2 replicas.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-2", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-2", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
 					},
 				},
 				{
 					// Rolling update the rest 2 replicas.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts1, sts2 appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-1", Namespace: lws.Namespace}, &sts1)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts1, lws)
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &sts2)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts2, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-0", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 			},
@@ -668,6 +664,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 				{
@@ -676,7 +673,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var leaderworkerset leaderworkerset.LeaderWorkerSet
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset)).To(gomega.Succeed())
 						leaderworkerset.Spec.Replicas = ptr.To[int32](6)
-						leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+						leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "new-worker"
 						gomega.Expect(k8sClient.Update(ctx, &leaderworkerset)).To(gomega.Succeed())
 
 						var leaderSts appsv1.StatefulSet
@@ -689,6 +686,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						// When scaling up the Replicas, Partition will not change, so the new created Pods will apply with the new template.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
+						// We haven't set the replica-4, replica-5 to ready, so the readyReplicas is 4, the updatedReplicas is 0.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
 				},
 				{
@@ -701,6 +700,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
 					},
 				},
 			},
@@ -720,37 +720,31 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 				{
 					// Update the worker template.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() error {
-							var leaderworkerset leaderworkerset.LeaderWorkerSet
-							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
-								return err
-							}
-							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
-							return k8sClient.Update(ctx, &leaderworkerset)
-						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
 				},
 				{
 					// Rolling update index-3 replica.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var sts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-						testing.SetPodGroupToReady(ctx, k8sClient, &sts, lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
 					},
 				},
 				{
@@ -770,11 +764,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaderworkerset.Name, Namespace: leaderworkerset.Namespace}, &leaderSts)).To(gomega.Succeed())
 						// Manually create leader pods here because we have no statefulset controller.
 						gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 4, 6)).To(gomega.Succeed())
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-4", lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-5", lws)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 3)
 					},
 				},
 				{
@@ -787,6 +784,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
 					},
 				},
 			},
@@ -806,6 +804,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
 					},
 				},
 				{
@@ -824,6 +823,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 5)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
 					},
 				},
 				{
@@ -845,6 +845,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -857,6 +858,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 3)
 					},
 				},
 			},

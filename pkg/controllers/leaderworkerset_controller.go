@@ -346,6 +346,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount := 0
+	updatedCount := 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -355,7 +356,8 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		// this is the worker statefulset.
-		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && statefulsetutils.StatefulsetReady(sts) {
+		if statefulsetutils.StatefulsetReady(sts) {
+
 			// the worker pods are OK.
 			// need to check leader pod for this group.
 			var leaderPod corev1.Pod
@@ -363,19 +365,27 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				log.Error(err, "Fetching leader pod")
 				return false, err
 			}
-			if leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && podutils.PodRunningAndReady(leaderPod) {
-				// set to progressing.
+			if podutils.PodRunningAndReady(leaderPod) {
 				readyCount++
+
+				if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+					updatedCount++
+				}
 			}
 		}
 	}
 
-	if lws.Status.ReadyReplicas != readyCount {
-		lws.Status.ReadyReplicas = readyCount
+	if lws.Status.ReadyReplicas != int32(readyCount) {
+		lws.Status.ReadyReplicas = int32(readyCount)
 		updateStatus = true
 	}
 
-	condition := makeCondition(readyCount == int(*lws.Spec.Replicas))
+	if lws.Status.UpdatedReplicas != int32(updatedCount) {
+		lws.Status.UpdatedReplicas = int32(updatedCount)
+		updateStatus = true
+	}
+
+	condition := makeCondition(updatedCount == int(*lws.Spec.Replicas))
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
@@ -398,8 +408,8 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 
 	// retrieve the current number of replicas -- the number of leaders
 	replicas := int(*sts.Spec.Replicas)
-	if lws.Status.Replicas != replicas {
-		lws.Status.Replicas = replicas
+	if lws.Status.Replicas != int32(replicas) {
+		lws.Status.Replicas = int32(replicas)
 		updateStatus = true
 	}
 
