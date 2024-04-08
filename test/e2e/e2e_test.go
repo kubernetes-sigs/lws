@@ -94,7 +94,6 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
-		//testing.GetPods(ctx, lws, k8sClient, lwsPods)
 
 		Eventually(func() (bool, error) {
 			var allPods corev1.PodList
@@ -119,7 +118,6 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
-		//testing.GetPods(ctx, lws, k8sClient, lwsPods)
 
 		for _, p := range lwsPods.Items {
 			Expect(testing.HasTPUEnvVarsPopulated(p)).To(BeFalse())
@@ -131,7 +129,6 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-		//testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
 
 		var leaderPod corev1.Pod
 		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(Succeed())
@@ -187,7 +184,6 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
-		//testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 
 		var leaderPod corev1.Pod
