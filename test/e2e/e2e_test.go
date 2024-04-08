@@ -56,13 +56,15 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	It("Can deploy lws", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(3).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
 	It("Can deploy lws with 'replicas', 'size', and 'restart policy' set", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
 		Expect(*lws.Spec.Replicas).To(Equal(int32(4)))
 		Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(Equal(int32(5)))
@@ -71,7 +73,7 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 	It("Can perform a rolling update", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
+		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		// Wait for leaderWorkerSet to be ready then update it.
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
@@ -79,7 +81,7 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 		testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		testing.ExpectValidPods(ctx, k8sClient, lws)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 		// Wait for leaderWorkerSet to be ready again.
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
@@ -88,10 +90,11 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := testutils.MakeWorkerPodSpecWithTPUResource()
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
+		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		lwsPods := &corev1.PodList{}
-		testing.GetPods(ctx, lws, k8sClient, lwsPods)
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+		//testing.GetPods(ctx, lws, k8sClient, lwsPods)
 
 		Eventually(func() (bool, error) {
 			var allPods corev1.PodList
@@ -99,7 +102,7 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 			if err != nil {
 				return false, err
 			}
-			for _, p := range lwsPods.Items {
+			for _, p := range allPods.Items {
 				if !testing.HasTPUEnvVarsPopulated(p) {
 					return false, nil
 				}
@@ -113,9 +116,10 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		workerPodSpec := testutils.MakeWorkerPodSpec()
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
-		testing.CreateLws(ctx, k8sClient, lws)
+		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
-		testing.GetPods(ctx, lws, k8sClient, lwsPods)
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+		//testing.GetPods(ctx, lws, k8sClient, lwsPods)
 
 		for _, p := range lwsPods.Items {
 			Expect(testing.HasTPUEnvVarsPopulated(p)).To(BeFalse())
@@ -124,8 +128,10 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 	It("Pod restart will not recreate the pod group when restart policy is Default", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.DefaultRestartPolicy).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
-		testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		//testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
 
 		var leaderPod corev1.Pod
 		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(Succeed())
@@ -178,8 +184,11 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 
 	It("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
-		testing.CreateLws(ctx, k8sClient, lws)
-		testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		//testing.GetPods(ctx, lws, k8sClient, &corev1.PodList{})
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 
 		var leaderPod corev1.Pod
 		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(Succeed())

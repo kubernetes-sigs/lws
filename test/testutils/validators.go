@@ -258,50 +258,6 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-// This should only be used in e2e test, since integration test will not consider workerPods.
-func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	gomega.Eventually(func() error {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
-			return err
-		}
-
-		hash := utils.LeaderWorkerTemplateHash(lws)
-		labelSelector := client.MatchingLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.TemplateRevisionHashKey: hash,
-		})
-
-		var podList corev1.PodList
-		if err := k8sClient.List(ctx, &podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
-			return err
-		}
-
-		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
-			return errors.New("pod number not right")
-		}
-
-		var leaderTemplateSpec corev1.PodTemplateSpec
-		// if leader template is nil, use worker template
-		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
-		} else {
-			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-		}
-
-		workerTemplateSpec := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-
-		for _, pod := range podList.Items {
-			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" && pod.Spec.Containers[0].Name != leaderTemplateSpec.Spec.Containers[0].Name {
-				return errors.New("container name not right")
-			}
-			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" && pod.Spec.Containers[0].Name != workerTemplateSpec.Spec.Containers[0].Name {
-				return errors.New("container name not right")
-			}
-		}
-		return nil
-	}, Timeout, Interval).Should(gomega.Succeed())
-}
-
 func ExpectLeaderWorkerSetProgressing(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
 	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetProgressing))
 	condition := metav1.Condition{
