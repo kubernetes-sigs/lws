@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -51,12 +50,7 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 // Default implements webhook.Defaulter so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
-	if lws.Spec.Replicas == nil {
-		lws.Spec.Replicas = ptr.To[int32](1)
-	}
-	if lws.Spec.LeaderWorkerTemplate.Size == nil {
-		lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
-	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
 	}
@@ -64,6 +58,7 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 	if lws.Spec.RolloutStrategy.Type == "" {
 		lws.Spec.RolloutStrategy.Type = v1.RollingUpdateStrategyType
 	}
+
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),

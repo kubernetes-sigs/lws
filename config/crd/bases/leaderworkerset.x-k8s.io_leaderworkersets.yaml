@@ -7652,6 +7652,7 @@ spec:
                       failures happen.
                     type: string
                   size:
+                    default: 1
                     description: |-
                       Number of pods to create. It is the total number of pods in each group.
                       The minimum is 1 which represent the leader. When set to 1, the leader
@@ -15253,6 +15254,7 @@ spec:
                 - workerTemplate
                 type: object
               replicas:
+                default: 1
                 description: |-
                   Number of leader-workers groups. A scale subresource is available to enable HPA. The
                   selector for HPA will be that of the leader pod, and so practically HPA will be looking up the
