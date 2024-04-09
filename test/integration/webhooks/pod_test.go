@@ -55,7 +55,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 		func(tc *testDefaultingCase) {
 			ctx := context.Background()
 			// Create LeaderWorkerSet pods
-			ginkgo.By("createing Lws pod")
+			ginkgo.By("creating lws pod")
 			expectedPod := tc.makePod(ns)
 			gomega.Expect(k8sClient.Create(ctx, &expectedPod)).To(gomega.Succeed())
 			var gotPod corev1.Pod

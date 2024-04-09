@@ -16,6 +16,7 @@ package testutils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -34,6 +35,16 @@ import (
 	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
+
+func MustCreateLws(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Expect(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
+	gomega.Eventually(func() error {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
+			return err
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
 
 func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
@@ -122,6 +133,49 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	return nil
 }
 
+// This should only be used in e2e test, since integration test will not automatically create worker pods.
+func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podList *corev1.PodList) {
+	gomega.Eventually(func() error {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
+			return err
+		}
+
+		hash := utils.LeaderWorkerTemplateHash(lws)
+		labelSelector := client.MatchingLabels(map[string]string{
+			leaderworkerset.SetNameLabelKey:         lws.Name,
+			leaderworkerset.TemplateRevisionHashKey: hash,
+		})
+
+		if err := k8sClient.List(ctx, podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
+			return err
+		}
+
+		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
+			return errors.New("pod number not right")
+		}
+
+		var leaderTemplateSpec corev1.PodTemplateSpec
+		// if leader template is nil, use worker template
+		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+		} else {
+			leaderTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+		}
+
+		workerTemplateSpec := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+
+		for _, pod := range podList.Items {
+			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" && pod.Spec.Containers[0].Name != leaderTemplateSpec.Spec.Containers[0].Name {
+				return errors.New("container name not right")
+			}
+			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" && pod.Spec.Containers[0].Name != workerTemplateSpec.Spec.Containers[0].Name {
+				return errors.New("container name not right")
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, sts *appsv1.StatefulSet) {
 	gomega.Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts); err != nil {
@@ -129,6 +183,13 @@ func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorker
 		}
 		return nil
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, stsl *appsv1.StatefulSetList) {
+	gomega.Eventually(func() int {
+		k8sClient.List(ctx, stsl, client.InNamespace(lws.Namespace))
+		return len(stsl.Items)
+	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas) + 1))
 }
 
 // SetPodGroupsToReady set all podGroups of the leaderWorkerSet to ready state.
