@@ -74,7 +74,9 @@ type LeaderWorkerSetSpec struct {
 	// group.
 	// On scale down, the leader pod as well as the workers statefulset will be deleted.
 	// Default to 1.
+	//
 	// +optional
+	// +kubebuilder:default=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// LeaderWorkerTemplate defines the template for leader/worker pods
@@ -102,7 +104,9 @@ type LeaderWorkerTemplate struct {
 	// The minimum is 1 which represent the leader. When set to 1, the leader
 	// pod is created for each group as well as a 0-replica StatefulSet for the workers.
 	// Default to 1.
+	//
 	// +optional
+	// +kubebuilder:default=1
 	Size *int32 `json:"size,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
