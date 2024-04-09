@@ -37,7 +37,7 @@ import (
 )
 
 func MustCreateLws(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	gomega.Eventually(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
+	gomega.Expect(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
 	gomega.Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
 			return err

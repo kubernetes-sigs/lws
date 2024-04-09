@@ -60,11 +60,35 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.GetStatefulSets(ctx, lws, k8sClient, &appsv1.StatefulSetList{})
+
+		statefulSets := &appsv1.StatefulSetList{}
+		testing.GetStatefulSets(ctx, lws, k8sClient, statefulSets)
+
+		pods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, pods)
 
 		gomega.Expect(*lws.Spec.Replicas).To(gomega.Equal(int32(4)))
 		gomega.Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(gomega.Equal(int32(5)))
 		gomega.Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(gomega.Equal(v1.RecreateGroupOnPodRestart))
+
+		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey}
+		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey}
+
+		for _, pod := range pods.Items {
+			for _, expectedLabel := range expectedLabels {
+				gomega.Expect(pod.Labels[expectedLabel]).To(gomega.Not(gomega.BeNil()))
+			}
+
+			for _, expectedAnnotation := range expectedAnnotations {
+				gomega.Expect(pod.Labels[expectedAnnotation]).To(gomega.Not(gomega.BeNil()))
+			}
+		}
+
+		for _, statefulSet := range statefulSets.Items {
+			for _, expectedLabel := range expectedLabels {
+				gomega.Expect(statefulSet.Labels[expectedLabel]).To(gomega.Not(gomega.BeNil()))
+			}
+		}
 	})
 
 	ginkgo.It("Can perform a rolling update", func() {
