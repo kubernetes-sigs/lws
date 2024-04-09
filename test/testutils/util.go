@@ -133,7 +133,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	return nil
 }
 
-// This should only be used in e2e test, since integration test will not consider workerPods.
+// This should only be used in e2e test, since integration test will not automatically create worker pods.
 func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podList *corev1.PodList) {
 	gomega.Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
