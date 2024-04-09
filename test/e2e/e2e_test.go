@@ -43,7 +43,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 				GenerateName: "test-ns-",
 			},
 		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).Should(gomega.Succeed())
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
 
 		// Wait for namespace to exist before proceeding with test.
 		gomega.Eventually(func() bool {
@@ -118,14 +118,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		initialPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, initialPods)
 
-		var leaderPod corev1.Pod
-		gomega.Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(gomega.Succeed())
-		var firstWorker corev1.Pod
-		gomega.Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPod.Name + "-1", Namespace: leaderPod.Namespace}, &firstWorker)).Should(gomega.Succeed())
-
 		// Get all lws pod UIDs now and compare them to the UIDs after deletion
 		// With RecreateGroupOnPodRestart they should all be different
-
 		initialPodUIDs := make(map[types.UID]struct{})
 		for _, w := range initialPods.Items {
 			initialPodUIDs[w.UID] = struct{}{}
