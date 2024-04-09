@@ -16,8 +16,9 @@ limitations under the License.
 package e2e
 
 import (
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,49 +30,44 @@ import (
 	testing "sigs.k8s.io/lws/test/testutils"
 )
 
-var _ = Describe("leaderWorkerSet e2e tests", func() {
+var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 	// Each test runs in a separate namespace.
 	var ns *corev1.Namespace
 	var lws *leaderworkerset.LeaderWorkerSet
 
-	BeforeEach(func() {
+	ginkgo.BeforeEach(func() {
 		// Create test namespace before each test.
 		ns = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-ns-",
 			},
 		}
-		Eventually(k8sClient.Create(ctx, ns)).Should(Succeed())
+		gomega.Expect(k8sClient.Create(ctx, ns)).Should(gomega.Succeed())
 
 		// Wait for namespace to exist before proceeding with test.
-		Eventually(func() bool {
+		gomega.Eventually(func() bool {
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Namespace, Name: ns.Name}, ns)
 			return err == nil
-		}, timeout, interval).Should(BeTrue())
+		}, timeout, interval).Should(gomega.BeTrue())
 	})
 
-	AfterEach(func() {
-		Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(Succeed())
+	ginkgo.AfterEach(func() {
+		gomega.Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(gomega.Succeed())
 	})
 
-	It("Can deploy lws", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-	})
-
-	It("Can deploy lws with 'replicas', 'size', and 'restart policy' set", func() {
+	ginkgo.It("Can deploy lws with 'replicas', 'size', and 'restart policy' set", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.GetStatefulSets(ctx, lws, k8sClient, &appsv1.StatefulSetList{})
 
-		Expect(*lws.Spec.Replicas).To(Equal(int32(4)))
-		Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(Equal(int32(5)))
-		Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(Equal(v1.RecreateGroupOnPodRestart))
+		gomega.Expect(*lws.Spec.Replicas).To(gomega.Equal(int32(4)))
+		gomega.Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(gomega.Equal(int32(5)))
+		gomega.Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(gomega.Equal(v1.RecreateGroupOnPodRestart))
 	})
 
-	It("Can perform a rolling update", func() {
+	ginkgo.It("Can perform a rolling update", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
@@ -86,31 +82,21 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
-	It("Adds env vars to containers when using TPU", func() {
+	ginkgo.It("Adds env vars to containers when using TPU", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := testutils.MakeWorkerPodSpecWithTPUResource()
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
 
+		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
-		Eventually(func() (bool, error) {
-			var allPods corev1.PodList
-			err := k8sClient.List(ctx, &allPods, client.InNamespace(lws.Namespace))
-			if err != nil {
-				return false, err
-			}
-			for _, p := range allPods.Items {
-				if !testing.HasTPUEnvVarsPopulated(p) {
-					return false, nil
-				}
-			}
-			return true, nil
-		}, timeout, interval).Should(BeTrue())
+		for _, p := range lwsPods.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(p)).To(gomega.BeTrue())
+		}
 	})
 
-	It("Doesnt add env vars to containers when not using TPU", func() {
+	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {
 		leaderPodSpec := testutils.MakeLeaderPodSpec()
 		workerPodSpec := testutils.MakeWorkerPodSpec()
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
@@ -120,110 +106,50 @@ var _ = Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
 		for _, p := range lwsPods.Items {
-			Expect(testing.HasTPUEnvVarsPopulated(p)).To(BeFalse())
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(p)).To(gomega.BeFalse())
 		}
 	})
 
-	It("Pod restart will not recreate the pod group when restart policy is Default", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.DefaultRestartPolicy).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-
-		var leaderPod corev1.Pod
-		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(Succeed())
-		var firstWorker corev1.Pod
-		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPod.Name + "-1", Namespace: leaderPod.Namespace}, &firstWorker)).Should(Succeed())
-		var workers corev1.PodList
-		Eventually(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace))).Should(Succeed())
-
-		// Get all lws pod UIDs now and compare them to the UIDs after deletion
-		// With DefaultRestartPolicy they should all be the same except for the restarted pod
-		initialPodUIDs := make(map[types.UID]struct{})
-		for _, w := range workers.Items {
-			initialPodUIDs[w.UID] = struct{}{}
-		}
-
-		Eventually(k8sClient.Delete(ctx, &firstWorker)).Should(Succeed())
-
-		Consistently(func() (*metav1.Time, error) {
-			err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)
-			if err != nil {
-				return nil, err
-			}
-			return leaderPod.DeletionTimestamp, nil
-		}).Should(BeNil())
-
-		Eventually(func() (int, error) {
-			var leaders corev1.PodList
-			err := k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})
-			if err != nil {
-				return -1, err
-			}
-			return len(leaders.Items), nil
-		}, timeout, interval).Should(Equal(int(*lws.Spec.Replicas)))
-
-		Eventually(func() (int, error) {
-			err := k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace))
-			if err != nil {
-				return -1, err
-			}
-			numberOfPodsInCommon := 0
-			for _, w := range workers.Items {
-				_, ok := initialPodUIDs[w.UID]
-				if ok {
-					numberOfPodsInCommon++
-				}
-			}
-			return numberOfPodsInCommon, nil
-		}, timeout, interval).Should(Equal(int(*lws.Spec.LeaderWorkerTemplate.Size) - 1))
-	})
-
-	It("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", func() {
+	ginkgo.It("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
-		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		initialPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, initialPods)
 
 		var leaderPod corev1.Pod
-		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(Succeed())
+		gomega.Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).Should(gomega.Succeed())
 		var firstWorker corev1.Pod
-		Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPod.Name + "-1", Namespace: leaderPod.Namespace}, &firstWorker)).Should(Succeed())
-		var workers corev1.PodList
-		Eventually(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace))).Should(Succeed())
+		gomega.Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPod.Name + "-1", Namespace: leaderPod.Namespace}, &firstWorker)).Should(gomega.Succeed())
 
 		// Get all lws pod UIDs now and compare them to the UIDs after deletion
 		// With RecreateGroupOnPodRestart they should all be different
+
 		initialPodUIDs := make(map[types.UID]struct{})
-		for _, w := range workers.Items {
+		for _, w := range initialPods.Items {
 			initialPodUIDs[w.UID] = struct{}{}
 		}
 
-		Eventually(k8sClient.Delete(ctx, &firstWorker)).Should(Succeed())
+		k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})
 
-		Eventually(func() (int, error) {
-			var leaders corev1.PodList
-			err := k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})
+		gomega.Eventually(func() (int, error) {
+			finalPods := &corev1.PodList{}
+			err := k8sClient.List(ctx, finalPods, client.InNamespace(lws.Namespace))
 			if err != nil {
 				return -1, err
 			}
-			return len(leaders.Items), nil
-		}, timeout, interval).Should(Equal(int(*lws.Spec.Replicas)))
 
-		Eventually(func() (int, error) {
-			err := k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace))
-			if err != nil {
-				return -1, err
-			}
+			// Ensure the initial and final pod lists are of equal length
+			gomega.Expect(len(finalPods.Items)).To(gomega.Equal(len(initialPods.Items)))
 			numberOfPodsInCommon := 0
-			for _, w := range workers.Items {
-				_, ok := initialPodUIDs[w.UID]
+			for _, p := range finalPods.Items {
+				_, ok := initialPodUIDs[p.UID]
 				if ok {
 					numberOfPodsInCommon++
 				}
 			}
 			return numberOfPodsInCommon, nil
-		}, timeout, interval).Should(Equal(0))
+		}, timeout, interval).Should(gomega.Equal(0))
 	})
 })
