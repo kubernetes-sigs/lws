@@ -141,7 +141,10 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			}
 
 			// Ensure the initial and final pod lists are of equal length
-			gomega.Expect(len(finalPods.Items)).To(gomega.Equal(len(initialPods.Items)))
+			if len(finalPods.Items) != len(initialPods.Items) {
+				return -1, nil
+			}
+
 			numberOfPodsInCommon := 0
 			for _, p := range finalPods.Items {
 				_, ok := initialPodUIDs[p.UID]

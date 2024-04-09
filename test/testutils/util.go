@@ -79,16 +79,16 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
 	// delete pods with the highest indexes
 	var leaders corev1.PodList
-	gomega.Eventually(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).Should(gomega.Succeed())
+	gomega.Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).To(gomega.Succeed())
 	// we don't have "slice" package before go1.21, could only manually delete pods with largest index
 	for i := range leaders.Items {
 		index, _ := strconv.Atoi(leaders.Items[i].Name[len(leaders.Items[i].Name)-1:])
 		if index >= int(*lws.Spec.Replicas) {
-			gomega.Eventually(k8sClient.Delete(ctx, &leaders.Items[i])).Should(gomega.Succeed())
+			gomega.Expect(k8sClient.Delete(ctx, &leaders.Items[i])).To(gomega.Succeed())
 			// delete worker statefulset on behalf of kube-controller-manager
 			var sts appsv1.StatefulSet
-			gomega.Eventually(k8sClient.Get(ctx, types.NamespacedName{Name: leaders.Items[i].Name, Namespace: lws.Namespace}, &sts)).Should(gomega.Succeed())
-			gomega.Eventually(k8sClient.Delete(ctx, &sts)).Should(gomega.Succeed())
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaders.Items[i].Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+			gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
 		}
 	}
 }
@@ -263,7 +263,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 func SetStatefulsetToUnReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet) {
 	sts.Status.CurrentRevision = "fuz"
 	sts.Status.UpdateRevision = "bar"
-	gomega.Eventually(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
+	gomega.Expect(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
 }
 
 func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, condition metav1.Condition) (bool, error) {
