@@ -22,7 +22,6 @@ import (
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 type LeaderWorkerSetWrapper struct {
@@ -107,15 +106,15 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Namespace = nsName
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
 	lws.Spec.Replicas = ptr.To[int32](2)
-	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{}
+	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.DefaultRestartPolicy}
 	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
 	// Manually set this for we didn't enable webhook in controller tests.
-	lws.Spec.RolloutStrategy = v1.RolloutStrategy{
-		Type: v1.RollingUpdateStrategyType,
-		RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
+		Type: leaderworkerset.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt32(0),
 		},

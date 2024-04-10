@@ -50,7 +50,6 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 // Default implements webhook.Defaulter so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
-
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
 	}
@@ -74,13 +73,13 @@ var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	warnings, allErrs := r.generalValidate(ctx, obj)
+	warnings, allErrs := r.generalValidate(obj)
 	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	warnings, allErrs := r.generalValidate(ctx, newObj)
+	warnings, allErrs := r.generalValidate(newObj)
 
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
@@ -93,7 +92,7 @@ func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, obj runtime
 	return nil, nil
 }
 
-func (r *LeaderWorkerSetWebhook) generalValidate(ctx context.Context, obj runtime.Object) (admission.Warnings, field.ErrorList) {
+func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.Warnings, field.ErrorList) {
 	lws := obj.(*v1.LeaderWorkerSet)
 	specPath := field.NewPath("spec")
 
@@ -108,14 +107,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(ctx context.Context, obj runtim
 	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
-	if lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.DefaultRestartPolicy && lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "restartPolicy"), lws.Spec.LeaderWorkerTemplate.RestartPolicy, "only support [Default, RecreateGroupOnPodRestart]"))
 
-	}
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
 		value, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(*lws.Spec.Replicas), false)
-		if err != nil || value > int(*lws.Spec.Replicas) {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable"), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, "maxUnavailable must not greater than replicas"))
+		if err != nil || value > int(*lws.Spec.Replicas) || value < 1 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable"), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, "maxUnavailable can be neither greater than replicas nor less than 1"))
 		}
 	}
 	return nil, allErrs
