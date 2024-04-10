@@ -24,10 +24,11 @@ import (
 // LeaderWorkerSetStatusApplyConfiguration represents an declarative configuration of the LeaderWorkerSetStatus type for use
 // with apply.
 type LeaderWorkerSetStatusApplyConfiguration struct {
-	Conditions     []v1.Condition `json:"conditions,omitempty"`
-	ReadyReplicas  *int           `json:"readyReplicas,omitempty"`
-	Replicas       *int           `json:"replicas,omitempty"`
-	HPAPodSelector *string        `json:"hpaPodSelector,omitempty"`
+	Conditions      []v1.Condition `json:"conditions,omitempty"`
+	ReadyReplicas   *int32         `json:"readyReplicas,omitempty"`
+	UpdatedReplicas *int32         `json:"updatedReplicas,omitempty"`
+	Replicas        *int32         `json:"replicas,omitempty"`
+	HPAPodSelector  *string        `json:"hpaPodSelector,omitempty"`
 }
 
 // LeaderWorkerSetStatusApplyConfiguration constructs an declarative configuration of the LeaderWorkerSetStatus type for use with
@@ -49,15 +50,23 @@ func (b *LeaderWorkerSetStatusApplyConfiguration) WithConditions(values ...v1.Co
 // WithReadyReplicas sets the ReadyReplicas field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the ReadyReplicas field is set to the value of the last call.
-func (b *LeaderWorkerSetStatusApplyConfiguration) WithReadyReplicas(value int) *LeaderWorkerSetStatusApplyConfiguration {
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithReadyReplicas(value int32) *LeaderWorkerSetStatusApplyConfiguration {
 	b.ReadyReplicas = &value
+	return b
+}
+
+// WithUpdatedReplicas sets the UpdatedReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdatedReplicas field is set to the value of the last call.
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithUpdatedReplicas(value int32) *LeaderWorkerSetStatusApplyConfiguration {
+	b.UpdatedReplicas = &value
 	return b
 }
 
 // WithReplicas sets the Replicas field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Replicas field is set to the value of the last call.
-func (b *LeaderWorkerSetStatusApplyConfiguration) WithReplicas(value int) *LeaderWorkerSetStatusApplyConfiguration {
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithReplicas(value int32) *LeaderWorkerSetStatusApplyConfiguration {
 	b.Replicas = &value
 	return b
 }
