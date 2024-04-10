@@ -23,6 +23,10 @@ Design and proposal can be found here: http://bit.ly/k8s-LWS.
 
 Read the [installation guide](/docs/setup/install.md) to learn more.
 
+## Examples
+
+Read the [examples](/docs/example/README.md) to learn more.
+
 ## Community, discussion, contribution, and support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
