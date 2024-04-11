@@ -35,6 +35,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
 	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	//+kubebuilder:scaffold:imports
 )
@@ -75,6 +76,8 @@ func main() {
 	kubeConfig := ctrl.GetConfigOrDie()
 	kubeConfig.QPS = float32(qps)
 	kubeConfig.Burst = burst
+
+	metrics.Register()
 
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
 		Scheme:                 scheme,

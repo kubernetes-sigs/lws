@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
@@ -174,6 +175,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}); err != nil {
 		return false, err
 	}
+	metrics.RecreatingGroup(leader.Name)
 	return true, nil
 }
 
