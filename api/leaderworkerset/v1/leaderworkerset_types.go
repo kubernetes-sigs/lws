@@ -110,7 +110,9 @@ type LeaderWorkerTemplate struct {
 	Size *int32 `json:"size,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+	// +kubebuilder:default=Default
+	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
+	RestartPolicy RestartPolicyType `json:"restartPolicy"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

@@ -23,7 +23,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestGenGroupUniqueKey(t *testing.T) {
@@ -73,13 +72,13 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		{
 			name: "Pod with only Exclusive Topology Annotation",
 			pod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
 				},
 			},
 			groupUniqueKey: "test-key",
 			expectedPod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
 				},
 				Spec: corev1.PodSpec{
@@ -119,7 +118,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		{
 			name: "Pod with Exclusive Annotation, Affinity, and AntiAffinity",
 			pod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
 				},
 				Spec: corev1.PodSpec{
@@ -135,7 +134,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			},
 			groupUniqueKey: "test-key",
 			expectedPod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
 				},
 				Spec: corev1.PodSpec{
@@ -203,7 +202,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		{
 			name: "Has annotiation, Pod Affinity and Pod AntiAffinity",
 			pod: corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 					},
@@ -224,7 +223,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		{
 			name: "Has annotiation, Pod Affinity, doesn't have Pod AntiAffinity",
 			pod: corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 					},
@@ -242,7 +241,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		{
 			name: "Has annotiation, Pod AntiAffinity, doesn't have Pod Affinity",
 			pod: corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 					},
@@ -260,7 +259,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		{
 			name: "Has annotiation, Pod Affinity and Pod AntiAffinity, Topology Key doesn't match",
 			pod: corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 					},

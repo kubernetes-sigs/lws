@@ -7648,8 +7648,12 @@ spec:
                         type: object
                     type: object
                   restartPolicy:
+                    default: Default
                     description: RestartPolicy defines the restart policy when pod
                       failures happen.
+                    enum:
+                    - Default
+                    - RecreateGroupOnPodRestart
                     type: string
                   size:
                     default: 1
@@ -15251,6 +15255,7 @@ spec:
                         type: object
                     type: object
                 required:
+                - restartPolicy
                 - workerTemplate
                 type: object
               replicas:
