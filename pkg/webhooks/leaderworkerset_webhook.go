@@ -20,8 +20,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -108,11 +111,62 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
 
+	maxUnavailable := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
+	maxUnavailablePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable")
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		value, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(*lws.Spec.Replicas), false)
-		if err != nil || value > int(*lws.Spec.Replicas) || value < 1 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable"), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, "maxUnavailable can be neither greater than replicas nor less than 1"))
-		}
+		allErrs = append(allErrs, validatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
+		// This is aligned with Statefulset.
+		allErrs = append(allErrs, isNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
 	}
 	return nil, allErrs
+}
+
+// This is mostly inspired by https://github.com/kubernetes/kubernetes/blob/be4b7176dc131ea842cab6882cd4a06dbfeed12a/pkg/apis/apps/validation/validation.go#L460,
+// but it's not importable.
+
+// validatePositiveIntOrPercent tests if a given value is a valid int or percentage.
+func validatePositiveIntOrPercent(intOrPercent intstr.IntOrString, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	switch intOrPercent.Type {
+	case intstr.String:
+		for _, msg := range utilvalidation.IsValidPercent(intOrPercent.StrVal) {
+			allErrs = append(allErrs, field.Invalid(fldPath, intOrPercent, msg))
+		}
+	case intstr.Int:
+		allErrs = append(allErrs, validateNonnegativeOrZeroField(int64(intOrPercent.IntValue()), fldPath)...)
+	default:
+		allErrs = append(allErrs, field.Invalid(fldPath, intOrPercent, "must be an integer or percentage (e.g '5%%')"))
+	}
+	return allErrs
+}
+
+// isNotMoreThan100Percent tests is a value can be represented as a percentage
+// and if this value is not more than 100%.
+func isNotMoreThan100Percent(intOrStringValue intstr.IntOrString, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	value, isPercent := getPercentValue(intOrStringValue)
+	if !isPercent || value <= 100 {
+		return nil
+	}
+	allErrs = append(allErrs, field.Invalid(fldPath, intOrStringValue, "must not be greater than 100%"))
+	return allErrs
+}
+func getPercentValue(intOrStringValue intstr.IntOrString) (int, bool) {
+	if intOrStringValue.Type != intstr.String {
+		return 0, false
+	}
+	if len(utilvalidation.IsValidPercent(intOrStringValue.StrVal)) != 0 {
+		return 0, false
+	}
+	value, _ := strconv.Atoi(intOrStringValue.StrVal[:len(intOrStringValue.StrVal)-1])
+	return value, true
+}
+
+// validateNonnegativeOrZeroField validates that given value is not negative or 0.
+func validateNonnegativeOrZeroField(value int64, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if value <= 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than 0"))
+	}
+	return allErrs
 }

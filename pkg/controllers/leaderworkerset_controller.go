@@ -221,7 +221,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 		if replicasUpdated(sts, lws) {
 			return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
 		} else {
-			return replicas - int32(rollingStep), nil
+			return utils.NonZeroValue(replicas - int32(rollingStep)), nil
 		}
 	}
 
