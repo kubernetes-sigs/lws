@@ -649,6 +649,51 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("leaderTemplate changed with maxUnavailable greater than replicas", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(10)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+				{
+					// Update the worker template.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+					},
+				},
+				{
+					// Set all groups to ready.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("rolling update with both worker template and number of replicas changed", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4)

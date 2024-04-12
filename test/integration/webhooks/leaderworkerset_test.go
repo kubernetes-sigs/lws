@@ -265,15 +265,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("set invalid maxUnavailable with int number should be failed", &testValidationCase{
+		ginkgo.Entry("set maxUnavailable greater than replicas is allowed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(10)
 				return lws
 			},
-			lwsCreationShouldFail: true,
+			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("set invalid maxUnavailable with percentage should be failed", &testValidationCase{
+		ginkgo.Entry("set maxUnavailable greater than 100% should be failed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("200%")
@@ -281,7 +281,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("set maxUnavailable less than 1 should be failed", &testValidationCase{
+		ginkgo.Entry("set maxUnavailable less than 0 should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(-1)
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set maxUnavailable equal to 0 should be failed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
