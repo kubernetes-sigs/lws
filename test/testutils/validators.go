@@ -77,6 +77,9 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, lws *lead
 		if headlessService.Spec.ClusterIP != "None" {
 			return false, errors.New("service type mismatch")
 		}
+		if headlessService.Spec.PublishNotReadyAddresses != lws.Spec.PublishNotReadyAddresses {
+			return false, errors.New("service publish not ready addresses mismatch")
+		}
 		selector := headlessService.Spec.Selector
 		value, exists := selector["leaderworkerset.sigs.k8s.io/name"]
 		if !exists || value != lws.Name {

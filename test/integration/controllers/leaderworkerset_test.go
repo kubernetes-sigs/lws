@@ -262,6 +262,30 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("PublishNotReadyAddresses set to false", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).PublishNotReadyAddresses(false)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("PublishNotReadyAddresses set to false", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).PublishNotReadyAddresses(true)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
 			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
 			updates: []*update{
