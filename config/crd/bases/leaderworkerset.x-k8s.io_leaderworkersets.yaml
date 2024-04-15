@@ -15258,6 +15258,12 @@ spec:
                 - restartPolicy
                 - workerTemplate
                 type: object
+              publishNotReadyAddresses:
+                default: true
+                description: |-
+                  PublishNotReadyAddresses indicates that any agent
+                  which deals with endpoints for this Service should disregard any indications of ready/not-ready.
+                type: boolean
               replicas:
                 default: 1
                 description: |-
@@ -15326,6 +15332,7 @@ spec:
                 type: object
             required:
             - leaderWorkerTemplate
+            - publishNotReadyAddresses
             - rolloutStrategy
             type: object
           status:

@@ -85,6 +85,11 @@ type LeaderWorkerSetSpec struct {
 	// RolloutStrategy defines the strategy that will be applied to update replicas
 	// when a revision is made to the leaderWorkerTemplate.
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy"`
+
+	// PublishNotReadyAddresses indicates that any agent
+	// which deals with endpoints for this Service should disregard any indications of ready/not-ready.
+	// +kubebuilder:default=true
+	PublishNotReadyAddresses bool `json:"publishNotReadyAddresses"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.

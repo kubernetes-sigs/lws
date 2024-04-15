@@ -131,6 +131,7 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 				Selector: map[string]string{
 					leaderworkerset.SetNameLabelKey: lws.Name,
 				},
+				PublishNotReadyAddresses: lws.Spec.PublishNotReadyAddresses,
 			},
 		}
 		// Set the controller owner reference for garbage collection and reconciliation.
