@@ -42,7 +42,6 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/utils"
-	"sigs.k8s.io/lws/pkg/utils/constants"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -61,6 +60,12 @@ var (
 const (
 	lwsOwnerKey  = ".metadata.controller"
 	fieldManager = "lws"
+)
+
+const (
+	// FailedCreate Event reason used when a resource creation fails.
+	// The event uses the error(s) as the reason.
+	FailedCreate = "FailedCreate"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -91,26 +96,24 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	partition, err := r.rollingUpdatePartition(ctx, lws)
 	if err != nil {
-		r.Record.Eventf(lws, corev1.EventTypeWarning, constants.RollingUpdateFailedReason, err.Error())
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition); err != nil {
-		r.Record.Eventf(lws, corev1.EventTypeWarning, constants.SSALeaderWorkerSetFailedReason, err.Error())
 		return ctrl.Result{}, err
 	}
 
 	// Create headless service if it does not exist.
 	if err := r.createHeadlessServiceIfNotExists(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, corev1.EventTypeWarning, constants.HeadlessServiceCreationFailedReason, err.Error())
+		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
+			fmt.Sprintf("Failed to create headless service for error: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	err = r.updateStatus(ctx, lws)
 	if err != nil {
-		r.Record.Eventf(lws, corev1.EventTypeWarning, constants.UpdateStatusFailedReason, err.Error())
 		return ctrl.Result{}, err
 	}
 
