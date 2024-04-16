@@ -47,11 +47,6 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Size(count int) *LeaderWorkerSetWrappe
 	return lwsWrapper
 }
 
-func (lwsWrapper *LeaderWorkerSetWrapper) PublishNotReadyAddresses(publishNotReadyAddresses bool) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.PublishNotReadyAddresses = publishNotReadyAddresses
-	return lwsWrapper
-}
-
 func (lwsWrapper *LeaderWorkerSetWrapper) WorkerTemplateSpec(spec corev1.PodSpec) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = spec
 	return lwsWrapper

@@ -20,10 +20,9 @@ package v1
 // LeaderWorkerSetSpecApplyConfiguration represents an declarative configuration of the LeaderWorkerSetSpec type for use
 // with apply.
 type LeaderWorkerSetSpecApplyConfiguration struct {
-	Replicas                 *int32                                  `json:"replicas,omitempty"`
-	LeaderWorkerTemplate     *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
-	RolloutStrategy          *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
-	PublishNotReadyAddresses *bool                                   `json:"publishNotReadyAddresses,omitempty"`
+	Replicas             *int32                                  `json:"replicas,omitempty"`
+	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
+	RolloutStrategy      *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs an declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -53,13 +52,5 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithLeaderWorkerTemplate(value *
 // If called multiple times, the RolloutStrategy field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithRolloutStrategy(value *RolloutStrategyApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.RolloutStrategy = value
-	return b
-}
-
-// WithPublishNotReadyAddresses sets the PublishNotReadyAddresses field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the PublishNotReadyAddresses field is set to the value of the last call.
-func (b *LeaderWorkerSetSpecApplyConfiguration) WithPublishNotReadyAddresses(value bool) *LeaderWorkerSetSpecApplyConfiguration {
-	b.PublishNotReadyAddresses = &value
 	return b
 }
