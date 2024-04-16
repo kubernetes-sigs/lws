@@ -73,10 +73,10 @@ func TestGetPercentValue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			outputVal, outputBool := getPercentValue(tc.input)
 			if diff := cmp.Diff(tc.wantOutputVal, outputVal); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 			if diff := cmp.Diff(tc.wantOutputBool, outputBool); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
 	}
@@ -124,7 +124,7 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 			testPath := field.NewPath("test")
 			output := validateNonnegativeOrZeroField(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
 	}
@@ -186,7 +186,7 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 			testPath := field.NewPath("test")
 			output := isNotMoreThan100Percent(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
 	}
@@ -279,7 +279,7 @@ func TestValidatePositiveIntOrPercent(t *testing.T) {
 			testPath := field.NewPath("test")
 			output := validatePositiveIntOrPercent(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
 	}
