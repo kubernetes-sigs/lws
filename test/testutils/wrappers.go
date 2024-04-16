@@ -116,7 +116,6 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		Type: leaderworkerset.RollingUpdateStrategyType,
 		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
-			MaxSurge:       intstr.FromInt32(0),
 		},
 	}
 	return &LeaderWorkerSetWrapper{

@@ -54,7 +54,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 						MaxUnavailable: intstr.FromInt32(1),
-						MaxSurge:       intstr.FromInt32(0),
 					},
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
@@ -121,7 +120,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 						MaxUnavailable: intstr.FromInt32(1),
-						MaxSurge:       intstr.FromInt32(0),
 					},
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
@@ -188,7 +186,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 						MaxUnavailable: intstr.FromInt32(1),
-						MaxSurge:       intstr.FromInt32(0),
 					},
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
