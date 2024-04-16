@@ -145,21 +145,6 @@ type RollingUpdateConfiguration struct {
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=1
 	MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
-
-	// The maximum number of replicas that can be scheduled above the original number of
-	// replicas.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
-	// the start of the update (ex: 10%).
-	// Absolute number is calculated from percentage by rounding up.
-	// By default, a value of 0 is used.
-	// Example: when this is set to 30%, the new replicas can be scaled up by 30%
-	// immediately when the rolling update starts. Once old replicas have been deleted,
-	// new replicas can be scaled up further, ensuring that total number of replicas running
-	// at any time during the update is at most 130% of original replicas.
-	//
-	// +kubebuilder:validation:XIntOrString
-	// +kubebuilder:default=0
-	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
 type RolloutStrategyType string

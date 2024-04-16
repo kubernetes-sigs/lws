@@ -117,7 +117,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 						MaxUnavailable: intstr.FromInt32(1),
-						MaxSurge:       intstr.FromInt32(0),
 					}})
 			},
 		}),
@@ -128,7 +127,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 							MaxUnavailable: intstr.FromInt32(2),
-							MaxSurge:       intstr.FromString("20%"),
 						}})
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
@@ -138,7 +136,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 							MaxUnavailable: intstr.FromInt32(2),
-							MaxSurge:       intstr.FromString("20%"),
 						}})
 			},
 		}),
