@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/utils"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
@@ -367,7 +369,8 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			}
 			if podutils.PodRunningAndReady(leaderPod) {
 				readyCount++
-
+				waitTime := getLastTransitionTime(string(leaderworkerset.LeaderWorkerSetProgressing), lws)
+				metrics.ReplicaReadyStatus(sts.Name, time.Since(waitTime.Time))
 				if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 					updatedCount++
 				}
@@ -568,4 +571,13 @@ func templateUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerS
 
 func replicasUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
 	return *sts.Spec.Replicas != *lws.Spec.Replicas
+}
+
+func getLastTransitionTime(conditionType string, lws *leaderworkerset.LeaderWorkerSet) metav1.Time {
+	for _, condition := range lws.Status.Conditions {
+		if condition.Type == conditionType {
+			return condition.LastTransitionTime
+		}
+	}
+	return metav1.Now()
 }

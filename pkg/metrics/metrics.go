@@ -39,6 +39,14 @@ var (
 			Help:      "number of times a group has been recreated",
 		}, []string{"leadername"},
 	)
+
+	replicaReadyStatusDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Subsystem: "lws",
+			Name:      "replica_ready_status_duration",
+			Help:      "latency for each replica to be scheduled and become ready",
+		}, []string{"leadername"},
+	)
 )
 
 func RollingUpdate(hash string, duration time.Duration) {
@@ -49,9 +57,14 @@ func RecreatingGroup(leaderName string) {
 	recreateGroupTimes.WithLabelValues(leaderName).Inc()
 }
 
+func ReplicaReadyStatus(leaderName string, time time.Duration) {
+	replicaReadyStatusDuration.WithLabelValues(leaderName).Observe(time.Seconds())
+}
+
 func Register() {
 	metrics.Registry.MustRegister(
 		rollingUpdateDuration,
 		recreateGroupTimes,
+		replicaReadyStatusDuration,
 	)
 }
