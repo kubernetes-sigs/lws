@@ -76,7 +76,8 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// get the leaderWorkerSet object
 	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderWorkerSet); err != nil {
-		return ctrl.Result{}, err
+		// If lws not found, it's mostly because deleted, ignore the error as Pods will be GCed finally.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, leaderWorkerSet)
 	if err != nil {
