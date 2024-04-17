@@ -19,6 +19,10 @@ package metrics
 import (
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -57,8 +61,12 @@ func RecreatingGroup(leaderName string) {
 	recreateGroupTimes.WithLabelValues(leaderName).Inc()
 }
 
-func ReplicaReadyStatus(leaderName string, time time.Duration) {
-	replicaReadyStatusDuration.WithLabelValues(leaderName).Observe(time.Seconds())
+func ReplicaReadyStatus(readyPods []corev1.Pod, startTime metav1.Time) {
+	for _, pod := range readyPods {
+		readyTime := podutils.PodReadyConditionLastTransitionTime(pod).Time
+		latency := readyTime.Sub(startTime.Time)
+		replicaReadyStatusDuration.WithLabelValues(pod.Name).Observe(latency.Seconds())
+	}
 }
 
 func Register() {

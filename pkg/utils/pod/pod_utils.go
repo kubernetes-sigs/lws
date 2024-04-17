@@ -18,6 +18,7 @@ package pod
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -54,6 +55,10 @@ func LeaderPod(pod corev1.Pod) bool {
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
 func PodRunningAndReady(pod corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && podReady(pod)
+}
+
+func PodReadyConditionLastTransitionTime(pod corev1.Pod) metav1.Time {
+	return getPodReadyCondition(pod.Status).LastTransitionTime
 }
 
 func podReady(pod corev1.Pod) bool {

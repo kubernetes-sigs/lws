@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -350,7 +349,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	readyCount := 0
 	updatedCount := 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
-
+	var readyLeaderPods []corev1.Pod
 	// Iterate through all statefulsets.
 	for _, sts := range lwssts.Items {
 		if sts.Name == lws.Name {
@@ -369,8 +368,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			}
 			if podutils.PodRunningAndReady(leaderPod) {
 				readyCount++
-				waitTime := getLastTransitionTime(string(leaderworkerset.LeaderWorkerSetProgressing), lws)
-				metrics.ReplicaReadyStatus(sts.Name, time.Since(waitTime.Time))
+				readyLeaderPods = append(readyLeaderPods, leaderPod)
 				if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 					updatedCount++
 				}
@@ -392,6 +390,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
+		if updatedCount == int(*lws.Spec.Replicas) {
+			metrics.ReplicaReadyStatus(readyLeaderPods, getLastTransitionTime(string(leaderworkerset.LeaderWorkerSetProgressing), lws))
+		}
 		r.Record.Eventf(lws, corev1.EventTypeNormal, condition.Reason, condition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, nil
