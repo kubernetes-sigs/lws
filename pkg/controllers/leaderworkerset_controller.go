@@ -414,7 +414,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	}
 
 	// retrieve the current number of replicas -- the number of leaders
-	replicas := int(*sts.Spec.Replicas)
+	replicas := int(sts.Status.Replicas)
 	if lws.Status.Replicas != int32(replicas) {
 		lws.Status.Replicas = int32(replicas)
 		updateStatus = true

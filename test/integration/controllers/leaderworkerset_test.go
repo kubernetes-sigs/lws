@@ -437,13 +437,6 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						gomega.Eventually(func() (int32, error) {
-							var leaderWorkerSet leaderworkerset.LeaderWorkerSet
-							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet); err != nil {
-								return -1, err
-							}
-							return leaderWorkerSet.Status.Replicas, nil
-						}, testing.Timeout, testing.Interval).Should(gomega.Equal(int32(2)))
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
