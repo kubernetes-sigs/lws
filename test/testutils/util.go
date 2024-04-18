@@ -76,14 +76,18 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 	}).Should(gomega.Succeed())
 }
 
-func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
+func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
 	// delete pods with the highest indexes
 	var leaders corev1.PodList
 	gomega.Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).To(gomega.Succeed())
+
+	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderWorkerSet)).To(gomega.Succeed())
+
 	// we don't have "slice" package before go1.21, could only manually delete pods with largest index
 	for i := range leaders.Items {
 		index, _ := strconv.Atoi(leaders.Items[i].Name[len(leaders.Items[i].Name)-1:])
-		if index >= int(*lws.Spec.Replicas) {
+		if index >= int(*leaderWorkerSet.Spec.Replicas) {
 			gomega.Expect(k8sClient.Delete(ctx, &leaders.Items[i])).To(gomega.Succeed())
 			// delete worker statefulset on behalf of kube-controller-manager
 			var sts appsv1.StatefulSet
@@ -360,8 +364,13 @@ func ValidatePodExclusivePlacementTerms(pod corev1.Pod) bool {
 
 func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, count int32) {
 	gomega.Eventually(func() error {
-		lws.Spec.Replicas = ptr.To[int32](count)
-		return k8sClient.Update(ctx, lws)
+		var leaderworkerset leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+			return err
+		}
+
+		leaderworkerset.Spec.Replicas = ptr.To[int32](count)
+		return k8sClient.Update(ctx, &leaderworkerset)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
