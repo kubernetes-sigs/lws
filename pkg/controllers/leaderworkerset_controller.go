@@ -354,8 +354,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount := 0
-	updatedCount := 0
+	readyCount, updatedCount, updatedAndReadyCount := 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -364,22 +363,21 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			continue
 		}
 
-		// this is the worker statefulset.
-		if statefulsetutils.StatefulsetReady(sts) {
+		var leaderPod corev1.Pod
+		if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod); err != nil {
+			log.Error(err, "Fetching leader pod")
+			return false, err
+		}
 
-			// the worker pods are OK.
-			// need to check leader pod for this group.
-			var leaderPod corev1.Pod
-			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod); err != nil {
-				log.Error(err, "Fetching leader pod")
-				return false, err
-			}
-			if podutils.PodRunningAndReady(leaderPod) {
-				readyCount++
-
-				if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
-					updatedCount++
-				}
+		var ready bool
+		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
+			ready = true
+			readyCount++
+		}
+		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+			updatedCount++
+			if ready {
+				updatedAndReadyCount++
 			}
 		}
 	}
@@ -394,7 +392,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		updateStatus = true
 	}
 
-	condition := makeCondition(updatedCount == int(*lws.Spec.Replicas))
+	condition := makeCondition(updatedAndReadyCount == int(*lws.Spec.Replicas))
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
@@ -416,7 +414,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	}
 
 	// retrieve the current number of replicas -- the number of leaders
-	replicas := int(*sts.Spec.Replicas)
+	replicas := int(sts.Status.Replicas)
 	if lws.Status.Replicas != int32(replicas) {
 		lws.Status.Replicas = int32(replicas)
 		updateStatus = true
