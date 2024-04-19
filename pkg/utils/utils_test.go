@@ -58,7 +58,7 @@ func Test_SortByIndex(t *testing.T) {
 			got := SortByIndex(tc.indexFunc, tc.inputs, tc.length)
 
 			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Fatalf("unexpected result: (-want, +got) %s", diff)
+				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
 	}
