@@ -354,7 +354,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, availableCount := 0, 0, 0
+	readyCount, updatedCount, updatedAndReadyCount := 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -377,7 +377,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 			updatedCount++
 			if ready {
-				availableCount++
+				updatedAndReadyCount++
 			}
 		}
 	}
@@ -392,7 +392,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		updateStatus = true
 	}
 
-	condition := makeCondition(availableCount == int(*lws.Spec.Replicas))
+	condition := makeCondition(updatedAndReadyCount == int(*lws.Spec.Replicas))
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
