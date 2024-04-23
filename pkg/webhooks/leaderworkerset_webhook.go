@@ -53,6 +53,9 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 // Default implements webhook.Defaulter so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
+	if lws.Spec.LeaderWorkerTemplate.Size == nil {
+		*lws.Spec.LeaderWorkerTemplate.Size = lws.Spec.LeaderWorkerTemplate.WorkerReplicas + 1
+	}
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
 	}

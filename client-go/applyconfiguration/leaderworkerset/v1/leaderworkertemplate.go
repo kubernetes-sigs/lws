@@ -28,6 +28,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	LeaderTemplate *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
 	WorkerTemplate *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
 	Size           *int32                               `json:"size,omitempty"`
+	WorkerReplicas *int32                               `json:"workerReplicas,omitempty"`
 	RestartPolicy  *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
 }
 
@@ -58,6 +59,14 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithWorkerTemplate(value v1.Pod
 // If called multiple times, the Size field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithSize(value int32) *LeaderWorkerTemplateApplyConfiguration {
 	b.Size = &value
+	return b
+}
+
+// WithWorkerReplicas sets the WorkerReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WorkerReplicas field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithWorkerReplicas(value int32) *LeaderWorkerTemplateApplyConfiguration {
+	b.WorkerReplicas = &value
 	return b
 }
 

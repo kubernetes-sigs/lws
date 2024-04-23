@@ -7656,12 +7656,14 @@ spec:
                     - RecreateGroupOnPodRestart
                     type: string
                   size:
-                    default: 1
                     description: |-
                       Number of pods to create. It is the total number of pods in each group.
                       The minimum is 1 which represent the leader. When set to 1, the leader
                       pod is created for each group as well as a 0-replica StatefulSet for the workers.
                       Default to 1.
+                    format: int32
+                    type: integer
+                  workerReplicas:
                     format: int32
                     type: integer
                   workerTemplate:
@@ -15256,6 +15258,7 @@ spec:
                     type: object
                 required:
                 - restartPolicy
+                - workerReplicas
                 - workerTemplate
                 type: object
               replicas:
