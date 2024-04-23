@@ -24,6 +24,7 @@ import (
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/utils/pointer"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -54,7 +55,7 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
 	if lws.Spec.LeaderWorkerTemplate.Size == nil {
-		*lws.Spec.LeaderWorkerTemplate.Size = lws.Spec.LeaderWorkerTemplate.WorkerReplicas + 1
+		lws.Spec.LeaderWorkerTemplate.Size = pointer.Int32(lws.Spec.LeaderWorkerTemplate.WorkerReplicas + 1)
 	}
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
