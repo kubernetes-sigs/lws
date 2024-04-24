@@ -117,12 +117,30 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if foundEpKey && !exclusiveAffinityApplied(*pod) {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
+		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		if foundSubGroupSize && (pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true") {
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
+			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
+		}
 	} else {
 		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if workerIndex == -1 {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
+		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		if foundSubGroupSize {
+			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
+			if err != nil {
+				return err
+			}
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
+			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
+				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = fmt.Sprint(workerIndex / subGroupSizeInt)
+				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
+			}
+		}
 	}
 
 	// injecting env vars if needed

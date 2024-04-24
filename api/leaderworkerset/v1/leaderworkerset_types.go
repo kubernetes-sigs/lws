@@ -62,6 +62,18 @@ const (
 	// Environment variable added to all containers in the LeaderWorkerSet to
 	// address the leader via the headless service.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
+
+	// Subgroup index tracks which subgroup the pod is part of. It will be added
+	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
+	SubGroupIndexLabelKey string = "leaderworkerset.gke.io/subgroup-index"
+
+	// SubGroupSize corresponds to LeaderWorkerSet.Spec.SubGroupSize. It is also
+	// used to determine if SubGroups are being used.
+	SubGroupWorkerIndexLabelKey string = "leaderworkerset.gke.io/subgroup-worker-index"
+
+	// An annotation with a unique hash value for the subgroup. Pods that are part of
+	// the same subgroup will have the same unique hash value.
+	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -93,6 +105,9 @@ type LeaderWorkerSetSpec struct {
 	// RolloutStrategy defines the strategy that will be applied to update replicas
 	// when a revision is made to the leaderWorkerTemplate.
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy"`
+
+	//Number of host per subgroup
+	SubgroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.

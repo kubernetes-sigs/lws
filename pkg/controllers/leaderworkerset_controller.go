@@ -552,6 +552,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
+	if lws.Spec.SubgroupSize != nil {
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = string(*lws.Spec.SubgroupSize)
+	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
 	// construct statefulset apply configuration
