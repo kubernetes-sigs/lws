@@ -18,11 +18,14 @@ package accelerator
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -77,6 +80,78 @@ func getContainerRequestingTPUs(spec *corev1.PodSpec) *corev1.Container {
 		}
 	}
 	return nil
+}
+
+func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
+	container := getContainerRequestingTPUs(&pod.Spec)
+	if container == nil {
+		return nil
+	}
+
+	for _, env := range container.Env {
+		if env.Name == TpuWorkerHostNames || env.Name == TpuWorkerId {
+			return nil
+		}
+	}
+
+	leaderName := pod.Name
+	tpuWorkerId, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey])
+	if err != nil {
+		return err
+	}
+
+	subGroupSize, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupSizeLabelKey])
+	if err != nil {
+		return nil
+	}
+
+	subGroupIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupIndexLabelKey])
+	if err != nil {
+		return nil
+	}
+
+	start := subGroupSize*subGroupIndex + 1
+	end := subGroupSize * (subGroupIndex + 1)
+	end = min(end, size)
+	var hostnames []string
+
+	if podutils.LeaderPod(*pod) {
+		//Leader is the one requesting TPU resources, so should be included in hostnames
+		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
+	} else {
+		leaderName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		if leaderName == "" {
+			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
+		}
+		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" && subGroupIndex == 0 {
+			//SubGroup 0 contains the leader, and the leader is requesting TPU resources, so
+			//the hostname list should shift to the left by one
+			end -= 1
+			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
+		} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
+			//Since the first subGroup has been shifted to the left by one, all other subsequent
+			//subGroups should be shifted as well
+			start -= 1
+			end -= 1
+		}
+	}
+
+	for i := start; i <= end; i++ {
+		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
+	}
+
+	container.Env = append(container.Env,
+		corev1.EnvVar{
+			Name:  TpuWorkerHostNames,
+			Value: strings.Join(hostnames[:], ","),
+		},
+		corev1.EnvVar{
+			Name:  TpuWorkerId,
+			Value: fmt.Sprint(tpuWorkerId),
+		},
+	)
+	return nil
+
 }
 
 // AddTPUVariables adds TPU related environment variables to containers

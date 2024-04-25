@@ -117,7 +117,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if foundEpKey && !exclusiveAffinityApplied(*pod) {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
-		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeLabelKey]
 		if foundSubGroupSize && (pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true") {
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
@@ -128,7 +128,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
-		subGroupSize, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]
+		subGroupSize, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
 		log.V(2).Info(fmt.Sprintf("foundSubGroupSize: %t of size: %s", foundSubGroupSize, subGroupSize))
 		if foundSubGroupSize {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
@@ -154,6 +154,15 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if err != nil {
 			return err
 		}
+
+		_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+		if foundSubGroupSize {
+			if err := acceleratorutils.AddTPUVariablesSubGroup(pod, podCount); err != nil {
+				return err
+			}
+			return nil
+		}
+
 		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
 			return err
 		}
