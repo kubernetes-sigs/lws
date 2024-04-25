@@ -266,7 +266,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
 	}
 	if lws.Spec.SubgroupSize != nil {
-		labelMap[leaderworkerset.SubGroupSizeAnnotationKey] = string(*lws.Spec.SubgroupSize)
+		labelMap[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)

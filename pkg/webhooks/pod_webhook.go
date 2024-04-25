@@ -128,7 +128,8 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
-		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		subGroupSize, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]
+		log.V(2).Info(fmt.Sprintf("foundSubGroupSize: %t of size: %s", foundSubGroupSize, subGroupSize))
 		if foundSubGroupSize {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
 			if err != nil {

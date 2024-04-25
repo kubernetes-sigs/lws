@@ -553,7 +553,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
 	if lws.Spec.SubgroupSize != nil {
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = string(*lws.Spec.SubgroupSize)
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
