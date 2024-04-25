@@ -112,7 +112,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 
 	start := subGroupSize*subGroupIndex + 1
 	end := subGroupSize * (subGroupIndex + 1)
-	end = min(end, size)
+	end = min(end, size-1)
 	var hostnames []string
 
 	if podutils.LeaderPod(*pod) {
