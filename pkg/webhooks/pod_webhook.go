@@ -148,7 +148,12 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
 			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
-			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = genGroupUniqueKey(leaderName, subGroupIndexKey)
+			groupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
+			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+			_, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+			if foundEpKey && !exclusiveAffinityApplied(*pod) {
+				SetExclusiveAffinities(pod, groupUniqueKey)
+			}
 		}
 	}
 
