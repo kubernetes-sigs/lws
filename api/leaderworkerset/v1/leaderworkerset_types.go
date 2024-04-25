@@ -59,10 +59,13 @@ const (
 	// leaderStatefulset, leaderPods, workerStatefulsets, workerPods.
 	TemplateRevisionHashKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
 
+<<<<<<< HEAD
 	// Environment variable added to all containers in the LeaderWorkerSet to
 	// address the leader via the headless service.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
 
+=======
+>>>>>>> 666216b (added comments to new labels)
 	// Subgroup index tracks which subgroup the pod is part of. It will be added
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.gke.io/subgroup-index"
@@ -106,7 +109,7 @@ type LeaderWorkerSetSpec struct {
 	// when a revision is made to the leaderWorkerTemplate.
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy"`
 
-	//Number of host per subgroup
+	//Number of host per subgroup.
 	SubgroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
