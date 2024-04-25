@@ -106,9 +106,14 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
 		_, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+		_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
 		var groupUniqueKey string
 		if !foundGroupKey {
 			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
+			if foundSubGroupSize {
+				//Since it is the leader, the subGroupIndex is 0
+				groupUniqueKey = genGroupUniqueKey(pod.Name, "0")
+			}
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 		} else {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
@@ -117,7 +122,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if foundEpKey && !exclusiveAffinityApplied(*pod) {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
-		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeLabelKey]
+
 		if foundSubGroupSize && (pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true") {
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
@@ -129,18 +134,21 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
 		subGroupSize, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
-		log.V(2).Info(fmt.Sprintf("foundSubGroupSize: %t of size: %s", foundSubGroupSize, subGroupSize))
 		if foundSubGroupSize {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
 			if err != nil {
 				return err
 			}
-			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+			subGroupIndexKey := fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
 			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
-				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = fmt.Sprint(workerIndex / subGroupSizeInt)
+				subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
+				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
 			}
+			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = genGroupUniqueKey(leaderName, subGroupIndexKey)
 		}
 	}
 

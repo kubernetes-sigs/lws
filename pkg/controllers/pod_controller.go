@@ -255,18 +255,21 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		return nil, err
 	}
 	selectorMap := map[string]string{
-		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
-		leaderworkerset.SetNameLabelKey:         lws.Name,
-		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
+		leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
+		leaderworkerset.SetNameLabelKey:    lws.Name,
 	}
 	labelMap := map[string]string{
 		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
-		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
 	}
+	// If subGroupSize is not enabled, then GroupKey is equal for all workers. If it is enabled, then
+	// it is set on the pod webook as workers can have different GroupKey
 	if lws.Spec.SubgroupSize != nil {
 		labelMap[leaderworkerset.SubGroupSizeLabelKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
+	} else {
+		labelMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+		selectorMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
