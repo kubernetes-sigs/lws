@@ -181,6 +181,13 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 }
 
 func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *corev1.Pod, sts *appsapplyv1.StatefulSetApplyConfiguration, topologyKey string) error {
+
+	// if subGroups are used, nodeSelectors should not be set. Otherwise all workers will attempt
+	// to follow leader
+	_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+	if foundSubGroupSize {
+		return nil
+	}
 	log := ctrl.LoggerFrom(ctx)
 	topologyValue, err := r.topologyValueFromPod(ctx, pod, topologyKey)
 	if err != nil {
