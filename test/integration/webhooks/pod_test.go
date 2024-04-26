@@ -140,6 +140,120 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Leader requests TPU resources, expect subgroup labels to be populated in leader", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "0",
+							// expect subgroupsize label to already be populated
+							leaderworkerset.SubGroupSizeLabelKey: "4",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "5",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.GroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SubGroupSizeLabelKey:        "4",
+					leaderworkerset.GroupIndexLabelKey:          "1",
+					leaderworkerset.SetNameLabelKey:             "test",
+					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:         "0",
+					leaderworkerset.SubGroupIndexLabelKey:       "0",
+					leaderworkerset.SubGroupWorkerIndexLabelKey: "0",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader requests TPU resources, expect subgroup labels in worker to be populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-3",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "3",
+							// expect subgroupsize label to already be populated
+							leaderworkerset.SubGroupSizeLabelKey: "2",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "4",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.GroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SubGroupSizeLabelKey:        "2",
+					leaderworkerset.SetNameLabelKey:             "test",
+					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:         "3",
+					leaderworkerset.SubGroupIndexLabelKey:       "1",
+					leaderworkerset.SubGroupWorkerIndexLabelKey: "1",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader doesn't request TPU resources, expect subgroup labels in worker to be populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-4",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "4",
+							// expect subgroupsize label to already be populated
+							leaderworkerset.SubGroupSizeLabelKey: "2",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "5",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.GroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SubGroupSizeLabelKey:        "2",
+					leaderworkerset.SetNameLabelKey:             "test",
+					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:         "4",
+					leaderworkerset.SubGroupIndexLabelKey:       "1",
+					leaderworkerset.SubGroupWorkerIndexLabelKey: "1",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Pod requesting TPUs which doesn't belong to LWS will not have TPU env vars populated", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
@@ -226,6 +340,34 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Pod requesting TPUs in lws with subgroupsize 5 will have env var populated in leader pod", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:      "test-sample",
+							leaderworkerset.WorkerIndexLabelKey:  "0",
+							leaderworkerset.SubGroupSizeLabelKey: "5",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "5",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Worker Pod requesting TPUs in lws, leader too", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
@@ -239,6 +381,35 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "5",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Worker Pod requesting TPUs in lws using subgrouping, leader too", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-3",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:      "test-sample",
+							leaderworkerset.WorkerIndexLabelKey:  "3",
+							leaderworkerset.SubGroupSizeLabelKey: "5",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "10",
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
 						},
 					},
@@ -278,6 +449,34 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
 				}
 				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Worker Pod requesting TPUs in lws using subgrouping, leader doesn't", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-7",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:      "test-sample",
+							leaderworkerset.WorkerIndexLabelKey:  "7",
+							leaderworkerset.SubGroupSizeLabelKey: "5",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "11",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default,test-sample-1-9.default,test-sample-1-10.default"); err != nil {
 					return err
 				}
 				return nil

@@ -123,7 +123,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
 
-		if foundSubGroupSize && (pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true") {
+		if foundSubGroupSize && acceleratorutils.PodRequestsTPUs(pod.Spec) {
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
 		}

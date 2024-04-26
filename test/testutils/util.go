@@ -369,6 +369,11 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 					if env.Value != pod.Labels[leaderworkerset.WorkerIndexLabelKey] {
 						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
 					}
+				} else if _, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]; foundSubGroupSize {
+					index, _ := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey])
+					if env.Value != fmt.Sprint(index) {
+						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
+					}
 				} else {
 					index, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
 					if env.Value != fmt.Sprint(index-1) {

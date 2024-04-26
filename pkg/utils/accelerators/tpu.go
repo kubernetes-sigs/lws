@@ -112,12 +112,12 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 
 	start := subGroupSize*subGroupIndex + 1
 	end := subGroupSize * (subGroupIndex + 1)
-	end = min(end, size-1)
 	var hostnames []string
 
 	if podutils.LeaderPod(*pod) {
 		//Leader is the one requesting TPU resources, so should be included in hostnames
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
+		end -= 1
 	} else {
 		leaderName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if leaderName == "" {
@@ -136,6 +136,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 		}
 	}
 
+	end = min(end, size-1)
 	for i := start; i <= end; i++ {
 		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
 	}

@@ -15326,7 +15326,7 @@ spec:
                 - type
                 type: object
               subGroupSize:
-                description: Number of host per subgroup
+                description: Number of host per subgroup.
                 format: int32
                 type: integer
             required:
