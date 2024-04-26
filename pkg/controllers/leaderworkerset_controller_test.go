@@ -312,6 +312,73 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "1 replica, size 2, with leader template, exclusive placement enabled, subgroupsize enabled",
+			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
+				"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+			}).SubGroupSize(2).Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+					},
+				}).
+				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
+				Size(2).
+				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
+					},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](1),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
+								leaderworkerset.SubGroupSizeLabelKey:                 "2",
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size":               "2",
+								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("worker"),
+									Image:     ptr.To[string]("nginx:1.14.2"),
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
+				},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

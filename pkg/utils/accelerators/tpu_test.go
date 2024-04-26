@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/resource"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,7 +44,7 @@ func TestAddTPUVariables(t *testing.T) {
 					Name:      "test-sample-1",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						leaderworkerset.WorkerIndexLabelKey: "0",
 					},
 				},
 			},
@@ -60,7 +61,7 @@ func TestAddTPUVariables(t *testing.T) {
 					Name:      "test-sample-1-3",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index": "3",
+						leaderworkerset.WorkerIndexLabelKey: "3",
 					},
 					Annotations: map[string]string{
 						LeaderRequestsTPUsAnnotationKey: "true",
@@ -94,6 +95,116 @@ func TestAddTPUVariables(t *testing.T) {
 				if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[1].Value, tc.expectedTpuWorkerId); diff != "" {
 					t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 				}
+			}
+		})
+	}
+}
+
+func TestAddTPUVariablesSubGroup(t *testing.T) {
+	tests := []struct {
+		name                       string
+		pod                        *corev1.Pod
+		size                       int
+		expectedTpuWorkerHostNames string
+		expectedTpuWorkerId        string
+	}{
+		{
+			name: "Leader requests TPU resources",
+			pod: &corev1.Pod{
+				Spec: MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-3",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:         "3",
+						leaderworkerset.SubGroupSizeLabelKey:        "5",
+						leaderworkerset.SubGroupIndexLabelKey:       "0",
+						leaderworkerset.SubGroupWorkerIndexLabelKey: "3",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
+				},
+			},
+			size:                       5,
+			expectedTpuWorkerId:        "3",
+			expectedTpuWorkerHostNames: "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default",
+		},
+		{
+			name: "Leader requests TPU resources, worker with subgroup index > 0",
+			pod: &corev1.Pod{
+				Spec: MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-7",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:         "7",
+						leaderworkerset.SubGroupSizeLabelKey:        "4",
+						leaderworkerset.SubGroupIndexLabelKey:       "1",
+						leaderworkerset.SubGroupWorkerIndexLabelKey: "3",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
+				},
+			},
+			size:                       8,
+			expectedTpuWorkerId:        "3",
+			expectedTpuWorkerHostNames: "test-sample-1-4.default,test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default",
+		},
+		{
+			name: "Leader requests TPU resources, with size being less than a multiple of subgroupsize",
+			pod: &corev1.Pod{
+				Spec: MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-7",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:         "7",
+						leaderworkerset.SubGroupSizeLabelKey:        "5",
+						leaderworkerset.SubGroupIndexLabelKey:       "1",
+						leaderworkerset.SubGroupWorkerIndexLabelKey: "2",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
+				},
+			},
+			size:                       8,
+			expectedTpuWorkerId:        "2",
+			expectedTpuWorkerHostNames: "test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default",
+		},
+		{
+			name: "Leader does not request TPU resources, worker with subgroup index > 0",
+			pod: &corev1.Pod{
+				Spec: MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-5",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:         "5",
+						leaderworkerset.SubGroupSizeLabelKey:        "4",
+						leaderworkerset.SubGroupIndexLabelKey:       "1",
+						leaderworkerset.SubGroupWorkerIndexLabelKey: "0",
+					},
+				},
+			},
+			size:                       9,
+			expectedTpuWorkerId:        "0",
+			expectedTpuWorkerHostNames: "test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := AddTPUVariablesSubGroup(tc.pod, tc.size)
+			if err != nil {
+				t.Errorf("Error parsing parent: %s", err.Error())
+			}
+			if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[0].Value, tc.expectedTpuWorkerHostNames); diff != "" {
+				t.Errorf("unexpected add TPU worker host names operation %s", diff)
+			}
+			if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[1].Value, tc.expectedTpuWorkerId); diff != "" {
+				t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 			}
 		})
 	}
