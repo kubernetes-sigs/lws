@@ -184,8 +184,7 @@ func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *c
 
 	// if subGroups are used, nodeSelectors should not be set. Otherwise all workers will attempt
 	// to follow leader
-	_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]
-	if foundSubGroupSize {
+	if _, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
 		return nil
 	}
 	log := ctrl.LoggerFrom(ctx)
@@ -283,6 +282,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 	}
 	if lws.Spec.SubgroupSize != nil {
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))

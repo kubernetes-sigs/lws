@@ -98,6 +98,9 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 			return fmt.Errorf("mismatch exclusive placement annotation between leader statefulset and leaderworkerset")
 		}
+		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
+			return fmt.Errorf("mismatch subgroup exclusive placement annotation between leader statefulset and leaderworkerset")
+		}
 		sizeAnnotation := sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]
 		if sizeAnnotation == "" {
 			return fmt.Errorf("leader statefulSet pod template misses worker replicas annotation")

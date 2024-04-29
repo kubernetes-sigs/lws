@@ -28,7 +28,7 @@ const (
 	ExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology"
 
 	// Subgroup exclusive topology annotation is used to specify the topology
-	//which will be used for 1:1 exclusive scheduling in a given subgroup.
+	// which will be used for 1:1 exclusive scheduling in a given subgroup.
 	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology-subgroup"
 
 	// Set name label will record the leaderworkerset name that those resources

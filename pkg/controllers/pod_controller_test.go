@@ -205,7 +205,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				Replica(1).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
-					"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+					leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
 				}).Size(2).SubGroupSize(2).Obj(),
 			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
@@ -237,10 +237,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 							},
 							Annotations: map[string]string{
-								"leaderworkerset.sigs.k8s.io/size":               "2",
-								"leaderworkerset.sigs.k8s.io/leader-name":        "test-sample",
-								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
-								leaderworkerset.SubGroupSizeAnnotationKey:        "2",
+								"leaderworkerset.sigs.k8s.io/size":                "2",
+								"leaderworkerset.sigs.k8s.io/leader-name":         "test-sample",
+								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{

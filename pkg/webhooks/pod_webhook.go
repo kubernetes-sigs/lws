@@ -151,7 +151,8 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			groupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 			_, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-			if foundEpKey && !exclusiveAffinityApplied(*pod) {
+			_, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+			if (foundEpKey || foundSubEpKey) && !exclusiveAffinityApplied(*pod) {
 				SetExclusiveAffinities(pod, groupUniqueKey)
 			}
 		}
@@ -203,6 +204,12 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string) {
 	if pod.Spec.Affinity.PodAntiAffinity == nil {
 		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
+
+	topologyKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	if !foundEpKey {
+		topologyKey = pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+	}
+
 	// Pod affinity ensures the pods of this set land on the same topology domain.
 	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
@@ -213,7 +220,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string) {
 					Values:   []string{groupUniqueKey},
 				},
 			}},
-			TopologyKey: pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+			TopologyKey: topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
@@ -229,7 +236,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string) {
 					Values:   []string{groupUniqueKey},
 				},
 			}},
-			TopologyKey: pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+			TopologyKey: topologyKey,
 		})
 }
 
@@ -240,13 +247,17 @@ func exclusiveAffinityApplied(pod corev1.Pod) bool {
 	}
 	hasAffinity := false
 	hasAntiAffinity := false
+	topologyKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	if !foundEpKey {
+		topologyKey = pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+	}
 	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAffinityTerm.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAffinityTerm.TopologyKey == topologyKey {
 			hasAffinity = true
 		}
 	}
 	for _, podAntiahasAntiAffinity := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAntiahasAntiAffinity.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAntiahasAntiAffinity.TopologyKey == topologyKey {
 			hasAntiAffinity = true
 		}
 	}
