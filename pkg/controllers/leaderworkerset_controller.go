@@ -219,7 +219,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
 	replicas := *lws.Spec.Replicas
-	rollingStep, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(replicas), false)
+	rollingStep := 0
+	if lws.Spec.RolloutStrategy == (leaderworkerset.RolloutStrategy{}) || lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
+		rollingStep = 1
+	} else {
+		rollingStep, err = intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(replicas), false)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -483,6 +488,11 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
+	maxUnavailable := intstr.FromInt(1)
+	if lws.Spec.RolloutStrategy != (leaderworkerset.RolloutStrategy{}) && lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		maxUnavailable = lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
+	}
+
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
@@ -491,7 +501,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
-				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).WithPartition(partition),
+				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(maxUnavailable).WithPartition(partition),
 			)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(map[string]string{
