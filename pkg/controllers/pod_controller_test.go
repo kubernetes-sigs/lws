@@ -219,7 +219,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
-						leaderworkerset.SubGroupSizeLabelKey:                 "2",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -236,12 +235,12 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/group-index":            "1",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
-								leaderworkerset.SubGroupSizeLabelKey:                 "2",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
 								"leaderworkerset.sigs.k8s.io/leader-name":        "test-sample",
 								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+								leaderworkerset.SubGroupSizeAnnotationKey:        "2",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{

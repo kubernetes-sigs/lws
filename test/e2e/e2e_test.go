@@ -125,7 +125,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
-	ginkgo.It("subgroupsize is successful", func() {
+	ginkgo.It("Can deploy lws with subgroupsize set", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
@@ -134,8 +134,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
-		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey, v1.SubGroupSizeLabelKey, v1.SubGroupIndexLabelKey, v1.SubGroupWorkerIndexLabelKey}
-		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey}
+		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey, v1.SubGroupIndexLabelKey, v1.SubGroupWorkerIndexLabelKey}
+		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey, v1.SubGroupSizeAnnotationKey}
 
 		for _, pod := range lwsPods.Items {
 

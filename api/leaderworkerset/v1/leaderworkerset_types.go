@@ -27,6 +27,10 @@ const (
 	// be used for 1:1 exclusive scheduling.
 	ExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology"
 
+	// Subgroup exclusive topology annotation is used to specify the topology
+	//which will be used for 1:1 exclusive scheduling in a given subgroup.
+	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology-subgroup"
+
 	// Set name label will record the leaderworkerset name that those resources
 	// (Pod/Service/StatefulSets) belong to.
 	SetNameLabelKey string = "leaderworkerset.sigs.k8s.io/name"
@@ -59,13 +63,10 @@ const (
 	// leaderStatefulset, leaderPods, workerStatefulsets, workerPods.
 	TemplateRevisionHashKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
 
-<<<<<<< HEAD
 	// Environment variable added to all containers in the LeaderWorkerSet to
 	// address the leader via the headless service.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
 
-=======
->>>>>>> 666216b (added comments to new labels)
 	// Subgroup index tracks which subgroup the pod is part of. It will be added
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.gke.io/subgroup-index"

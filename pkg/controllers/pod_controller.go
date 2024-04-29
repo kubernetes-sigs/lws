@@ -184,7 +184,7 @@ func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *c
 
 	// if subGroups are used, nodeSelectors should not be set. Otherwise all workers will attempt
 	// to follow leader
-	_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+	_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]
 	if foundSubGroupSize {
 		return nil
 	}
@@ -272,9 +272,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	// If subGroupSize is not enabled, then GroupKey is equal for all workers. If it is enabled, then
 	// it is set on the pod webook as workers can have different GroupKey
-	if lws.Spec.SubgroupSize != nil {
-		labelMap[leaderworkerset.SubGroupSizeLabelKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
-	} else {
+	if lws.Spec.SubgroupSize == nil {
 		labelMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		selectorMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 	}
@@ -285,6 +283,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	if lws.Spec.SubgroupSize != nil {
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

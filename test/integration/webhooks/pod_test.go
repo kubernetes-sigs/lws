@@ -150,12 +150,11 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "0",
-							// expect subgroupsize label to already be populated
-							leaderworkerset.SubGroupSizeLabelKey: "4",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "5",
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "4",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -166,7 +165,6 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.SubGroupSizeLabelKey:        "4",
 					leaderworkerset.GroupIndexLabelKey:          "1",
 					leaderworkerset.SetNameLabelKey:             "test",
 					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
@@ -189,12 +187,11 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "3",
-							// expect subgroupsize label to already be populated
-							leaderworkerset.SubGroupSizeLabelKey: "2",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "4",
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "2",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -205,7 +202,6 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.SubGroupSizeLabelKey:        "2",
 					leaderworkerset.SetNameLabelKey:             "test",
 					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
 					leaderworkerset.WorkerIndexLabelKey:         "3",
@@ -227,11 +223,10 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "4",
-							// expect subgroupsize label to already be populated
-							leaderworkerset.SubGroupSizeLabelKey: "2",
 						},
 						Annotations: map[string]string{
-							leaderworkerset.SizeAnnotationKey: "5",
+							leaderworkerset.SizeAnnotationKey:         "5",
+							leaderworkerset.SubGroupSizeAnnotationKey: "2",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -242,7 +237,6 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.SubGroupSizeLabelKey:        "2",
 					leaderworkerset.SetNameLabelKey:             "test",
 					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
 					leaderworkerset.WorkerIndexLabelKey:         "4",
@@ -347,12 +341,12 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-sample-1",
 						Namespace: ns.Name,
 						Labels: map[string]string{
-							leaderworkerset.SetNameLabelKey:      "test-sample",
-							leaderworkerset.WorkerIndexLabelKey:  "0",
-							leaderworkerset.SubGroupSizeLabelKey: "5",
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
 						},
 						Annotations: map[string]string{
-							leaderworkerset.SizeAnnotationKey: "5",
+							leaderworkerset.SizeAnnotationKey:         "5",
+							leaderworkerset.SubGroupSizeAnnotationKey: "5",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -404,13 +398,13 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-sample-1-3",
 						Namespace: ns.Name,
 						Labels: map[string]string{
-							leaderworkerset.SetNameLabelKey:      "test-sample",
-							leaderworkerset.WorkerIndexLabelKey:  "3",
-							leaderworkerset.SubGroupSizeLabelKey: "5",
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "3",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "10",
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "5",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
@@ -461,12 +455,12 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-sample-1-7",
 						Namespace: ns.Name,
 						Labels: map[string]string{
-							leaderworkerset.SetNameLabelKey:      "test-sample",
-							leaderworkerset.WorkerIndexLabelKey:  "7",
-							leaderworkerset.SubGroupSizeLabelKey: "5",
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "7",
 						},
 						Annotations: map[string]string{
-							leaderworkerset.SizeAnnotationKey: "11",
+							leaderworkerset.SizeAnnotationKey:         "11",
+							leaderworkerset.SubGroupSizeAnnotationKey: "5",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),

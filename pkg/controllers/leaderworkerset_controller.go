@@ -547,14 +547,14 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
 	}
-	if lws.Spec.SubgroupSize != nil {
-		podLabels[leaderworkerset.SubGroupSizeLabelKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
-	}
 	podTemplateApplyConfiguration.WithLabels(podLabels)
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	if lws.Spec.SubgroupSize != nil {
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.SubgroupSize))
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 

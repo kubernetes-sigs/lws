@@ -100,7 +100,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 		return err
 	}
 
-	subGroupSize, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupSizeLabelKey])
+	subGroupSize, err := strconv.Atoi(pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey])
 	if err != nil {
 		return err
 	}

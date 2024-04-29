@@ -106,7 +106,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
 		_, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
-		_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		var groupUniqueKey string
 		if !foundGroupKey {
 			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
@@ -133,7 +133,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
-		subGroupSize, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
 			if err != nil {
@@ -168,7 +168,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return err
 		}
 
-		_, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeLabelKey]
+		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize {
 			if err := acceleratorutils.AddTPUVariablesSubGroup(pod, podCount); err != nil {
 				return err
