@@ -123,8 +123,14 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
 
-		if foundSubGroupSize && acceleratorutils.PodRequestsTPUs(pod.Spec) {
+		if foundSubGroupSize {
+			// Even if leader does not request TPU resources, this
+			// ensures that it will be scheduled in the same topology
+			// as SubGroup 0
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
+		}
+
+		if foundSubGroupSize && acceleratorutils.PodRequestsTPUs(pod.Spec) {
 			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
 		}
 	} else {
