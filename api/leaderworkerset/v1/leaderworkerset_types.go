@@ -108,7 +108,7 @@ type LeaderWorkerTemplate struct {
 	// +optional
 	Size *int32 `json:"size,omitempty"`
 
-	WorkerReplicas *int32 `json:"workerReplicas"`
+	WorkerReplicas int32 `json:"workerReplicas,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
 	// +kubebuilder:default=Default
