@@ -85,9 +85,10 @@ func TestGetPercentValue(t *testing.T) {
 
 func TestValidateNonnegativeOrZeroField(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      int64
-		wantOutput field.ErrorList
+		name          string
+		input         int64
+		includingZero bool
+		wantOutput    field.ErrorList
 	}{
 		{
 			name:  "input less than 0",
@@ -114,6 +115,12 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 			},
 		},
 		{
+			name:          "input equal to 0 when includingZero is true",
+			input:         0,
+			includingZero: true,
+			wantOutput:    []*field.Error{},
+		},
+		{
 			name:       "input greater than 0",
 			input:      1,
 			wantOutput: []*field.Error{},
@@ -123,7 +130,7 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testPath := field.NewPath("test")
-			output := validateNonnegativeOrZeroField(tc.input, testPath)
+			output := validateNonnegativeField(tc.input, testPath, tc.includingZero)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
@@ -195,10 +202,11 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 
 func TestValidatePositiveIntOrPercent(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      intstr.IntOrString
-		wantErr    string
-		wantOutput field.ErrorList
+		name          string
+		input         intstr.IntOrString
+		includingZero bool
+		wantErr       string
+		wantOutput    field.ErrorList
 	}{
 		{
 			name: "int - positive",
@@ -222,6 +230,15 @@ func TestValidatePositiveIntOrPercent(t *testing.T) {
 					Detail:   "must be grater than 0",
 				},
 			},
+		},
+		{
+			name: "int - zero",
+			input: intstr.IntOrString{
+				Type:   0,
+				IntVal: 0,
+			},
+			includingZero: true,
+			wantOutput:    []*field.Error{},
 		},
 		{
 			name: "percent - greater than 100",
@@ -278,7 +295,7 @@ func TestValidatePositiveIntOrPercent(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testPath := field.NewPath("test")
-			output := validatePositiveIntOrPercent(tc.input, testPath)
+			output := validatePositiveIntOrPercent(tc.input, testPath, tc.includingZero)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}

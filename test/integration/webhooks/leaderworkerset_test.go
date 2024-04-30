@@ -117,6 +117,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
 					}})
 			},
 		}),
@@ -127,6 +128,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 							MaxUnavailable: intstr.FromInt32(2),
+							MaxSurge:       intstr.FromInt32(1),
 						}})
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
@@ -136,6 +138,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 							MaxUnavailable: intstr.FromInt32(2),
+							MaxSurge:       intstr.FromInt32(1),
 						}})
 			},
 		}),
@@ -293,6 +296,38 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return lws
 			},
 			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set maxSurge greater than replicas is allowed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(10)
+				return lws
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("set maxSurge greater than 100% should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromString("200%")
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set maxSurge less than 0 should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(-1)
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set maxSurge equal to 0 should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
+				return lws
+			},
+			lwsCreationShouldFail: false,
 		}),
 	)
 })

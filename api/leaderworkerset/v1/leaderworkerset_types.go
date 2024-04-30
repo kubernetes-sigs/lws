@@ -43,6 +43,10 @@ const (
 	// LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size.
 	SizeAnnotationKey string = "leaderworkerset.sigs.k8s.io/size"
 
+	// Replicas will be added to leader statefulset as an annotation which corresponds to
+	// LeaderWorkerSet.Spec.Replicas
+	ReplicasAnnotationKey string = "leaderworkerset.sigs.k8s.io/replicas"
+
 	// Pods that are in the same group will have an annotation that is a unique
 	// hash value.
 	GroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/group-key"
@@ -145,6 +149,22 @@ type RollingUpdateConfiguration struct {
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=1
 	MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
+
+	// The maximum number of replicas that can be scheduled above the original number of
+	// replicas.
+	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
+	// the start of the update (ex: 10%).
+	// Absolute number is calculated from percentage by rounding up.
+	// By default, a value of 0 is used.
+	// Example: when this is set to 30%, the new replicas can be scaled up by 30%
+	// immediately when the rolling update starts. Once old replicas have been deleted,
+	// new replicas can be scaled up further, ensuring that total number of replicas running
+	// at any time during the update is at most 130% of original replicas.
+	// When rolling update completes, replicas will fall back to the original replicas.
+	//
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:default=0
+	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
 type RolloutStrategyType string

@@ -42,6 +42,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) MaxUnavailable(value int) *LeaderWorke
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) MaxSurge(value int) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt(value)
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Size(count int) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](int32(count))
 	return lwsWrapper
@@ -116,6 +121,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		Type: leaderworkerset.RollingUpdateStrategyType,
 		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt(0),
 		},
 	}
 	return &LeaderWorkerSetWrapper{

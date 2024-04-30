@@ -94,13 +94,13 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
-	partition, err := r.rollingUpdatePartition(ctx, lws)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, lws)
 	if err != nil {
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -193,7 +193,7 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 // Rolling update will always wait for the former replica to be ready then process the next one,
 // we didn't consider rollout strategy type here since we only support rollingUpdate now,
 // once we have more policies, we should update the logic here.
-// Possible scenarios:
+// Possible scenarios for Partition:
 //   - When sts is under creation, partition is always 0 because pods are created in parallel, rolling update is not relevant here.
 //   - When sts is in rolling update, the partition will start from the last index to the index 0 processing in maxUnavailable step.
 //   - When sts is in rolling update, and Replicas increases, we'll delay the rolling update until the scaling up is done,
@@ -206,103 +206,103 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //     together with scaling down.
 //
 // At rest, Partition should always be zero.
-func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, error) {
+//
+// For Replicas:
+//   - When rolling update, Replicas is equal to (spec.Replicas+maxSurge)
+//   - Otherwise, Replicas is equal to spec.Replicas
+//   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
+//     we should reclaim the extra replicas gradually to accommodate for the new replicas.
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (partition int32, replicas int32, err error) {
+	lwsReplicas := *lws.Spec.Replicas
+
 	sts := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
+	err = r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
 	if err != nil {
-		// If sts not created yet, all partitions should be updated.
+		// Case 1:
+		// If sts not created yet, all partitions should be updated,
+		// replicas should not change.
 		if apierrors.IsNotFound(err) {
-			return 0, nil
+			return 0, lwsReplicas, nil
 		}
-		return 0, err
+		return 0, 0, err
 	}
 
-	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
-	replicas := *lws.Spec.Replicas
-	rollingStep, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(replicas), false)
+	stsReplicas := *sts.Spec.Replicas
+	maxSurge, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), false)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
+	// No need to burst more than the replicas.
+	if maxSurge > int(lwsReplicas) {
+		maxSurge = int(lwsReplicas)
+	}
+	burstReplicas := lwsReplicas + int32(maxSurge)
 
+	var continuousReadyReplicas, lwsUnreadyReplicas int32
+
+	defer func() {
+		// Reclaim the bursted replicas gradually.
+		if lwsUnreadyReplicas <= int32(maxSurge) {
+			// When we have n unready replicas and n bursted replicas, we should
+			// start to release the burst replica gradually for the accommodation of
+			// the unready ones.
+			replicas = lwsReplicas + utils.NonZeroValue(int32(lwsUnreadyReplicas)-1)
+		}
+	}()
+
+	// Case 2:
 	// Indicates a new rolling update here.
 	if templateUpdated(sts, lws) {
+		lwsUnreadyReplicas = lwsReplicas
 		// Processing scaling up/down first prior to rolling update.
-		return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
+		return min(lwsReplicas, stsReplicas), burstReplicas, nil
 	}
 
-	// Replicas changes during rolling update.
-	if replicasUpdated(sts, lws) {
-		return min(partition, *lws.Spec.Replicas), nil
+	// Case 3:
+	partition = *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+	rollingUpdateCompleted := partition == 0 && stsReplicas == lwsReplicas
+	// In normal cases, return the values directly.
+	if rollingUpdateCompleted {
+		return 0, lwsReplicas, nil
 	}
 
-	// If Partition is 0, it means it's under creation or rolling update is done or
-	// just running normally, return 0 directly under these cases.
-	if partition == 0 {
-		return 0, nil
+	continuousReadyReplicas, lwsUnreadyReplicas, err = r.iterateReplicas(ctx, lws, stsReplicas)
+	if err != nil {
+		return 0, 0, err
 	}
 
+	originalLwsReplicas, err := strconv.Atoi(sts.Annotations[leaderworkerset.ReplicasAnnotationKey])
+	if err != nil {
+		return 0, 0, err
+	}
+	replicasUpdated := originalLwsReplicas != int(*lws.Spec.Replicas)
+	// Case 4:
+	// Replicas changed during rolling update.
+	if replicasUpdated {
+		return min(partition, burstReplicas), burstReplicas, nil
+	}
+
+	// Case 5:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 
-	podSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.WorkerIndexLabelKey: "0",
-	})
-	var leaderPodList corev1.PodList
-	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return 0, err
+	rollingStep, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	if err != nil {
+		return 0, 0, err
 	}
-	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
-	// the leader pod and the corresponding worker statefulset has the same index.
-	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
-		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
-	}, leaderPodList.Items, int(replicas))
-
-	stsSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	})
-	var stsList appsv1.StatefulSetList
-	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return 0, err
-	}
-
-	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
-		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
-	}, stsList.Items, int(replicas))
-
-	var finishedPart int32
-	templateHash := utils.LeaderWorkerTemplateHash(lws)
-
-	for i := replicas - 1; i >= 0; i-- {
-		nominatedName := fmt.Sprintf("%s-%d", lws.Name, i)
-		// It can happen that the leader pod or the worker statefulset hasn't created yet
-		// or under rebuilding, which also indicates not ready.
-		if nominatedName != sortedPods[i].Name || nominatedName != sortedSts[i].Name {
-			break
-		}
-
-		podTemplateHash := sortedPods[i].Labels[leaderworkerset.TemplateRevisionHashKey]
-		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[i])) {
-			break
-		}
-
-		stsTemplateHash := sortedSts[i].Labels[leaderworkerset.TemplateRevisionHashKey]
-		if !(stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(sortedSts[i])) {
-			break
-		}
-
-		finishedPart++
-	}
+	// Make sure that we always respect the maxUnavailable, or
+	// we'll violate it when reclaiming bursted replicas.
+	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
 
 	// When updated replicas become not ready again or scaled up replicas are not ready yet,
 	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
-	return min(partition, utils.NonZeroValue(replicas-int32(rollingStep)-finishedPart)), nil
+	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), burstReplicas, nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition int32) error {
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	// construct the statefulset apply configuration
-	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition)
+	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas)
 	if err != nil {
 		log.Error(err, "Constructing StatefulSet apply configuration.")
 		return err
@@ -365,14 +365,23 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			return false, err
 		}
 
-		var ready bool
+		var ready, updated bool
 		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
 			ready = true
 			readyCount++
 		}
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+			updated = true
 			updatedCount++
-			if ready {
+		}
+
+		if ready && updated {
+			index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+			if err != nil {
+				return false, err
+			}
+			// Bursted replicas should not be counted here.
+			if index < int(*lws.Spec.Replicas) {
 				updatedAndReadyCount++
 			}
 		}
@@ -387,7 +396,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		lws.Status.UpdatedReplicas = int32(updatedCount)
 		updateStatus = true
 	}
-
 	condition := makeCondition(updatedAndReadyCount == int(*lws.Spec.Replicas))
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
@@ -447,8 +455,72 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	return nil
 }
 
+func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32) (int32, int32, error) {
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return 0, 0, err
+	}
+
+	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
+	// the leader pod and the corresponding worker statefulset has the same index.
+	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
+		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, leaderPodList.Items, int(stsReplicas))
+
+	stsSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	})
+	var stsList appsv1.StatefulSetList
+	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return 0, 0, err
+	}
+
+	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
+		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+	}, stsList.Items, int(stsReplicas))
+
+	templateHash := utils.LeaderWorkerTemplateHash(lws)
+	processReplica := func(index int32) (ready bool) {
+		nominatedName := fmt.Sprintf("%s-%d", lws.Name, index)
+		// It can happen that the leader pod or the worker statefulset hasn't created yet
+		// or under rebuilding, which also indicates not ready.
+		if nominatedName != sortedPods[index].Name || nominatedName != sortedSts[index].Name {
+			return false
+		}
+
+		podTemplateHash := sortedPods[index].Labels[leaderworkerset.TemplateRevisionHashKey]
+		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[index])) {
+			return false
+		}
+
+		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.TemplateRevisionHashKey]
+		return stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(sortedSts[index])
+	}
+
+	var skip bool
+	var continuousReadyReplicas, lwsUnreadyReplicas int32
+
+	for index := stsReplicas - 1; index >= 0; index-- {
+		replicaReady := processReplica(index)
+		skip = skip || !replicaReady
+
+		if replicaReady && !skip {
+			continuousReadyReplicas++
+		}
+		if !replicaReady && index < *lws.Spec.Replicas {
+			lwsUnreadyReplicas++
+		}
+	}
+
+	return continuousReadyReplicas, lwsUnreadyReplicas, nil
+}
+
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition int32) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
@@ -483,7 +555,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
-			WithReplicas(*lws.Spec.Replicas).
+			WithReplicas(replicas).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
@@ -497,6 +569,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		WithLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey:         lws.Name,
 			leaderworkerset.TemplateRevisionHashKey: templateHash,
+		}).
+		WithAnnotations(map[string]string{
+			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 		})
 	return statefulSetConfig, nil
 }
@@ -567,8 +642,4 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 
 func templateUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
 	return sts.Labels[leaderworkerset.TemplateRevisionHashKey] != utils.LeaderWorkerTemplateHash(lws)
-}
-
-func replicasUpdated(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
-	return *sts.Spec.Replicas != *lws.Spec.Replicas
 }
