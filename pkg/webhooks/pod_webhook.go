@@ -119,7 +119,8 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
 		_, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-		if foundEpKey && !exclusiveAffinityApplied(*pod) {
+		_, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+		if (foundEpKey || foundSubEpKey) && !exclusiveAffinityApplied(*pod) {
 			SetExclusiveAffinities(pod, groupUniqueKey)
 		}
 
@@ -145,17 +146,21 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if err != nil {
 				return err
 			}
-			subGroupIndexKey := fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+
+			subGroupIndexKey := fmt.Sprint(workerIndex / subGroupSizeInt)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
-			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
-				subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
+			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
+
+			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" && acceleratorutils.PodRequestsTPUs(pod.Spec) {
+				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
+				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
 			}
+
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
 			groupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+
 			_, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 			_, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 			if (foundEpKey || foundSubEpKey) && !exclusiveAffinityApplied(*pod) {
