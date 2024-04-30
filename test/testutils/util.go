@@ -364,7 +364,7 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 				}
 			}
 			if env.Name == acceleratorutils.TpuWorkerId {
-				if _, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
+				if _, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
 					index, _ := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey])
 					if env.Value != fmt.Sprint(index) {
 						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)

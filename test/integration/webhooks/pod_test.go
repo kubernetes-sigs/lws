@@ -229,7 +229,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
