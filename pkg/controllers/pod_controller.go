@@ -182,11 +182,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 
 func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *corev1.Pod, sts *appsapplyv1.StatefulSetApplyConfiguration, topologyKey string) error {
 
-	// if subGroups are used, nodeSelectors should not be set. Otherwise all workers will attempt
-	// to follow leader
-	if _, foundSubGroupSize := pod.Labels[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
-		return nil
-	}
 	log := ctrl.LoggerFrom(ctx)
 	topologyValue, err := r.topologyValueFromPod(ctx, pod, topologyKey)
 	if err != nil {
@@ -261,19 +256,15 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		return nil, err
 	}
 	selectorMap := map[string]string{
-		leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
-		leaderworkerset.SetNameLabelKey:    lws.Name,
+		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 	}
 	labelMap := map[string]string{
 		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
-	}
-	// If subGroupSize is not enabled, then GroupKey is equal for all workers. If it is enabled, then
-	// it is set on the pod webook as workers can have different GroupKey
-	if lws.Spec.SubgroupSize == nil {
-		labelMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
-		selectorMap[leaderworkerset.GroupUniqueHashLabelKey] = leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)

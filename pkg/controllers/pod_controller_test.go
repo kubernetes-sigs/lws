@@ -219,6 +219,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -227,6 +228,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						MatchLabels: map[string]string{
 							"leaderworkerset.sigs.k8s.io/name":        "test-sample",
 							"leaderworkerset.sigs.k8s.io/group-index": "1",
+							"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
 						},
 					},
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
@@ -235,6 +237,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/group-index":            "1",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",

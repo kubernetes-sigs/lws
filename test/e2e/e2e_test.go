@@ -128,7 +128,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	ginkgo.It("Can deploy lws with subgroupsize set", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}

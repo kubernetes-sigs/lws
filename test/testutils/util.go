@@ -387,7 +387,7 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 	return nil
 }
 
-func ValidatePodExclusivePlacementTerms(pod corev1.Pod) bool {
+func ValidatePodExclusivePlacementTerms(pod corev1.Pod, exclusiveAnnotationKey string, uniqueHashLabelKey string) bool {
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil || pod.Spec.Affinity.PodAntiAffinity == nil {
 		return false
 	}
@@ -395,24 +395,24 @@ func ValidatePodExclusivePlacementTerms(pod corev1.Pod) bool {
 	validAffinity := false
 	validAntiAffinity := false
 	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAffinityTerm.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAffinityTerm.TopologyKey == pod.Annotations[exclusiveAnnotationKey] {
 			requirement := podAffinityTerm.LabelSelector.MatchExpressions[0]
-			if requirement.Key == leaderworkerset.GroupUniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpIn && requirement.Values[0] != "" {
+			if requirement.Key == uniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpIn && requirement.Values[0] != "" {
 				validAffinity = true
 				termsCount++
 			}
 		}
 	}
 	for _, podAntiAffinity := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAntiAffinity.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAntiAffinity.TopologyKey == pod.Annotations[exclusiveAnnotationKey] {
 			requirements := podAntiAffinity.LabelSelector.MatchExpressions
 			hasExist := false
 			hasNotIn := false
 			for _, requirement := range requirements {
-				if requirement.Key == leaderworkerset.GroupUniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpExists {
+				if requirement.Key == uniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpExists {
 					hasExist = true
 				}
-				if requirement.Key == leaderworkerset.GroupUniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpNotIn && requirement.Values[0] != "" {
+				if requirement.Key == uniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpNotIn && requirement.Values[0] != "" {
 					hasNotIn = true
 				}
 			}
