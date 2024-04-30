@@ -89,7 +89,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
-	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
+	if newLws.Spec.LeaderWorkerTemplate.Size != nil && oldLws.Spec.LeaderWorkerTemplate.Size != nil {
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
+	}
 	return warnings, allErrs.ToAggregate()
 }
 
@@ -107,7 +109,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
 	}
-	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
+	if lws.Spec.LeaderWorkerTemplate.Size != nil && *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
 	}
 	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
