@@ -15258,7 +15258,6 @@ spec:
                     type: object
                 required:
                 - restartPolicy
-                - workerReplicas
                 - workerTemplate
                 type: object
               replicas:
