@@ -227,11 +227,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdatePartition(ctx context.Context, 
 	// Indicates a new rolling update here.
 	if templateUpdated(sts, lws) {
 		// Processing scaling up/down first prior to rolling update.
-		if replicasUpdated(sts, lws) {
-			return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
-		} else {
-			return utils.NonZeroValue(replicas - int32(rollingStep)), nil
-		}
+		return min(*lws.Spec.Replicas, *sts.Spec.Replicas), nil
 	}
 
 	// Replicas changes during rolling update.

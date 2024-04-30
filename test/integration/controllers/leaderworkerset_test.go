@@ -501,6 +501,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, lws, k8sClient)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						// This should be 4 at the first step, however, reconciliation syncs quickly and
+						// soon updated to 3 (replicas-maxUnavailable), it's fine here.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
