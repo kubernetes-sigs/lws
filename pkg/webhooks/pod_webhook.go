@@ -126,7 +126,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
-			if foundSubEpKey && exclusiveAffinityApplied(*pod, epKey) {
+			if foundSubEpKey && !exclusiveAffinityApplied(*pod, subEpKey) {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
 			if acceleratorutils.PodRequestsTPUs(pod.Spec) {
@@ -155,10 +155,11 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
 			}
+			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
 			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
-			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
+			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-			if foundSubEpKey {
+			if foundSubEpKey && !exclusiveAffinityApplied(*pod, subEpKey) {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
 		}
