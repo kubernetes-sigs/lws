@@ -482,11 +482,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
 	})
 	podAnnotations := make(map[string]string)
-	if lws.Spec.LeaderWorkerTemplate.Size == nil {
-		podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(lws.Spec.LeaderWorkerTemplate.WorkerReplicas))
-	} else {
-		podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	}
+	size := int(getSize(&lws.Spec.LeaderWorkerTemplate))
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(size)
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
@@ -517,6 +514,13 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			leaderworkerset.TemplateRevisionHashKey: templateHash,
 		})
 	return statefulSetConfig, nil
+}
+
+func getSize(template *leaderworkerset.LeaderWorkerTemplate) int32 {
+	if template.Size != nil {
+		return *template.Size
+	}
+	return template.WorkerReplicas + 1
 }
 
 func makeCondition(available bool) metav1.Condition {

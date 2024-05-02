@@ -265,11 +265,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	podTemplateApplyConfiguration.WithLabels(labelMap)
 	podAnnotations := make(map[string]string)
-	if lws.Spec.LeaderWorkerTemplate.Size == nil {
-		podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(lws.Spec.LeaderWorkerTemplate.WorkerReplicas))
-	} else {
-		podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	}
+
+	size := int(getSize(&lws.Spec.LeaderWorkerTemplate))
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(size)
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
@@ -280,7 +278,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
-			WithReplicas(*lws.Spec.LeaderWorkerTemplate.Size - 1).
+			WithReplicas(int32(size - 1)).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).
