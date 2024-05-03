@@ -45,7 +45,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 [experience reports]: https://github.com/golang/go/wiki/ExperienceReports
 -->
 
-Disaggregated serving is an optimization made for LLM inference workloads. It takes advantage of the fact that the two phases of inference have different characteristics and thus it can be beneficial to run them on different machines. State of the art LLM serving frameworks such as vLLM are already adding support for this optimization based on the paper released by Microsoft. 
+Disaggregated serving is an optimization made for LLM inference workloads. It takes advantage of the fact that the two phases of inference have different characteristics and thus it can be beneficial to run them on different machines. State of the art LLM serving frameworks such as [vLLM](https://github.com/vllm-project/vllm/issues/2472) are already adding support for this optimization based on the paper released by [Microsoft](https://www.microsoft.com/en-us/research/publication/splitwise-efficient-generative-llm-inference-using-phase-splitting/). 
 
 LeaderWorkerSet does not currently support having a group for each phase.
 
