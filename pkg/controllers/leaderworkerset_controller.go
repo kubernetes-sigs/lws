@@ -228,7 +228,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 
 	stsReplicas := *sts.Spec.Replicas
-	maxSurge, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), false)
+	maxSurge, err := intstr.GetValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), true)
 	if err != nil {
 		return 0, 0, err
 	}

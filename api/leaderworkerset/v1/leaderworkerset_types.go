@@ -138,7 +138,7 @@ type RollingUpdateConfiguration struct {
 	// The maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
-	// This can not be 0 because it will pass through to statefulset which doesn't allow 0 value.
+	// This can not be 0 if MaxSurge is 0.
 	// By default, a fixed value of 1 is used.
 	// Example: when this is set to 30%, the old replicas can be scaled down by 30%
 	// immediately when the rolling update starts. Once new replicas are ready, old replicas

@@ -21,7 +21,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -85,10 +84,9 @@ func TestGetPercentValue(t *testing.T) {
 
 func TestValidateNonnegativeOrZeroField(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         int64
-		includingZero bool
-		wantOutput    field.ErrorList
+		name       string
+		input      int64
+		wantOutput field.ErrorList
 	}{
 		{
 			name:  "input less than 0",
@@ -98,27 +96,14 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 					Type:     field.ErrorTypeInvalid,
 					Field:    "test",
 					BadValue: int64(-1),
-					Detail:   "must be grater than 0",
+					Detail:   "must be grater than or equal to 0",
 				},
 			},
 		},
 		{
-			name:  "input equal to 0",
-			input: 0,
-			wantOutput: []*field.Error{
-				{
-					Type:     field.ErrorTypeInvalid,
-					Field:    "test",
-					BadValue: int64(0),
-					Detail:   "must be grater than 0",
-				},
-			},
-		},
-		{
-			name:          "input equal to 0 when includingZero is true",
-			input:         0,
-			includingZero: true,
-			wantOutput:    []*field.Error{},
+			name:       "input equal to 0",
+			input:      0,
+			wantOutput: []*field.Error{},
 		},
 		{
 			name:       "input greater than 0",
@@ -130,7 +115,7 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testPath := field.NewPath("test")
-			output := validateNonnegativeField(tc.input, testPath, tc.includingZero)
+			output := validateNonnegativeField(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
@@ -193,109 +178,6 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			testPath := field.NewPath("test")
 			output := isNotMoreThan100Percent(tc.input, testPath)
-			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
-				t.Errorf("unexpected result: (-want, +got) %s", diff)
-			}
-		})
-	}
-}
-
-func TestValidatePositiveIntOrPercent(t *testing.T) {
-	tests := []struct {
-		name          string
-		input         intstr.IntOrString
-		includingZero bool
-		wantErr       string
-		wantOutput    field.ErrorList
-	}{
-		{
-			name: "int - positive",
-			input: intstr.IntOrString{
-				Type:   0,
-				IntVal: 1,
-			},
-			wantOutput: []*field.Error{},
-		},
-		{
-			name: "int - negative",
-			input: intstr.IntOrString{
-				Type:   0,
-				IntVal: -1,
-			},
-			wantOutput: []*field.Error{
-				{
-					Type:     field.ErrorTypeInvalid,
-					Field:    "test",
-					BadValue: int64(-1),
-					Detail:   "must be grater than 0",
-				},
-			},
-		},
-		{
-			name: "int - zero",
-			input: intstr.IntOrString{
-				Type:   0,
-				IntVal: 0,
-			},
-			includingZero: true,
-			wantOutput:    []*field.Error{},
-		},
-		{
-			name: "percent - greater than 100",
-			input: intstr.IntOrString{
-				Type:   1,
-				StrVal: "101%",
-			},
-			wantOutput: []*field.Error{},
-		},
-		{
-			name: "percent - less than 100",
-			input: intstr.IntOrString{
-				Type:   1,
-				StrVal: "99%",
-			},
-			wantOutput: []*field.Error{},
-		},
-		{
-			name: "percent - invalid string",
-			input: intstr.IntOrString{
-				Type:   1,
-				StrVal: "invalid",
-			},
-			wantOutput: []*field.Error{
-				{
-					Type:  field.ErrorTypeInvalid,
-					Field: "test",
-					BadValue: intstr.IntOrString{
-						Type:   1,
-						StrVal: "invalid",
-					},
-					Detail: utilvalidation.RegexError("a valid percent string must be a numeric string followed by an ending '%'", "[0-9]+%", "1%", "93%"),
-				},
-			},
-		},
-		{
-			name: "invalid input",
-			input: intstr.IntOrString{
-				Type: 2,
-			},
-			wantOutput: []*field.Error{
-				{
-					Type:  field.ErrorTypeInvalid,
-					Field: "test",
-					BadValue: intstr.IntOrString{
-						Type: 2,
-					},
-					Detail: "must be an integer or percentage (e.g '5%%')",
-				},
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			testPath := field.NewPath("test")
-			output := validatePositiveIntOrPercent(tc.input, testPath, tc.includingZero)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
