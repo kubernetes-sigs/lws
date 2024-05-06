@@ -30,6 +30,7 @@ tags, and then generate with `hack/update-toc.sh`.
     - [Test Plan](#test-plan)
       - [Unit Tests](#unit-tests)
       - [Integration tests](#integration-tests)
+      - [End to End Tests](#end-to-end-tests)
   - [Alternatives](#alternatives)
     - [Only Set Pod-Affinity on workers with `subgroup-worker-index=0`](#only-set-pod-affinity-on-workers-with-subgroup-worker-index0)
 <!-- /toc -->
@@ -47,7 +48,8 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 Disaggregated serving is an optimization made for LLM inference workloads. It takes advantage of the fact that the two phases of inference have different characteristics and thus it can be beneficial to run them on different machines. State of the art LLM serving frameworks such as [vLLM](https://github.com/vllm-project/vllm/issues/2472) are already adding support for this optimization based on the paper released by [Microsoft](https://www.microsoft.com/en-us/research/publication/splitwise-efficient-generative-llm-inference-using-phase-splitting/). 
 
-LeaderWorkerSet does not currently support having a group for each phase.
+
+This KEP is to have LeaderWorkerSet to support running both prefill/decode servers in one pod group (aka one replica)
 
 
 ## Proposal
@@ -148,7 +150,7 @@ when drafting this test plan.
 [testing-guidelines]: https://git.k8s.io/community/contributors/devel/sig-testing/testing.md
 -->
 
-[ ] I/we understand the owners of the involved components may require updates to
+[X] I/we understand the owners of the involved components may require updates to
 existing tests to make this code solid enough prior to committing the changes necessary
 to implement this enhancement.
 
@@ -186,6 +188,10 @@ After the implementation PR is merged, add the names of the tests here.
   - Pod Affinity/Anti-Affinity is injected properly in leader and workers
   - The new labels are only added if `SubGroupSize` is set
   - The expected TPU environment variables are injected given different combinations of leader requests resources and subgroup sizes. 
+
+#### End to End Tests
+
+- Test that LWS deployment with subgrouping enabled can be deployed
 
 
 ## Alternatives
