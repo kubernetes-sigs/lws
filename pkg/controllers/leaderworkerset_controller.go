@@ -212,11 +212,11 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //   - Otherwise, Replicas is equal to spec.Replicas
 //   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (partition int32, replicas int32, err error) {
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, int32, error) {
 	lwsReplicas := *lws.Spec.Replicas
 
 	sts := &appsv1.StatefulSet{}
-	err = r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
+	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
 	if err != nil {
 		// Case 1:
 		// If sts not created yet, all partitions should be updated,
@@ -238,35 +238,33 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 	burstReplicas := lwsReplicas + int32(maxSurge)
 
-	var continuousReadyReplicas, lwsUnreadyReplicas int32
-
-	defer func() {
-		// Reclaim the bursted replicas gradually.
-		if lwsUnreadyReplicas <= int32(maxSurge) {
+	// wantReplicas calculates the final replicas if needed.
+	wantReplicas := func(unreadyReplicas int32) int32 {
+		if unreadyReplicas <= int32(maxSurge) {
 			// When we have n unready replicas and n bursted replicas, we should
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
-			replicas = lwsReplicas + utils.NonZeroValue(int32(lwsUnreadyReplicas)-1)
+			return lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
 		}
-	}()
+		return burstReplicas
+	}
 
 	// Case 2:
 	// Indicates a new rolling update here.
 	if templateUpdated(sts, lws) {
-		lwsUnreadyReplicas = lwsReplicas
 		// Processing scaling up/down first prior to rolling update.
-		return min(lwsReplicas, stsReplicas), burstReplicas, nil
+		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
 	}
 
-	// Case 3:
-	partition = *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
 	rollingUpdateCompleted := partition == 0 && stsReplicas == lwsReplicas
+	// Case 3:
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
 		return 0, lwsReplicas, nil
 	}
 
-	continuousReadyReplicas, lwsUnreadyReplicas, err = r.iterateReplicas(ctx, lws, stsReplicas)
+	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -279,7 +277,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 4:
 	// Replicas changed during rolling update.
 	if replicasUpdated {
-		return min(partition, burstReplicas), burstReplicas, nil
+		return min(partition, burstReplicas), wantReplicas(lwsUnreadyReplicas), nil
 	}
 
 	// Case 5:
@@ -295,7 +293,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// When updated replicas become not ready again or scaled up replicas are not ready yet,
 	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
-	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), burstReplicas, nil
+	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), wantReplicas(lwsUnreadyReplicas), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32) error {
@@ -455,6 +453,11 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	return nil
 }
 
+// iterateReplicas will iterate the leader pods together with corresponding worker statefulsets
+// to check the replica state, and return two values and an error in the end:
+//   - The first value represents the number of continuous ready replicas ranging from the last index to 0,
+//     to help us judge whether we can update the Partition or not.
+//   - The second value represents the unready replicas whose index is smaller than leaderWorkerSet Replicas.
 func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32) (int32, int32, error) {
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
@@ -465,7 +468,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 		return 0, 0, err
 	}
 
-	// Got a sorted leader pod list matches with the following sorted statefulsets one by one, which means
+	// Get a sorted leader pod list matches with the following sorted statefulsets one by one, which means
 	// the leader pod and the corresponding worker statefulset has the same index.
 	sortedPods := utils.SortByIndex(func(pod corev1.Pod) (int, error) {
 		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
