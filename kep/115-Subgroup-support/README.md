@@ -71,7 +71,7 @@ bogged down.
 -->
 
 #### Story 1
-As a user, I should be able to have smaller groups within my LeaderWorkerSet deployment and be able to deploy each subgroup on a different topology. 
+As a user, I should be able to split each LeaderWorkerSet replica into smaller subgroups, and be able to deploy each subgroup on a separate accelerator island. 
 
 ### Risks and Mitigations
 
@@ -103,13 +103,14 @@ We extend the LeaderWorkerSet API to introduce a new field: subGroupSize to opt 
 
 ```
 type LeaderWorkerSetSpec struct {
-	 // Number of pods per subgroup
+	 // Number of pods per subgroup. This value is immutable,
+   // and must not be greater than LeaderWorkerSet.Spec.Size.
 	SubGroupSize *int32 'json:"subGroupSize,omitempty'
 } 
 ```
 
 ### Exclusive Topology Support
-LeaderWorkerSet can guarantee that the leader and the workers are placed in the same topology if the leaderworkerset.gke.io/exclusive-topology annotation is set. Similarly, we will support that the pods within the same subgroup will be placed in the same topology with a new annotation leaderworkerset.gke.io/exclusive-topology-subgroup, so that the new changes can support up to two levels of pod affinity. 
+LeaderWorkerSet can guarantee that the leader and the workers are placed in the same topology if the `leaderworkerset.gke.io/exclusive-topology` annotation is set. Similarly, we will support that the pods within the same subgroup will be placed in the same topology with a new annotation `leaderworkerset.gke.io/exclusive-topology-subgroup`, so that the new changes can support up to two levels of pod affinity. 
 
 ### Implementation
 - Two new annotations will be added
@@ -126,9 +127,9 @@ LeaderWorkerSet can guarantee that the leader and the workers are placed in the 
 To support exclusive placement at the subgroup level, the pod webhook will inject the new labels, and set the pod affinity/anti-affinity on all the pods. If both levels of pod affinity are set, then the leader pod will contain two pod affinities, while the workers will have a node selector, and a single pod affinity set. 
 
 ### TPU Environment Variable Injection
-Because the value of the TPU environmental variables will vary between subgroups, the way they are injected will be extended. `TPU_WOKRER_ID` will be the value of `subgroup-worker-index`, while the value of `TPU_HOSTNAMES` will only be a list of the pods in the same subgroup.
+Because the value of the TPU environmental variables will vary between subgroups, the way they are injected will be extended. `TPU_WORKER_ID` will be the value of `subgroup-worker-index`, while the value of `TPU_HOSTNAMES` will only be a list of the pods in the same subgroup.
 
-LeaderWorkerSet supports the leader not requesting TPU resources. This raises a problem when determining the values of `subgroup-index` and s`ubgroup-worker-index`. Suppose we have two TPU slices with two hosts each. Since the leader doesn’t request TPU resources, there will be four workers + the leader, meaning that one of the workers will have a worker index of four. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
+LeaderWorkerSet supports the leader not requesting TPU resources. This raises a problem when determining the values of `subgroup-index` and `subgroup-worker-index`. Suppose we have two TPU slices with two hosts each. Since the leader doesn’t request TPU resources, there will be four workers + the leader, meaning that one of the workers will have a worker index of four. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
 
 If the leader does not request TPU resources, then the labels will have the following values
 `leaderworkerset.gke.io/subgroup-index = (workerIndex - 1) / subGroupSize`
@@ -196,6 +197,6 @@ information to express the idea and why it was not acceptable.
 -->
 
 ### Only Set Pod-Affinity on workers with `subgroup-worker-index=0`
-The original plan was to mimic how the leader worker group is scheduled. Only set the pod affinity/anti-affinity on pods with subgroup-worker-index=0, essentially treating them as a pseudo-leader. Once it has been scheduled, the pod webhook would set the node selector on all other pods so that they follow the pseudo-leader. 
+The original plan was to mimic how the leader worker group is scheduled. Only set the pod affinity/anti-affinity on pods with `subgroup-worker-index=0`, essentially treating them as a pseudo-leader. Once it has been scheduled, the pod webhook would set the node selector on all other pods so that they follow the pseudo-leader. 
 
-This implementation is more complicated to implement, as it requires the pod webhook to have access to the client to be able to query which topology the pseudo-leader was scheduled to. Moreover, it can cause issues such as exponential backoff of the sts controller when too many pods fails to create because the subgroup index 0 is not yet scheduled.
+This implementation is more complicated to implement, as it requires the pod webhook to have access to the client to be able to query which topology the pseudo-leader was scheduled to. Moreover, it can cause issues such as exponential backoff of the statefulset controller when too many pods fail to create because the subgroup index 0 is not yet scheduled.
