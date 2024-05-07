@@ -25,7 +25,7 @@ Read the [installation guide](/docs/setup/install.md) to learn more.
 
 ## Examples
 
-Read the [examples](/docs/example/README.md) to learn more.
+Read the [examples](/docs/example/sample/README.md) to learn more.
 
 ## Community, discussion, contribution, and support
 
