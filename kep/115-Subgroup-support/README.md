@@ -112,30 +112,30 @@ type LeaderWorkerSetSpec struct {
 ```
 
 ### Exclusive Topology Support
-LeaderWorkerSet can guarantee that the leader and the workers are placed in the same topology if the `leaderworkerset.gke.io/exclusive-topology` annotation is set. Similarly, we will support that the pods within the same subgroup will be placed in the same topology with a new annotation `leaderworkerset.gke.io/exclusive-topology-subgroup`, so that the new changes can support up to two levels of pod affinity. 
+LeaderWorkerSet can guarantee that the leader and the workers are placed in the same topology if the `leaderworkerset.sigs.k8s.io/exclusive-topology` annotation is set. Similarly, we will support that the pods within the same subgroup will be placed in the same topology with a new annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology`, so that the new changes can support up to two levels of pod affinity. 
 
 ### Implementation
 - Two new annotations will be added
-  - `leaderworkerset.gke.io/exclusive-topology-subgroup `
-  - `leaderworkerset.gke.io/subgroup-size` 
+  - `leaderworkerset.sigs.k8s.io/ubgroup-exclusive-topology`
+  - `leaderworkerset.sigs.k8s.io/subgroup-size` 
 - Three new labels will be added,
-  - `leaderworkerset.gke.io/subgroup-index = worker-index/subGroupSize`
+  - `leaderworkerset.sigs.k8s.io/subgroup-index = worker-index/subGroupSize`
     - Tracks which subgroup the pod is part of 
-  - `leaderworkerset.gke.io/subgroup-worker-index = worker-index%subGroupSize`
+  - `leaderworkerset.sigs.k8s.io/subgroup-worker-index = worker-index%subGroupSize`
     - index/identity of a pod inside the pod's subgroup
-  - `leaderworkerset.gke.io/subgroup-key` 
+  - `leaderworkerset.sigs.k8s.io/subgroup-key` 
     - Pods that are part of the same subgroup will have an annotation that is a unique hash value will be generated from the name of the leader, and the subgroup-index
 
 To support exclusive placement at the subgroup level, the pod webhook will inject the new labels, and set the pod affinity/anti-affinity on all the pods. If both levels of pod affinity are set, then the leader pod will contain two pod affinities, while the workers will have a node selector, and a single pod affinity set. 
 
 ### TPU Environment Variable Injection
-Because the value of the TPU environmental variables will vary between subgroups, the way they are injected will be extended. `TPU_WORKER_ID` will be the value of `subgroup-worker-index`, while the value of `TPU_HOSTNAMES` will only be a list of the pods in the same subgroup.
+Because the value of the TPU environmental variables will vary between subgroups, the way they are injected will be extended. `TPU_WORKER_ID` will be the value of `subgroup-worker-index`, while the value of `TPU_WORKER_HOSTNAMES` will only be a list of the pods in the same subgroup.
 
 LeaderWorkerSet supports the leader not requesting TPU resources. This raises a problem when determining the values of `subgroup-index` and `subgroup-worker-index`. Suppose we have two TPU slices with two hosts each. Since the leader doesn’t request TPU resources, there will be four workers + the leader, meaning that one of the workers will have a worker index of four. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
 
 If the leader does not request TPU resources, then the labels will have the following values
-`leaderworkerset.gke.io/subgroup-index = (workerIndex - 1) / subGroupSize`
-`leaderworkerset.gke.io/subgroup-worker-index = (workerIndex - 1) % subGroupSize`
+`leaderworkerset.sigs.k8s.io/subgroup-index = (workerIndex - 1) / subGroupSize`
+`leaderworkerset.sigs.k8s.io/subgroup-worker-index = (workerIndex - 1) % subGroupSize`
 
 ### Test Plan
 
