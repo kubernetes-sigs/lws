@@ -29,7 +29,7 @@ const (
 
 	// Subgroup exclusive topology annotation is used to specify the topology
 	// which will be used for 1:1 exclusive scheduling in a given subgroup.
-	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology-subgroup"
+	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"
 
 	// Set name label will record the leaderworkerset name that those resources
 	// (Pod/Service/StatefulSets) belong to.
@@ -69,7 +69,7 @@ const (
 
 	// Subgroup index tracks which subgroup the pod is part of. It will be added
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
-	SubGroupIndexLabelKey string = "leaderworkerset.gke.io/subgroup-index"
+	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"
 
 	// SubGroupSize corresponds to LeaderWorkerSet.Spec.SubGroupSize. It is also
 	// used to determine if SubGroups are being used.
