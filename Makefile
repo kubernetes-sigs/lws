@@ -277,3 +277,11 @@ artifacts: kustomize
 .PHONY: prometheus
 prometheus:
 	kubectl apply --server-side -k config/prometheus
+
+.PHONY: toc-update
+toc-update:
+	./hack/update-toc.sh
+
+.PHONY: toc-verify
+toc-verify:
+	./hack/verify-toc.sh
