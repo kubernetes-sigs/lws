@@ -95,6 +95,24 @@ func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderw
 			gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
 		}
 	}
+
+	gomega.Eventually(func() bool {
+		var stsList appsv1.StatefulSetList
+		gomega.Expect(k8sClient.List(ctx, &stsList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.LeaderPodNameAnnotationKey: lws.Name})).To(gomega.Succeed())
+		return len(stsList.Items) == int(*lws.Spec.Replicas)-1
+	})
+}
+
+func DeleteLeaderPod(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end int32) {
+	for index := start; index < end; index++ {
+		name := lws.Name + "-" + strconv.Itoa(int(index))
+		var pod corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &pod)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, &pod)).To(gomega.Succeed())
+		var sts appsv1.StatefulSet
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
+	}
 }
 
 func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start int, end int) error {
@@ -197,18 +215,20 @@ func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, 
 }
 
 // SetPodGroupsToReady set all podGroups of the leaderWorkerSet to ready state.
-func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podGroupNumber int32) {
 	stsSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	})
+
 	// update the condition based on the status of all statefulsets owned by the lws.
 	var stsList appsv1.StatefulSetList
+
 	gomega.Eventually(func() (int, error) {
 		if err := k8sClient.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-			return -1, err
+			return 0, err
 		}
-		return len(stsList.Items), nil
-	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas + 1)))
+		return len(stsList.Items) - 1, nil
+	}, Timeout, Interval).Should(gomega.Equal(int(podGroupNumber)))
 
 	for i, sts := range stsList.Items {
 		if sts.Name != lws.Name {

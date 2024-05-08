@@ -64,6 +64,7 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt32(0),
 		}
 	}
 	return nil
@@ -117,6 +118,25 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 		// This is aligned with Statefulset.
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
 	}
+
+	maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
+	maxSurgePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxSurge")
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		allErrs = append(allErrs, validatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
+		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
+	}
+	maxUnavailableValue, err := intstr.GetValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
+	}
+	maxSurgeValue, err := intstr.GetValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
+	}
+	if maxUnavailableValue == 0 && maxSurgeValue == 0 {
+		// Both MaxSurge and MaxUnavailable cannot be zero.
+		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
+	}
 	return nil, allErrs
 }
 
@@ -132,7 +152,7 @@ func validatePositiveIntOrPercent(intOrPercent intstr.IntOrString, fldPath *fiel
 			allErrs = append(allErrs, field.Invalid(fldPath, intOrPercent, msg))
 		}
 	case intstr.Int:
-		allErrs = append(allErrs, validateNonnegativeOrZeroField(int64(intOrPercent.IntValue()), fldPath)...)
+		allErrs = append(allErrs, validateNonnegativeField(int64(intOrPercent.IntValue()), fldPath)...)
 	default:
 		allErrs = append(allErrs, field.Invalid(fldPath, intOrPercent, "must be an integer or percentage (e.g '5%%')"))
 	}
@@ -161,11 +181,11 @@ func getPercentValue(intOrStringValue intstr.IntOrString) (int, bool) {
 	return value, true
 }
 
-// validateNonnegativeOrZeroField validates that given value is not negative or 0.
-func validateNonnegativeOrZeroField(value int64, fldPath *field.Path) field.ErrorList {
+// validateNonnegativeField validates that given value is not negative.
+func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	if value <= 0 {
-		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than 0"))
+	if value < 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than or equal to 0"))
 	}
 	return allErrs
 }

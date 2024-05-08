@@ -41,16 +41,6 @@ const (
 	Interval = time.Millisecond * 250
 )
 
-func ExpectValidReplicasCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, count int, k8sClient client.Client) {
-	gomega.Eventually(func() (int, error) {
-		var leaderStatefulSet appsv1.StatefulSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderStatefulSet); err != nil {
-			return -1, err
-		}
-		return int(*leaderStatefulSet.Spec.Replicas), nil
-	}).Should(gomega.Equal(count))
-}
-
 func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
 	gomega.Eventually(func() bool {
 		var leaderSet appsv1.StatefulSet
@@ -89,7 +79,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, lws *lead
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func ExpectValidLeaderStatefulSet(ctx context.Context, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
+func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replicas int32) {
 	gomega.Eventually(func() error {
 		// Always got the latest lws.
 		var lws leaderworkerset.LeaderWorkerSet
@@ -110,10 +100,17 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, leaderWorkerSet *leaderwo
 		}
 		sizeAnnotation := sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]
 		if sizeAnnotation == "" {
-			return fmt.Errorf("leader statefuSet pod template misses worker replicas annotation")
+			return fmt.Errorf("leader statefulSet pod template misses worker replicas annotation")
 		}
 		if size, err := strconv.Atoi(sizeAnnotation); err != nil || size != int(*lws.Spec.LeaderWorkerTemplate.Size) {
 			return fmt.Errorf("error parsing size annotation or size mismatch for value %s", sizeAnnotation)
+		}
+		replicasAnnotation := sts.Annotations[leaderworkerset.ReplicasAnnotationKey]
+		if replicasAnnotation == "" {
+			return fmt.Errorf("leader statefulSet misses replicas annotation")
+		}
+		if replicas, err := strconv.Atoi(replicasAnnotation); err != nil || replicas != int(*lws.Spec.Replicas) {
+			return fmt.Errorf("error parsing replicas annotation or replicas mismatch for value %s", replicasAnnotation)
 		}
 		if sts.Spec.Template.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
 			return fmt.Errorf("leader statefulset pod template misses worker index label")
@@ -128,8 +125,8 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, leaderWorkerSet *leaderwo
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
 		}
-		if *sts.Spec.Replicas != *lws.Spec.Replicas {
-			return errors.New("leader StatefulSet replicas should match leaderWorkerSet replicas")
+		if *sts.Spec.Replicas != replicas {
+			return fmt.Errorf("leader StatefulSet replicas should match with specified replicas, want %d, got %d", replicas, *sts.Spec.Replicas)
 		}
 		if sts.Spec.PodManagementPolicy != appsv1.ParallelPodManagement {
 			return errors.New("leader StatefulSet should use parallel pod management")
@@ -173,20 +170,23 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			return err
 		}
 
+		var leaderSts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &leaderSts); err != nil {
+			return err
+		}
 		var statefulSetList appsv1.StatefulSetList
 		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
-
-		var podList corev1.PodList
-		if err := k8sClient.List(ctx, &podList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
-			return err
+		if leaderPodScheduled && int(*leaderSts.Spec.Replicas) != len(statefulSetList.Items)-1 {
+			return fmt.Errorf("running worker statefulsets replicas not right, want %d, got %d", *leaderSts.Spec.Replicas, len(statefulSetList.Items)-1)
 		}
 		if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" && !leaderPodScheduled && len(statefulSetList.Items) != 1 {
 			return fmt.Errorf("when exclusive placement is enabled, only expect sts count to be 1")
 		}
-		if len(statefulSetList.Items) != int(*lws.Spec.Replicas)+1 && lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] == "" {
-			return fmt.Errorf("incorrect statefulSets count, got %d, expect %d", len(statefulSetList.Items), int(*lws.Spec.Replicas)+1)
+		var podList corev1.PodList
+		if err := k8sClient.List(ctx, &podList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+			return err
 		}
 		for _, sts := range statefulSetList.Items {
 			// Skip the leader sts

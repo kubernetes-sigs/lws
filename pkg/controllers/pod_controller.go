@@ -123,6 +123,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.Error(err, "Setting controller reference.")
 		return ctrl.Result{}, nil
 	}
+
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(statefulSet)
 	if err != nil {
 		return ctrl.Result{}, err
