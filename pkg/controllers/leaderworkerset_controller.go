@@ -542,12 +542,11 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
-	podLabels := map[string]string{
+	podTemplateApplyConfiguration.WithLabels(map[string]string{
 		leaderworkerset.WorkerIndexLabelKey:     "0",
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
-	}
-	podTemplateApplyConfiguration.WithLabels(podLabels)
+	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
