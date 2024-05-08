@@ -339,6 +339,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
 					},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
