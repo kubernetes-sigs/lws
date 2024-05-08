@@ -114,6 +114,32 @@ type LeaderWorkerSetSpec struct {
 ### Exclusive Topology Support
 LeaderWorkerSet can guarantee that the leader and the workers are placed in the same topology if the `leaderworkerset.sigs.k8s.io/exclusive-topology` annotation is set. Similarly, we will support that the pods within the same subgroup will be placed in the same topology with a new annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology`, so that the new changes can support up to two levels of pod affinity. 
 
+The overall workflow will look like this 
+![kep-115](https://github.com/kubernetes-sigs/lws/assets/86417275/ff9fc93d-c738-4c09-abc8-50a7b16d49df)
+
+Suppose we have an LWS deployment with 2 replicas, subGroupSize 2, size 4, and the following annotations: 
+- `leaderworkerset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-placement-group` 
+- `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: cloud.google.com/gke-nodepool`
+
+The leader pod will first be scheduled on a placement group. Once a worker pod is created, it will follow the leader to the placement group. 
+Afterward, it will be scheduled into a nodepool that has other pods with the same subgroup index. So, the placement will look something like this:
+
+Placement will look like this
+- Placement-group-1
+  - Nodepool 1
+    - LWS-0
+    - LWS-0-1
+  - Nodepool 2
+    - LWS-0-2
+    - LWS-0-3
+- Placement-group-2
+  - Nodepool 1 
+    - LWS-1
+    - LWS-1-1
+  - Nodepool 2
+    - LWS-1-2
+    - LWS-1-3
+
 ### Implementation
 - Two new annotations will be added
   - `leaderworkerset.sigs.k8s.io/ubgroup-exclusive-topology`
@@ -191,7 +217,7 @@ After the implementation PR is merged, add the names of the tests here.
 
 #### End to End Tests
 
-- Test that LWS deployment with subgrouping enabled can be deployed
+- Test that LWS deployment with subgrouping enabled will have correct pod labels, pod exclusive placement and work well with other features enabled, like failure handling and rolling update.
 
 
 ## Alternatives
