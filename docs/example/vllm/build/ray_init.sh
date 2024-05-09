@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+
 subcommand=$1
 shift
 
@@ -16,6 +16,9 @@ case "$subcommand" in
           ;;
         --ray_port=*)
           ray_port="${1#*=}"
+          ;;
+        --ray_init_timeout=*)
+          ray_init_timeout="${1#*=}"
           ;;
         *)
           echo "unknown argument: $1"
@@ -35,14 +38,14 @@ case "$subcommand" in
         echo "Worker: Ray runtime started with head address $ray_address:$ray_port"
         exit 0
       fi
-      echo "Wait the ray worker to be active..."
+      echo "Waiting until the ray worker is active..."
       sleep 5s;
     done
     echo "Ray worker starts timeout, head address: $ray_address:$ray_port"
     exit 1
     ;;
 
-  head)
+  leader)
     ray_cluster_size=""
     while [ $# -gt 0 ]; do
           case "$1" in
@@ -67,8 +70,10 @@ case "$subcommand" in
       exit 1
     fi
 
+    # start the ray daemon
     ray start --head --port=$ray_port
-    # wait all workers to be active
+
+    # wait until all workers are active
     for (( i=0; i < $ray_init_timeout; i+=5 )); do
         active_nodes=`python3 -c 'import ray; ray.init(); print(sum(node["Alive"] for node in ray.nodes()))'`
         if [ $active_nodes -eq $ray_cluster_size ]; then
@@ -79,7 +84,7 @@ case "$subcommand" in
         sleep 5s;
     done
 
-    echo "Waiting for all ray workers to be active has been timed out."
+    echo "Waiting for all ray workers to be active timed out."
     exit 1
     ;;
 
@@ -88,5 +93,4 @@ case "$subcommand" in
     exit 1
     ;;
 esac
-
 

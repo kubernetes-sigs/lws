@@ -14,6 +14,7 @@ spec:
       spec:
         containers:
           - name: vllm-leader
+            # this image is build with the Dockerfile under ./build
             image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
             env:
               - name: RAY_CLUSTER_SIZE
@@ -23,8 +24,8 @@ spec:
             command:
               - sh
               - -c
-              - "/vllm-workspace/ray_init.sh head --ray_cluster_size=$RAY_CLUSTER_SIZE; 
-                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model facebook/opt-125m --gpu-memory-utilization 0.95 --tensor-parallel-size 2"
+              - "/vllm-workspace/ray_init.sh leader --ray_cluster_size=$RAY_CLUSTER_SIZE; 
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model facebook/opt-125m --swap-space 2 --tensor-parallel-size 2"
             resources:
               limits:
                 nvidia.com/gpu: "1"
@@ -43,6 +44,7 @@ spec:
       spec:
         containers:
           - name: vllm-worker
+            # this image is build with the Dockerfile under ./build
             image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
             command:
               - sh
