@@ -113,9 +113,6 @@ type LeaderWorkerSetSpec struct {
 	// RolloutStrategy defines the strategy that will be applied to update replicas
 	// when a revision is made to the leaderWorkerTemplate.
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy"`
-
-	//Number of host per subgroup.
-	SubgroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -144,6 +141,9 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:default=Default
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
 	RestartPolicy RestartPolicyType `json:"restartPolicy"`
+
+	//Number of host per subgroup.
+	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

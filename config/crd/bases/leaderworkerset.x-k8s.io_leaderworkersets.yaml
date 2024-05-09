@@ -7664,6 +7664,10 @@ spec:
                       Default to 1.
                     format: int32
                     type: integer
+                  subGroupSize:
+                    description: Number of host per subgroup.
+                    format: int32
+                    type: integer
                   workerTemplate:
                     description: WorkerTemplate defines the pod template for worker
                       pods.
@@ -15325,10 +15329,6 @@ spec:
                 required:
                 - type
                 type: object
-              subGroupSize:
-                description: Number of host per subgroup.
-                format: int32
-                type: integer
             required:
             - leaderWorkerTemplate
             - rolloutStrategy

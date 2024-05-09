@@ -94,7 +94,7 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Conditions(conditions []metav1.Conditi
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupSize(subGroupSize int32) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.SubgroupSize = &subGroupSize
+	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupSize = &subGroupSize
 	return lwsWrapper
 }
 
