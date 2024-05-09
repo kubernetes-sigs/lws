@@ -131,7 +131,7 @@ Afterward, it will be scheduled into a nodepool that has other pods with the sam
 
 ### Implementation
 - Two new annotations will be added
-  - `leaderworkerset.sigs.k8s.io/ubgroup-exclusive-topology`
+  - `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology`
   - `leaderworkerset.sigs.k8s.io/subgroup-size` 
 - Three new labels will be added,
   - `leaderworkerset.sigs.k8s.io/subgroup-index = worker-index/subGroupSize`
