@@ -106,7 +106,7 @@ proposal will be implemented, this is the place to discuss them.
 We extend the LeaderWorkerSet API to introduce a new field: subGroupSize to opt in and set the number of pods that each subgroup will contain. Current behavior is kept if not set. 
 
 ```
-type LeaderWorkerSetSpec struct {
+type LeaderWorkerTemplate struct {
 	 // Number of pods per subgroup. This value is immutable,
    // and must not be greater than LeaderWorkerSet.Spec.Size.
 	SubGroupSize *int32 'json:"subGroupSize,omitempty'
