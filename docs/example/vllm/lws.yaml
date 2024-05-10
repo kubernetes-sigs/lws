@@ -1,0 +1,72 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        containers:
+          - name: vllm-leader
+            # this image is build with the Dockerfile under ./build
+            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
+            env:
+              - name: RAY_CLUSTER_SIZE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
+            command:
+              - sh
+              - -c
+              - "/vllm-workspace/ray_init.sh leader --ray_cluster_size=$RAY_CLUSTER_SIZE; 
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model facebook/opt-125m --swap-space 2 --tensor-parallel-size 2"
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+              requests:
+                cpu: "4"
+                memory: 8Gi
+                nvidia.com/gpu: "1"
+            ports:
+              - containerPort: 8080
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
+    workerTemplate:
+      spec:
+        containers:
+          - name: vllm-worker
+            # this image is build with the Dockerfile under ./build
+            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
+            command:
+              - sh
+              - -c
+              - "/vllm-workspace/ray_init.sh worker --ray_address=$(LEADER_NAME).$(LWS_NAME).$(NAMESPACE).svc.cluster.local"
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+              requests:
+                cpu: "4"
+                memory: 8Gi
+                nvidia.com/gpu: "1"
+            env:
+              - name: LEADER_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/leader-name']
+              - name: NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: LWS_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/name']
