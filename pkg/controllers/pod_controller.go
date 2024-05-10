@@ -103,6 +103,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	// logic for handling leader pod
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
 	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
 		// check if the leader pod is scheduled.
@@ -116,9 +120,6 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if err != nil {
-		return ctrl.Result{}, err
-	}
 	if err := setControllerReferenceWithStatefulSet(&pod, statefulSet, r.Scheme); err != nil {
 		log.Error(err, "Setting controller reference.")
 		return ctrl.Result{}, nil
