@@ -1,4 +1,4 @@
-# KEP #115 Subgroup Support
+# KEP-115 Subgroup Support
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
 title can help communicate what the KEP is and should be considered as part of
@@ -16,7 +16,7 @@ tags, and then generate with `hack/update-toc.sh`.
 -->
 
 <!-- toc -->
-- [KEP #115 Subgroup Support](#kep-115-subgroup-support)
+- [KEP-115 Subgroup Support](#kep-115-subgroup-support)
   - [Motivation](#motivation)
   - [Proposal](#proposal)
     - [User Stories (Optional)](#user-stories-optional)
@@ -121,13 +121,13 @@ The overall workflow will look like this
 ![kep-115](https://github.com/kubernetes-sigs/lws/assets/86417275/ff9fc93d-c738-4c09-abc8-50a7b16d49df)
 
 Suppose we have an LWS deployment with 2 replicas, subGroupSize 4, size 8, and the following annotations: 
-- `leaderworkerset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-placement-group` 
-- `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: cloud.google.com/gke-nodepool`
+- `leaderworkerset.sigs.k8s.io/exclusive-topology: topology-1` 
+- `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: topology-2`
 
 The leader pod will first be scheduled on a placement group. Once a worker pod is created, it will follow the leader to the placement group. 
 Afterward, it will be scheduled into a nodepool that has other pods with the same subgroup index. So, the placement will look something like this
 
-![kep-115 scheduling](https://github.com/kubernetes-sigs/lws/assets/86417275/8127f005-2f50-4648-aa1a-6b37cb3b813a)
+![kep-115 scheduling](https://github.com/kubernetes-sigs/lws/assets/86417275/33c49e9f-84da-4ac9-8e2b-973b532a0756)
 
 ### Implementation
 - Two new annotations will be added
@@ -146,7 +146,11 @@ To support exclusive placement at the subgroup level, the pod webhook will injec
 ### TPU Environment Variable Injection
 Because the value of the TPU environmental variables will vary between subgroups, the way they are injected will be extended. `TPU_WORKER_ID` will be the value of `subgroup-worker-index`, while the value of `TPU_WORKER_HOSTNAMES` will only be a list of the pods in the same subgroup.
 
-LeaderWorkerSet supports the leader not requesting TPU resources. This raises a problem when determining the values of `subgroup-index` and `subgroup-worker-index`. Suppose we have two TPU slices with two hosts each. Since the leader doesn’t request TPU resources, there will be four workers + the leader, meaning that one of the workers will have a worker index of four. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
+LeaderWorkerSet supports the leader not requesting TPU resources. This raises a problem when determining the values of `subgroup-index` and `subgroup-worker-index`. Suppose we have two TPU slices with two vm hosts each. Since the leader doesn’t request TPU resources, it won't take full ownership of the TPU vm, allowing 
+a worker that does request TPU resources to run in the same vm. Therefore, there will be four workers + the leader, meaning that one of the workers will have a worker index of four, a
+as shown in the picture below. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
+
+![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/jobset/assets/86417275/251241ba-47b1-4ae3-a5d1-44cef8fb9440)
 
 If the leader does not request TPU resources, then the labels will have the following values
 `leaderworkerset.sigs.k8s.io/subgroup-index = (workerIndex - 1) / subGroupSize`
