@@ -1395,7 +1395,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
-						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
+						// Partition will transit from 4 to 3.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
 					},
 				},
