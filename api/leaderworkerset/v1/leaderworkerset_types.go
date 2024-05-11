@@ -109,6 +109,11 @@ type LeaderWorkerSetSpec struct {
 	// when a revision is made to the leaderWorkerTemplate.
 	// +optional
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// StartupPolicy defines the startup policy for the leader/worker statefulset.
+	// +kubebuilder:default=Default
+	// +kubebuilder:validation:Enum={Default,WaitForLeaderReady}
+	StartupPolicy StartupPolicyType `json:"startupPolicy"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -225,6 +230,17 @@ const (
 	// Default will follow the same behavior as the StatefulSet where only the failed pod
 	// will be restarted on failure and other pods in the group will not be impacted.
 	DefaultRestartPolicy RestartPolicyType = "Default"
+)
+
+type StartupPolicyType string
+
+const (
+	// WaitForLeaderReady will create worker statefulset after the leader is ready.
+	WaitForLeaderReady StartupPolicyType = "WaitForLeaderReady"
+
+	// Default will create worker statefulset immediately when pod controller receives
+	// the leader pod created event.
+	DefaultStartupPolicy StartupPolicyType = "Default"
 )
 
 // LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet

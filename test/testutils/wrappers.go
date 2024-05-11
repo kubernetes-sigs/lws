@@ -83,6 +83,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) RolloutStrategy(strategy leaderworkers
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) StartupPolicy(strategy leaderworkerset.StartupPolicyType) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.StartupPolicy = strategy
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]string) *LeaderWorkerSetWrapper {
 	lwsWrapper.Annotations = annotations
 	return lwsWrapper
@@ -132,6 +137,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 			MaxSurge:       intstr.FromInt(0),
 		},
 	}
+	lws.Spec.StartupPolicy = leaderworkerset.DefaultStartupPolicy
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}

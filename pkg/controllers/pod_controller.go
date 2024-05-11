@@ -102,6 +102,19 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// logic for handling leader pod
+	// workerStsReplicas := *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size - 1
+	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.WaitForLeaderReady {
+		var leaderSts appsv1.StatefulSet
+		if err = r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderSts); err != nil {
+			return ctrl.Result{}, err
+		}
+		if leaderSts.Status.ReadyReplicas != *leaderSts.Spec.Replicas {
+			// workerStsReplicas = 0
+			// create the workers sts only after the leader is ready
+			return ctrl.Result{}, nil
+		}
+	}
+
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet)
 	if err != nil {
 		return ctrl.Result{}, err
