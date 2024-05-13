@@ -50,7 +50,7 @@ ARTIFACTS ?= $(PROJECT_DIR)/bin
 
 INTEGRATION_TARGET ?= ./test/integration/...
 
-E2E_KIND_VERSION ?= kindest/node:v1.27.1
+E2E_KIND_VERSION ?= kindest/node:v1.29.1
 USE_EXISTING_CLUSTER ?= false
 
 # For local testing, we should allow user to use different kind cluster name
@@ -108,7 +108,7 @@ test: manifests fmt vet envtest gotestsum ## Run tests.
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
 kind:
-	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on go install sigs.k8s.io/kind@v0.18.0
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on go install sigs.k8s.io/kind@v0.22.0
 
 .PHONY: kind-image-build
 kind-image-build: PLATFORMS=linux/amd64
