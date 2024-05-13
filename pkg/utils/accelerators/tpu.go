@@ -22,15 +22,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
-var (
-	TpuResourceName                 = corev1.ResourceName("google.com/tpu")
-	TpuWorkerHostNames              = "TPU_WORKER_HOSTNAMES"
-	TpuWorkerId                     = "TPU_WORKER_ID"
-	LeaderRequestsTPUsAnnotationKey = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
+const (
+	TpuResourceName                 corev1.ResourceName = corev1.ResourceName("google.com/tpu")
+	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
+	TpuWorkerId                     string              = "TPU_WORKER_ID"
+	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
 )
 
 // PodRequestsTPUs returns true if the pod requesting TPUs
@@ -94,7 +94,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	leaderName := pod.Name
 	tpuWorkerId := 0
 	var hostnames []string
-	if podutils.LeaderPod(*pod) {
+	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		// if this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
 	} else {

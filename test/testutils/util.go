@@ -306,18 +306,53 @@ func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Clie
 	return false, nil
 }
 
-func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
+func contains(envVars []corev1.EnvVar, e string) bool {
+	for _, env := range envVars {
+		if env.Name == e {
+			return true
+		}
+	}
+	return false
+}
+
+func containerHasAllEnvVars(c corev1.Container, envVars []string) bool {
+	for _, e := range envVars {
+		if !contains(c.Env, e) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasAllEnvVarPopulated(pod corev1.Pod, envVars []string) bool {
 	var containers []corev1.Container
 	containers = append(containers, pod.Spec.Containers...)
 	containers = append(containers, pod.Spec.InitContainers...)
 	for _, container := range containers {
+		if !containerHasAllEnvVars(container, envVars) {
+			return false
+		}
+	}
+	return true
+}
+
+func HasLWSEnvVarsPopulated(pod corev1.Pod) bool {
+	return hasAllEnvVarPopulated(pod, []string{leaderworkerset.LwsLeaderAddress})
+}
+
+func CheckContainerHasCorrectEnvVar(pod corev1.Pod, expect corev1.EnvVar) error {
+	for _, container := range pod.Spec.Containers {
 		for _, env := range container.Env {
-			if env.Name == acceleratorutils.TpuWorkerHostNames || env.Name == acceleratorutils.TpuWorkerId {
-				return true
+			if env.Name == expect.Name && env.Value != expect.Value {
+				return fmt.Errorf("incorrect env value for %s, expect %s, got %s", expect.Name, expect.Value, env.Value)
 			}
 		}
 	}
-	return false
+	return nil
+}
+
+func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
+	return hasAllEnvVarPopulated(pod, []string{acceleratorutils.TpuWorkerHostNames, acceleratorutils.TpuWorkerId})
 }
 
 func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {

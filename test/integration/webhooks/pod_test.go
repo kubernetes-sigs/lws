@@ -92,7 +92,8 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-1-1",
 						Namespace: ns.Name,
 						Labels: map[string]string{
-							leaderworkerset.SetNameLabelKey: "test",
+							leaderworkerset.SetNameLabelKey:    "test",
+							leaderworkerset.GroupIndexLabelKey: "1",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -102,6 +103,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				if diff := cmp.Diff(got.Labels, map[string]string{
 					leaderworkerset.SetNameLabelKey:     "test",
 					leaderworkerset.WorkerIndexLabelKey: "1",
+					leaderworkerset.GroupIndexLabelKey:  "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
@@ -183,7 +185,8 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-1-2",
 						Namespace: ns.Name,
 						Labels: map[string]string{
-							leaderworkerset.SetNameLabelKey: "test",
+							leaderworkerset.SetNameLabelKey:    "test",
+							leaderworkerset.GroupIndexLabelKey: "1",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -232,6 +235,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "5",
@@ -260,6 +264,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey: "5",
@@ -287,6 +292,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "2",
@@ -455,6 +461,32 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got)).To(gomega.BeTrue())
 				if got.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchExpressions[0].Key != "key" && got.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchExpressions[0].Key != "key" {
 					return fmt.Errorf("existing pod affinity terms are unexpectedly overridden")
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Pod has leader address env var populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+					},
+					Spec: testutils.MakePodSpecWithInitContainer(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasLWSEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect leader address env var for pod %s", got.Name)
+				}
+				expectedLeaderAddress := fmt.Sprintf("test-sample-1.test-sample.%s", expected.ObjectMeta.Namespace)
+				if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: leaderworkerset.LwsLeaderAddress, Value: expectedLeaderAddress}); err != nil {
+					return err
 				}
 				return nil
 			},
