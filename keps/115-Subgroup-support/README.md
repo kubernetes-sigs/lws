@@ -49,7 +49,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 Disaggregated serving is an optimization made for LLM inference workloads. It takes advantage of the fact that the two phases of inference have different characteristics and thus it can be beneficial to run them on different machines. State of the art LLM serving frameworks such as [vLLM](https://github.com/vllm-project/vllm/issues/2472) are already adding support for this optimization based on the paper released by [Microsoft](https://www.microsoft.com/en-us/research/publication/splitwise-efficient-generative-llm-inference-using-phase-splitting/). 
 
 
-This KEP is to have LeaderWorkerSet to support running both prefill/decode servers in one pod group (aka one replica)
+This KEP is to have LeaderWorkerSet to support running both prefill/decode servers in one pod group (aka one replica) for LLM on multi-host
 
 
 ## Proposal
@@ -150,7 +150,7 @@ LeaderWorkerSet supports the leader not requesting TPU resources. This raises a 
 a worker that does request TPU resources to run in the same vm. Therefore, there will be four workers + the leader, meaning that one of the workers will have a worker index of four, a
 as shown in the picture below. Because of the way the new labels are calculated, this worker will have a subgroup-index of two, creating three subgroup indices (0,1,2) even though there are only two TPU slices.
 
-![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/jobset/assets/86417275/251241ba-47b1-4ae3-a5d1-44cef8fb9440)
+![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/lws/assets/86417275/3a1292ac-7221-4324-acda-ff33702838f9)
 
 If the leader does not request TPU resources, then the labels will have the following values
 `leaderworkerset.sigs.k8s.io/subgroup-index = (workerIndex - 1) / subGroupSize`
