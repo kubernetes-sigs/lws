@@ -134,8 +134,8 @@ Suppose we have an LWS deployment with 2 replicas, subGroupSize 4, size 8, and t
 - `leaderworkerset.sigs.k8s.io/exclusive-topology: topology-1` 
 - `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: topology-2`
 
-The leader pod will first be scheduled on a placement group. Once a worker pod is created, it will follow the leader to the placement group. 
-Afterward, it will be scheduled into a nodepool that has other pods with the same subgroup index. So, the placement will look something like this
+The leader pod will first be scheduled on a placement group. Once a worker pod is created, it will follow the leader topology-1. 
+Afterward, it will be scheduled into topology-2 that has other pods with the same subgroup index. So, the placement will look something like this
 
 ![kep-115 scheduling](https://github.com/kubernetes-sigs/lws/assets/86417275/0f4f7757-bbf6-42f5-b178-bfee9f339957)
 
