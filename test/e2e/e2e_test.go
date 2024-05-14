@@ -151,6 +151,24 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		}
 	})
+	ginkgo.It("Can perform a rolling update with subgroupsize and MaxSurge set", func() {
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubGroupSize(1).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		// Wait for leaderWorkerSet to be ready then update it.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		// Happen during rolling update.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+
+		// Rolling update completes.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		// Wait for leaderWorkerSet to be ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+	})
 
 	ginkgo.It("Adds env vars to containers when using TPU", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
