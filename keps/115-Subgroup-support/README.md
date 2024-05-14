@@ -152,11 +152,14 @@ LeaderWorkerSet supports the leader not requesting TPU resources. This raises a 
 a worker that does request TPU resources to run in the same vm. Therefore, there will be four workers + the leader, meaning that one of the workers will have a worker index of four, a
 as shown in the picture below. Because of the way the subgroup indices are calculated, it creates three subgroup indices (0,1,2) even though there are only two TPU slices.
 
-![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/lws/assets/86417275/2d22fb99-2e41-463f-a7f6-40e4925ede7f)
 
-If the leader does not request TPU resources, then the labels will have the following values
+In order to mitigate the problem described above, if the leader does not request TPU resources, then the labels will have the following values
 `leaderworkerset.sigs.k8s.io/subgroup-index = (workerIndex - 1) / subGroupSize`
 `TPU_WORKER_ID = (workerIndex - 1) % subGroupSize`
+
+
+With the new values, this is how the placement will look like
+![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/lws/assets/86417275/2d22fb99-2e41-463f-a7f6-40e4925ede7f)
 
 ### Test Plan
 
