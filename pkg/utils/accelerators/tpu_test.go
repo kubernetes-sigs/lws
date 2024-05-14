@@ -116,9 +116,8 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					Name:      "test-sample-1-3",
 					Namespace: "default",
 					Labels: map[string]string{
-						leaderworkerset.WorkerIndexLabelKey:         "3",
-						leaderworkerset.SubGroupIndexLabelKey:       "0",
-						leaderworkerset.SubGroupWorkerIndexLabelKey: "3",
+						leaderworkerset.WorkerIndexLabelKey:   "3",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
 					},
 					Annotations: map[string]string{
 						LeaderRequestsTPUsAnnotationKey:           "true",
@@ -138,9 +137,8 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					Name:      "test-sample-1-7",
 					Namespace: "default",
 					Labels: map[string]string{
-						leaderworkerset.WorkerIndexLabelKey:         "7",
-						leaderworkerset.SubGroupIndexLabelKey:       "1",
-						leaderworkerset.SubGroupWorkerIndexLabelKey: "3",
+						leaderworkerset.WorkerIndexLabelKey:   "7",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
 					},
 					Annotations: map[string]string{
 						LeaderRequestsTPUsAnnotationKey:           "true",
@@ -160,9 +158,8 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					Name:      "test-sample-1-7",
 					Namespace: "default",
 					Labels: map[string]string{
-						leaderworkerset.WorkerIndexLabelKey:         "7",
-						leaderworkerset.SubGroupIndexLabelKey:       "1",
-						leaderworkerset.SubGroupWorkerIndexLabelKey: "2",
+						leaderworkerset.WorkerIndexLabelKey:   "7",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
 					},
 					Annotations: map[string]string{
 						LeaderRequestsTPUsAnnotationKey:           "true",
@@ -182,9 +179,8 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					Name:      "test-sample-1-5",
 					Namespace: "default",
 					Labels: map[string]string{
-						leaderworkerset.WorkerIndexLabelKey:         "5",
-						leaderworkerset.SubGroupIndexLabelKey:       "1",
-						leaderworkerset.SubGroupWorkerIndexLabelKey: "0",
+						leaderworkerset.WorkerIndexLabelKey:   "5",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SubGroupSizeAnnotationKey: "4",

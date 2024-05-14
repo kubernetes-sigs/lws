@@ -129,9 +129,6 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if foundSubEpKey && !exclusiveAffinityApplied(*pod, subEpKey) {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
-			if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = "0"
-			}
 		}
 	} else {
 		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
@@ -148,12 +145,10 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 
 			subGroupIndexKey := fmt.Sprint(workerIndex / subGroupSizeInt)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint(workerIndex % subGroupSizeInt)
 
 			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" && acceleratorutils.PodRequestsTPUs(pod.Spec) {
 				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-				pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey] = fmt.Sprint((workerIndex - 1) % subGroupSizeInt)
 			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
 			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]

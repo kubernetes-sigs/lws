@@ -168,13 +168,12 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.GroupIndexLabelKey:          "1",
-					leaderworkerset.SetNameLabelKey:             "test",
-					leaderworkerset.GroupUniqueHashLabelKey:     "uniqueHash",
-					leaderworkerset.SubGroupUniqueHashLabelKey:  "uniqueHash",
-					leaderworkerset.WorkerIndexLabelKey:         "0",
-					leaderworkerset.SubGroupIndexLabelKey:       "0",
-					leaderworkerset.SubGroupWorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:         "1",
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.GroupUniqueHashLabelKey:    "uniqueHash",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "0",
+					leaderworkerset.SubGroupIndexLabelKey:      "0",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
@@ -206,11 +205,10 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.SetNameLabelKey:             "test",
-					leaderworkerset.SubGroupUniqueHashLabelKey:  "uniqueHash",
-					leaderworkerset.WorkerIndexLabelKey:         "3",
-					leaderworkerset.SubGroupIndexLabelKey:       "1",
-					leaderworkerset.SubGroupWorkerIndexLabelKey: "1",
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "3",
+					leaderworkerset.SubGroupIndexLabelKey:      "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
@@ -241,11 +239,10 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
 				}
 				if diff := cmp.Diff(got.Labels, map[string]string{
-					leaderworkerset.SetNameLabelKey:             "test",
-					leaderworkerset.SubGroupUniqueHashLabelKey:  "uniqueHash",
-					leaderworkerset.WorkerIndexLabelKey:         "4",
-					leaderworkerset.SubGroupIndexLabelKey:       "1",
-					leaderworkerset.SubGroupWorkerIndexLabelKey: "1",
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "4",
+					leaderworkerset.SubGroupIndexLabelKey:      "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}

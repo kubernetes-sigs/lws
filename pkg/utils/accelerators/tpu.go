@@ -95,11 +95,6 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 	}
 
 	leaderName := pod.Name
-	tpuWorkerId, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupWorkerIndexLabelKey])
-	if err != nil {
-		return err
-	}
-
 	subGroupSize, err := strconv.Atoi(pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey])
 	if err != nil {
 		return err
@@ -108,6 +103,16 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 	subGroupIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.SubGroupIndexLabelKey])
 	if err != nil {
 		return err
+	}
+
+	workerIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
+	if err != nil {
+		return err
+	}
+	tpuWorkerId := (workerIndex) % subGroupSize
+
+	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
+		tpuWorkerId = (workerIndex - 1) % subGroupSize
 	}
 
 	start := subGroupSize*subGroupIndex + 1
