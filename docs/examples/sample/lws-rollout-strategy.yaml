@@ -1,0 +1,25 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-rollout
+spec:
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 2
+      maxSurge: 2
+  replicas: 4
+  leaderWorkerTemplate:
+    size: 4
+    workerTemplate:
+      spec:
+        containers:
+        - name: nginx
+          image: nginx:1.14.2
+          resources:
+            limits:
+              cpu: "100m"
+            requests:
+              cpu: "50m"
+          ports:
+          - containerPort: 8080

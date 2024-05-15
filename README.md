@@ -1,7 +1,7 @@
 # The LeaderWorkerSet API (LWS)
 
-LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across devices. 
-Design and proposal can be found here: http://bit.ly/k8s-LWS.
+LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across devices.
+Design and proposal can be found here: <http://bit.ly/k8s-LWS>.
 
 ## Conceptual view
 
@@ -13,7 +13,7 @@ Design and proposal can be found here: http://bit.ly/k8s-LWS.
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
   - **Parallel creation:** Pods in the group will have the same lifecycle and be created in parallel.
 - **Dual-template, one for leader and one for the workers:** A replica is a group of a single leader and a set of workers, and allow to specify a template for the workers and optionally use a second one for the leader pod.
-- **Multiple groups with identical specifications:** Supports creating multiple “replicas” of the above mentioned group. Each group is a single unit for rolling update, scaling, and maps to a single exclusive topology for placement. 
+- **Multiple groups with identical specifications:** Supports creating multiple “replicas” of the above mentioned group. Each group is a single unit for rolling update, scaling, and maps to a single exclusive topology for placement.
 - **A scale subresource:** A scale endpoint is exposed for HPA to dynamically scale the number replicas (aka number of groups)
 - **Rollout and Rolling update:** Supports performing rollout and rolling update at the group level, which means the groups are upgraded one by one as a unit (i.e. the pods within a group are updated together).
 - **Topology-aware placement:** Opt-in support for pods in the same group to be co-located in the same topology.
@@ -25,7 +25,7 @@ Read the [installation guide](/docs/setup/install.md) to learn more.
 
 ## Examples
 
-Read the [examples](/docs/example/sample/README.md) to learn more.
+Read the [examples](/docs/examples/sample/README.md) to learn more.
 
 ## Community, discussion, contribution, and support
 
@@ -39,6 +39,3 @@ You can reach the maintainers of this project at:
 ### Code of conduct
 
 Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
-
-[owners]: https://git.k8s.io/community/contributors/guide/owners.md
-[Creative Commons 4.0]: https://git.k8s.io/website/LICENSE
