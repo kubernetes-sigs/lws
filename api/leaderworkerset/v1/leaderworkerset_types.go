@@ -228,6 +228,8 @@ const (
 	// will be in progressing state. And any group in progress will make
 	// the lws as progressing state.
 	LeaderWorkerSetProgressing LeaderWorkerSetConditionType = "Progressing"
+
+	LeaderWorkerSetUpgradeInProgress LeaderWorkerSetConditionType = "UpgradeInProgress"
 )
 
 // +genclient

@@ -348,7 +348,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, updatedAndReadyCount := 0, 0, 0
+	readyCount, updatedCount, rollingUpdateCount, updatedAndReadyCount := 0, 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -363,6 +363,10 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			return false, err
 		}
 
+		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+		if err != nil {
+			return false, err
+		}
 		var ready, updated bool
 		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
 			ready = true
@@ -371,13 +375,17 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 			updated = true
 			updatedCount++
-		}
-
-		if ready && updated {
 			index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 			if err != nil {
 				return false, err
 			}
+			if index < int(*lws.Spec.Replicas) {
+				// Bursted replicas do not count when determining if rollingUpdate has been completed.
+				rollingUpdateCount++
+			}
+		}
+
+		if ready && updated {
 			// Bursted replicas should not be counted here.
 			if index < int(*lws.Spec.Replicas) {
 				updatedAndReadyCount++
@@ -394,7 +402,17 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		lws.Status.UpdatedReplicas = int32(updatedCount)
 		updateStatus = true
 	}
-	condition := makeCondition(updatedAndReadyCount == int(*lws.Spec.Replicas))
+
+	condition := makeCondition(leaderworkerset.LeaderWorkerSetProgressing)
+
+	if updatedAndReadyCount == int(*lws.Spec.Replicas) {
+		condition = makeCondition(leaderworkerset.LeaderWorkerSetAvailable)
+	}
+
+	if rollingUpdateCount < int(*lws.Spec.Replicas) && lws.Spec.RolloutStrategy.Type == "RollingUpdate" {
+		condition = makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
+	}
+	
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
@@ -579,15 +597,25 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	return statefulSetConfig, nil
 }
 
-func makeCondition(available bool) metav1.Condition {
+func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) metav1.Condition {
 	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
 	reason := "GroupsAreProgressing"
 	message := "Replicas are progressing"
 
-	if available {
+	switch conditionType {
+	case leaderworkerset.LeaderWorkerSetAvailable:
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
 		message = "All replicas are ready"
+		break
+	case leaderworkerset.LeaderWorkerSetUpgradeInProgress:
+		condtype = string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
+		reason = "GroupsAreUpgrading"
+		message = "Rolling Upgrade is in progress"
+	default:
+		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
+		reason = "GroupsAreProgressing"
+		message = "Replicas are progressing"
 	}
 
 	condition := metav1.Condition{
