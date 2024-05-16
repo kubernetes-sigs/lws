@@ -110,9 +110,10 @@ type LeaderWorkerSetSpec struct {
 	// +optional
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
-	// StartupPolicy defines the startup policy for the leader/worker statefulset.
-	// +kubebuilder:default=Default
-	// +kubebuilder:validation:Enum={Default,WaitForLeaderReady}
+	// StartupPolicy determines the startup policy for the worker statefulset.
+	// +kubebuilder:default=LeaderCreated
+	// +kubebuilder:validation:Enum={LeaderCreated,LeaderReady}
+	// +optional
 	StartupPolicy StartupPolicyType `json:"startupPolicy"`
 }
 
@@ -235,12 +236,11 @@ const (
 type StartupPolicyType string
 
 const (
-	// WaitForLeaderReady will create worker statefulset after the leader is ready.
-	WaitForLeaderReady StartupPolicyType = "WaitForLeaderReady"
+	// LeaderReady creates the workers statefulset after the leader pod is ready.
+	LeaderReadyStartupPolicy StartupPolicyType = "LeaderReady"
 
-	// Default will create worker statefulset immediately when pod controller receives
-	// the leader pod created event.
-	DefaultStartupPolicy StartupPolicyType = "Default"
+	// LeaderCreated creates the workers statefulset immediately after the leader pod is created.
+	LeaderCreatedStartupPolicy StartupPolicyType = "LeaderCreated"
 )
 
 // LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet

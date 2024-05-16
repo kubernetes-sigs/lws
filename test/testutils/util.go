@@ -237,11 +237,10 @@ func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *lead
 	}
 }
 
-// SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
-func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
+func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: statefulsetName}, &leaderPod); err != nil {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &leaderPod); err != nil {
 			return err
 		}
 
@@ -256,7 +255,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 
 	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: statefulsetName}, &leaderPod); err != nil {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &leaderPod); err != nil {
 			return err
 		}
 
@@ -268,7 +267,11 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
 		return k8sClient.Status().Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
 
+// SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
+func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
+	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
@@ -491,4 +494,18 @@ func DeleteNamespace(ctx context.Context, c client.Client, ns *corev1.Namespace)
 		return err
 	}
 	return nil
+}
+
+func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end int) {
+	var leaderSts appsv1.StatefulSet
+	gomega.Eventually(func() error {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts); err != nil {
+			return err
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+
+	for i := start; i < end; i++ {
+		SetLeaderPodToReady(ctx, k8sClient, fmt.Sprintf("%s-%d", leaderSts.Name, i), lws)
+	}
 }

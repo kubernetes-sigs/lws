@@ -32,6 +32,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/klog/v2"
+	k8spodutils "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -102,17 +103,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// logic for handling leader pod
-	// workerStsReplicas := *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size - 1
-	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.WaitForLeaderReady {
-		var leaderSts appsv1.StatefulSet
-		if err = r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderSts); err != nil {
-			return ctrl.Result{}, err
-		}
-		if leaderSts.Status.ReadyReplicas != *leaderSts.Spec.Replicas {
-			// workerStsReplicas = 0
-			// create the workers sts only after the leader is ready
-			return ctrl.Result{}, nil
-		}
+	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy && !k8spodutils.IsPodReady(&pod) {
+		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
+		return ctrl.Result{}, nil
 	}
 
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet)

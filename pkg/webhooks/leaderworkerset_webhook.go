@@ -61,10 +61,6 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 		lws.Spec.RolloutStrategy.Type = v1.RollingUpdateStrategyType
 	}
 
-	if lws.Spec.StartupPolicy == "" {
-		lws.Spec.StartupPolicy = v1.DefaultStartupPolicy
-	}
-
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
