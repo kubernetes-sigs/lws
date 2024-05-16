@@ -2,26 +2,28 @@
 
 Below are some examples to use different features of LeaderWorkerSet.
 
-Deploy a LeaderWorkerSet with 3 groups and 4 workers in each group. You can find an example [here](lws.yaml)
+## A Minimal Sample
 
-## Multi template for leader/worker pods
+Deploy a LeaderWorkerSet with 3 groups and 4 workers per group. You can find an example [here](lws.yaml)
 
-LWS support using different templates for leader and worker pods. You could find the example [here](lws-multi-template.yaml),
+## Multi-template for Pods
+
+LWS support using different templates for leader and worker pods. You can find the example [here](lws-multi-template.yaml),
 leader pod's spec is specified in leaderTemplate, and worker pods' spec is specified in workerTemplate.
 
 ## Restart Policy
 
 You could specify the RestartPolicy to define the failure handling schematics for the pod group.
 By default, only failed pods will be automatically restarted. When the RestartPolicy is set to RecreateGroupOnRestart, it will recreate
-the groups on container/pods restarts. All the worker pods will be recreated after the new leader pod is started.
+the pod group on container/pod restarts. All the worker pods will be recreated after the new leader pod is started.
 You can find an example [here](lws-restart-policy.yaml).
 
 ## Rollout Strategy
 
-Rolling update is vital to online services with zero downtime. For LLM, this is particularly important, which helps to mitigate the stockout situation. Two different configurations are supported in LWS, `maxUnavailable` and `maxSurge`:
+Rolling update is vital to online services with zero downtime. For LLM inference services, this is particularly important, which helps to mitigate stockout. Two different configurations are supported in LWS, `maxUnavailable` and `maxSurge`:
 
-- MaxUnavailable: It indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the leaderWorkerSet Replicas. Default to 1.
-- MaxSurge: It indicates how many extra replicas can be deployed during the update, default to 0.
+- `MaxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1.
+- `MaxSurge`: Indicates how many extra replicas can be deployed during the update. Defaults to 0.
 
 Note that maxSurge and maxUnavailable can not both be zero at the same time.
 
@@ -37,7 +39,7 @@ spec:
   replicas: 4
 ```
 
-We'll have a dry run for rolling update process, the rolling step is equal to maxUnavailable(2)+maxSurge(2)=4, three Replica status are simulated here:
+In the following we'll show how rolling update processes for a leaderWorkerSet with four replicas. The rolling step is equal to maxUnavailable(2)+maxSurge(2)=4, three Replica status are simulated here:
 
 - ✅ Replica has been updated
 - ❎ Replica hasn't been updated
@@ -57,7 +59,7 @@ We'll have a dry run for rolling update process, the rolling step is equal to ma
 
 ## Horizontal Pod AutoScaler (HPA)
 
-LWS expose a scale endpoint for HPA to trigger scaling. An example HPA yaml for LWS can be found [here](horizontal-pod-autoscaler.yaml)
+LWS supports the scale subresource for HPA to manage workload autoscaling. An example HPA yaml for LWS can be found [here](horizontal-pod-autoscaler.yaml)
 
 ## Exclusive Placement
 

@@ -6,7 +6,6 @@ spec:
   replicas: 3
   leaderWorkerTemplate:
     size: 4
-    restartPolicy: RecreateGroupOnPodRestart
     workerTemplate:
       spec:
         containers:
