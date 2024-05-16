@@ -79,8 +79,8 @@ const (
 	// the same subgroup will have the same unique hash value.
 	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
 
-	// Pods that are part of the same subgroup will have an annotation that is a unique
-	// hash value.
+	//An annotation with a unique hash value for the subgroup. Pods that are part of
+	// the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 )
 
@@ -142,7 +142,8 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
 	RestartPolicy RestartPolicyType `json:"restartPolicy"`
 
-	// SubGroupingPolicy describes the policy that will be applied when creating subgroups.
+	// SubGroupingPolicy describes the policy that will be applied when creating subgroups
+	// in each replica.
 	SubGroupingPolicy *SubGroupingPolicy `json:"subGroupingPolicy,omitempty"`
 }
 

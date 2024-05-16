@@ -118,10 +118,9 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize {
-			// Even if leader does not request TPU resources, this
-			// ensures that it will be scheduled in the same topology
-			// as SubGroup 0
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] != "" {
+			// The leader pod will always lands on SubGroup 0 in the same
+			// topology regardless if it requests any accelerator resources
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
@@ -137,7 +136,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
 		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize {
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] != "" {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
 			if err != nil {
 				return err
@@ -147,13 +146,14 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 
 			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" && acceleratorutils.PodRequestsTPUs(pod.Spec) {
+				// If the leader pod is not requesting TPU resource, shift the workerIndex by 1 to calculate the worker sub group
 				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
-			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 			if foundSubEpKey && !exclusiveAffinityApplied(*pod, subEpKey) {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
