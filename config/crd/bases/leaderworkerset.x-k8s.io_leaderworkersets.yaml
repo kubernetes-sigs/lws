@@ -7665,8 +7665,9 @@ spec:
                     format: int32
                     type: integer
                   subGroupingPolicy:
-                    description: SubGroupingPolicy describes the policy that will
-                      be applied when creating subgroups.
+                    description: |-
+                      SubGroupingPolicy describes the policy that will be applied when creating subgroups
+                      in each replica.
                     properties:
                       subGroupSize:
                         description: |-

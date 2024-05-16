@@ -118,7 +118,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] != "" {
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
 			// The leader pod will always lands on SubGroup 0 in the same
 			// topology regardless if it requests any accelerator resources
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
@@ -136,7 +136,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
 		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] != "" {
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
 			if err != nil {
 				return err

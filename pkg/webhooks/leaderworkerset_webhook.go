@@ -87,6 +87,7 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
+	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"))...)
 	return warnings, allErrs.ToAggregate()
 }
 
@@ -98,6 +99,7 @@ func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, obj runtime
 func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.Warnings, field.ErrorList) {
 	lws := obj.(*v1.LeaderWorkerSet)
 	specPath := field.NewPath("spec")
+	metadataPath := field.NewPath("metadata")
 
 	var allErrs field.ErrorList
 	// Ensure replicas and groups number are valid
@@ -137,6 +139,21 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 		// Both MaxSurge and MaxUnavailable cannot be zero.
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
 	}
+
+	if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
+		size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
+		subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize)
+		if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+		}
+	}
+
+	if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+		if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy == nil {
+			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
+		}
+	}
+
 	return nil, allErrs
 }
 
