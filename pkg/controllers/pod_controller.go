@@ -277,7 +277,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 	}
-	if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize != nil {
+	if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize))
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
