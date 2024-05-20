@@ -83,12 +83,19 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	warnings, allErrs := r.generalValidate(newObj)
+	specPath := field.NewPath("spec")
 
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
-	if newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
-		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"))...)
+	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"))...)
+	}
+	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot add subGroupSize"))
+	}
+	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize"))
 	}
 	return warnings, allErrs.ToAggregate()
 }
@@ -142,16 +149,19 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
 	}
 
-	if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
-		subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize)
+		subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
 		if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+		}
+		if size < subGroupSize {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
 		}
 	}
 
 	if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-		if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy == nil {
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
 		}
 	}

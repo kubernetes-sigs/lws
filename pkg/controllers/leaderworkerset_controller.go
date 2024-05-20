@@ -552,11 +552,11 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
-	if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
-	}
-	if lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize))
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
+			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+		}
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 

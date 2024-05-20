@@ -17,22 +17,22 @@ limitations under the License.
 
 package v1
 
-// SubGroupingPolicyApplyConfiguration represents an declarative configuration of the SubGroupingPolicy type for use
+// SubGroupPolicyApplyConfiguration represents an declarative configuration of the SubGroupPolicy type for use
 // with apply.
-type SubGroupingPolicyApplyConfiguration struct {
+type SubGroupPolicyApplyConfiguration struct {
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
-// SubGroupingPolicyApplyConfiguration constructs an declarative configuration of the SubGroupingPolicy type for use with
+// SubGroupPolicyApplyConfiguration constructs an declarative configuration of the SubGroupPolicy type for use with
 // apply.
-func SubGroupingPolicy() *SubGroupingPolicyApplyConfiguration {
-	return &SubGroupingPolicyApplyConfiguration{}
+func SubGroupPolicy() *SubGroupPolicyApplyConfiguration {
+	return &SubGroupPolicyApplyConfiguration{}
 }
 
 // WithSubGroupSize sets the SubGroupSize field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the SubGroupSize field is set to the value of the last call.
-func (b *SubGroupingPolicyApplyConfiguration) WithSubGroupSize(value int32) *SubGroupingPolicyApplyConfiguration {
+func (b *SubGroupPolicyApplyConfiguration) WithSubGroupSize(value int32) *SubGroupPolicyApplyConfiguration {
 	b.SubGroupSize = &value
 	return b
 }

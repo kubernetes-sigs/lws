@@ -142,9 +142,9 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
 	RestartPolicy RestartPolicyType `json:"restartPolicy"`
 
-	// SubGroupingPolicy describes the policy that will be applied when creating subgroups
+	// SubGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
-	SubGroupingPolicy *SubGroupingPolicy `json:"subGroupingPolicy,omitempty"`
+	SubGroupPolicy *SubGroupPolicy `json:"subGroupPolicy,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller
@@ -161,8 +161,8 @@ type RolloutStrategy struct {
 	RollingUpdateConfiguration *RollingUpdateConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 
-// SubGroupingPolicy describes the policy that will be applied when creating subgroups.
-type SubGroupingPolicy struct {
+// SubGroupPolicy describes the policy that will be applied when creating subgroups.
+type SubGroupPolicy struct {
 	// The number of pods per subgroup. This value is immutable,
 	// and must not be greater than LeaderWorkerSet.Spec.Size.
 	// Size must be divisible by subGroupSize in which case the

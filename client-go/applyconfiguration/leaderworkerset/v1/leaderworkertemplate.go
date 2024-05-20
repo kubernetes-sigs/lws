@@ -25,11 +25,11 @@ import (
 // LeaderWorkerTemplateApplyConfiguration represents an declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
 type LeaderWorkerTemplateApplyConfiguration struct {
-	LeaderTemplate    *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
-	WorkerTemplate    *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
-	Size              *int32                               `json:"size,omitempty"`
-	RestartPolicy     *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
-	SubGroupingPolicy *SubGroupingPolicyApplyConfiguration `json:"subGroupingPolicy,omitempty"`
+	LeaderTemplate *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
+	WorkerTemplate *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
+	Size           *int32                               `json:"size,omitempty"`
+	RestartPolicy  *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	SubGroupPolicy *SubGroupPolicyApplyConfiguration    `json:"subGroupPolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs an declarative configuration of the LeaderWorkerTemplate type for use with
@@ -70,10 +70,10 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderw
 	return b
 }
 
-// WithSubGroupingPolicy sets the SubGroupingPolicy field in the declarative configuration to the given value
+// WithSubGroupPolicy sets the SubGroupPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SubGroupingPolicy field is set to the value of the last call.
-func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupingPolicy(value *SubGroupingPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
-	b.SubGroupingPolicy = value
+// If called multiple times, the SubGroupPolicy field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupPolicy(value *SubGroupPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.SubGroupPolicy = value
 	return b
 }
