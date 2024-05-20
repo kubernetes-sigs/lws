@@ -25,7 +25,6 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -119,7 +118,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 	end := subGroupSize * (subGroupIndex + 1)
 	var hostnames []string
 
-	if podutils.LeaderPod(*pod) {
+	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		//Leader is the one requesting TPU resources, so should be included in hostnames
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
 		end -= 1

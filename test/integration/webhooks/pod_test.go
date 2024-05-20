@@ -190,6 +190,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "4",
@@ -209,6 +210,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
 					leaderworkerset.WorkerIndexLabelKey:        "3",
 					leaderworkerset.SubGroupIndexLabelKey:      "1",
+					leaderworkerset.GroupIndexLabelKey:         "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
