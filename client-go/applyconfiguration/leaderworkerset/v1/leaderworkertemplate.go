@@ -25,10 +25,11 @@ import (
 // LeaderWorkerTemplateApplyConfiguration represents an declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
 type LeaderWorkerTemplateApplyConfiguration struct {
-	LeaderTemplate *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
-	WorkerTemplate *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
-	Size           *int32                               `json:"size,omitempty"`
-	RestartPolicy  *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	LeaderTemplate    *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
+	WorkerTemplate    *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
+	Size              *int32                               `json:"size,omitempty"`
+	RestartPolicy     *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	SubGroupingPolicy *SubGroupingPolicyApplyConfiguration `json:"subGroupingPolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs an declarative configuration of the LeaderWorkerTemplate type for use with
@@ -66,5 +67,13 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithSize(value int32) *LeaderWo
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderworkersetv1.RestartPolicyType) *LeaderWorkerTemplateApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithSubGroupingPolicy sets the SubGroupingPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SubGroupingPolicy field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupingPolicy(value *SubGroupingPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.SubGroupingPolicy = value
 	return b
 }

@@ -87,7 +87,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
-	allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"))...)
+	if newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy != nil {
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupingPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "subGroupingPolicy", "subGroupSize"))...)
+	}
 	return warnings, allErrs.ToAggregate()
 }
 
