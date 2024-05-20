@@ -19,7 +19,9 @@ package pod
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/lws/test/testutils"
 )
 
 func TestContainerRestarted(t *testing.T) {
@@ -92,6 +94,69 @@ func TestContainerRestarted(t *testing.T) {
 			containerRestarted := ContainerRestarted(tc.pod)
 			if containerRestarted != tc.expectRestartedContainer {
 				t.Errorf("Expected value %t, got %t", tc.expectRestartedContainer, containerRestarted)
+			}
+		})
+	}
+}
+
+func TestAddLWSVariables(t *testing.T) {
+	tests := []struct {
+		name                     string
+		pod                      *corev1.Pod
+		expectedLwsLeaderAddress string
+	}{
+		{
+			name:                     "Leader pod",
+			pod:                      testutils.MakePodWithLabels("test-sample", "0", "", "default"),
+			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
+		},
+		{
+			name:                     "Worker pod",
+			pod:                      testutils.MakePodWithLabels("test-sample", "0", "1", "default"),
+			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
+		},
+		{
+			name:                     "Leader pod, group 1",
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "", "default"),
+			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
+		},
+		{
+			name:                     "Worker pod, group 1",
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "default"),
+			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
+		},
+		{
+			name:                     "Leader pod, group 1, non-default namespace",
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws"),
+			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
+		},
+		{
+			name:                     "Worker pod, group 1, non-default namespace",
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws"),
+			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := AddLWSVariables(tc.pod)
+			if err != nil {
+				t.Fatalf("Error parsing parent: %s", err.Error())
+			}
+			containers := append(tc.pod.Spec.Containers, tc.pod.Spec.InitContainers...)
+			if len(containers) == 0 {
+				t.Fatalf("No contianers in podSpec %+v", tc.pod.Spec)
+			}
+
+			for _, container := range containers {
+				if len(container.Env) == 0 {
+					t.Errorf("Failed to add LWS Variables to container %+v", container)
+				}
+
+				envVar := container.Env[0]
+				if diff := cmp.Diff(envVar.Value, tc.expectedLwsLeaderAddress); diff != "" {
+					t.Errorf("Unexpected lws leader address %s", diff)
+				}
 			}
 		})
 	}

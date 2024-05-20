@@ -139,6 +139,11 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return err
 		}
 	}
+
+	if err := podutils.AddLWSVariables(pod); err != nil {
+		return err
+	}
+
 	return nil
 }
 

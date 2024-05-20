@@ -58,6 +58,10 @@ const (
 	// This will be applied to all API objects including:
 	// leaderStatefulset, leaderPods, workerStatefulsets, workerPods.
 	TemplateRevisionHashKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
+
+	// Environment variable added to all containers in the LeaderWorkerSet to
+	// address the leader via the headless service.
+	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.

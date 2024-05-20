@@ -15,6 +15,8 @@ limitations under the License.
 package testutils
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -129,6 +131,24 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	}
 }
 
+func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string) *corev1.Pod {
+	podName := fmt.Sprintf("%s-%s-%s", setName, groupIndex, workerIndex)
+	if workerIndex == "0" {
+		podName = fmt.Sprintf("%s-%s", setName, groupIndex)
+	}
+	return &corev1.Pod{
+		Spec: MakePodSpecWithInitContainer(),
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				leaderworkerset.GroupIndexLabelKey: groupIndex,
+				leaderworkerset.SetNameLabelKey:    setName,
+			},
+		},
+	}
+}
+
 func MakeWorkerPodSpec() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -141,6 +161,23 @@ func MakeWorkerPodSpec() corev1.PodSpec {
 						Protocol:      "TCP",
 					},
 				},
+			},
+		},
+	}
+}
+
+func MakePodSpecWithInitContainer() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "test",
+				Image: "busybox",
+			},
+		},
+		InitContainers: []corev1.Container{
+			{
+				Name:  "init-test",
+				Image: "busybox",
 			},
 		},
 	}
