@@ -166,6 +166,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		return nil
 	}
 	for _, env := range container.Env {
+		// The assumption is that other env vars are added as well
 		if env.Name == TpuWorkerHostNames || env.Name == TpuWorkerId {
 			return nil
 		}

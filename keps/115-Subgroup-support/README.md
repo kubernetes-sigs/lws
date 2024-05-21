@@ -108,11 +108,11 @@ We extend the LeaderWorkerSet API to introduce a new field: subGroupSize to opt 
 ```
 type LeaderWorkerTemplate struct {
 
-  // SubGroupingPolicy describes the policy that will be applied when creating subgroups.
-	SubGroupingPolicy *SubGroupingPolicy 'json:"subGroupSize,omitempty'
+  // SubGroupPolicy describes the policy that will be applied when creating subgroups.
+	SubGroupPolicy *SubGroupPolicy 'json:"subGroupSize,omitempty'
 } 
 
-type SubGroupingPolicy struct {
+type SubGroupPolicy struct {
    // The number of pods per subgroup. This value is immutable,
    // and must not be greater than LeaderWorkerSet.Spec.Size.
    // Size must be divisible by subGroupSize in which case the 
