@@ -348,7 +348,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, rollingUpdateCount, updatedAndReadyCount := 0, 0, 0, 0
+	readyCount, updatedCount, rollingUpdateCount, currentWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -357,13 +357,17 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			continue
 		}
 
+		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+		if index < int(*lws.Spec.Replicas) {
+			currentWorkerCount++
+		}
+
 		var leaderPod corev1.Pod
 		if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod); err != nil {
 			log.Error(err, "Fetching leader pod")
 			return false, err
 		}
 
-		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 		if err != nil {
 			return false, err
 		}
@@ -409,10 +413,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		condition = makeCondition(leaderworkerset.LeaderWorkerSetAvailable)
 	}
 
-	if rollingUpdateCount < int(*lws.Spec.Replicas) && lws.Spec.RolloutStrategy.Type == "RollingUpdate" {
+	if rollingUpdateCount < currentWorkerCount && lws.Spec.RolloutStrategy.Type == "RollingUpdate" {
+		setCondition(lws, condition)
 		condition = makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
 	}
-	
+
 	updateCondition := setCondition(lws, condition)
 	// if condition changed, record events
 	if updateCondition {
