@@ -26,6 +26,9 @@ spec:
           protocol: TCP
           name: https
         resources:
+          limits:
+            cpu: 1
+            memory: 1Gi
           requests:
             cpu: 5m
             memory: 64Mi
