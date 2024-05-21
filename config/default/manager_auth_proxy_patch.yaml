@@ -27,7 +27,6 @@ spec:
           name: https
         resources:
           limits:
-            cpu: 1
             memory: 1Gi
           requests:
             cpu: 5m
