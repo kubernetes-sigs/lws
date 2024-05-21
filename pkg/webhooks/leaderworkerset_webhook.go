@@ -152,6 +152,9 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
 		subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
+		if subGroupSize < 1 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
+		}
 		if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
 		}
