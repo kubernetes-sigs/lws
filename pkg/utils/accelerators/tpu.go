@@ -115,7 +115,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
 	}
 
-	start := subGroupSize*subGroupIndex + 1
+	start := subGroupSize * subGroupIndex + 1
 	end := subGroupSize * (subGroupIndex + 1)
 	var hostnames []string
 
