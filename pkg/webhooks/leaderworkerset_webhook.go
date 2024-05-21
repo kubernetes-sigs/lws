@@ -150,17 +150,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
-		subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
-		if subGroupSize < 1 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
-		}
-		if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
-		}
-		if size < subGroupSize {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
-		}
+		allErrs = append(allErrs, validateUpdateSubGroupPolicy(specPath, lws)...)
 	}
 
 	if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
@@ -218,6 +208,22 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 	allErrs := field.ErrorList{}
 	if value < 0 {
 		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than or equal to 0"))
+	}
+	return allErrs
+}
+
+func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	allErrs := field.ErrorList{}
+	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
+	subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
+	if subGroupSize < 1 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
+	}
+	if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+	}
+	if size < subGroupSize {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
 	}
 	return allErrs
 }

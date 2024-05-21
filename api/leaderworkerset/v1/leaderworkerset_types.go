@@ -71,10 +71,6 @@ const (
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"
 
-	// SubGroupSize corresponds to LeaderWorkerSet.Spec.SubGroupSize. It is also
-	// used to determine if SubGroups are being used.
-	SubGroupWorkerIndexLabelKey string = "leaderworkerset.gke.io/subgroup-worker-index"
-
 	// An annotation with a unique hash value for the subgroup. Pods that are part of
 	// the same subgroup will have the same unique hash value.
 	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
