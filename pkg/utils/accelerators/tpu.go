@@ -216,3 +216,16 @@ func AddTPUAnnotations(leaderPod corev1.Pod, annotations map[string]string) {
 		annotations[LeaderRequestsTPUsAnnotationKey] = "true"
 	}
 }
+
+func AddTPUSubGroupLabels(pod *corev1.Pod, workerIndex int, subGroupSizeInt int) string {
+	var subGroupIndexKey string
+	// If the leader pod is not requesting TPU resource, shift the workerIndex by 1 to calculate the worker sub group
+	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
+		subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+		pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
+		return subGroupIndexKey
+	}
+	subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
+	pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
+	return subGroupIndexKey
+}

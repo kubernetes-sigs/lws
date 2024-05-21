@@ -142,12 +142,11 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 				return err
 			}
 
-			subGroupIndexKey := fmt.Sprint(workerIndex / subGroupSizeInt)
-			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-
-			if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" && acceleratorutils.PodRequestsTPUs(pod.Spec) {
-				// If the leader pod is not requesting TPU resource, shift the workerIndex by 1 to calculate the worker sub group
-				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+			var subGroupIndexKey string
+			if acceleratorutils.PodRequestsTPUs(pod.Spec) {
+				subGroupIndexKey = acceleratorutils.AddTPUSubGroupLabels(pod, workerIndex, subGroupSizeInt)
+			} else {
+				subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
