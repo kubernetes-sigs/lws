@@ -151,10 +151,8 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, validateUpdateSubGroupPolicy(specPath, lws)...)
-	}
-
-	if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+	}else {
+	    if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
 		}
 	}
