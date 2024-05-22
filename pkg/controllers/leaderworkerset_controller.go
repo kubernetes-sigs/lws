@@ -348,7 +348,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, rollingUpdateCount, currentWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
+	readyCount, updatedCount, updatedNonBurstWorkerCount, currentNonBurstWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -358,8 +358,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+		if err != nil {
+			return false, err
+		}
 		if index < int(*lws.Spec.Replicas) {
-			currentWorkerCount++
+			currentNonBurstWorkerCount++
 		}
 
 		var leaderPod corev1.Pod
@@ -379,13 +382,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 			updated = true
 			updatedCount++
-			index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
-			if err != nil {
-				return false, err
-			}
 			if index < int(*lws.Spec.Replicas) {
 				// Bursted replicas do not count when determining if rollingUpdate has been completed.
-				rollingUpdateCount++
+				updatedNonBurstWorkerCount++
 			}
 		}
 
@@ -409,7 +408,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	condition := makeCondition(leaderworkerset.LeaderWorkerSetProgressing)
 
-	if rollingUpdateCount < currentWorkerCount && lws.Spec.RolloutStrategy.Type == "RollingUpdate" {
+	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
+		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
+		// number of total replicas not including the burst replicas
 		setCondition(lws, condition)
 		condition = makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
 	}
