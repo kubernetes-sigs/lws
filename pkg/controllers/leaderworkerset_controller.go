@@ -409,13 +409,13 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	condition := makeCondition(leaderworkerset.LeaderWorkerSetProgressing)
 
-	if updatedAndReadyCount == int(*lws.Spec.Replicas) {
-		condition = makeCondition(leaderworkerset.LeaderWorkerSetAvailable)
-	}
-
 	if rollingUpdateCount < currentWorkerCount && lws.Spec.RolloutStrategy.Type == "RollingUpdate" {
 		setCondition(lws, condition)
 		condition = makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
+	}
+
+	if updatedAndReadyCount == int(*lws.Spec.Replicas) {
+		condition = makeCondition(leaderworkerset.LeaderWorkerSetAvailable)
 	}
 
 	updateCondition := setCondition(lws, condition)
@@ -603,16 +603,12 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 }
 
 func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) metav1.Condition {
-	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
-	reason := "GroupsAreProgressing"
-	message := "Replicas are progressing"
-
+	var condtype, reason, message string
 	switch conditionType {
 	case leaderworkerset.LeaderWorkerSetAvailable:
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
 		message = "All replicas are ready"
-		break
 	case leaderworkerset.LeaderWorkerSetUpgradeInProgress:
 		condtype = string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
 		reason = "GroupsAreUpgrading"
@@ -673,6 +669,12 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 		(condition1.Type == string(leaderworkerset.LeaderWorkerSetProgressing) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
 	}
+
+	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)) ||
+		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
+		return true
+	}
+
 	return false
 }
 

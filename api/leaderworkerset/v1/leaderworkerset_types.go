@@ -229,6 +229,9 @@ const (
 	// the lws as progressing state.
 	LeaderWorkerSetProgressing LeaderWorkerSetConditionType = "Progressing"
 
+	// LeaderWorkerSetUpgradeInProgress means lws is performing a rolling update. UpgradeInProgress
+	// is considered when the lws template is updated. If only replicas is modified, it will
+	// not be considered as UpgradeInProgress.
 	LeaderWorkerSetUpgradeInProgress LeaderWorkerSetConditionType = "UpgradeInProgress"
 )
 
