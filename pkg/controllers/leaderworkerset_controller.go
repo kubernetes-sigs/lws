@@ -406,23 +406,22 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		updateStatus = true
 	}
 
-	condition := makeCondition(leaderworkerset.LeaderWorkerSetProgressing)
-
+	var conditions []metav1.Condition
 	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
-		setCondition(lws, condition)
-		condition = makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
+	} else {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
 
-	if updatedAndReadyCount == int(*lws.Spec.Replicas) {
-		condition = makeCondition(leaderworkerset.LeaderWorkerSetAvailable)
-	}
-
-	updateCondition := setCondition(lws, condition)
+	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
 	if updateCondition {
-		r.Record.Eventf(lws, corev1.EventTypeNormal, condition.Reason, condition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
+		r.Record.Eventf(lws, corev1.EventTypeNormal, conditions[0].Reason, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, nil
 }
@@ -628,6 +627,15 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) m
 		Message:            message,
 	}
 	return condition
+}
+
+func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
+	shouldUpdate := false
+	for _, condition := range conditions {
+		shouldUpdate = shouldUpdate || setCondition(lws, condition)
+	}
+
+	return shouldUpdate
 }
 
 func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Condition) bool {
