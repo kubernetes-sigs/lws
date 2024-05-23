@@ -172,12 +172,32 @@ func MakePodSpecWithInitContainer() corev1.PodSpec {
 			{
 				Name:  "test",
 				Image: "busybox",
+				Env: []corev1.EnvVar{
+					corev1.EnvVar{
+						Name:  "key1",
+						Value: "value1",
+					},
+					corev1.EnvVar{
+						Name:  "key2",
+						Value: "value2",
+					},
+				},
 			},
 		},
 		InitContainers: []corev1.Container{
 			{
 				Name:  "init-test",
 				Image: "busybox",
+				Env: []corev1.EnvVar{
+					corev1.EnvVar{
+						Name:  "key1",
+						Value: "value1",
+					},
+					corev1.EnvVar{
+						Name:  "key2",
+						Value: "value2",
+					},
+				},
 			},
 		},
 	}

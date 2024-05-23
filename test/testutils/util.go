@@ -351,6 +351,16 @@ func CheckContainerHasCorrectEnvVar(pod corev1.Pod, expect corev1.EnvVar) error 
 	return nil
 }
 
+func IsContainerFirstEnvVarLWSLeaderAddress(pod corev1.Pod) error {
+	for _, container := range pod.Spec.Containers {
+		// check the first env var is the LWS_LEADER_ADDRESS
+		if container.Env[0].Name != leaderworkerset.LwsLeaderAddress {
+			return fmt.Errorf("expecting first container env var to be LWS_LEADER_ADDRESS, but got %s", container.Env[0].Name)
+		}
+	}
+	return nil
+}
+
 func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
 	return hasAllEnvVarPopulated(pod, []string{acceleratorutils.TpuWorkerHostNames, acceleratorutils.TpuWorkerId})
 }
