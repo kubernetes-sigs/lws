@@ -97,7 +97,7 @@ func addEnvVarIfNotExists(c *corev1.Container, e corev1.EnvVar) {
 			return
 		}
 	}
-	c.Env = append(c.Env, e)
+	c.Env = append([]corev1.EnvVar{e}, c.Env...)
 }
 
 // AddLWSVariables adds LWS_LEADER_ADDRESS environment variable to every container.
