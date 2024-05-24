@@ -281,6 +281,26 @@ func ExpectLeaderWorkerSetNotProgressing(ctx context.Context, k8sClient client.C
 	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
 }
 
+func ExpectLeaderWorkerSetUpgradeInProgress(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	condition := metav1.Condition{
+		Type:    string(leaderworkerset.LeaderWorkerSetUpgradeInProgress),
+		Status:  metav1.ConditionTrue,
+		Message: message,
+	}
+	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
+}
+
+func ExpectLeaderWorkerSetNoUpgradeInProgress(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	condition := metav1.Condition{
+		Type:    string(leaderworkerset.LeaderWorkerSetUpgradeInProgress),
+		Status:  metav1.ConditionFalse,
+		Message: message,
+	}
+	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
+}
+
 func ExpectLeaderWorkerSetStatusReplicas(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, readyReplicas, updatedReplicas int) {
 	ginkgo.By("checking leaderworkerset status replicas")
 	gomega.Eventually(func() error {

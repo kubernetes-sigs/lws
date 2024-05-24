@@ -348,7 +348,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, updatedAndReadyCount := 0, 0, 0
+	readyCount, updatedCount, updatedNonBurstWorkerCount, currentNonBurstWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
 
 	// Iterate through all statefulsets.
@@ -357,12 +357,23 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			continue
 		}
 
+		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+		if err != nil {
+			return false, err
+		}
+		if index < int(*lws.Spec.Replicas) {
+			currentNonBurstWorkerCount++
+		}
+
 		var leaderPod corev1.Pod
 		if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod); err != nil {
 			log.Error(err, "Fetching leader pod")
 			return false, err
 		}
 
+		if err != nil {
+			return false, err
+		}
 		var ready, updated bool
 		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
 			ready = true
@@ -371,13 +382,13 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 			updated = true
 			updatedCount++
+			if index < int(*lws.Spec.Replicas) {
+				// Bursted replicas do not count when determining if rollingUpdate has been completed.
+				updatedNonBurstWorkerCount++
+			}
 		}
 
 		if ready && updated {
-			index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
-			if err != nil {
-				return false, err
-			}
 			// Bursted replicas should not be counted here.
 			if index < int(*lws.Spec.Replicas) {
 				updatedAndReadyCount++
@@ -394,11 +405,23 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		lws.Status.UpdatedReplicas = int32(updatedCount)
 		updateStatus = true
 	}
-	condition := makeCondition(updatedAndReadyCount == int(*lws.Spec.Replicas))
-	updateCondition := setCondition(lws, condition)
+
+	var conditions []metav1.Condition
+	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
+		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
+		// number of total replicas not including the burst replicas
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
+	} else {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
+	}
+
+	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
 	if updateCondition {
-		r.Record.Eventf(lws, corev1.EventTypeNormal, condition.Reason, condition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
+		r.Record.Eventf(lws, corev1.EventTypeNormal, conditions[0].Reason, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, nil
 }
@@ -579,15 +602,21 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	return statefulSetConfig, nil
 }
 
-func makeCondition(available bool) metav1.Condition {
-	condtype := string(leaderworkerset.LeaderWorkerSetProgressing)
-	reason := "GroupsAreProgressing"
-	message := "Replicas are progressing"
-
-	if available {
+func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) metav1.Condition {
+	var condtype, reason, message string
+	switch conditionType {
+	case leaderworkerset.LeaderWorkerSetAvailable:
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
 		message = "All replicas are ready"
+	case leaderworkerset.LeaderWorkerSetUpgradeInProgress:
+		condtype = string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
+		reason = "GroupsAreUpgrading"
+		message = "Rolling Upgrade is in progress"
+	default:
+		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
+		reason = "GroupsAreProgressing"
+		message = "Replicas are progressing"
 	}
 
 	condition := metav1.Condition{
@@ -598,6 +627,15 @@ func makeCondition(available bool) metav1.Condition {
 		Message:            message,
 	}
 	return condition
+}
+
+func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
+	shouldUpdate := false
+	for _, condition := range conditions {
+		shouldUpdate = shouldUpdate || setCondition(lws, condition)
+	}
+
+	return shouldUpdate
 }
 
 func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Condition) bool {
@@ -640,6 +678,12 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 		(condition1.Type == string(leaderworkerset.LeaderWorkerSetProgressing) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
 	}
+
+	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)) ||
+		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
+		return true
+	}
+
 	return false
 }
 

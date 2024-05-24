@@ -350,6 +350,28 @@ func TestExclusiveConditionTypes(t *testing.T) {
 			condition1: metav1.Condition{Type: "Progressing"},
 			condition2: metav1.Condition{Type: "Progressing"},
 		},
+		{
+			name:                          "First Condition UpradeInProgress, second Available",
+			condition1:                    metav1.Condition{Type: "UpgradeInProgress"},
+			condition2:                    metav1.Condition{Type: "Available"},
+			expectExclusiveConditionTypes: true,
+		},
+		{
+			name:                          "First Condition Available, second UpgradeInProgress",
+			condition1:                    metav1.Condition{Type: "Available"},
+			condition2:                    metav1.Condition{Type: "UpgradeInProgress"},
+			expectExclusiveConditionTypes: true,
+		},
+		{
+			name:       "First Condition Progressing, second UpgradeInProgress",
+			condition1: metav1.Condition{Type: "Progressing"},
+			condition2: metav1.Condition{Type: "UpgradeInProgress"},
+		},
+		{
+			name:       "First Condition UpgradeInProgress, second Progressing",
+			condition1: metav1.Condition{Type: "UpgradeInProgress"},
+			condition2: metav1.Condition{Type: "Progressing"},
+		},
 	}
 
 	for _, tc := range tests {
