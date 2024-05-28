@@ -175,11 +175,10 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if err := acceleratorutils.AddTPUVariablesSubGroup(pod, podCount); err != nil {
 				return err
 			}
-			return nil
-		}
-
-		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
-			return err
+		} else {
+			if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
+				return err
+			}
 		}
 	}
 

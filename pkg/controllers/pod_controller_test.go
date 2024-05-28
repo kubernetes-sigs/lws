@@ -129,7 +129,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				Replica(1).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
-					"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+					"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 				}).Size(2).Obj(),
 			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
@@ -166,7 +166,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
 								"leaderworkerset.sigs.k8s.io/leader-name":        "test-sample",
-								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+								"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
@@ -205,7 +205,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				Replica(1).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
-					leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+					leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 				}).Size(2).SubGroupSize(2).Obj(),
 			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
@@ -242,7 +242,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",
 								"leaderworkerset.sigs.k8s.io/leader-name":         "test-sample",
-								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 							},
 						},

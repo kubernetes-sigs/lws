@@ -71,12 +71,11 @@ const (
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"
 
-	// An annotation with a unique hash value for the subgroup. Pods that are part of
-	// the same subgroup will have the same unique hash value.
+	// SubGroupSize will be added to pods as an annotation which corresponds to
+	// LeaderWorkerSet.Spec.SubGroupPolicy.SubGroupSize
 	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
 
-	// An annotation with a unique hash value for the subgroup. Pods that are part of
-	// the same subgroup will have the same unique hash value.
+	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 )
 

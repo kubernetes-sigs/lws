@@ -227,6 +227,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "4",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "5",
@@ -245,6 +246,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
 					leaderworkerset.WorkerIndexLabelKey:        "4",
 					leaderworkerset.SubGroupIndexLabelKey:      "1",
+					leaderworkerset.GroupIndexLabelKey:         "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
@@ -403,6 +405,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                "10",
@@ -460,6 +463,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "7",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "11",
@@ -547,7 +551,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -570,8 +574,8 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                 "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey:         "cloud.google.com/gke-nodepool",
-							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool-2",
+							leaderworkerset.ExclusiveKeyAnnotationKey:         "topologyKey",
+							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey-2",
 							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 						},
 					},
@@ -593,11 +597,12 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:                 "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey:         "cloud.google.com/gke-nodepool",
-							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool-2",
+							leaderworkerset.ExclusiveKeyAnnotationKey:         "topologyKey",
+							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey-2",
 							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 						},
 					},
@@ -644,7 +649,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -669,7 +674,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),

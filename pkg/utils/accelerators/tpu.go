@@ -115,7 +115,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
 	}
 
-	start := subGroupSize * subGroupIndex + 1
+	start := subGroupSize*subGroupIndex + 1
 	end := subGroupSize * (subGroupIndex + 1)
 	var hostnames []string
 
@@ -129,13 +129,13 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
 		}
 		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" && subGroupIndex == 0 {
-			//SubGroup 0 contains the leader, and the leader is requesting TPU resources, so
-			//the hostname list should shift to the left by one
+			// SubGroup 0 contains the leader, and the leader is requesting TPU resources, so
+			// the hostname list should shift to the left by one
 			end -= 1
 			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
 		} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
-			//Since the first subGroup has been shifted to the left by one, all other subsequent
-			//subGroups should be shifted as well
+			// Since the first subGroup has been shifted to the left by one, all other subsequent
+			// subGroups should be shifted as well
 			start -= 1
 			end -= 1
 		}
