@@ -75,7 +75,7 @@ const (
 	// the same subgroup will have the same unique hash value.
 	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
 
-	//An annotation with a unique hash value for the subgroup. Pods that are part of
+	// An annotation with a unique hash value for the subgroup. Pods that are part of
 	// the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 )
