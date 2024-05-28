@@ -115,7 +115,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			name: "1 replica, size 2 , with empty leader template, exclusive placement enabled",
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Annotation(map[string]string{
-					"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+					"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 				}).Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
@@ -157,7 +157,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
-								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+								"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
@@ -182,7 +182,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name: "2 replica, size 2, with leader template, exclusive placement enabled",
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
-				"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+				"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 			}).Replica(2).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
@@ -225,7 +225,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
-								"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+								"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
@@ -315,7 +315,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name: "1 replica, size 2, with leader template, exclusive placement enabled, subgroupsize enabled",
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
-				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 			}).SubGroupSize(2).Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
@@ -359,7 +359,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
-								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
