@@ -95,6 +95,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:    "test",
 							leaderworkerset.GroupIndexLabelKey: "1",
 						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
 				}
@@ -120,6 +123,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey: "test",
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -280,6 +286,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:     "test",
 							leaderworkerset.WorkerIndexLabelKey: "0",
 						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
 				}
@@ -300,6 +309,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:    "test",
 							leaderworkerset.GroupIndexLabelKey: "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "3",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -728,6 +740,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "1",
 							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
 					Spec: testutils.MakePodSpecWithInitContainer(),

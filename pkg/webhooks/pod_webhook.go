@@ -92,7 +92,14 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	if !found {
 		return nil
 	}
-
+	size, exist := pod.Annotations[leaderworkerset.SizeAnnotationKey]
+	if !exist {
+		return fmt.Errorf("size annotation is unexpectedly missing for pod %s", pod.Name)
+	}
+	podCount, err := strconv.Atoi(size)
+	if err != nil {
+		return err
+	}
 	// adding labels for pods
 	if podutils.LeaderPod(*pod) {
 		// add group index label to group pods
@@ -141,10 +148,11 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if err != nil {
 				return err
 			}
-
 			var subGroupIndexKey string
-			if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-				subGroupIndexKey = acceleratorutils.AddTPUSubGroupLabels(pod, workerIndex, subGroupSizeInt)
+			if (podCount-1)%subGroupSizeInt == 0 {
+				// Leader is considered as extra pod, it is part of the first group
+				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
+				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			} else {
 				subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
 				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
@@ -161,14 +169,6 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 
 	// injecting env vars if needed
 	if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-		size, exist := pod.Annotations[leaderworkerset.SizeAnnotationKey]
-		if !exist {
-			return fmt.Errorf("size annotation is unexpectedly missing for pod %s", pod.Name)
-		}
-		podCount, err := strconv.Atoi(size)
-		if err != nil {
-			return err
-		}
 
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize {
