@@ -120,7 +120,7 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 	var hostnames []string
 
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
-		//Leader is the one requesting TPU resources, so should be included in hostnames
+		// The leader requests TPU resources, so it should be included in hostnames.
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
 		end -= 1
 	} else {
