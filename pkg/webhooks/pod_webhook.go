@@ -120,7 +120,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		} else {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
-		
+
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
@@ -130,7 +130,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-			
+
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
@@ -147,20 +147,12 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if err != nil {
 				return err
 			}
-			var subGroupIndexKey string
-			if (podCount-1)%subGroupSizeInt == 0 {
-				// Leader is considered as extra pod, it is part of the first group
-				subGroupIndexKey = fmt.Sprint((workerIndex - 1) / subGroupSizeInt)
-				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			} else {
-				subGroupIndexKey = fmt.Sprint(workerIndex / subGroupSizeInt)
-				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-			subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
-			if foundSubEpKey && !exclusiveAffinityApplied(*pod, subEpKey) {
+			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
 		}
@@ -168,16 +160,8 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 
 	// injecting env vars if needed
 	if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-
-		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize {
-			if err := acceleratorutils.AddTPUVariablesSubGroup(pod, podCount); err != nil {
-				return err
-			}
-		} else {
-			if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
-				return err
-			}
+		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
+			return err
 		}
 	}
 
@@ -194,6 +178,9 @@ func genGroupUniqueKey(ns string, podName string) string {
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
 func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+	if exclusiveAffinityApplied(*pod, topologyKey) {
+		return
+	}
 	if pod.Spec.Affinity == nil {
 		pod.Spec.Affinity = &corev1.Affinity{}
 	}
@@ -252,4 +239,12 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 		}
 	}
 	return hasAffinity && hasAntiAffinity
+}
+
+func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+	if (podCount-1)%subGroupSize == 0 {
+		// Leader is considered as extra pod, it is part of the first group
+		return fmt.Sprint((workerIndex - 1) / subGroupSize)
+	}
+	return fmt.Sprint(workerIndex / subGroupSize)
 }

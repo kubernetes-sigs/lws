@@ -81,7 +81,7 @@ func getContainerRequestingTPUs(spec *corev1.PodSpec) *corev1.Container {
 	return nil
 }
 
-func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
+func addTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 	container := getContainerRequestingTPUs(&pod.Spec)
 	if container == nil {
 		return nil
@@ -161,6 +161,10 @@ func AddTPUVariablesSubGroup(pod *corev1.Pod, size int) error {
 
 // AddTPUVariables adds TPU related environment variables to containers
 func AddTPUVariables(pod *corev1.Pod, size int) error {
+	_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+	if foundSubGroupSize {
+		return addTPUVariablesSubGroup(pod, size)
+	}
 	container := getContainerRequestingTPUs(&pod.Spec)
 	if container == nil {
 		return nil
