@@ -126,8 +126,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
-			// The leader pod will always lands on SubGroup 0 in the same
-			// topology regardless if it requests any accelerator resources
+			// The leader pod always lands on SubGroup 0.
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
