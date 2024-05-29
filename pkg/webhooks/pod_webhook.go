@@ -120,8 +120,8 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		} else {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
-		epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-		if (foundEpKey) && !exclusiveAffinityApplied(*pod, epKey) {
+		
+		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
