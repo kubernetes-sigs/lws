@@ -27,6 +27,10 @@ const (
 	// be used for 1:1 exclusive scheduling.
 	ExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology"
 
+	// Subgroup exclusive topology annotation is used to specify the topology
+	// which will be used for 1:1 exclusive scheduling in a given subgroup.
+	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"
+
 	// Set name label will record the leaderworkerset name that those resources
 	// (Pod/Service/StatefulSets) belong to.
 	SetNameLabelKey string = "leaderworkerset.sigs.k8s.io/name"
@@ -62,6 +66,17 @@ const (
 	// Environment variable added to all containers in the LeaderWorkerSet to
 	// address the leader via the headless service.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
+
+	// Subgroup index tracks which subgroup the pod is part of. It will be added
+	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
+	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"
+
+	// SubGroupSize will be added to pods as an annotation which corresponds to
+	// LeaderWorkerSet.Spec.SubGroupPolicy.SubGroupSize
+	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
+
+	// Pods that are part of the same subgroup will have the same unique hash value.
+	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -121,6 +136,10 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:default=Default
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
 	RestartPolicy RestartPolicyType `json:"restartPolicy"`
+
+	// SubGroupPolicy describes the policy that will be applied when creating subgroups
+	// in each replica.
+	SubGroupPolicy *SubGroupPolicy `json:"subGroupPolicy,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller
@@ -135,6 +154,17 @@ type RolloutStrategy struct {
 	// RollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
 	// +optional
 	RollingUpdateConfiguration *RollingUpdateConfiguration `json:"rollingUpdateConfiguration,omitempty"`
+}
+
+// SubGroupPolicy describes the policy that will be applied when creating subgroups.
+type SubGroupPolicy struct {
+	// The number of pods per subgroup. This value is immutable,
+	// and must not be greater than LeaderWorkerSet.Spec.Size.
+	// Size must be divisible by subGroupSize in which case the
+	// subgroups will be of equal size. Or size - 1 is divisible
+	// by subGroupSize, in which case the leader is considered as
+	// the extra pod, and will be part of the first subgroup.
+	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.

@@ -7664,6 +7664,22 @@ spec:
                       Default to 1.
                     format: int32
                     type: integer
+                  subGroupPolicy:
+                    description: |-
+                      SubGroupPolicy describes the policy that will be applied when creating subgroups
+                      in each replica.
+                    properties:
+                      subGroupSize:
+                        description: |-
+                          The number of pods per subgroup. This value is immutable,
+                          and must not be greater than LeaderWorkerSet.Spec.Size.
+                          Size must be divisible by subGroupSize in which case the
+                          subgroups will be of equal size. Or size - 1 is divisible
+                          by subGroupSize, in which case the leader is considered as
+                          the extra pod, and will be part of the first subgroup.
+                        format: int32
+                        type: integer
+                    type: object
                   workerTemplate:
                     description: WorkerTemplate defines the pod template for worker
                       pods.

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,6 +68,8 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		name           string
 		pod            *corev1.Pod
 		groupUniqueKey string
+		topologyKey    string
+		podAffinityKey string
 		expectedPod    *corev1.Pod
 	}{
 		{
@@ -77,6 +80,8 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				},
 			},
 			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -133,6 +138,8 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				},
 			},
 			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -140,42 +147,10 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
 						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
-								{
-									TopologyKey: "topologyKey",
-								},
-								{
-									TopologyKey: "topologyKey",
-									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "In",
-											Values:   []string{"test-key"},
-										},
-									}},
-								},
-							},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
 						},
 						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
-								{
-									TopologyKey: "topologyKey",
-								},
-								{
-									TopologyKey: "topologyKey",
-									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "Exists",
-										},
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "NotIn",
-											Values:   []string{"test-key"},
-										},
-									}},
-								},
-							},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
 						},
 					},
 				},
@@ -185,7 +160,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			SetExclusiveAffinities(tc.pod, tc.groupUniqueKey)
+			SetExclusiveAffinities(tc.pod, tc.groupUniqueKey, tc.topologyKey, tc.podAffinityKey)
 			if diff := cmp.Diff(tc.pod, tc.expectedPod); diff != "" {
 				t.Errorf("unexpected set exclusive affinities operation: %s", diff)
 			}
@@ -198,6 +173,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		name                              string
 		pod                               corev1.Pod
 		expectedAppliedExclusivePlacement bool
+		topologyKey                       string
 	}{
 		{
 			name: "Has annotiation, Pod Affinity and Pod AntiAffinity",
@@ -219,6 +195,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 				},
 			},
 			expectedAppliedExclusivePlacement: true,
+			topologyKey:                       "topologyKey",
 		},
 		{
 			name: "Has annotiation, Pod Affinity, doesn't have Pod AntiAffinity",
@@ -237,6 +214,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 				},
 			},
 			expectedAppliedExclusivePlacement: false,
+			topologyKey:                       "topologyKey",
 		},
 		{
 			name: "Has annotiation, Pod AntiAffinity, doesn't have Pod Affinity",
@@ -255,6 +233,7 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 				},
 			},
 			expectedAppliedExclusivePlacement: false,
+			topologyKey:                       "topologyKey",
 		},
 		{
 			name: "Has annotiation, Pod Affinity and Pod AntiAffinity, Topology Key doesn't match",
@@ -276,12 +255,13 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 				},
 			},
 			expectedAppliedExclusivePlacement: false,
+			topologyKey:                       "topologyKey",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			appliedExclusivePlacement := exclusiveAffinityApplied(tc.pod)
+			appliedExclusivePlacement := exclusiveAffinityApplied(tc.pod, tc.topologyKey)
 			if appliedExclusivePlacement != tc.expectedAppliedExclusivePlacement {
 				t.Errorf("Expected value %t, got %t", tc.expectedAppliedExclusivePlacement, appliedExclusivePlacement)
 			}

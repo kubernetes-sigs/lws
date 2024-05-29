@@ -40,6 +40,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &leaderworkersetv1.RollingUpdateConfigurationApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("RolloutStrategy"):
 		return &leaderworkersetv1.RolloutStrategyApplyConfiguration{}
+	case v1.SchemeGroupVersion.WithKind("SubGroupPolicy"):
+		return &leaderworkersetv1.SubGroupPolicyApplyConfiguration{}
 
 	}
 	return nil

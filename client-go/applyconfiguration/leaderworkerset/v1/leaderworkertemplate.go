@@ -29,6 +29,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	WorkerTemplate *v1.PodTemplateSpec                  `json:"workerTemplate,omitempty"`
 	Size           *int32                               `json:"size,omitempty"`
 	RestartPolicy  *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	SubGroupPolicy *SubGroupPolicyApplyConfiguration    `json:"subGroupPolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs an declarative configuration of the LeaderWorkerTemplate type for use with
@@ -66,5 +67,13 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithSize(value int32) *LeaderWo
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderworkersetv1.RestartPolicyType) *LeaderWorkerTemplateApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithSubGroupPolicy sets the SubGroupPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SubGroupPolicy field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupPolicy(value *SubGroupPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.SubGroupPolicy = value
 	return b
 }

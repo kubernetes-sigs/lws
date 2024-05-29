@@ -92,12 +92,18 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	if !found {
 		return nil
 	}
-
+	size, exist := pod.Annotations[leaderworkerset.SizeAnnotationKey]
+	if !exist {
+		return fmt.Errorf("size annotation is unexpectedly missing for pod %s", pod.Name)
+	}
+	podCount, err := strconv.Atoi(size)
+	if err != nil {
+		return err
+	}
 	// adding labels for pods
 	if podutils.LeaderPod(*pod) {
 		// add group index label to group pods
-		_, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-		if !found {
+		if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if groupIndex == -1 {
 				return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
@@ -105,17 +111,26 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 		}
 		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
-		_, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		var groupUniqueKey string
-		if !foundGroupKey {
+		if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
 			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 		} else {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
-		_, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-		if foundEpKey && !exclusiveAffinityApplied(*pod) {
-			SetExclusiveAffinities(pod, groupUniqueKey)
+		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
+			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+		}
+		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
+			// The leader pod always lands on SubGroup 0.
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
+			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
+			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+
+			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+			}
 		}
 	} else {
 		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
@@ -123,18 +138,25 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
+		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
+			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
+			if err != nil {
+				return err
+			}
+			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
+			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
+			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+			}
+		}
 	}
 
 	// injecting env vars if needed
 	if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-		size, exist := pod.Annotations[leaderworkerset.SizeAnnotationKey]
-		if !exist {
-			return fmt.Errorf("size annotation is unexpectedly missing for pod %s", pod.Name)
-		}
-		podCount, err := strconv.Atoi(size)
-		if err != nil {
-			return err
-		}
 		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
 			return err
 		}
@@ -151,8 +173,11 @@ func genGroupUniqueKey(ns string, podName string) string {
 	return utils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
 }
 
-// SetExclusiveAffinities set the node affinity/anti-affinity for the leader pod
-func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string) {
+// SetExclusiveAffinities set the pod affinity/anti-affinity
+func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+	if exclusiveAffinityApplied(*pod, topologyKey) {
+		return
+	}
 	if pod.Spec.Affinity == nil {
 		pod.Spec.Affinity = &corev1.Affinity{}
 	}
@@ -162,52 +187,61 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string) {
 	if pod.Spec.Affinity.PodAntiAffinity == nil {
 		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
+
 	// Pod affinity ensures the pods of this set land on the same topology domain.
 	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
 			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
-					Key:      leaderworkerset.GroupUniqueHashLabelKey,
+					Key:      podAffinityKey,
 					Operator: metav1.LabelSelectorOpIn,
 					Values:   []string{groupUniqueKey},
 				},
 			}},
-			TopologyKey: pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+			TopologyKey: topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
 			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
-					Key:      leaderworkerset.GroupUniqueHashLabelKey,
+					Key:      podAffinityKey,
 					Operator: metav1.LabelSelectorOpExists,
 				},
 				{
-					Key:      leaderworkerset.GroupUniqueHashLabelKey,
+					Key:      podAffinityKey,
 					Operator: metav1.LabelSelectorOpNotIn,
 					Values:   []string{groupUniqueKey},
 				},
 			}},
-			TopologyKey: pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+			TopologyKey: topologyKey,
 		})
 }
 
 // exclusiveAffinityApplied return true if the exclusive placement terms have been applied
-func exclusiveAffinityApplied(pod corev1.Pod) bool {
+func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil || pod.Spec.Affinity.PodAntiAffinity == nil {
 		return false
 	}
 	hasAffinity := false
 	hasAntiAffinity := false
 	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAffinityTerm.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAffinityTerm.TopologyKey == topologyKey {
 			hasAffinity = true
 		}
 	}
 	for _, podAntiahasAntiAffinity := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAntiahasAntiAffinity.TopologyKey == pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if podAntiahasAntiAffinity.TopologyKey == topologyKey {
 			hasAntiAffinity = true
 		}
 	}
 	return hasAffinity && hasAntiAffinity
+}
+
+func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+	if (podCount-1)%subGroupSize == 0 {
+		// Leader is considered as extra pod, it is part of the first group
+		return fmt.Sprint((workerIndex - 1) / subGroupSize)
+	}
+	return fmt.Sprint(workerIndex / subGroupSize)
 }

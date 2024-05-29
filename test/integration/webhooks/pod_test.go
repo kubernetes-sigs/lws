@@ -95,6 +95,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:    "test",
 							leaderworkerset.GroupIndexLabelKey: "1",
 						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
 				}
@@ -121,6 +124,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							// expect the worker index label already be populated
 							leaderworkerset.WorkerIndexLabelKey: "0",
 						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
 				}
@@ -134,6 +140,119 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					leaderworkerset.SetNameLabelKey:         "test",
 					leaderworkerset.GroupUniqueHashLabelKey: "uniqueHash",
 					leaderworkerset.WorkerIndexLabelKey:     "0",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader requests TPU resources, expect subgroup labels to be populated in leader", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "5",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "4",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.GroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.GroupIndexLabelKey:         "1",
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.GroupUniqueHashLabelKey:    "uniqueHash",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "0",
+					leaderworkerset.SubGroupIndexLabelKey:      "0",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader requests TPU resources, expect subgroup labels in worker to be populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-3",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "4",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "2",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "3",
+					leaderworkerset.SubGroupIndexLabelKey:      "1",
+					leaderworkerset.GroupIndexLabelKey:         "1",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader doesn't request TPU resources, expect subgroup labels in worker to be populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-4",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test",
+							// expect the worker index label already be populated
+							leaderworkerset.WorkerIndexLabelKey: "4",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:         "5",
+							leaderworkerset.SubGroupSizeAnnotationKey: "2",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "4",
+					leaderworkerset.SubGroupIndexLabelKey:      "1",
+					leaderworkerset.GroupIndexLabelKey:         "1",
 				}); diff != "" {
 					return errors.New("pod labels mismatch: " + diff)
 				}
@@ -167,6 +286,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:     "test",
 							leaderworkerset.WorkerIndexLabelKey: "0",
 						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
 				}
@@ -187,6 +309,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Labels: map[string]string{
 							leaderworkerset.SetNameLabelKey:    "test",
 							leaderworkerset.GroupIndexLabelKey: "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "3",
 						},
 					},
 					Spec: testutils.MakeWorkerPodSpec(),
@@ -211,6 +336,34 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey: "5",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Pod requesting TPUs in lws with subgroupsize 5 will have env var populated in leader pod", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:         "5",
+							leaderworkerset.SubGroupSizeAnnotationKey: "5",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -255,6 +408,36 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Worker Pod requesting TPUs in lws using subgrouping, leader too", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-3",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "3",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                "10",
+							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
+							leaderworkerset.SubGroupSizeAnnotationKey:        "5",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Worker Pod requesting TPUs in lws, leader doesn't", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
@@ -278,6 +461,35 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
 				}
 				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Worker Pod requesting TPUs in lws using subgrouping, leader doesn't", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-7",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "7",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:         "11",
+							leaderworkerset.SubGroupSizeAnnotationKey: "5",
+						},
+					},
+					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default,test-sample-1-9.default,test-sample-1-10.default"); err != nil {
 					return err
 				}
 				return nil
@@ -351,14 +563,67 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
-				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got)).To(gomega.BeTrue())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader pod with exclusive placement and subgroup exclusive placement enabled will have two pod affinity/anti-affinity", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                 "4",
+							leaderworkerset.ExclusiveKeyAnnotationKey:         "topologyKey",
+							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey-2",
+							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.SubGroupExclusiveKeyAnnotationKey, leaderworkerset.SubGroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				return nil
+			},
+		}),
+		ginkgo.Entry("Worker pod with exclusive placement and subgroup exclusive placement enabled will only have subgroup pod affinity/anti-affinity", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:                 "4",
+							leaderworkerset.ExclusiveKeyAnnotationKey:         "topologyKey",
+							leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey-2",
+							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeFalse())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.SubGroupExclusiveKeyAnnotationKey, leaderworkerset.SubGroupUniqueHashLabelKey)).To(gomega.BeTrue())
 				return nil
 			},
 		}),
@@ -380,7 +645,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
-				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got)).To(gomega.BeFalse())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeFalse())
 				return nil
 			},
 		}),
@@ -396,16 +661,16 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
 				}
-				webhooks.SetExclusiveAffinities(pod, "uniquehash")
+				webhooks.SetExclusiveAffinities(pod, "uniquehash", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey)
 				return *pod
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
-				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got)).To(gomega.BeTrue())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
 				return nil
 			},
 		}),
@@ -421,7 +686,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:         "4",
-							leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
@@ -458,7 +723,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return *pod
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
-				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got)).To(gomega.BeTrue())
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
 				if got.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchExpressions[0].Key != "key" && got.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchExpressions[0].Key != "key" {
 					return fmt.Errorf("existing pod affinity terms are unexpectedly overridden")
 				}
@@ -475,6 +740,9 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SetNameLabelKey:     "test-sample",
 							leaderworkerset.WorkerIndexLabelKey: "1",
 							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
 					Spec: testutils.MakePodSpecWithInitContainer(),
