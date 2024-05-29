@@ -147,42 +147,10 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
 						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
-								{
-									TopologyKey: "topologyKey",
-								},
-								{
-									TopologyKey: "topologyKey",
-									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "In",
-											Values:   []string{"test-key"},
-										},
-									}},
-								},
-							},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
 						},
 						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
-								{
-									TopologyKey: "topologyKey",
-								},
-								{
-									TopologyKey: "topologyKey",
-									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "Exists",
-										},
-										{
-											Key:      "leaderworkerset.sigs.k8s.io/group-key",
-											Operator: "NotIn",
-											Values:   []string{"test-key"},
-										},
-									}},
-								},
-							},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
 						},
 					},
 				},
