@@ -103,8 +103,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	// adding labels for pods
 	if podutils.LeaderPod(*pod) {
 		// add group index label to group pods
-		_, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-		if !found {
+		if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if groupIndex == -1 {
 				return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
@@ -112,15 +111,13 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 		}
 		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
-		_, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		var groupUniqueKey string
-		if !foundGroupKey {
+		if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
 			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 		} else {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
-
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
