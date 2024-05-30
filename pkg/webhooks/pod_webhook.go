@@ -230,8 +230,8 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 			hasAffinity = true
 		}
 	}
-	for _, podAntiahasAntiAffinity := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAntiahasAntiAffinity.TopologyKey == topologyKey {
+	for _, term := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey == topologyKey {
 			hasAntiAffinity = true
 		}
 	}
