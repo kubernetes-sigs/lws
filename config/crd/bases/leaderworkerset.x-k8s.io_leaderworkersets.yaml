@@ -15271,7 +15271,6 @@ spec:
                         type: object
                     type: object
                 required:
-                - restartPolicy
                 - workerTemplate
                 type: object
               replicas:
@@ -15343,7 +15342,6 @@ spec:
                 type: object
             required:
             - leaderWorkerTemplate
-            - rolloutStrategy
             type: object
           status:
             description: LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet
