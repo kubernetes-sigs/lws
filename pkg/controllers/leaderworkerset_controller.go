@@ -371,9 +371,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			return false, err
 		}
 
-		if err != nil {
-			return false, err
-		}
 		var ready, updated bool
 		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
 			ready = true

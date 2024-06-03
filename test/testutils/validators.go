@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -372,4 +373,40 @@ func ValidateLatestEvent(ctx context.Context, k8sClient client.Client, eventReas
 		return fmt.Errorf("mismatch with the latest event: got r:%v t:%v n:%v, reg %v", item.Reason, item.Type, item.Note, item.Regarding)
 
 	}, Timeout, Interval).Should(gomega.BeNil())
+}
+
+func ExpectWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	ginkgo.By("checking no worker statefulset created")
+	gomega.Consistently(func() bool {
+		var statefulSetList appsv1.StatefulSetList
+		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+			return false
+		}
+		return len(statefulSetList.Items) == 1 && statefulSetList.Items[0].Name == lws.Name
+	}, Timeout, Interval).Should(gomega.Equal(true))
+}
+
+func ExpectSpecifiedWorkerStatefulSetsCreated(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end int) {
+	gomega.Eventually(func() error {
+		var sts appsv1.StatefulSet
+		for i := start; i < end; i++ {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%d", lws.Name, i), Namespace: lws.Namespace}, &sts); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.BeNil())
+}
+
+func ExpectSpecifiedWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end int) {
+	gomega.Consistently(func() bool {
+		var sts appsv1.StatefulSet
+		for i := start; i < end; i++ {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%d", lws.Name, i), Namespace: lws.Namespace}, &sts); err == nil ||
+				!apierrors.IsNotFound(err) {
+				return false
+			}
+		}
+		return true
+	}, Timeout, Interval).Should(gomega.Equal(true))
 }

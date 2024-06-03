@@ -23,7 +23,6 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
-	v1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -271,7 +270,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var scale v1.Scale
+						var scale autoscalingv1.Scale
 						gomega.Expect(k8sClient.SubResource("scale").Get(ctx, lws, &scale)).To(gomega.Succeed())
 						gomega.Expect(int32(scale.Spec.Replicas)).To(gomega.Equal(*lws.Spec.Replicas))
 						gomega.Expect(int32(scale.Status.Replicas)).To(gomega.Equal(lws.Status.Replicas))
@@ -1508,6 +1507,47 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("create a leaderworkerset with spec.startupPolicyy=LeaderReady", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectWorkerStatefulSetsNotCreated(ctx, k8sClient, lws)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetLeaderPodsToReady(ctx, k8sClient, lws, 0, 2)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectSpecifiedWorkerStatefulSetsCreated(ctx, k8sClient, lws, 0, 2)
+						testing.ExpectSpecifiedWorkerStatefulSetsNotCreated(ctx, k8sClient, lws, 2, 4)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetLeaderPodsToReady(ctx, k8sClient, lws, 2, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectSpecifiedWorkerStatefulSetsCreated(ctx, k8sClient, lws, 2, 4)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("create a leaderworkerset with spec.startupPolicyy=LeaderCreated", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderCreatedStartupPolicy)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectSpecifiedWorkerStatefulSetsCreated(ctx, k8sClient, lws, 0, 4)
 					},
 				},
 			},

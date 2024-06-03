@@ -83,6 +83,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) RolloutStrategy(strategy leaderworkers
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) StartupPolicy(strategy leaderworkerset.StartupPolicyType) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.StartupPolicy = strategy
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]string) *LeaderWorkerSetWrapper {
 	lwsWrapper.Annotations = annotations
 	return lwsWrapper
@@ -132,6 +137,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 			MaxSurge:       intstr.FromInt(0),
 		},
 	}
+	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}
@@ -179,11 +185,11 @@ func MakePodSpecWithInitContainer() corev1.PodSpec {
 				Name:  "test",
 				Image: "busybox",
 				Env: []corev1.EnvVar{
-					corev1.EnvVar{
+					{
 						Name:  "key1",
 						Value: "value1",
 					},
-					corev1.EnvVar{
+					{
 						Name:  "key2",
 						Value: "value2",
 					},
@@ -195,11 +201,11 @@ func MakePodSpecWithInitContainer() corev1.PodSpec {
 				Name:  "init-test",
 				Image: "busybox",
 				Env: []corev1.EnvVar{
-					corev1.EnvVar{
+					{
 						Name:  "key1",
 						Value: "value1",
 					},
-					corev1.EnvVar{
+					{
 						Name:  "key2",
 						Value: "value2",
 					},

@@ -108,6 +108,22 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
 			},
 		}),
+		ginkgo.Entry("defaulting logic applies when spec.startpolicy is not set", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2)
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).StartupPolicy(leaderworkerset.LeaderCreatedStartupPolicy)
+			},
+		}),
+		ginkgo.Entry("defaulting logic applies when spec.startpolicy is set", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
+			},
+		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).RolloutStrategy(leaderworkerset.RolloutStrategy{}) // unset rollout strategy
@@ -197,6 +213,12 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
+		ginkgo.Entry("creation with invalid startpolicy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).StartupPolicy("invalidValue")
+			},
+			lwsCreationShouldFail: true,
+		}),
 		ginkgo.Entry("creation with invalid subGroupSize should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Size(2).SubGroupSize(-1)
@@ -224,6 +246,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Replicas = ptr.To[int32](-1)
+			},
+			updateShouldFail: true,
+		}),
+		ginkgo.Entry("update with invalid startpolicy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.StartupPolicy = "invalidValue"
 			},
 			updateShouldFail: true,
 		}),

@@ -15340,6 +15340,14 @@ spec:
                 required:
                 - type
                 type: object
+              startupPolicy:
+                default: LeaderCreated
+                description: StartupPolicy determines the startup policy for the worker
+                  statefulset.
+                enum:
+                - LeaderCreated
+                - LeaderReady
+                type: string
             required:
             - leaderWorkerTemplate
             type: object
