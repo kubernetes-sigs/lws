@@ -15,3 +15,4 @@ dev/tasks/start-blobserver
 docker buildx bake clichat --load --progress=plain
 
 docker buildx bake bartowski --load --progress=plain
+docker buildx bake llamacpp-worker --load --progress=plain

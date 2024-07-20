@@ -5,15 +5,27 @@ metadata:
 spec:
   replicas: 1
   leaderWorkerTemplate:
-    size: 2
+    size: 5
     restartPolicy: RecreateGroupOnPodRestart
-    workerTemplate:
+    leaderTemplate:
       metadata:
         labels:
           app: llamacpp-llama3-8b-instruct-bartowski-q5km
       spec:
         containers:
-        - name: llamacpp-server
+        - name: llamacpp-leader
           image: llamacpp-llama3-8b-instruct-bartowski-q5km:latest
           imagePullPolicy: IfNotPresent
-          args: ["--host", "0.0.0.0"]
+          command: [ "/llamacpp-leader", "--", "--n-gpu-layers", "99", "--verbose" ]
+          env:
+            - name: LWS_SIZE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
+    workerTemplate:
+      spec:
+        containers:
+        - name: llamacpp-worker
+          image: llamacpp-worker:latest
+          imagePullPolicy: IfNotPresent
+          args: ["--host", "0.0.0.0", "--mem", "4192"]

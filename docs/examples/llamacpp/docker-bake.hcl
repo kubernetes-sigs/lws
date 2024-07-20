@@ -3,13 +3,18 @@ target "clichat" {
   tags = [ "clichat:latest" ]
 }
  
-target "llama-server" {
-  dockerfile = "images/llama-server/Dockerfile"
+target "llamacpp-leader" {
+  dockerfile = "images/llamacpp-leader/Dockerfile"
+}
+
+target "llamacpp-worker" {
+  dockerfile = "images/llamacpp-worker/Dockerfile"
+  tags = [ "llamacpp-worker:latest" ]
 }
 
 target "bartowski" {
   contexts = {
-    llama-server = "target:llama-server"
+    llamacpp-leader = "target:llamacpp-leader"
   }
   dockerfile = "images/bartowski/Dockerfile"
   tags = [ "llamacpp-llama3-8b-instruct-bartowski-q5km:latest" ]

@@ -9,10 +9,12 @@ WORKDIR /models/bartowski/Meta-Llama-3-8B-Instruct-GGUF
 RUN curl -v -L --fail -o Meta-Llama-3-8B-Instruct-Q5_K_M.gguf http://$(ip -4 route show default | cut -d" " -f3):9999/16d824ee771e0e33b762bb3dc3232b972ac8dce4d2d449128fca5081962a1a9e
 RUN sha256sum /models/bartowski/Meta-Llama-3-8B-Instruct-GGUF/Meta-Llama-3-8B-Instruct-Q5_K_M.gguf
 
-FROM llama-server
+FROM llamacpp-leader
 
 # TODO: This copy command is a bottleneck (it doesn't seem to be reliably cached?)
 # Maybe we create a simple download tool and embed it the llama-server image.
 COPY --from=quantizer /models /models
+
+ENV LLM_MODEL /models/bartowski/Meta-Llama-3-8B-Instruct-GGUF/Meta-Llama-3-8B-Instruct-Q5_K_M.gguf
 
 ENTRYPOINT ["/llama-server", "--model", "/models/bartowski/Meta-Llama-3-8B-Instruct-GGUF/Meta-Llama-3-8B-Instruct-Q5_K_M.gguf"]
