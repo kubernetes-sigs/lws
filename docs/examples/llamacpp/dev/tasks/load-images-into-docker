@@ -1,0 +1,17 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+set -x
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}/docs/examples/llamacpp"
+
+dev/tasks/stop-blobserver
+dev/tasks/start-blobserver
+
+docker buildx bake clichat --load --progress=plain
+
+docker buildx bake bartowski --load --progress=plain

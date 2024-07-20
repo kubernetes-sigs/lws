@@ -1,0 +1,19 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: llamacpp-llama3-8b-instruct-bartowski-q5km
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          app: llamacpp-llama3-8b-instruct-bartowski-q5km
+      spec:
+        containers:
+        - name: llamacpp-server
+          image: llamacpp-llama3-8b-instruct-bartowski-q5km:latest
+          imagePullPolicy: IfNotPresent
+          args: ["--host", "0.0.0.0"]
