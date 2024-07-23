@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+set -x
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}/docs/examples/llamacpp"
+
+dev/tasks/load-images-into-docker
+
+kind load docker-image llamacpp-llama3-8b-instruct-bartowski-q5km:latest
+kind load docker-image llamacpp-worker:latest
+kind load docker-image clichat:latest
+
+kubectl apply --server-side -f k8s/
+
+kubectl run clichat --image=clichat:latest --rm=true -it --image-pull-policy=IfNotPresent --env=LLM_ENDPOINT=http://llamacpp:80

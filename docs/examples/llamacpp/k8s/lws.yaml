@@ -1,0 +1,31 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: llamacpp-llama3-8b-instruct-bartowski-q5km
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 5
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          app: llamacpp-llama3-8b-instruct-bartowski-q5km
+      spec:
+        containers:
+        - name: llamacpp-leader
+          image: llamacpp-llama3-8b-instruct-bartowski-q5km:latest
+          imagePullPolicy: IfNotPresent
+          command: [ "/llamacpp-leader", "--", "--n-gpu-layers", "99", "--verbose" ]
+          env:
+            - name: LWS_SIZE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
+    workerTemplate:
+      spec:
+        containers:
+        - name: llamacpp-worker
+          image: llamacpp-worker:latest
+          imagePullPolicy: IfNotPresent
+          args: ["--host", "0.0.0.0", "--mem", "4192"]
