@@ -7,13 +7,13 @@ require (
 	github.com/onsi/ginkgo/v2 v2.19.0
 	github.com/onsi/gomega v1.33.1
 	github.com/open-policy-agent/cert-controller v0.10.1
-	k8s.io/api v0.29.6
-	k8s.io/apiextensions-apiserver v0.29.6
-	k8s.io/apimachinery v0.29.6
-	k8s.io/client-go v0.29.6
-	k8s.io/code-generator v0.29.6
+	k8s.io/api v0.29.7
+	k8s.io/apiextensions-apiserver v0.29.7
+	k8s.io/apimachinery v0.29.7
+	k8s.io/client-go v0.29.7
+	k8s.io/code-generator v0.29.7
 	k8s.io/klog/v2 v2.120.1
-	k8s.io/kubernetes v1.29.6
+	k8s.io/kubernetes v1.29.7
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
 	sigs.k8s.io/controller-runtime v0.17.3
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1
@@ -73,7 +73,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/component-base v0.29.6 // indirect
+	k8s.io/component-base v0.29.7 // indirect
 	k8s.io/gengo v0.0.0-20230829151522-9cce18d56c01 // indirect
 	k8s.io/gengo/v2 v2.0.0-20240228010128-51d4e06bde70 // indirect
 	k8s.io/kube-openapi v0.0.0-20240228011516-70dd3763d340 // indirect
