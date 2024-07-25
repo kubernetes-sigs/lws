@@ -55,6 +55,12 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - apps
+  resources:
   - statefulsets/status
   verbs:
   - get
