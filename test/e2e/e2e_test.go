@@ -213,7 +213,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			initialPodUIDs[w.UID] = struct{}{}
 		}
 
-		k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})).To(gomega.Succeed())
 
 		gomega.Eventually(func() (int, error) {
 			finalPods := &corev1.PodList{}
