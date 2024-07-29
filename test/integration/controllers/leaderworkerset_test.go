@@ -341,7 +341,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 								Name:      lws.Name,
 							},
 						})
-						k8sClient.Patch(ctx, &leaderworkerset.LeaderWorkerSet{
+						gomega.Expect(k8sClient.Patch(ctx, &leaderworkerset.LeaderWorkerSet{
 							ObjectMeta: metav1.ObjectMeta{
 								Namespace: lws.Namespace,
 								Name:      lws.Name,
@@ -349,7 +349,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							Spec: leaderworkerset.LeaderWorkerSetSpec{
 								Replicas: ptr.To[int32](3),
 							},
-						}, patch)
+						}, patch)).To(gomega.Succeed())
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						// Check most recent event.
