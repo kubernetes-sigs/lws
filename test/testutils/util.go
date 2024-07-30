@@ -208,9 +208,11 @@ func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorker
 }
 
 func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, stsl *appsv1.StatefulSetList) {
-	gomega.Eventually(func() int {
-		k8sClient.List(ctx, stsl, client.InNamespace(lws.Namespace))
-		return len(stsl.Items)
+	gomega.Eventually(func() (int, error) {
+		if err := k8sClient.List(ctx, stsl, client.InNamespace(lws.Namespace)); err != nil {
+			return 0, err
+		}
+		return len(stsl.Items), nil
 	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas) + 1))
 }
 

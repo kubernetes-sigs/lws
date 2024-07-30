@@ -68,7 +68,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, lws *lead
 		if headlessService.Spec.ClusterIP != "None" {
 			return false, errors.New("service type mismatch")
 		}
-		if headlessService.Spec.PublishNotReadyAddresses != true {
+		if !headlessService.Spec.PublishNotReadyAddresses {
 			return false, errors.New("service publish not ready should be true")
 		}
 		selector := headlessService.Spec.Selector
