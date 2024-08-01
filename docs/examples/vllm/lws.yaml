@@ -14,49 +14,60 @@ spec:
       spec:
         containers:
           - name: vllm-leader
-            # this image is build with the Dockerfile under ./build
-            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
+            image: <image-built-from-dockerfile>
             env:
               - name: RAY_CLUSTER_SIZE
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
+              - name: HUGGING_FACE_HUB_TOKEN
+                value: <your-hf-token>
             command:
               - sh
               - -c
               - "/vllm-workspace/ray_init.sh leader --ray_cluster_size=$RAY_CLUSTER_SIZE; 
-                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model facebook/opt-125m --swap-space 2 --tensor-parallel-size 2"
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3.1-405B-Instruct --tensor-parallel-size 8 --pipeline_parallel_size 2"
             resources:
               limits:
-                nvidia.com/gpu: "1"
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 2600Gi
+                cpu: "125"
               requests:
-                cpu: "4"
-                memory: 8Gi
-                nvidia.com/gpu: "1"
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 2600Gi
+                cpu: "125"
             ports:
               - containerPort: 8080
-            readinessProbe:
-              tcpSocket:
-                port: 8080
-              initialDelaySeconds: 15
-              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 15Gi
     workerTemplate:
       spec:
         containers:
           - name: vllm-worker
-            # this image is build with the Dockerfile under ./build
-            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1
+            image: <image-built-from-dockerfile>
             command:
               - sh
               - -c
               - "/vllm-workspace/ray_init.sh worker --ray_address=$(LEADER_NAME).$(LWS_NAME).$(NAMESPACE).svc.cluster.local"
             resources:
               limits:
-                nvidia.com/gpu: "1"
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 2600Gi
+                cpu: 125
               requests:
-                cpu: "4"
-                memory: 8Gi
-                nvidia.com/gpu: "1"
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 2600Gi
+                cpu: 125
             env:
               - name: LEADER_NAME
                 valueFrom:
@@ -70,3 +81,13 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/name']
+              - name: HUGGING_FACE_HUB_TOKEN
+                value: <your-hf-token>
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm   
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 15Gi
