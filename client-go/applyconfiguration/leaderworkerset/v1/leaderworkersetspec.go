@@ -17,12 +17,17 @@ limitations under the License.
 
 package v1
 
+import (
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+)
+
 // LeaderWorkerSetSpecApplyConfiguration represents an declarative configuration of the LeaderWorkerSetSpec type for use
 // with apply.
 type LeaderWorkerSetSpecApplyConfiguration struct {
 	Replicas             *int32                                  `json:"replicas,omitempty"`
 	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
 	RolloutStrategy      *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
+	StartupPolicy        *leaderworkersetv1.StartupPolicyType    `json:"startupPolicy,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs an declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -52,5 +57,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithLeaderWorkerTemplate(value *
 // If called multiple times, the RolloutStrategy field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithRolloutStrategy(value *RolloutStrategyApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.RolloutStrategy = value
+	return b
+}
+
+// WithStartupPolicy sets the StartupPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the StartupPolicy field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderworkersetv1.StartupPolicyType) *LeaderWorkerSetSpecApplyConfiguration {
+	b.StartupPolicy = &value
 	return b
 }
