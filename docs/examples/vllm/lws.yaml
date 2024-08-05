@@ -31,13 +31,10 @@ spec:
               limits:
                 nvidia.com/gpu: "8"
                 memory: 1124Gi
-                ephemeral-storage: 2600Gi
-                cpu: "125"
+                ephemeral-storage: 800Gi
               requests:
-                nvidia.com/gpu: "8"
-                memory: 1124Gi
-                ephemeral-storage: 2600Gi
-                cpu: "125"
+                ephemeral-storage: 800Gi
+                cpu: 125
             ports:
               - containerPort: 8080
             volumeMounts:
@@ -61,12 +58,9 @@ spec:
               limits:
                 nvidia.com/gpu: "8"
                 memory: 1124Gi
-                ephemeral-storage: 2600Gi
-                cpu: 125
+                ephemeral-storage: 800Gi
               requests:
-                nvidia.com/gpu: "8"
-                memory: 1124Gi
-                ephemeral-storage: 2600Gi
+                ephemeral-storage: 800Gi
                 cpu: 125
             env:
               - name: LEADER_NAME
@@ -91,4 +85,3 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 15Gi
-            
