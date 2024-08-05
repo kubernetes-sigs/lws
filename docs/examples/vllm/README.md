@@ -8,7 +8,7 @@ In this example, we will use LeaderWorkerSet to deploy a distributed inference s
 Follow the step-by-step guide on how to install LWS. [View installation guide](https://github.com/kubernetes-sigs/lws/blob/main/docs/setup/install.md)
 
 ## Deploy LeaderWorkerSet of vLLM
-We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 2 pods (pipeline_parallel_size=2) and 8 machines per pod (tensor_parallel_size=8). 
+We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs per pod (tensor_parallel_size=8). 
 The leader pod runs the Ray head and the http server, while the workers run the Ray workers.
 
 ```shell
