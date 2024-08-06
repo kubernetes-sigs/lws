@@ -37,6 +37,11 @@ spec:
                 cpu: 125
             ports:
               - containerPort: 8080
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
             volumeMounts:
               - mountPath: /dev/shm
                 name: dshm
