@@ -8,7 +8,7 @@ In this example, we will use LeaderWorkerSet to deploy a distributed inference s
 Follow the step-by-step guide on how to install LWS. [View installation guide](https://github.com/kubernetes-sigs/lws/blob/main/docs/setup/install.md)
 
 ## Deploy LeaderWorkerSet of vLLM
-We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has two pods (tp=2). 
+We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs per pod (tensor_parallel_size=8). 
 The leader pod runs the Ray head and the http server, while the workers run the Ray workers.
 
 ```shell
@@ -67,7 +67,7 @@ Open another terminal and send a request
 curl http://localhost:8080/v1/completions \
 -H "Content-Type: application/json" \
 -d '{
-    "model": "facebook/opt-125m",
+    "model": "meta-llama/Meta-Llama-3.1-405B-Instruct",
     "prompt": "San Francisco is a",
     "max_tokens": 7,
     "temperature": 0
@@ -80,11 +80,11 @@ The output should be similar to the following
   "id": "cmpl-1bb34faba88b43f9862cfbfb2200949d",
   "object": "text_completion",
   "created": 1715138766,
-  "model": "facebook/opt-125m",
+  "model": "meta-llama/Meta-Llama-3.1-405B-Instruct",
   "choices": [
     {
       "index": 0,
-      "text": " great place to live.  I",
+      "text": " top destination for foodies, with",
       "logprobs": null,
       "finish_reason": "length",
       "stop_reason": null
