@@ -17,27 +17,27 @@ tags, and then generate with `hack/update-toc.sh`.
 -->
 
 <!-- toc -->
-- [Summary](#summary)
-- [Motivation](#motivation)
-  - [Goals](#goals)
-  - [Non-Goals](#non-goals)
-- [Proposal](#proposal)
-  - [User Stories (Optional)](#user-stories-optional)
-    - [Story 1](#story-1)
-  - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
-  - [Risks and Mitigations](#risks-and-mitigations)
-- [Design Details](#design-details)
-  - [API](#api)
-  - [Implementation](#implementation)
-  - [Test Plan](#test-plan)
-      - [Prerequisite testing updates](#prerequisite-testing-updates)
-      - [Unit tests](#unit-tests)
-      - [Integration tests](#integration-tests)
-      - [e2e tests](#e2e-tests)
-  - [Graduation Criteria](#graduation-criteria)
-- [Implementation History](#implementation-history)
-- [Drawbacks](#drawbacks)
-- [Alternatives](#alternatives)
+  - [Summary](#summary)
+  - [Motivation](#motivation)
+    - [Goals](#goals)
+    - [Non-Goals](#non-goals)
+  - [Proposal](#proposal)
+    - [User Stories (Optional)](#user-stories-optional)
+      - [Story 1](#story-1)
+    - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
+    - [Risks and Mitigations](#risks-and-mitigations)
+  - [Design Details](#design-details)
+    - [API](#api)
+    - [Implementation](#implementation)
+    - [Test Plan](#test-plan)
+        - [Prerequisite testing updates](#prerequisite-testing-updates)
+        - [Unit tests](#unit-tests)
+        - [Integration tests](#integration-tests)
+        - [e2e tests](#e2e-tests)
+    - [Graduation Criteria](#graduation-criteria)
+  - [Implementation History](#implementation-history)
+  - [Drawbacks](#drawbacks)
+  - [Alternatives](#alternatives)
 <!-- /toc -->
 
 ## Summary
@@ -151,7 +151,7 @@ const (
 
 With HeadlessServicePerReplica true, we will create a headless service per replica.
 The name of the service will be `{lws.Name}-{replicaIndex}`.
-Creation of the services will be in a loop of replicas. The selector of each
+Creation of the services will be in a loop of replicas.
 
 With SubdomainPolicy set to SubdomainUniquePerReplica, we will create a headless service
 per replica. The name of the service will be `{lws.Name}-{replicaIndex}`. The selector of
