@@ -510,4 +510,17 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 	for i := start; i < end; i++ {
 		SetLeaderPodToReady(ctx, k8sClient, fmt.Sprintf("%s-%d", leaderSts.Name, i), lws)
 	}
+
+	// If size=1, we should trigger the leader sts update or the controller will not run reconciliation.
+	gomega.Eventually(func() error {
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts); err != nil {
+			return err
+		}
+		sts.Status.ReadyReplicas = *sts.Spec.Replicas
+		sts.Status.Replicas = *sts.Spec.Replicas
+		sts.Status.CurrentRevision = ""
+		sts.Status.UpdateRevision = ""
+		return k8sClient.Status().Update(ctx, &sts)
+	}, Timeout, Interval).Should(gomega.Succeed())
 }

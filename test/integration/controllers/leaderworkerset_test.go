@@ -166,9 +166,17 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 			updates: []*update{
 				{
-					checkLWSState: func(deployment *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, deployment, 2)
-						testing.ExpectValidWorkerStatefulSets(ctx, deployment, k8sClient, true)
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetLeaderPodsToReady(ctx, k8sClient, lws, 0, int(*lws.Spec.Replicas))
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 					},
 				},
 			},
@@ -1511,7 +1519,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("create a leaderworkerset with spec.startupPolicyy=LeaderReady", &testCase{
+		ginkgo.Entry("create a leaderworkerset with spec.startupPolicy=LeaderReady", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
 			},
@@ -1540,7 +1548,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("create a leaderworkerset with spec.startupPolicyy=LeaderCreated", &testCase{
+		ginkgo.Entry("create a leaderworkerset with spec.startupPolicy=LeaderCreated", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderCreatedStartupPolicy)
 			},

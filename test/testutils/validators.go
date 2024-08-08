@@ -182,8 +182,12 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
-		if leaderPodScheduled && int(*leaderSts.Spec.Replicas) != len(statefulSetList.Items)-1 {
-			return fmt.Errorf("running worker statefulsets replicas not right, want %d, got %d", *leaderSts.Spec.Replicas, len(statefulSetList.Items)-1)
+		stsNumber := *leaderSts.Spec.Replicas
+		if *lws.Spec.LeaderWorkerTemplate.Size == 1 {
+			stsNumber = 0
+		}
+		if leaderPodScheduled && len(statefulSetList.Items)-1 != int(stsNumber) {
+			return fmt.Errorf("running worker statefulsets replicas not right, want %d, got %d", len(statefulSetList.Items)-1, stsNumber)
 		}
 		if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" && !leaderPodScheduled && len(statefulSetList.Items) != 1 {
 			return fmt.Errorf("when exclusive placement is enabled, only expect sts count to be 1")

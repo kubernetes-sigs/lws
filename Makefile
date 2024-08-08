@@ -295,4 +295,3 @@ toc-verify:
 .PHONY: generate-apiref
 generate-apiref: genref
 	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/docs/reference
-	

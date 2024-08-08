@@ -91,6 +91,23 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
+	ginkgo.It("Can create/update a lws with size=1", func() {
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(1).Size(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+		// Happen during rolling update.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 5)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+	})
+
 	ginkgo.It("Can perform a rolling update", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)

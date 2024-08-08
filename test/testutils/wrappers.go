@@ -34,6 +34,10 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Obj() *leaderworkerset.LeaderWorkerSet
 	return &lwsWrapper.LeaderWorkerSet
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) Name(name string) *LeaderWorkerSetWrapper {
+	lwsWrapper.ObjectMeta.Name = name
+	return lwsWrapper
+}
 func (lwsWrapper *LeaderWorkerSetWrapper) Replica(count int) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.Replicas = ptr.To[int32](int32(count))
 	return lwsWrapper
