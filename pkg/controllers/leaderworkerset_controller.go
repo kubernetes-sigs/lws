@@ -337,28 +337,24 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 // updates the condition of the leaderworkerset to either Progressing or Available.
 func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
-	stsSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
 	})
-
-	// update the condition based on the status of all statefulsets owned by the lws.
-	var lwssts appsv1.StatefulSetList
-	if err := r.List(ctx, &lwssts, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-		log.Error(err, "Fetching statefulsets managed by leaderworkerset instance")
+	leaderPodList := &corev1.PodList{}
+	if err := r.List(ctx, leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		log.Error(err, "Fetching leaderPods")
 		return false, err
 	}
 
 	updateStatus := false
 	readyCount, updatedCount, updatedNonBurstWorkerCount, currentNonBurstWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
+	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 
-	// Iterate through all statefulsets.
-	for _, sts := range lwssts.Items {
-		if sts.Name == lws.Name {
-			continue
-		}
-
-		index, err := strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
+	// Iterate through all leaderPods.
+	for _, pod := range leaderPodList.Items {
+		index, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 		if err != nil {
 			return false, err
 		}
@@ -366,18 +362,20 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			currentNonBurstWorkerCount++
 		}
 
-		var leaderPod corev1.Pod
-		if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: sts.Name}, &leaderPod); err != nil {
-			log.Error(err, "Fetching leader pod")
-			return false, err
+		var sts appsv1.StatefulSet
+		if !noWorkerSts {
+			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: pod.Name}, &sts); err != nil {
+				log.Error(err, "Fetching worker statefulSet")
+				return false, err
+			}
 		}
 
 		var ready, updated bool
-		if statefulsetutils.StatefulsetReady(sts) && podutils.PodRunningAndReady(leaderPod) {
+		if (noWorkerSts || statefulsetutils.StatefulsetReady(sts)) && podutils.PodRunningAndReady(pod) {
 			ready = true
 			readyCount++
 		}
-		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash && leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+		if (noWorkerSts || sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash) && pod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
 			updated = true
 			updatedCount++
 			if index < int(*lws.Spec.Replicas) {
@@ -424,7 +422,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	return updateStatus || updateCondition, nil
 }
 
-// Updates status and condition of LeaderWorkerSet and returns whether or not an upate actually occurred.
+// Updates status and condition of LeaderWorkerSet and returns whether or not an update actually occurred.
 func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
 	updateStatus := false
 	log := ctrl.LoggerFrom(ctx)
@@ -502,23 +500,28 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
 		return 0, 0, err
 	}
-
 	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, stsList.Items, int(stsReplicas))
 
 	templateHash := utils.LeaderWorkerTemplateHash(lws)
+	// Once size==1, no worker statefulSets will be created.
+	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	processReplica := func(index int32) (ready bool) {
 		nominatedName := fmt.Sprintf("%s-%d", lws.Name, index)
 		// It can happen that the leader pod or the worker statefulset hasn't created yet
 		// or under rebuilding, which also indicates not ready.
-		if nominatedName != sortedPods[index].Name || nominatedName != sortedSts[index].Name {
+		if nominatedName != sortedPods[index].Name || (!noWorkerSts && nominatedName != sortedSts[index].Name) {
 			return false
 		}
 
 		podTemplateHash := sortedPods[index].Labels[leaderworkerset.TemplateRevisionHashKey]
 		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[index])) {
 			return false
+		}
+
+		if noWorkerSts {
+			return true
 		}
 
 		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.TemplateRevisionHashKey]

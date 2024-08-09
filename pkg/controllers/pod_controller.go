@@ -102,6 +102,11 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	// Once size = 1, no need to create worker statefulSets.
+	if *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size == 1 {
+		return ctrl.Result{}, nil
+	}
+
 	// logic for handling leader pod
 	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy && !k8spodutils.IsPodReady(&pod) {
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
