@@ -17,5 +17,3 @@ updates:
       # Allow patches and security updates.
       - dependency-name: k8s.io/*
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      # TODO: remove this until https://github.com/open-policy-agent/cert-controller/issues/207 is fixed.
-      - dependency-name: sigs.k8s.io/controller-runtime
