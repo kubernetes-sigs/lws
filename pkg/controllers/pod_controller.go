@@ -275,6 +275,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
+		leaderworkerset.PodRoleLabelKey:         "worker",
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)

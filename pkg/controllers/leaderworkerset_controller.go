@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -106,7 +107,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Create headless service if it does not exist.
-	if err := r.createHeadlessServiceIfNotExists(ctx, lws); err != nil {
+	if err := r.createMultipleHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -122,27 +123,54 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+func (r *LeaderWorkerSetReconciler) createMultipleHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Spec.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+			return err
+		}
+		for i := 0; i < int(*lws.Spec.Replicas); i++ {
+			if err := r.deleteHeadlessServiceIfExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i))); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.PodRoleLabelKey: "leader"})
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < int(*lws.Spec.Replicas); i++ {
+		err := r.createHeadlessServiceIfNotExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.PodRoleLabelKey: "worker", leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string, serviceSelector map[string]string) error {
 	log := ctrl.LoggerFrom(ctx)
 	// If the headless service does not exist in the namespace, create it.
 	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return err
 		}
+		// creates the headless service for the leader
 		headlessService := corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      lws.Name,
+				Name:      serviceName,
 				Namespace: lws.Namespace,
 			},
 			Spec: corev1.ServiceSpec{
-				ClusterIP: "None", // defines service as headless
-				Selector: map[string]string{
-					leaderworkerset.SetNameLabelKey: lws.Name,
-				},
+				ClusterIP:                "None", // defines service as headless
+				Selector:                 serviceSelector,
 				PublishNotReadyAddresses: true,
 			},
 		}
+
 		// Set the controller owner reference for garbage collection and reconciliation.
 		if err := ctrl.SetControllerReference(lws, &headlessService, r.Scheme); err != nil {
 			return err
@@ -152,6 +180,31 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 		if err := r.Create(ctx, &headlessService); err != nil {
 			return err
 		}
+	}
+
+	// updating the headless service as it transitions from shared to UniquePerReplica
+	if eq := reflect.DeepEqual(headlessService.Spec.Selector, serviceSelector); !eq {
+		headlessService.ObjectMeta.Name = serviceName
+		headlessService.Spec.Selector = serviceSelector
+		if err := r.Update(ctx, &headlessService); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *LeaderWorkerSetReconciler) deleteHeadlessServiceIfExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string) error {
+	// if the headless service exists, delete it
+	var headlessService corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := r.Delete(ctx, &headlessService); err != nil {
+		return err
 	}
 	return nil
 }
@@ -570,6 +623,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey:     "0",
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
+		leaderworkerset.PodRoleLabelKey:         "leader",
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))

@@ -28,6 +28,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
 	RolloutStrategy      *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
 	StartupPolicy        *leaderworkersetv1.StartupPolicyType    `json:"startupPolicy,omitempty"`
+	SubdomainPolicy      *leaderworkersetv1.SubdomainPolicy      `json:"subdomainPolicy,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -65,5 +66,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithRolloutStrategy(value *Rollo
 // If called multiple times, the StartupPolicy field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderworkersetv1.StartupPolicyType) *LeaderWorkerSetSpecApplyConfiguration {
 	b.StartupPolicy = &value
+	return b
+}
+
+// WithSubdomainPolicy sets the SubdomainPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SubdomainPolicy field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithSubdomainPolicy(value leaderworkersetv1.SubdomainPolicy) *LeaderWorkerSetSpecApplyConfiguration {
+	b.SubdomainPolicy = &value
 	return b
 }

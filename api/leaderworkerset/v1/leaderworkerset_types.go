@@ -81,6 +81,9 @@ const (
 
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
+
+	//
+	PodRoleLabelKey string = "leaderworkerset.sigs.k8s.io/role"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -119,6 +122,9 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={LeaderCreated,LeaderReady}
 	// +optional
 	StartupPolicy StartupPolicyType `json:"startupPolicy"`
+
+	//
+	SubdomainPolicy SubdomainPolicy `json:"subdomainPolicy,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -179,6 +185,13 @@ type SubGroupPolicy struct {
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
+
+type SubdomainPolicy string
+
+const (
+	SubdomainShared           SubdomainPolicy = "Shared"
+	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
+)
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
