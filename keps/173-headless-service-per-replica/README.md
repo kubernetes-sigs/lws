@@ -126,11 +126,11 @@ proposal will be implemented, this is the place to discuss them.
 type LeaderWorkerSetSpec struct {
  // SubdomainPolicy determines the policy that will be used when creating
  // the headless service
- SubdomainPolicy SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+ NetworkConfig *NetworkConfig`json:"networkConfig,omitempty"`
 }
 
 type NetworkConfig struct {
-  SubdomainPolicy SubdomainPolicy
+  SubdomainPolicy *SubdomainPolicy `json:"subDomainPolicy,omitempty"`
 }
 type SubdomainPolicy string
 const (
