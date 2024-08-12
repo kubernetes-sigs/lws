@@ -76,13 +76,13 @@ var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	warnings, allErrs := r.generalValidate(obj)
-	return warnings, allErrs.ToAggregate()
+	allErrs := r.generalValidate(obj)
+	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	warnings, allErrs := r.generalValidate(newObj)
+	allErrs := r.generalValidate(newObj)
 	specPath := field.NewPath("spec")
 
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
@@ -97,7 +97,7 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
 	}
-	return warnings, allErrs.ToAggregate()
+	return nil, allErrs.ToAggregate()
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
@@ -105,7 +105,7 @@ func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, obj runtime
 	return nil, nil
 }
 
-func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.Warnings, field.ErrorList) {
+func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.ErrorList {
 	lws := obj.(*v1.LeaderWorkerSet)
 	specPath := field.NewPath("spec")
 	metadataPath := field.NewPath("metadata")
@@ -157,7 +157,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) (admission.
 		}
 	}
 
-	return nil, allErrs
+	return allErrs
 }
 
 // This is mostly inspired by https://github.com/kubernetes/kubernetes/blob/be4b7176dc131ea842cab6882cd4a06dbfeed12a/pkg/apis/apps/validation/validation.go#L460,

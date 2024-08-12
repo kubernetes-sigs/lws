@@ -104,7 +104,6 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 	tests := []struct {
 		name                       string
 		pod                        *corev1.Pod
-		size                       int
 		expectedTpuWorkerHostNames string
 		expectedTpuWorkerId        string
 	}{
@@ -125,7 +124,6 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					},
 				},
 			},
-			size:                       5,
 			expectedTpuWorkerId:        "3",
 			expectedTpuWorkerHostNames: "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default",
 		},
@@ -146,7 +144,6 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					},
 				},
 			},
-			size:                       8,
 			expectedTpuWorkerId:        "3",
 			expectedTpuWorkerHostNames: "test-sample-1-4.default,test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default",
 		},
@@ -166,14 +163,13 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					},
 				},
 			},
-			size:                       9,
 			expectedTpuWorkerId:        "0",
 			expectedTpuWorkerHostNames: "test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := addTPUVariablesSubGroup(tc.pod, tc.size)
+			err := addTPUVariablesSubGroup(tc.pod)
 			if err != nil {
 				t.Errorf("Error parsing parent: %s", err.Error())
 			}
