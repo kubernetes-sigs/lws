@@ -139,7 +139,7 @@ const (
   // Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
   // Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
   SubdomainShared SubdomainPolicy = "Shared"
-  // SubdomainUniquePerReplica will create a headless service for each
+  // SubdomainLeadersSharedWorkersDedicated will create a headless service for each
   // leader-worker group. 
   // The leader host names will look like:
   // Replica 0: my-lws-0.my-lws
@@ -147,13 +147,13 @@ const (
   // The worker host names will look like:
   // Replica 0: my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
   // Replica 1: my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
-  SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
+  SubdomainLeadersSharedWorkersDedicated SubdomainPolicy = "LeadersSharedWorkersDedicated"
 )
 ```
 
 ### Implementation
 
-With SubdomainPolicy set to SubdomainUniquePerReplica, we will create a headless
+With SubdomainPolicy set to SubdomainLeadersSharedWorkersDedicated, we will create a headless
 service for all of the leaders, and a headless service per replica for the workers. In order 
 to ensure backwards compatability, the default value if non is set will be Shared.
 
@@ -172,7 +172,7 @@ if lws.Spec.SubdomainPolicy == leaderworkerset.SubdomainShared {
       }
     )
   for i := 0; i < int(*lws.Spec.Replicas); i++ {
-    // If transitioning from UniquePerReplica to shared, need to delete 
+    // If transitioning from LeadersSharedWorkersDedicated to shared, need to delete 
     // the worker headless services that were created
     r.deleteHeadlessServiceIfExists(
       name=fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i))
@@ -289,7 +289,7 @@ https://storage.googleapis.com/k8s-triage/index.html
 
 - When field is set to Shared, verify that there is only one headless service
 
-- When field is set to UniquePerReplica, verify that the number of headless services is lws.Spec.Replicas + 1
+- When field is set to LeadersSharedWorkersDedicated, verify that the number of headless services is lws.Spec.Replicas + 1
 
 - When updating the field, verify that the correct number of headless
 services exist after update
@@ -358,7 +358,7 @@ not need to be as detailed as the proposal, but should include enough
 information to express the idea and why it was not acceptable.
 -->
 
-Instead of doing a headless service exclusively for the leaders, and a headless service per replica por the workers, we 
+Instead of doing a headless service exclusively for the leaders, and a headless service per replica for the workers, we 
 considered having a headless service per replica. Having the leader and its respective workers use the same headless 
 service made more sense at first, but it would require having to update the environment variable `LWS_LEADER_ADDRESS`, 
 significantly complicating the process of updating the field.
