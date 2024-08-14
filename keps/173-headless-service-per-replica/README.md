@@ -130,7 +130,7 @@ type LeaderWorkerSetSpec struct {
 }
 
 type NetworkConfig struct {
-  SubdomainPolicy *SubdomainPolicy `json:"subDomainPolicy,omitempty"`
+  SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy,omitempty"`
 }
 type SubdomainPolicy string
 const (
@@ -357,3 +357,8 @@ What other approaches did you consider, and why did you rule them out? These do
 not need to be as detailed as the proposal, but should include enough
 information to express the idea and why it was not acceptable.
 -->
+
+Instead of doing a headless service exclusively for the leaders, and a headless service per replica por the workers, we 
+considered having a headless service per replica. Having the leader and its respective workers use the same headless 
+service made more sense at first, but it would require having to update the environment variable `LWS_LEADER_ADDRESS`, 
+significantly complicating the process of updating the field.
