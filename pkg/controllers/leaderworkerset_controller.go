@@ -181,7 +181,7 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 		}
 	}
 
-	// updating the headless service as it transitions from shared to UniquePerReplica
+	// updating the headless service as it transitions between Shared and LeadersSharedWorkersDedicated
 	if eq := reflect.DeepEqual(headlessService.Spec.Selector, serviceSelector); !eq {
 		headlessService.ObjectMeta.Name = serviceName
 		headlessService.Spec.Selector = serviceSelector
@@ -193,7 +193,6 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 }
 
 func (r *LeaderWorkerSetReconciler) deleteHeadlessServiceIfExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string) error {
-	// if the headless service exists, delete it
 	var headlessService corev1.Service
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
 		if client.IgnoreNotFound(err) != nil {

@@ -82,7 +82,7 @@ const (
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 
-	//
+	// Role will be added to all pods to determine whether it is a leader or a worker.
 	PodRoleLabelKey string = "leaderworkerset.sigs.k8s.io/role"
 )
 
@@ -201,8 +201,8 @@ const (
 	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
 	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
 	SubdomainShared SubdomainPolicy = "Shared"
-	// SubdomainLeadersSharedWorkersDedicated will create a headless service for each
-	// leader-worker group.
+	// SubdomainLeadersSharedWorkersDedicated will create a headless service for the leaders,
+	// and a headless service per replica for the workers.
 	// The leader host names will look like:
 	// Replica 0: my-lws-0.my-lws
 	// Replica 1: my-lws-1.my-lws
