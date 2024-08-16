@@ -87,6 +87,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
+								leaderworkerset.PodRoleLabelKey:                      "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -154,6 +155,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
+								leaderworkerset.PodRoleLabelKey:                      "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -222,6 +224,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
+								leaderworkerset.PodRoleLabelKey:                      "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -288,6 +291,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash2,
+								leaderworkerset.PodRoleLabelKey:                      "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -355,6 +359,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": hash1,
+								leaderworkerset.PodRoleLabelKey:                      "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",

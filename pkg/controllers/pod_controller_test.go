@@ -49,6 +49,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":         "test-sample",
 						"leaderworkerset.sigs.k8s.io/group-index":  "1",
 						"leaderworkerset.sigs.k8s.io/group-key":    "test-key",
+						leaderworkerset.PodRoleLabelKey:            "worker",
 					},
 				},
 			},
@@ -69,6 +70,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.PodRoleLabelKey:                      "worker",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -87,6 +89,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/group-index":            "1",
 								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+								leaderworkerset.PodRoleLabelKey:                      "worker",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -122,6 +125,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.PodRoleLabelKey:                      "worker",
 					},
 				},
 			},
@@ -144,6 +148,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.PodRoleLabelKey:                      "worker",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -162,6 +167,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/group-index":            "1",
 								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+								leaderworkerset.PodRoleLabelKey:                      "worker",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -198,6 +204,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.PodRoleLabelKey:                      "worker",
 					},
 				},
 			},
@@ -220,6 +227,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/group-index":            "1",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+						leaderworkerset.PodRoleLabelKey:                      "worker",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -238,6 +246,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/group-index":            "1",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
 								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+								leaderworkerset.PodRoleLabelKey:                      "worker",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",

@@ -123,8 +123,9 @@ type LeaderWorkerSetSpec struct {
 	// +optional
 	StartupPolicy StartupPolicyType `json:"startupPolicy"`
 
-	//
-	SubdomainPolicy SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	// Defines the network configuration of the group
+	// +optional
+	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -186,11 +187,29 @@ type SubGroupPolicy struct {
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
+type NetworkConfig struct {
+	// SubdomainPolicy determines the policy that will be used when creating
+	// the headless service
+	SubdomainPolicy SubdomainPolicy `json:"subdomainPolicy"`
+}
+
 type SubdomainPolicy string
 
 const (
-	SubdomainShared           SubdomainPolicy = "Shared"
-	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
+	// SubdomainShared will create a single headless service that all replicas
+	// will share. The host names look like:
+	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
+	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	SubdomainShared SubdomainPolicy = "Shared"
+	// SubdomainLeadersSharedWorkersDedicated will create a headless service for each
+	// leader-worker group.
+	// The leader host names will look like:
+	// Replica 0: my-lws-0.my-lws
+	// Replica 1: my-lws-1.my-lws
+	// The worker host names will look like:
+	// Replica 0: my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
+	// Replica 1: my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	SubdomainLeadersSharedWorkersDedicated SubdomainPolicy = "LeadersSharedWorkersDedicated"
 )
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.

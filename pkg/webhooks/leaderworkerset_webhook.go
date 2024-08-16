@@ -67,6 +67,11 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 			MaxSurge:       intstr.FromInt32(0),
 		}
 	}
+
+	if lws.Spec.NetworkConfig == nil {
+		lws.Spec.NetworkConfig = &v1.NetworkConfig{}
+		lws.Spec.NetworkConfig.SubdomainPolicy = v1.SubdomainShared
+	}
 	return nil
 }
 
