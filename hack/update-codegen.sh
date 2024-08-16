@@ -33,15 +33,12 @@ source "${CODEGEN_PKG}/kube_codegen.sh"
 ln -s .. sigs.k8s.io
 trap "rm sigs.k8s.io" EXIT
 
-kube::codegen::gen_helpers \
-    --input-pkg-root sigs.k8s.io/lws/api \
-    --output-base "${REPO_ROOT}" \
+kube::codegen::gen_helpers sigs.k8s.io/lws/api \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
-kube::codegen::gen_client \
+kube::codegen::gen_client sigs.k8s.io/lws/api \
     --with-watch \
     --with-applyconfig \
-    --input-pkg-root sigs.k8s.io/lws/api \
-    --output-base "$REPO_ROOT" \
-    --output-pkg-root sigs.k8s.io/lws/client-go \
+    --output-dir "$REPO_ROOT"/client-go \
+    --output-pkg sigs.k8s.io/lws/client-go \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
