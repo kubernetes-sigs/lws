@@ -124,7 +124,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *LeaderWorkerSetReconciler) createMultipleHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	if lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+	if lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared || lws.Spec.NetworkConfig == nil {
 		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
