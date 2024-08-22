@@ -19,7 +19,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -128,21 +127,11 @@ func (r *LeaderWorkerSetReconciler) createMultipleHeadlessServices(ctx context.C
 		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
-		for i := 0; i < int(*lws.Spec.Replicas); i++ {
-			if err := r.deleteHeadlessServiceIfExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i))); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 
-	err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.PodRoleLabelKey: "leader"})
-	if err != nil {
-		return err
-	}
-
 	for i := 0; i < int(*lws.Spec.Replicas); i++ {
-		err := r.createHeadlessServiceIfNotExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.PodRoleLabelKey: "worker", leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)})
+		err := r.createHeadlessServiceIfNotExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)})
 		if err != nil {
 			return err
 		}
@@ -179,30 +168,6 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 		if err := r.Create(ctx, &headlessService); err != nil {
 			return err
 		}
-	}
-
-	// updating the headless service as it transitions between Shared and LeadersSharedWorkersDedicated
-	if eq := reflect.DeepEqual(headlessService.Spec.Selector, serviceSelector); !eq {
-		headlessService.ObjectMeta.Name = serviceName
-		headlessService.Spec.Selector = serviceSelector
-		if err := r.Update(ctx, &headlessService); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *LeaderWorkerSetReconciler) deleteHeadlessServiceIfExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string) error {
-	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		return nil
-	}
-
-	if err := r.Delete(ctx, &headlessService); err != nil {
-		return err
 	}
 	return nil
 }
@@ -621,7 +586,6 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey:     "0",
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
-		leaderworkerset.PodRoleLabelKey:         "leader",
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))

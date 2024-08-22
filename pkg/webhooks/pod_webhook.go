@@ -110,6 +110,10 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			}
 			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 		}
+		subdomainPolicy, foundSubdomainPolicy := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
+		if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
+			pod.Spec.Subdomain = pod.Name
+		}
 		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
 		var groupUniqueKey string
 		if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {

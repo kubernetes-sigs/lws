@@ -351,6 +351,44 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Leader pod requesting TPUs with subdomainPolicy UniquePerReplica will have different env variables", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:            "5",
+							leaderworkerset.SubdomainPolicyAnnotationKey: "UniquePerReplica",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1,test-sample-1-2.test-sample-1,test-sample-1-3.test-sample-1,test-sample-1-4.test-sample-1"); err != nil {
+					return err
+				}
+				if !testutils.HasLWSEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect lws env vars for pod %s", got.Name)
+				}
+				lwsLeaderAddress := corev1.EnvVar{
+					Name:  "LWS_LEADER_ADDRESS",
+					Value: fmt.Sprintf("test-sample-1.test-sample-1.%s", expected.ObjectMeta.Namespace),
+				}
+				if err := testutils.CheckContainerHasCorrectEnvVar(got, lwsLeaderAddress); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Pod requesting TPUs in lws with subgroupsize 5 will have env var populated in leader pod", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
@@ -752,7 +790,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				if !testutils.HasLWSEnvVarsPopulated(got) {
 					return fmt.Errorf("should expect lws env var for pod %s", got.Name)
 				}
-				expectedLeaderAddress := fmt.Sprintf("test-sample-1.test-sample.%s", expected.ObjectMeta.Namespace)
+				expectedLeaderAddress := fmt.Sprintf("test-sample-1..%s", expected.ObjectMeta.Namespace)
 				if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: leaderworkerset.LwsLeaderAddress, Value: expectedLeaderAddress}); err != nil {
 					return err
 				}

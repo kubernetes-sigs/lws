@@ -131,11 +131,9 @@ func AddLWSVariables(pod *corev1.Pod) error {
 		return fmt.Errorf("Failure constructing environment variables, no group index label found for pod %v", klog.KObj(pod))
 	}
 
-	// The headless service name is assumed to be the same as the LWS name.
-	// See function [createHeadlessServiceIfNotExists](sigs.k8s.io/lws/pkg/controllers/leaderworkerset_controller.go).
 	leaderAddressEnvVar := corev1.EnvVar{
 		Name:  leaderworkerset.LwsLeaderAddress,
-		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, lwsName, pod.ObjectMeta.Namespace),
+		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
 	}
 
 	size, found := pod.Annotations[leaderworkerset.SizeAnnotationKey]

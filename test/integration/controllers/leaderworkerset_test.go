@@ -258,7 +258,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("subdomain policy LeadersSharedWorkersDedicated, more than one headless service created", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainLeadersSharedWorkersDedicated)
+				return testing.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
 			},
 			updates: []*update{
 				{
@@ -280,27 +280,12 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &lwsToUpdate); err != nil {
 								return err
 							}
-							lwsToUpdate.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainLeadersSharedWorkersDedicated
+							lwsToUpdate.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainUniquePerReplica
 							return k8sClient.Update(ctx, &lwsToUpdate)
 						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
-					},
-				},
-				{
-					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var lwsToUpdate leaderworkerset.LeaderWorkerSet
-						gomega.Eventually(func() error {
-							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &lwsToUpdate); err != nil {
-								return err
-							}
-							lwsToUpdate.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainShared
-							return k8sClient.Update(ctx, &lwsToUpdate)
-						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
-					},
-					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServicesOnUpdate(ctx, k8sClient, lws)
 					},
 				},
 			},

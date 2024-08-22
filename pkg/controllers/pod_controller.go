@@ -275,7 +275,6 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
-		leaderworkerset.PodRoleLabelKey:         "worker",
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
@@ -291,12 +290,19 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
 	}
+	if lws.Spec.NetworkConfig != nil {
+		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(lws.Spec.NetworkConfig.SubdomainPolicy)
+	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+	serviceName := leaderPod.Name
+	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		serviceName = lws.Name
+	}
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
-			WithServiceName(lws.Name).
+			WithServiceName(serviceName).
 			WithReplicas(*lws.Spec.LeaderWorkerTemplate.Size - 1).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).

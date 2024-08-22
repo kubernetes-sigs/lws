@@ -82,8 +82,9 @@ const (
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 
-	// Role will be added to all pods to determine whether it is a leader or a worker.
-	PodRoleLabelKey string = "leaderworkerset.sigs.k8s.io/role"
+	// Leader pods will have an annotation that determines what type of domain
+	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
+	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -201,15 +202,11 @@ const (
 	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
 	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
 	SubdomainShared SubdomainPolicy = "Shared"
-	// SubdomainLeadersSharedWorkersDedicated will create a headless service for the leaders,
-	// and a headless service per replica for the workers.
-	// The leader host names will look like:
-	// Replica 0: my-lws-0.my-lws
-	// Replica 1: my-lws-1.my-lws
-	// The worker host names will look like:
-	// Replica 0: my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
-	// Replica 1: my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
-	SubdomainLeadersSharedWorkersDedicated SubdomainPolicy = "LeadersSharedWorkersDedicated"
+	// UniquePerReplica will create a headless service per replica
+	// The pod host names look like:
+	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
+	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.

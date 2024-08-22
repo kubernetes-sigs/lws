@@ -189,15 +189,43 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 	ginkgo.It("Adds env vars to containers when using TPU", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
-		workerPodSpec := testutils.MakeWorkerPodSpecWithTPUResource()
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
 		for _, p := range lwsPods.Items {
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(p)).To(gomega.BeTrue())
+		}
+	})
+
+	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
+		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
+		lwsWrapper := testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec)
+		lwsWrapper.Spec.NetworkConfig = nil
+		lws := lwsWrapper.Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		testing.UpdateReplicaCount(ctx, k8sClient, lws, 2)
+
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		lwsPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+
+		for _, pod := range lwsPods.Items {
+			if pod.Annotations[leaderworkerset.GroupIndexLabelKey] == "0" {
+				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample"))
+			} else {
+				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1"))
+			}
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
 		}
 	})
 

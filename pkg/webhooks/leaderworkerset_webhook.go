@@ -102,6 +102,19 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
 	}
+	if newLws.Spec.NetworkConfig != nil && oldLws.Spec.NetworkConfig != nil {
+		if newLws.Spec.NetworkConfig.SubdomainPolicy == v1.SubdomainShared && oldLws.Spec.NetworkConfig.SubdomainPolicy == v1.SubdomainUniquePerReplica {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot change subDomainPolicy from UniquePerReplica to Shared"))
+		}
+	}
+	// NetworkConfig will only be nil if previously using a version LWS lower than 0.4
+	// Therefore, only oldLws can be nil.
+	if oldLws.Spec.NetworkConfig != nil {
+		if newLws.Spec.NetworkConfig.SubdomainPolicy == v1.SubdomainShared && oldLws.Spec.NetworkConfig.SubdomainPolicy == v1.SubdomainUniquePerReplica {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot change subDomainPolicy from UniquePerReplica to Shared"))
+		}
+	}
+
 	return nil, allErrs.ToAggregate()
 }
 

@@ -252,7 +252,6 @@ func MakeWorkerPodSpecWithTPUResource() corev1.PodSpec {
 				},
 			},
 		},
-		Subdomain: "default",
 	}
 }
 
@@ -280,6 +279,5 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 				},
 			},
 		},
-		Subdomain: "default",
 	}
 }
