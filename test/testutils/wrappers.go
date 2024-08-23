@@ -149,7 +149,8 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		},
 	}
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
-	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{SubdomainPolicy: leaderworkerset.SubdomainShared}
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
+	lws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainShared
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}
@@ -227,6 +228,7 @@ func MakePodSpecWithInitContainer() corev1.PodSpec {
 				},
 			},
 		},
+		Subdomain: "test-sample",
 	}
 }
 
@@ -252,6 +254,7 @@ func MakeWorkerPodSpecWithTPUResource() corev1.PodSpec {
 				},
 			},
 		},
+		Subdomain: "default",
 	}
 }
 
@@ -279,5 +282,6 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 				},
 			},
 		},
+		Subdomain: "default",
 	}
 }

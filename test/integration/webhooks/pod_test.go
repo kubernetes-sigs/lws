@@ -790,7 +790,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				if !testutils.HasLWSEnvVarsPopulated(got) {
 					return fmt.Errorf("should expect lws env var for pod %s", got.Name)
 				}
-				expectedLeaderAddress := fmt.Sprintf("test-sample-1..%s", expected.ObjectMeta.Namespace)
+				expectedLeaderAddress := fmt.Sprintf("test-sample-1.test-sample.%s", expected.ObjectMeta.Namespace)
 				if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: leaderworkerset.LwsLeaderAddress, Value: expectedLeaderAddress}); err != nil {
 					return err
 				}
