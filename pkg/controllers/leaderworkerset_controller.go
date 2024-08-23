@@ -598,6 +598,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
 	}
+	if lws.Spec.NetworkConfig != nil {
+		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(lws.Spec.NetworkConfig.SubdomainPolicy)
+	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
 	// construct statefulset apply configuration

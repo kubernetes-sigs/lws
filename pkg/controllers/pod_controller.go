@@ -290,9 +290,6 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
 	}
-	if lws.Spec.NetworkConfig != nil {
-		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(lws.Spec.NetworkConfig.SubdomainPolicy)
-	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name

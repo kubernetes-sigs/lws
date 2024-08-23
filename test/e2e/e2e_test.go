@@ -205,7 +205,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws)
@@ -216,10 +216,10 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
 		for _, pod := range lwsPods.Items {
-			if pod.Annotations[leaderworkerset.GroupIndexLabelKey] == "0" {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample"))
+			if pod.Labels[leaderworkerset.GroupIndexLabelKey] == "0" {
+				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
 			} else {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1"))
+				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1")).Should(gomega.Succeed())
 			}
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
 		}
