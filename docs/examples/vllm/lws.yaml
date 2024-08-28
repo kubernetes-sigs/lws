@@ -58,7 +58,7 @@ spec:
             command:
               - sh
               - -c
-              - "/vllm-workspace/ray_init.sh worker --ray_address=$(LEADER_NAME).$(LWS_NAME).$(NAMESPACE).svc.cluster.local"
+              - "/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
             resources:
               limits:
                 nvidia.com/gpu: "8"
@@ -68,18 +68,6 @@ spec:
                 ephemeral-storage: 800Gi
                 cpu: 125
             env:
-              - name: LEADER_NAME
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/leader-name']
-              - name: NAMESPACE
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.namespace
-              - name: LWS_NAME
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/name']
               - name: HUGGING_FACE_HUB_TOKEN
                 value: <your-hf-token>
             volumeMounts:
