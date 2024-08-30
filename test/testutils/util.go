@@ -454,7 +454,7 @@ func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leade
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, subdomainPolicy leaderworkerset.SubdomainPolicy) {
 	gomega.Eventually(func() error {
 		var newLws leaderworkerset.LeaderWorkerSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
@@ -462,7 +462,7 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 		}
 
 		newLws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
-		newLws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainUniquePerReplica
+		newLws.Spec.NetworkConfig.SubdomainPolicy = subdomainPolicy
 		return k8sClient.Update(ctx, &newLws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

@@ -351,7 +351,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
-		ginkgo.Entry("Leader pod requesting TPUs with subdomainPolicy UniquePerReplica will have different env variables", &testDefaultingCase{
+		ginkgo.Entry("Leader pod requesting TPUs with subdomainPolicy UniquePerReplica will inject the subdomain", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -363,7 +363,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 						Annotations: map[string]string{
 							leaderworkerset.SizeAnnotationKey:            "5",
-							leaderworkerset.SubdomainPolicyAnnotationKey: "UniquePerReplica",
+							leaderworkerset.SubdomainPolicyAnnotationKey: string(leaderworkerset.SubdomainUniquePerReplica),
 						},
 					},
 					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),

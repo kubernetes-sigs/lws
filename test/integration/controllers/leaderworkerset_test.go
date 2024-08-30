@@ -229,7 +229,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
 				},
 			},
@@ -239,7 +239,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
 				},
 				{
@@ -251,7 +251,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					},
 					// Service should be recreated during reconcilation
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
 				},
 			},
@@ -263,29 +263,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
-					},
-				},
-			},
-		}),
-		ginkgo.Entry("able to create right amount of services, subdomain policy updated", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainShared)
-			},
-			updates: []*update{
-				{
-					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var lwsToUpdate leaderworkerset.LeaderWorkerSet
-						gomega.Eventually(func() error {
-							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &lwsToUpdate); err != nil {
-								return err
-							}
-							lwsToUpdate.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainUniquePerReplica
-							return k8sClient.Update(ctx, &lwsToUpdate)
-						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
-					},
-					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServicesOnUpdate(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
 					},
 				},
 			},

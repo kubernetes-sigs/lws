@@ -208,7 +208,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws)
+		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainUniquePerReplica)
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 		testing.UpdateReplicaCount(ctx, k8sClient, lws, 2)
 
@@ -217,12 +217,34 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		for _, pod := range lwsPods.Items {
 			if pod.Labels[leaderworkerset.GroupIndexLabelKey] == "0" {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
+				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample-0,test-sample-0-1.test-sample-0")).Should(gomega.Succeed())
 			} else {
 				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1")).Should(gomega.Succeed())
 			}
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
 		}
+	})
+
+	ginkgo.It("RollingUpdate is triggered when changing subdomainPolicy", func() {
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubGroupSize(1).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		// Wait for leaderWorkerSet to be ready then update it.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainUniquePerReplica)
+
+		// Happen during rolling update.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 8)
+
+		// Rolling update completes.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		// Wait for leaderWorkerSet to be ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
 	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {
