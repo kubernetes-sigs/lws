@@ -338,7 +338,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 3:
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
-		r.deleteMultipleHeadlessSevices(ctx, lws)
+		if err := r.deleteMultipleHeadlessSevices(ctx, lws); err != nil {
+			return 0, 0, err
+		}
 		return 0, lwsReplicas, nil
 	}
 
