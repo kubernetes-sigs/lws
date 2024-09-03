@@ -129,7 +129,7 @@ func (r *LeaderWorkerSetReconciler) createMultipleHeadlessServices(ctx context.C
 		}
 		return nil
 	}
-	// using replicas instead of lws.spec.replicas as need to create services for burst replicas during maxSurge
+	// using replicas instead of lws.spec.replicas as needed to create services for burst replicas during maxSurge
 	for i := 0; i < int(replicas); i++ {
 		err := r.createHeadlessServiceIfNotExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)})
 		if err != nil {
