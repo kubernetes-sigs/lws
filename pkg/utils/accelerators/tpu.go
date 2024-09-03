@@ -215,6 +215,10 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 			Name:  TpuWorkerId,
 			Value: fmt.Sprint(tpuWorkerId),
 		},
+		corev1.EnvVar{
+			Name:  "TPU_NAME",
+			Value: fmt.Sprint(pod.Name),
+		},
 	)
 	return nil
 }
