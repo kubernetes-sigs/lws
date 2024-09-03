@@ -18,8 +18,8 @@ limitations under the License.
 package v1
 
 import (
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/listers"
 	"k8s.io/client-go/tools/cache"
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -37,25 +37,17 @@ type LeaderWorkerSetLister interface {
 
 // leaderWorkerSetLister implements the LeaderWorkerSetLister interface.
 type leaderWorkerSetLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*v1.LeaderWorkerSet]
 }
 
 // NewLeaderWorkerSetLister returns a new LeaderWorkerSetLister.
 func NewLeaderWorkerSetLister(indexer cache.Indexer) LeaderWorkerSetLister {
-	return &leaderWorkerSetLister{indexer: indexer}
-}
-
-// List lists all LeaderWorkerSets in the indexer.
-func (s *leaderWorkerSetLister) List(selector labels.Selector) (ret []*v1.LeaderWorkerSet, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1.LeaderWorkerSet))
-	})
-	return ret, err
+	return &leaderWorkerSetLister{listers.New[*v1.LeaderWorkerSet](indexer, v1.Resource("leaderworkerset"))}
 }
 
 // LeaderWorkerSets returns an object that can list and get LeaderWorkerSets.
 func (s *leaderWorkerSetLister) LeaderWorkerSets(namespace string) LeaderWorkerSetNamespaceLister {
-	return leaderWorkerSetNamespaceLister{indexer: s.indexer, namespace: namespace}
+	return leaderWorkerSetNamespaceLister{listers.NewNamespaced[*v1.LeaderWorkerSet](s.ResourceIndexer, namespace)}
 }
 
 // LeaderWorkerSetNamespaceLister helps list and get LeaderWorkerSets.
@@ -73,26 +65,5 @@ type LeaderWorkerSetNamespaceLister interface {
 // leaderWorkerSetNamespaceLister implements the LeaderWorkerSetNamespaceLister
 // interface.
 type leaderWorkerSetNamespaceLister struct {
-	indexer   cache.Indexer
-	namespace string
-}
-
-// List lists all LeaderWorkerSets in the indexer for a given namespace.
-func (s leaderWorkerSetNamespaceLister) List(selector labels.Selector) (ret []*v1.LeaderWorkerSet, err error) {
-	err = cache.ListAllByNamespace(s.indexer, s.namespace, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1.LeaderWorkerSet))
-	})
-	return ret, err
-}
-
-// Get retrieves the LeaderWorkerSet from the indexer for a given namespace and name.
-func (s leaderWorkerSetNamespaceLister) Get(name string) (*v1.LeaderWorkerSet, error) {
-	obj, exists, err := s.indexer.GetByKey(s.namespace + "/" + name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1.Resource("leaderworkerset"), name)
-	}
-	return obj.(*v1.LeaderWorkerSet), nil
+	listers.ResourceIndexer[*v1.LeaderWorkerSet]
 }

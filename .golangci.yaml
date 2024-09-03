@@ -1,10 +1,10 @@
 # golangci-lint configuration file
 # see: https://golangci-lint.run/usage/configuration/
 
-# Options for analysis running
-run:
-  # Which dirs to skip: they won't be analyzed;
-  skip-dirs:
+# Settings related to issues
+issues:
+  # Which dirs to exclude: issues from them won't be reported
+  exclude-dirs:
     - bin
 
 # Settings for enabling and disabling linters

@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// LeaderWorkerSetApplyConfiguration represents an declarative configuration of the LeaderWorkerSet type for use
+// LeaderWorkerSetApplyConfiguration represents a declarative configuration of the LeaderWorkerSet type for use
 // with apply.
 type LeaderWorkerSetApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -32,7 +32,7 @@ type LeaderWorkerSetApplyConfiguration struct {
 	Status                           *LeaderWorkerSetStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// LeaderWorkerSet constructs an declarative configuration of the LeaderWorkerSet type for use with
+// LeaderWorkerSet constructs a declarative configuration of the LeaderWorkerSet type for use with
 // apply.
 func LeaderWorkerSet(name, namespace string) *LeaderWorkerSetApplyConfiguration {
 	b := &LeaderWorkerSetApplyConfiguration{}
@@ -215,4 +215,10 @@ func (b *LeaderWorkerSetApplyConfiguration) WithSpec(value *LeaderWorkerSetSpecA
 func (b *LeaderWorkerSetApplyConfiguration) WithStatus(value *LeaderWorkerSetStatusApplyConfiguration) *LeaderWorkerSetApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *LeaderWorkerSetApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }
