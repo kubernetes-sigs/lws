@@ -124,7 +124,7 @@ type LeaderWorkerSetSpec struct {
 	// +optional
 	StartupPolicy StartupPolicyType `json:"startupPolicy"`
 
-	// Defines the network configuration of the group
+	// NetworkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 }
