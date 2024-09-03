@@ -19,14 +19,11 @@ package v1
 
 import (
 	"context"
-	json "encoding/json"
-	"fmt"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
-	rest "k8s.io/client-go/rest"
+	gentype "k8s.io/client-go/gentype"
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 	scheme "sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
@@ -42,6 +39,7 @@ type LeaderWorkerSetsGetter interface {
 type LeaderWorkerSetInterface interface {
 	Create(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.CreateOptions) (*v1.LeaderWorkerSet, error)
 	Update(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (*v1.LeaderWorkerSet, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
 	UpdateStatus(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (*v1.LeaderWorkerSet, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
@@ -50,206 +48,25 @@ type LeaderWorkerSetInterface interface {
 	Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
 	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.LeaderWorkerSet, err error)
 	Apply(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error)
+	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
 	ApplyStatus(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error)
 	LeaderWorkerSetExpansion
 }
 
 // leaderWorkerSets implements LeaderWorkerSetInterface
 type leaderWorkerSets struct {
-	client rest.Interface
-	ns     string
+	*gentype.ClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration]
 }
 
 // newLeaderWorkerSets returns a LeaderWorkerSets
 func newLeaderWorkerSets(c *LeaderworkersetV1Client, namespace string) *leaderWorkerSets {
 	return &leaderWorkerSets{
-		client: c.RESTClient(),
-		ns:     namespace,
+		gentype.NewClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration](
+			"leaderworkersets",
+			c.RESTClient(),
+			scheme.ParameterCodec,
+			namespace,
+			func() *v1.LeaderWorkerSet { return &v1.LeaderWorkerSet{} },
+			func() *v1.LeaderWorkerSetList { return &v1.LeaderWorkerSetList{} }),
 	}
-}
-
-// Get takes name of the leaderWorkerSet, and returns the corresponding leaderWorkerSet object, and an error if there is any.
-func (c *leaderWorkerSets) Get(ctx context.Context, name string, options metav1.GetOptions) (result *v1.LeaderWorkerSet, err error) {
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Get().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(name).
-		VersionedParams(&options, scheme.ParameterCodec).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// List takes label and field selectors, and returns the list of LeaderWorkerSets that match those selectors.
-func (c *leaderWorkerSets) List(ctx context.Context, opts metav1.ListOptions) (result *v1.LeaderWorkerSetList, err error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	result = &v1.LeaderWorkerSetList{}
-	err = c.client.Get().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Watch returns a watch.Interface that watches the requested leaderWorkerSets.
-func (c *leaderWorkerSets) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	opts.Watch = true
-	return c.client.Get().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Watch(ctx)
-}
-
-// Create takes the representation of a leaderWorkerSet and creates it.  Returns the server's representation of the leaderWorkerSet, and an error, if there is any.
-func (c *leaderWorkerSets) Create(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.CreateOptions) (result *v1.LeaderWorkerSet, err error) {
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Post().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(leaderWorkerSet).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Update takes the representation of a leaderWorkerSet and updates it. Returns the server's representation of the leaderWorkerSet, and an error, if there is any.
-func (c *leaderWorkerSets) Update(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (result *v1.LeaderWorkerSet, err error) {
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Put().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(leaderWorkerSet.Name).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(leaderWorkerSet).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *leaderWorkerSets) UpdateStatus(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (result *v1.LeaderWorkerSet, err error) {
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Put().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(leaderWorkerSet.Name).
-		SubResource("status").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(leaderWorkerSet).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Delete takes name of the leaderWorkerSet and deletes it. Returns an error if one occurs.
-func (c *leaderWorkerSets) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
-	return c.client.Delete().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(name).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *leaderWorkerSets) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
-	var timeout time.Duration
-	if listOpts.TimeoutSeconds != nil {
-		timeout = time.Duration(*listOpts.TimeoutSeconds) * time.Second
-	}
-	return c.client.Delete().
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		VersionedParams(&listOpts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// Patch applies the patch and returns the patched leaderWorkerSet.
-func (c *leaderWorkerSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.LeaderWorkerSet, err error) {
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Patch(pt).
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(name).
-		SubResource(subresources...).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Apply takes the given apply declarative configuration, applies it and returns the applied leaderWorkerSet.
-func (c *leaderWorkerSets) Apply(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error) {
-	if leaderWorkerSet == nil {
-		return nil, fmt.Errorf("leaderWorkerSet provided to Apply must not be nil")
-	}
-	patchOpts := opts.ToPatchOptions()
-	data, err := json.Marshal(leaderWorkerSet)
-	if err != nil {
-		return nil, err
-	}
-	name := leaderWorkerSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("leaderWorkerSet.Name must be provided to Apply")
-	}
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Patch(types.ApplyPatchType).
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(*name).
-		VersionedParams(&patchOpts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// ApplyStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-func (c *leaderWorkerSets) ApplyStatus(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error) {
-	if leaderWorkerSet == nil {
-		return nil, fmt.Errorf("leaderWorkerSet provided to Apply must not be nil")
-	}
-	patchOpts := opts.ToPatchOptions()
-	data, err := json.Marshal(leaderWorkerSet)
-	if err != nil {
-		return nil, err
-	}
-
-	name := leaderWorkerSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("leaderWorkerSet.Name must be provided to Apply")
-	}
-
-	result = &v1.LeaderWorkerSet{}
-	err = c.client.Patch(types.ApplyPatchType).
-		Namespace(c.ns).
-		Resource("leaderworkersets").
-		Name(*name).
-		SubResource("status").
-		VersionedParams(&patchOpts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
 }

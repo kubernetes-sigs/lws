@@ -21,14 +21,14 @@ import (
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// RolloutStrategyApplyConfiguration represents an declarative configuration of the RolloutStrategy type for use
+// RolloutStrategyApplyConfiguration represents a declarative configuration of the RolloutStrategy type for use
 // with apply.
 type RolloutStrategyApplyConfiguration struct {
 	Type                       *v1.RolloutStrategyType                       `json:"type,omitempty"`
 	RollingUpdateConfiguration *RollingUpdateConfigurationApplyConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 
-// RolloutStrategyApplyConfiguration constructs an declarative configuration of the RolloutStrategy type for use with
+// RolloutStrategyApplyConfiguration constructs a declarative configuration of the RolloutStrategy type for use with
 // apply.
 func RolloutStrategy() *RolloutStrategyApplyConfiguration {
 	return &RolloutStrategyApplyConfiguration{}

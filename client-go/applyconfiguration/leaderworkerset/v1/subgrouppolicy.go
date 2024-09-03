@@ -17,13 +17,13 @@ limitations under the License.
 
 package v1
 
-// SubGroupPolicyApplyConfiguration represents an declarative configuration of the SubGroupPolicy type for use
+// SubGroupPolicyApplyConfiguration represents a declarative configuration of the SubGroupPolicy type for use
 // with apply.
 type SubGroupPolicyApplyConfiguration struct {
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
-// SubGroupPolicyApplyConfiguration constructs an declarative configuration of the SubGroupPolicy type for use with
+// SubGroupPolicyApplyConfiguration constructs a declarative configuration of the SubGroupPolicy type for use with
 // apply.
 func SubGroupPolicy() *SubGroupPolicyApplyConfiguration {
 	return &SubGroupPolicyApplyConfiguration{}

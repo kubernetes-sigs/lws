@@ -21,7 +21,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// LeaderWorkerSetSpecApplyConfiguration represents an declarative configuration of the LeaderWorkerSetSpec type for use
+// LeaderWorkerSetSpecApplyConfiguration represents a declarative configuration of the LeaderWorkerSetSpec type for use
 // with apply.
 type LeaderWorkerSetSpecApplyConfiguration struct {
 	Replicas             *int32                                  `json:"replicas,omitempty"`
@@ -30,7 +30,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy        *leaderworkersetv1.StartupPolicyType    `json:"startupPolicy,omitempty"`
 }
 
-// LeaderWorkerSetSpecApplyConfiguration constructs an declarative configuration of the LeaderWorkerSetSpec type for use with
+// LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
 // apply.
 func LeaderWorkerSetSpec() *LeaderWorkerSetSpecApplyConfiguration {
 	return &LeaderWorkerSetSpecApplyConfiguration{}

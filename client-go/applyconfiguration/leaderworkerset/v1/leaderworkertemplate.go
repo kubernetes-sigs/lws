@@ -22,7 +22,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// LeaderWorkerTemplateApplyConfiguration represents an declarative configuration of the LeaderWorkerTemplate type for use
+// LeaderWorkerTemplateApplyConfiguration represents a declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
 type LeaderWorkerTemplateApplyConfiguration struct {
 	LeaderTemplate *v1.PodTemplateSpec                  `json:"leaderTemplate,omitempty"`
@@ -32,7 +32,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	SubGroupPolicy *SubGroupPolicyApplyConfiguration    `json:"subGroupPolicy,omitempty"`
 }
 
-// LeaderWorkerTemplateApplyConfiguration constructs an declarative configuration of the LeaderWorkerTemplate type for use with
+// LeaderWorkerTemplateApplyConfiguration constructs a declarative configuration of the LeaderWorkerTemplate type for use with
 // apply.
 func LeaderWorkerTemplate() *LeaderWorkerTemplateApplyConfiguration {
 	return &LeaderWorkerTemplateApplyConfiguration{}

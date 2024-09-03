@@ -21,7 +21,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// LeaderWorkerSetStatusApplyConfiguration represents an declarative configuration of the LeaderWorkerSetStatus type for use
+// LeaderWorkerSetStatusApplyConfiguration represents a declarative configuration of the LeaderWorkerSetStatus type for use
 // with apply.
 type LeaderWorkerSetStatusApplyConfiguration struct {
 	Conditions      []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -31,7 +31,7 @@ type LeaderWorkerSetStatusApplyConfiguration struct {
 	HPAPodSelector  *string                          `json:"hpaPodSelector,omitempty"`
 }
 
-// LeaderWorkerSetStatusApplyConfiguration constructs an declarative configuration of the LeaderWorkerSetStatus type for use with
+// LeaderWorkerSetStatusApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetStatus type for use with
 // apply.
 func LeaderWorkerSetStatus() *LeaderWorkerSetStatusApplyConfiguration {
 	return &LeaderWorkerSetStatusApplyConfiguration{}
