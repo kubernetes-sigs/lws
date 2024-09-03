@@ -203,8 +203,8 @@ func (r *LeaderWorkerSetReconciler) deleteMultipleHeadlessSevices(ctx context.Co
 	if len(leaderPodList.Items) == 0 {
 		return nil
 	}
-
-	if leaderPodList.Items[0].Annotations[leaderworkerset.SubdomainPolicyAnnotationKey] == string(leaderworkerset.SubdomainUniquePerReplica) {
+	subdomainPolicy, foundSubdomainPolicy := leaderPodList.Items[0].Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
+	if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
 		return r.deleteHeadlessServiceIfExists(ctx, lws, lws.Name)
 	}
 
