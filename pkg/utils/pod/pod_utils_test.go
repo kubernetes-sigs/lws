@@ -17,6 +17,7 @@ limitations under the License.
 package pod
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -104,36 +105,43 @@ func TestAddLWSVariables(t *testing.T) {
 		name                     string
 		pod                      *corev1.Pod
 		expectedLwsLeaderAddress string
+		expectedGroupSize        int
 	}{
 		{
 			name:                     "Leader pod",
-			pod:                      testutils.MakePodWithLabels("test-sample", "0", "", "default"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "0", "", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
+			expectedGroupSize:        3,
 		},
 		{
 			name:                     "Worker pod",
-			pod:                      testutils.MakePodWithLabels("test-sample", "0", "1", "default"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "0", "1", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
+			expectedGroupSize:        3,
 		},
 		{
 			name:                     "Leader pod, group 1",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "", "default"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
+			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Worker pod, group 1",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "default"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
+			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Leader pod, group 1, non-default namespace",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
+			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Worker pod, group 1, non-default namespace",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws"),
+			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
+			expectedGroupSize:        2,
 		},
 	}
 
@@ -156,6 +164,10 @@ func TestAddLWSVariables(t *testing.T) {
 				envVar := container.Env[0]
 				if diff := cmp.Diff(envVar.Value, tc.expectedLwsLeaderAddress); diff != "" {
 					t.Errorf("Unexpected lws leader address %s", diff)
+				}
+				envVar = container.Env[1]
+				if diff := cmp.Diff(envVar.Value, strconv.Itoa(tc.expectedGroupSize)); diff != "" {
+					t.Errorf("Unexpected lws group size %s", diff)
 				}
 			}
 		})

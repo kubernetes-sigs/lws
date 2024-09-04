@@ -730,7 +730,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
-		ginkgo.Entry("Leader address env var should be populated and is the first env var", &testDefaultingCase{
+		ginkgo.Entry("Leader env var should be populated and leader address env should be the first env var", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -750,10 +750,14 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
 				if !testutils.HasLWSEnvVarsPopulated(got) {
-					return fmt.Errorf("should expect leader address env var for pod %s", got.Name)
+					return fmt.Errorf("should expect lws env var for pod %s", got.Name)
 				}
 				expectedLeaderAddress := fmt.Sprintf("test-sample-1.test-sample.%s", expected.ObjectMeta.Namespace)
 				if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: leaderworkerset.LwsLeaderAddress, Value: expectedLeaderAddress}); err != nil {
+					return err
+				}
+				expectedGroupSize := fmt.Sprintf("%d", 2)
+				if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: leaderworkerset.LwsGroupSize, Value: expectedGroupSize}); err != nil {
 					return err
 				}
 				if err := testutils.IsContainerFirstEnvVarLWSLeaderAddress(got); err != nil {
