@@ -106,7 +106,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Create headless service if it does not exist.
-	if err := r.createMultipleHeadlessServices(ctx, lws, replicas); err != nil {
+	if err := r.reconcileHeadlessServices(ctx, lws, replicas); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -122,8 +122,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) createMultipleHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32) error {
-	if lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared || lws.Spec.NetworkConfig == nil {
+func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32) error {
+
+	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
@@ -203,6 +204,7 @@ func (r *LeaderWorkerSetReconciler) deleteMultipleHeadlessSevices(ctx context.Co
 	if len(leaderPodList.Items) == 0 {
 		return nil
 	}
+
 	subdomainPolicy, foundSubdomainPolicy := leaderPodList.Items[0].Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
 	if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
 		return r.deleteHeadlessServiceIfExists(ctx, lws, lws.Name)
