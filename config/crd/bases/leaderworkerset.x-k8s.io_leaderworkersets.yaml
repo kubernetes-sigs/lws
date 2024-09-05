@@ -762,11 +762,11 @@ spec:
                                                 pod labels will be ignored. The default value is empty.
                                                 The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                                 Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                                 This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                                This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
                                               items:
+                                                type: string
+                                              type: array
+                                              x-kubernetes-list-type: atomic
                                             namespaceSelector:
                                               description: |-
                                                 A label query over the set of namespaces that the term applies to.
@@ -931,11 +931,7 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both matchLabelKeys and labelSelector.
                                             Also, matchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
                                             type: string
                                           type: array
@@ -950,11 +946,7 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                             Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
                                             type: string
                                           type: array
@@ -1120,13 +1112,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -1196,13 +1182,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -1242,13 +1222,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -1271,13 +1245,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the Secret
@@ -2471,24 +2439,13 @@ spec:
                                           Mounted read-only if true, read-write otherwise (false or unspecified).
                                           Defaults to false.
                                         type: boolean
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                       recursiveReadOnly:
                                         description: |-
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -2496,23 +2453,11 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
-=======
->>>>>>> 6b7edb0 (added integration tests, changed to have NetworkConfig be the overarching struct)
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
-                                          If this field is not specified, it is treated as an equivalent of Disabled.
-                                        type: string
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                       subPath:
                                         description: |-
                                           Path within the volume from which the container's volume should be mounted.
@@ -2691,13 +2636,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -2767,13 +2706,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -2813,13 +2746,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -2842,13 +2769,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the Secret
@@ -4021,15 +3942,8 @@ spec:
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -4037,17 +3951,9 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
                                       subPath:
@@ -4159,13 +4065,7 @@ spec:
                                     This field is effectively required, but due to backwards compatibility is
                                     allowed to be empty. Instances of this type with an empty value here are
                                     almost certainly wrong.
-<<<<<<< HEAD
                                     More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                    TODO: Add other useful fields. apiVersion, kind, uid?
-                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                    TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                   type: string
                               type: object
                               x-kubernetes-map-type: atomic
@@ -4261,13 +4161,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -4337,13 +4231,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -4383,13 +4271,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -4412,13 +4294,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the Secret
@@ -5617,15 +5493,8 @@ spec:
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -5633,17 +5502,9 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
                                       subPath:
@@ -5719,10 +5580,7 @@ spec:
                               - spec.securityContext.runAsUser
                               - spec.securityContext.runAsGroup
                               - spec.securityContext.supplementalGroups
-<<<<<<< HEAD
                               - spec.securityContext.supplementalGroupsPolicy
-=======
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                               - spec.containers[*].securityContext.appArmorProfile
                               - spec.containers[*].securityContext.seLinuxOptions
                               - spec.containers[*].securityContext.seccompProfile
@@ -6051,7 +5909,6 @@ spec:
                                   type: integer
                                 type: array
                                 x-kubernetes-list-type: atomic
-<<<<<<< HEAD
                               supplementalGroupsPolicy:
                                 description: |-
                                   Defines how supplemental groups of the first container processes are calculated.
@@ -6060,8 +5917,6 @@ spec:
                                   and the container runtime must implement support for this feature.
                                   Note that this field cannot be set when spec.os.name is windows.
                                 type: string
-=======
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                               sysctls:
                                 description: |-
                                   Sysctls hold a list of namespaced sysctls used for the pod. Pods with unsupported
@@ -6527,13 +6382,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -6575,13 +6424,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -6654,13 +6497,7 @@ spec:
                                         This field is effectively required, but due to backwards compatibility is
                                         allowed to be empty. Instances of this type with an empty value here are
                                         almost certainly wrong.
-<<<<<<< HEAD
                                         More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                        TODO: Add other useful fields. apiVersion, kind, uid?
-                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                        TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                       type: string
                                     optional:
                                       description: optional specify whether the ConfigMap
@@ -6699,13 +6536,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -7111,11 +6942,7 @@ spec:
                                                 set to a Pending state, as reflected by the modifyVolumeStatus field, until such as a resource
                                                 exists.
                                                 More info: https://kubernetes.io/docs/concepts/storage/volume-attributes-classes/
-<<<<<<< HEAD
                                                 (Beta) Using this field requires the VolumeAttributesClass feature gate to be enabled (off by default).
-=======
-                                                (Alpha) Using this field requires the VolumeAttributesClass feature gate to be enabled.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               type: string
                                             volumeMode:
                                               description: |-
@@ -7210,13 +7037,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -7448,13 +7269,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -7727,13 +7542,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: optional specify whether
@@ -7880,13 +7689,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: optional field specify
@@ -8026,13 +7829,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -8085,13 +7882,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -8215,13 +8006,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -8636,11 +8421,7 @@ spec:
                                                 pod labels will be ignored. The default value is empty.
                                                 The same key is forbidden to exist in both matchLabelKeys and labelSelector.
                                                 Also, matchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                                 This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                                This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               items:
                                                 type: string
                                               type: array
@@ -8655,11 +8436,7 @@ spec:
                                                 pod labels will be ignored. The default value is empty.
                                                 The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                                 Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                                 This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                                This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               items:
                                                 type: string
                                               type: array
@@ -8828,11 +8605,7 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both matchLabelKeys and labelSelector.
                                             Also, matchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
                                             type: string
                                           type: array
@@ -8847,12 +8620,13 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                             Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
+                                            type: string
+                                          type: array
+                                          x-kubernetes-list-type: atomic
+                                        namespaceSelector:
+                                          description: |-
                                             A label query over the set of namespaces that the term applies to.
                                             The term is applied to the union of the namespaces selected by this field
                                             and the ones listed in the namespaces field.
@@ -9013,11 +8787,7 @@ spec:
                                                 pod labels will be ignored. The default value is empty.
                                                 The same key is forbidden to exist in both matchLabelKeys and labelSelector.
                                                 Also, matchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                                 This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                                This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               items:
                                                 type: string
                                               type: array
@@ -9032,11 +8802,7 @@ spec:
                                                 pod labels will be ignored. The default value is empty.
                                                 The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                                 Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                                 This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                                This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               items:
                                                 type: string
                                               type: array
@@ -9205,11 +8971,7 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both matchLabelKeys and labelSelector.
                                             Also, matchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
                                             type: string
                                           type: array
@@ -9224,12 +8986,13 @@ spec:
                                             pod labels will be ignored. The default value is empty.
                                             The same key is forbidden to exist in both mismatchLabelKeys and labelSelector.
                                             Also, mismatchLabelKeys cannot be set when labelSelector isn't set.
-<<<<<<< HEAD
                                             This is a beta field and requires enabling MatchLabelKeysInPodAffinity feature gate (enabled by default).
-=======
-                                            This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           items:
+                                            type: string
+                                          type: array
+                                          x-kubernetes-list-type: atomic
+                                        namespaceSelector:
+                                          description: |-
                                             A label query over the set of namespaces that the term applies to.
                                             The term is applied to the union of the namespaces selected by this field
                                             and the ones listed in the namespaces field.
@@ -9389,13 +9152,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -9465,13 +9222,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -9511,13 +9262,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -9537,24 +9282,15 @@ spec:
                                             default: ""
                                             description: |-
                                               Name of the referent.
-<<<<<<< HEAD
-<<<<<<< HEAD
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
->>>>>>> 6b7edb0 (added integration tests, changed to have NetworkConfig be the overarching struct)
-=======
-                                              This field is effectively required, but due to backwards compatibility is
-                                              allowed to be empty. Instances of this type with an empty value here are
-                                              almost certainly wrong.
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
+                                          optional:
+                                            description: Specify whether the Secret
+                                              must be defined
+                                            type: boolean
                                         type: object
                                         x-kubernetes-map-type: atomic
                                     type: object
@@ -10748,15 +10484,8 @@ spec:
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -10764,17 +10493,9 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
                                       subPath:
@@ -10955,13 +10676,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -11031,13 +10746,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -11077,13 +10786,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -11106,13 +10809,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the Secret
@@ -12285,15 +11982,8 @@ spec:
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -12301,17 +11991,9 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
                                       subPath:
@@ -12423,13 +12105,7 @@ spec:
                                     This field is effectively required, but due to backwards compatibility is
                                     allowed to be empty. Instances of this type with an empty value here are
                                     almost certainly wrong.
-<<<<<<< HEAD
                                     More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                    TODO: Add other useful fields. apiVersion, kind, uid?
-                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                    TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                   type: string
                               type: object
                               x-kubernetes-map-type: atomic
@@ -12525,13 +12201,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the ConfigMap
@@ -12601,13 +12271,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: Specify whether the Secret
@@ -12647,13 +12311,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the ConfigMap
@@ -12676,13 +12334,7 @@ spec:
                                               This field is effectively required, but due to backwards compatibility is
                                               allowed to be empty. Instances of this type with an empty value here are
                                               almost certainly wrong.
-<<<<<<< HEAD
                                               More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                              TODO: Add other useful fields. apiVersion, kind, uid?
-                                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                              TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                             type: string
                                           optional:
                                             description: Specify whether the Secret
@@ -13881,15 +13533,8 @@ spec:
                                           RecursiveReadOnly specifies whether read-only mounts should be handled
                                           recursively.
 
-<<<<<<< HEAD
                                           If ReadOnly is false, this field has no meaning and must be unspecified.
 
-=======
-
-                                          If ReadOnly is false, this field has no meaning and must be unspecified.
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If ReadOnly is true, and this field is set to Disabled, the mount is not made
                                           recursively read-only.  If this field is set to IfPossible, the mount is made
                                           recursively read-only, if it is supported by the container runtime.  If this
@@ -13897,17 +13542,9 @@ spec:
                                           supported by the container runtime, otherwise the pod will not be started and
                                           an error will be generated to indicate the reason.
 
-<<<<<<< HEAD
                                           If this field is set to IfPossible or Enabled, MountPropagation must be set to
                                           None (or be unspecified, which defaults to None).
 
-=======
-
-                                          If this field is set to IfPossible or Enabled, MountPropagation must be set to
-                                          None (or be unspecified, which defaults to None).
-
-
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           If this field is not specified, it is treated as an equivalent of Disabled.
                                         type: string
                                       subPath:
@@ -13983,10 +13620,7 @@ spec:
                               - spec.securityContext.runAsUser
                               - spec.securityContext.runAsGroup
                               - spec.securityContext.supplementalGroups
-<<<<<<< HEAD
                               - spec.securityContext.supplementalGroupsPolicy
-=======
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                               - spec.containers[*].securityContext.appArmorProfile
                               - spec.containers[*].securityContext.seLinuxOptions
                               - spec.containers[*].securityContext.seccompProfile
@@ -14315,7 +13949,6 @@ spec:
                                   type: integer
                                 type: array
                                 x-kubernetes-list-type: atomic
-<<<<<<< HEAD
                               supplementalGroupsPolicy:
                                 description: |-
                                   Defines how supplemental groups of the first container processes are calculated.
@@ -14324,8 +13957,6 @@ spec:
                                   and the container runtime must implement support for this feature.
                                   Note that this field cannot be set when spec.os.name is windows.
                                 type: string
-=======
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                               sysctls:
                                 description: |-
                                   Sysctls hold a list of namespaced sysctls used for the pod. Pods with unsupported
@@ -14791,13 +14422,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -14839,13 +14464,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -14918,13 +14537,7 @@ spec:
                                         This field is effectively required, but due to backwards compatibility is
                                         allowed to be empty. Instances of this type with an empty value here are
                                         almost certainly wrong.
-<<<<<<< HEAD
                                         More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                        TODO: Add other useful fields. apiVersion, kind, uid?
-                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                        TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                       type: string
                                     optional:
                                       description: optional specify whether the ConfigMap
@@ -14963,13 +14576,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -15375,11 +14982,7 @@ spec:
                                                 set to a Pending state, as reflected by the modifyVolumeStatus field, until such as a resource
                                                 exists.
                                                 More info: https://kubernetes.io/docs/concepts/storage/volume-attributes-classes/
-<<<<<<< HEAD
                                                 (Beta) Using this field requires the VolumeAttributesClass feature gate to be enabled (off by default).
-=======
-                                                (Alpha) Using this field requires the VolumeAttributesClass feature gate to be enabled.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                               type: string
                                             volumeMode:
                                               description: |-
@@ -15474,13 +15077,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -15712,13 +15309,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -15991,13 +15582,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: optional specify whether
@@ -16144,13 +15729,7 @@ spec:
                                                   This field is effectively required, but due to backwards compatibility is
                                                   allowed to be empty. Instances of this type with an empty value here are
                                                   almost certainly wrong.
-<<<<<<< HEAD
                                                   More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                                  TODO: Add other useful fields. apiVersion, kind, uid?
-                                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                                  TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                                 type: string
                                               optional:
                                                 description: optional field specify
@@ -16290,13 +15869,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -16349,13 +15922,7 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
@@ -16479,18 +16046,12 @@ spec:
                                             This field is effectively required, but due to backwards compatibility is
                                             allowed to be empty. Instances of this type with an empty value here are
                                             almost certainly wrong.
-<<<<<<< HEAD
                                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-=======
-                                            TODO: Add other useful fields. apiVersion, kind, uid?
-                                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                            TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
->>>>>>> de3d148 (changed implementation to UniquePerReplica)
                                           type: string
                                       type: object
                                       x-kubernetes-map-type: atomic
                                     volumeName:
-                                      description: |-s
+                                      description: |-
                                         volumeName is the human-readable name of the StorageOS volume.  Volume
                                         names are only unique within a namespace.
                                       type: string
@@ -16545,7 +16106,8 @@ spec:
                 - workerTemplate
                 type: object
               networkConfig:
-                description: Defines the network configuration of the group
+                description: NetworkConfig defines the network configuration of the
+                  group
                 properties:
                   subdomainPolicy:
                     description: |-

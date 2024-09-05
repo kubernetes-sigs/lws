@@ -21,13 +21,13 @@ import (
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// NetworkConfigApplyConfiguration represents an declarative configuration of the NetworkConfig type for use
+// NetworkConfigApplyConfiguration represents a declarative configuration of the NetworkConfig type for use
 // with apply.
 type NetworkConfigApplyConfiguration struct {
 	SubdomainPolicy *v1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
 }
 
-// NetworkConfigApplyConfiguration constructs an declarative configuration of the NetworkConfig type for use with
+// NetworkConfigApplyConfiguration constructs a declarative configuration of the NetworkConfig type for use with
 // apply.
 func NetworkConfig() *NetworkConfigApplyConfiguration {
 	return &NetworkConfigApplyConfiguration{}
