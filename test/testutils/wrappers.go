@@ -16,6 +16,7 @@ package testutils
 
 import (
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -147,7 +148,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	}
 }
 
-func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string) *corev1.Pod {
+func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string, size int) *corev1.Pod {
 	podName := fmt.Sprintf("%s-%s-%s", setName, groupIndex, workerIndex)
 	if workerIndex == "0" {
 		podName = fmt.Sprintf("%s-%s", setName, groupIndex)
@@ -160,6 +161,9 @@ func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string) *core
 			Labels: map[string]string{
 				leaderworkerset.GroupIndexLabelKey: groupIndex,
 				leaderworkerset.SetNameLabelKey:    setName,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.SizeAnnotationKey: strconv.Itoa(size),
 			},
 		},
 	}

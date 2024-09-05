@@ -342,7 +342,7 @@ func hasAllEnvVarPopulated(pod corev1.Pod, envVars []string) bool {
 }
 
 func HasLWSEnvVarsPopulated(pod corev1.Pod) bool {
-	return hasAllEnvVarPopulated(pod, []string{leaderworkerset.LwsLeaderAddress})
+	return hasAllEnvVarPopulated(pod, []string{leaderworkerset.LwsLeaderAddress, leaderworkerset.LwsGroupSize})
 }
 
 func CheckContainerHasCorrectEnvVar(pod corev1.Pod, expect corev1.EnvVar) error {

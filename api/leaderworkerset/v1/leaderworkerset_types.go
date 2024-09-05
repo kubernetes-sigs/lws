@@ -67,6 +67,10 @@ const (
 	// address the leader via the headless service.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
 
+	// Environment variable added to all containers in the LeaderWorkerSet to
+	// track the size of the LWS group.
+	LwsGroupSize string = "LWS_GROUP_SIZE"
+
 	// Subgroup index tracks which subgroup the pod is part of. It will be added
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"

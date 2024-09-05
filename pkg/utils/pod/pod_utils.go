@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -91,25 +92,43 @@ func getPodConditionFromList(conditions []corev1.PodCondition, conditionType cor
 	return -1, nil
 }
 
-func addEnvVarIfNotExists(c *corev1.Container, e corev1.EnvVar) {
+// addEnvVarsIfNotExists adds env vars to the container if they don't already exist.
+// It takes a slice of existing env vars and appends new env vars to the beginning of it,
+// ensuring that the 'firstEnv' and 'e' env vars maintain their order at the front.
+// The function then adds any existing env vars from 'c.Env' that are not in 'e' to the newEnvVars slice.
+func addEnvVarsIfNotExists(c *corev1.Container, firstEnv corev1.EnvVar, e ...corev1.EnvVar) {
+	newEnvVars := make([]corev1.EnvVar, 0)
+
+	// Add firstEnv to the beginning of the newEnvVars slice
+	newEnvVars = append(newEnvVars, firstEnv)
+	newEnvVars = append(newEnvVars, e...)
+
+	// Add existing env vars from c.Env that are not in e to newEnvVars
 	for _, env := range c.Env {
-		if env.Name == e.Name {
-			return
+		exists := false
+		for _, newEnv := range newEnvVars {
+			if newEnv.Name == env.Name {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			newEnvVars = append(newEnvVars, env)
 		}
 	}
-	c.Env = append([]corev1.EnvVar{e}, c.Env...)
+	c.Env = newEnvVars
 }
 
-// AddLWSVariables adds LWS_LEADER_ADDRESS environment variable to every container.
+// AddLWSVariables adds environment variable to every container.
 func AddLWSVariables(pod *corev1.Pod) error {
 	lwsName, found := pod.Labels[leaderworkerset.SetNameLabelKey]
 	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no name label found for pod %v", pod.Name)
+		return fmt.Errorf("Failure constructing environment variables, no name label found for pod %v", klog.KObj(pod))
 	}
 
 	groupIndex, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no group index label found for pod %v", pod.Name)
+		return fmt.Errorf("Failure constructing environment variables, no group index label found for pod %v", klog.KObj(pod))
 	}
 
 	// The headless service name is assumed to be the same as the LWS name.
@@ -119,11 +138,24 @@ func AddLWSVariables(pod *corev1.Pod) error {
 		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, lwsName, pod.ObjectMeta.Namespace),
 	}
 
+	size, found := pod.Annotations[leaderworkerset.SizeAnnotationKey]
+	if !found {
+		return fmt.Errorf("Failure constructing environment variables, no size annotation found for pod %v", klog.KObj(pod))
+	}
+
+	// The group size is assumed to be the same as the number of replicas.
+	sizeEnvVar := corev1.EnvVar{
+		Name:  leaderworkerset.LwsGroupSize,
+		Value: size,
+	}
+
+	// The order of injection needs attention, see
+	// https://github.com/kubernetes-sigs/lws/pull/152
 	for i := range pod.Spec.Containers {
-		addEnvVarIfNotExists(&pod.Spec.Containers[i], leaderAddressEnvVar)
+		addEnvVarsIfNotExists(&pod.Spec.Containers[i], leaderAddressEnvVar, sizeEnvVar)
 	}
 	for i := range pod.Spec.InitContainers {
-		addEnvVarIfNotExists(&pod.Spec.InitContainers[i], leaderAddressEnvVar)
+		addEnvVarsIfNotExists(&pod.Spec.InitContainers[i], leaderAddressEnvVar, sizeEnvVar)
 	}
 
 	return nil
