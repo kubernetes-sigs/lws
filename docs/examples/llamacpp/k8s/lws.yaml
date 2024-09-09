@@ -17,11 +17,6 @@ spec:
           image: llamacpp-llama3-8b-instruct-bartowski-q5km:latest
           imagePullPolicy: IfNotPresent
           command: [ "/llamacpp-leader", "--", "--n-gpu-layers", "99", "--verbose" ]
-          env:
-            - name: LWS_SIZE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
     workerTemplate:
       spec:
         containers:
