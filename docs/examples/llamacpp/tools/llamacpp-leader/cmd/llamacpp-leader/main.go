@@ -23,10 +23,10 @@ func main() {
 
 func run(ctx context.Context) error {
 	lwsSize := 1
-	if s := os.Getenv("LWS_SIZE"); s != "" {
+	if s := os.Getenv("LWS_GROUP_SIZE"); s != "" {
 		v, err := strconv.Atoi(s)
 		if err != nil {
-			return fmt.Errorf("parsing LWS_SIZE=%q, expected integer", s)
+			return fmt.Errorf("parsing LWS_GROUP_SIZE=%q, expected integer", s)
 		}
 		lwsSize = v
 	}
