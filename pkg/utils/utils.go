@@ -47,7 +47,7 @@ func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
 	}
 
 	return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(lws.Spec.NetworkConfig.SubdomainPolicy))
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(*lws.Spec.NetworkConfig.SubdomainPolicy))
 }
 
 // SortByIndex returns an ascending list, the length of the list is always specified by the parameter.

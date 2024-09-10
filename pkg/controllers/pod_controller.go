@@ -93,6 +93,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+		r.createHeadlessServiceIfNotExists(ctx, &leaderWorkerSet, &pod)
+	}
+
 	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset
 	// this is critical to avoid race condition in all-or-nothing restart where the worker sts may be created
 	// when the leader pod is being deleted
@@ -231,6 +235,42 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 	return topology, nil
 }
 
+func (r *PodReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, pod *corev1.Pod) error {
+	log := ctrl.LoggerFrom(ctx)
+	// If the headless service does not exist in the namespace, create it.
+	var headlessService corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		headlessService := corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: lws.Namespace,
+			},
+			Spec: corev1.ServiceSpec{
+				ClusterIP: "None", // defines service as headless
+				Selector: map[string]string{
+					leaderworkerset.SetNameLabelKey:    lws.Name,
+					leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey],
+				},
+				PublishNotReadyAddresses: true,
+			},
+		}
+
+		// Set the controller owner reference for garbage collection and reconciliation.
+		if err := ctrl.SetControllerReference(pod, &headlessService, r.Scheme); err != nil {
+			return err
+		}
+		// create the service in the cluster
+		log.V(2).Info("Creating headless service.")
+		if err := r.Create(ctx, &headlessService); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet
 func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1.StatefulSetApplyConfiguration, scheme *runtime.Scheme) error {
 	// Validate the owner.
@@ -293,7 +333,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name
-	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		serviceName = lws.Name
 	}
 	// construct statefulset apply configuration

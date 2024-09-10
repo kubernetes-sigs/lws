@@ -190,8 +190,8 @@ type SubGroupPolicy struct {
 
 type NetworkConfig struct {
 	// SubdomainPolicy determines the policy that will be used when creating
-	// the headless service
-	SubdomainPolicy SubdomainPolicy `json:"subdomainPolicy"`
+	// the headless service, defaults to shared
+	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
 }
 
 type SubdomainPolicy string

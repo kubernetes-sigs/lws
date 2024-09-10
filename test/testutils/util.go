@@ -461,8 +461,9 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 			return err
 		}
 
-		newLws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
-		newLws.Spec.NetworkConfig.SubdomainPolicy = subdomainPolicy
+		newLws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+			SubdomainPolicy: &subdomainPolicy,
+		}
 		return k8sClient.Update(ctx, &newLws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

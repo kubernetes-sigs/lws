@@ -16112,7 +16112,7 @@ spec:
                   subdomainPolicy:
                     description: |-
                       SubdomainPolicy determines the policy that will be used when creating
-                      the headless service
+                      the headless service, defaults to shared
                     type: string
                 required:
                 - subdomainPolicy

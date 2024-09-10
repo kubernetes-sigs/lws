@@ -234,26 +234,25 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
-	ginkgo.It("RollingUpdate is triggered when changing subdomainPolicy", func() {
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubGroupSize(1).Obj()
+	ginkgo.It("headless services scale up during MaxSurge", func() {
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
-		// Wait for leaderWorkerSet to be ready then update it.
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.ExpectValidServices(ctx, k8sClient, lws, 1)
-		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainUniquePerReplica)
-
 		// Happen during rolling update.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
-		testing.ExpectValidServices(ctx, k8sClient, lws, 8)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
 		// Rolling update completes.
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 		// Wait for leaderWorkerSet to be ready again.
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 	})
 
 	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {

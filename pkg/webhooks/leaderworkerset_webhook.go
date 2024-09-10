@@ -70,7 +70,13 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 
 	if lws.Spec.NetworkConfig == nil {
 		lws.Spec.NetworkConfig = &v1.NetworkConfig{}
-		lws.Spec.NetworkConfig.SubdomainPolicy = v1.SubdomainShared
+		subdomainPolicy := v1.SubdomainShared
+		lws.Spec.NetworkConfig = &v1.NetworkConfig{
+			SubdomainPolicy: &subdomainPolicy,
+		}
+	} else if lws.Spec.NetworkConfig.SubdomainPolicy == nil {
+		subdomainPolicy := v1.SubdomainShared
+		lws.Spec.NetworkConfig.SubdomainPolicy = &subdomainPolicy
 	}
 	return nil
 }
@@ -101,6 +107,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
+	}
+	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
 	}
 
 	return nil, allErrs.ToAggregate()

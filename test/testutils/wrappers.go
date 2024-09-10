@@ -110,8 +110,9 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupSize(subGroupSize int32) *Lead
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leaderworkerset.SubdomainPolicy) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
-	lwsWrapper.Spec.NetworkConfig.SubdomainPolicy = subdomainPolicy
+	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
 	return lwsWrapper
 }
 
@@ -149,8 +150,10 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		},
 	}
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
-	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
-	lws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainShared
+	subdomainPolicy := leaderworkerset.SubdomainShared
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}

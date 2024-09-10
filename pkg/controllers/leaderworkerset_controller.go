@@ -106,7 +106,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Create headless service if it does not exist.
-	if err := r.reconcileHeadlessServices(ctx, lws, replicas); err != nil {
+	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -122,37 +122,12 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32) error {
-
-	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 			return err
 		}
 		return nil
-	}
-	// using replicas instead of lws.spec.replicas as needed to create services for burst replicas during maxSurge
-	for i := 0; i < int(replicas); i++ {
-		err := r.createHeadlessServiceIfNotExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)})
-		if err != nil {
-			return err
-		}
-	}
-
-	var headlessServiceList corev1.ServiceList
-	if err := r.List(ctx, &headlessServiceList, client.InNamespace(lws.Namespace)); err != nil {
-		return err
-	}
-
-	if len(headlessServiceList.Items) == int(replicas) {
-		return nil
-	}
-
-	// In case of scale down, need to delete the services of the replicas that will be deleted
-	for i := len(headlessServiceList.Items); i > int(replicas); i-- {
-		err := r.deleteHeadlessServiceIfExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i-1)))
-		if err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -186,50 +161,6 @@ func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context
 		if err := r.Create(ctx, &headlessService); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func (r *LeaderWorkerSetReconciler) deleteMultipleHeadlessSevices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-
-	podSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.WorkerIndexLabelKey: "0",
-	})
-	var leaderPodList corev1.PodList
-	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return err
-	}
-
-	if len(leaderPodList.Items) == 0 {
-		return nil
-	}
-
-	subdomainPolicy, foundSubdomainPolicy := leaderPodList.Items[0].Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
-	if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
-		return r.deleteHeadlessServiceIfExists(ctx, lws, lws.Name)
-	}
-
-	for i := 0; i < int(*lws.Spec.Replicas); i++ {
-		err := r.deleteHeadlessServiceIfExists(ctx, lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *LeaderWorkerSetReconciler) deleteHeadlessServiceIfExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string) error {
-	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		return nil
-	}
-
-	if err := r.Delete(ctx, &headlessService); err != nil {
-		return err
 	}
 	return nil
 }
@@ -340,9 +271,6 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 3:
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
-		if err := r.deleteMultipleHeadlessSevices(ctx, lws); err != nil {
-			return 0, 0, err
-		}
 		return 0, lwsReplicas, nil
 	}
 
@@ -664,7 +592,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		}
 	}
 
-	if lws.Spec.NetworkConfig != nil && lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

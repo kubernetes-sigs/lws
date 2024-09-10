@@ -71,7 +71,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return false, fmt.Errorf("expected %d headless services, got %d", numHeadlessServices, len(headlessServiceList.Items))
 		}
 
-		if lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
@@ -82,7 +82,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
-			if _, err := validateService(headlessService, &lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
+			if _, err := validateService(headlessService, &lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
 				return false, err
 			}
 		}
@@ -102,6 +102,9 @@ func validateService(headlessService corev1.Service, lws *leaderworkerset.Leader
 	}
 	if !headlessService.Spec.PublishNotReadyAddresses {
 		return false, errors.New("service publish not ready should be true")
+	}
+	if headlessService.OwnerReferences[0].Name != serviceName {
+		return false, fmt.Errorf("service name is %s, expected %s", headlessService.OwnerReferences[0].Name, serviceName)
 	}
 	selector := headlessService.Spec.Selector
 	if diff := cmp.Diff(selector, wantSelector); diff != "" {
