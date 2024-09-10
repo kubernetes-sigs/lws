@@ -94,7 +94,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
-		r.createHeadlessServiceIfNotExists(ctx, &leaderWorkerSet, &pod)
+		if err := r.createHeadlessServiceIfNotExists(ctx, &leaderWorkerSet, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset
