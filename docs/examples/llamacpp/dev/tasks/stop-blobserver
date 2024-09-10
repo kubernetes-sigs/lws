@@ -7,4 +7,4 @@ set -o pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "${REPO_ROOT}/docs/examples/llamacpp"
 
-pkill --exact blobserver || true
+kill $(pgrep -x blobserver) || true

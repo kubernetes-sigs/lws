@@ -16,6 +16,9 @@ target "bartowski" {
   contexts = {
     llamacpp-leader = "target:llamacpp-leader"
   }
+  args = {
+    BLOB_SERVER = ""
+  }
   dockerfile = "images/bartowski/Dockerfile"
   tags = [ "llamacpp-llama3-8b-instruct-bartowski-q5km:latest" ]
 }
