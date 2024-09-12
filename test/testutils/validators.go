@@ -75,14 +75,14 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
-			return validateService(headlessService, &lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
+			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
 		}
 
 		for i := 0; i < int(*lws.Spec.Replicas); i++ {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
-			if _, err := validateService(headlessService, &lws, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
+			if _, err := validateService(headlessService, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
 				return false, err
 			}
 		}
@@ -90,13 +90,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func validateService(headlessService corev1.Service, lws *leaderworkerset.LeaderWorkerSet, serviceName string, wantSelector map[string]string) (bool, error) {
-	if headlessService.ObjectMeta.Name != serviceName {
-		return false, errors.New("service name mismatch")
-	}
-	if headlessService.ObjectMeta.Namespace != lws.Namespace {
-		return false, errors.New("service namespace mismatch")
-	}
+func validateService(headlessService corev1.Service, serviceName string, wantSelector map[string]string) (bool, error) {
 	if headlessService.Spec.ClusterIP != "None" {
 		return false, errors.New("service type mismatch")
 	}

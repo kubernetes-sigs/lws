@@ -214,23 +214,16 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		for _, pod := range lwsPods.Items {
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
-			if pod.Labels[leaderworkerset.GroupIndexLabelKey] == "0" {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample-0,test-sample-0-1.test-sample-0")).Should(gomega.Succeed())
-			} else {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample-1,test-sample-1-1.test-sample-1")).Should(gomega.Succeed())
-			}
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample-0,test-sample-0-1.test-sample-0")).Should(gomega.Succeed())
 		}
+
 		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainShared)
 		lwsPodsAfterUpgrade := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPodsAfterUpgrade)
 
 		for _, pod := range lwsPodsAfterUpgrade.Items {
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
-			if pod.Labels[leaderworkerset.GroupIndexLabelKey] == "0" {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
-			} else {
-				gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-1.test-sample,test-sample-1-1.test-sample")).Should(gomega.Succeed())
-			}
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
 		}
 	})
 

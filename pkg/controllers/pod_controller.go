@@ -40,6 +40,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
+	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -94,7 +95,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
-		if err := r.createHeadlessServiceIfNotExists(ctx, &leaderWorkerSet, &pod); err != nil {
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -235,42 +236,6 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 		return "", fmt.Errorf("node does not have topology label: %s", topology)
 	}
 	return topology, nil
-}
-
-func (r *PodReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, pod *corev1.Pod) error {
-	log := ctrl.LoggerFrom(ctx)
-	// If the headless service does not exist in the namespace, create it.
-	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		headlessService := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pod.Name,
-				Namespace: lws.Namespace,
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: "None", // defines service as headless
-				Selector: map[string]string{
-					leaderworkerset.SetNameLabelKey:    lws.Name,
-					leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey],
-				},
-				PublishNotReadyAddresses: true,
-			},
-		}
-
-		// Set the controller owner reference for garbage collection and reconciliation.
-		if err := ctrl.SetControllerReference(pod, &headlessService, r.Scheme); err != nil {
-			return err
-		}
-		// create the service in the cluster
-		log.V(2).Info("Creating headless service.")
-		if err := r.Create(ctx, &headlessService); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet

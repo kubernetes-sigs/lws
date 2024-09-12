@@ -42,6 +42,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/utils"
+	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -124,43 +125,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
 	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-		if err := r.createHeadlessServiceIfNotExists(ctx, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
 		}
 		return nil
-	}
-	return nil
-}
-
-func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, serviceName string, serviceSelector map[string]string) error {
-	log := ctrl.LoggerFrom(ctx)
-	// If the headless service does not exist in the namespace, create it.
-	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		headlessService := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceName,
-				Namespace: lws.Namespace,
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP:                "None", // defines service as headless
-				Selector:                 serviceSelector,
-				PublishNotReadyAddresses: true,
-			},
-		}
-
-		// Set the controller owner reference for garbage collection and reconciliation.
-		if err := ctrl.SetControllerReference(lws, &headlessService, r.Scheme); err != nil {
-			return err
-		}
-		// create the service in the cluster
-		log.V(2).Info("Creating headless service.")
-		if err := r.Create(ctx, &headlessService); err != nil {
-			return err
-		}
 	}
 	return nil
 }
