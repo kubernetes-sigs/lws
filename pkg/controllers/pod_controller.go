@@ -40,6 +40,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
+	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -91,6 +92,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// worker pods' reconciliation is only done to handle restart policy
 	if !podutils.LeaderPod(pod) {
 		return ctrl.Result{}, nil
+	}
+
+	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset
@@ -292,10 +299,14 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+	serviceName := leaderPod.Name
+	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		serviceName = lws.Name
+	}
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
-			WithServiceName(lws.Name).
+			WithServiceName(serviceName).
 			WithReplicas(*lws.Spec.LeaderWorkerTemplate.Size - 1).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).

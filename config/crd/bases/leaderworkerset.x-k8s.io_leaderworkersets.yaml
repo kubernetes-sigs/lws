@@ -16105,6 +16105,18 @@ spec:
                 required:
                 - workerTemplate
                 type: object
+              networkConfig:
+                description: NetworkConfig defines the network configuration of the
+                  group
+                properties:
+                  subdomainPolicy:
+                    description: |-
+                      SubdomainPolicy determines the policy that will be used when creating
+                      the headless service, defaults to shared
+                    type: string
+                required:
+                - subdomainPolicy
+                type: object
               replicas:
                 default: 1
                 description: |-

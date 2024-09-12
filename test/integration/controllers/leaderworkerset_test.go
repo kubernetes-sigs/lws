@@ -229,7 +229,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
 				},
 			},
@@ -239,7 +239,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
 				},
 				{
@@ -251,7 +251,19 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					},
 					// Service should be recreated during reconcilation
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidServices(ctx, k8sClient, lws)
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("subdomain policy LeadersSharedWorkersDedicated, more than one headless service created", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
 					},
 				},
 			},

@@ -81,6 +81,10 @@ const (
 
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
+
+	// Leader pods will have an annotation that determines what type of domain
+	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
+	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -119,6 +123,10 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={LeaderCreated,LeaderReady}
 	// +optional
 	StartupPolicy StartupPolicyType `json:"startupPolicy"`
+
+	// NetworkConfig defines the network configuration of the group
+	// +optional
+	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -179,6 +187,27 @@ type SubGroupPolicy struct {
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
+
+type NetworkConfig struct {
+	// SubdomainPolicy determines the policy that will be used when creating
+	// the headless service, defaults to shared
+	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
+}
+
+type SubdomainPolicy string
+
+const (
+	// SubdomainShared will create a single headless service that all replicas
+	// will share. The host names look like:
+	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
+	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	SubdomainShared SubdomainPolicy = "Shared"
+	// UniquePerReplica will create a headless service per replica
+	// The pod host names look like:
+	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
+	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
+)
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {

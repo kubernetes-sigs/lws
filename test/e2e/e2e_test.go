@@ -148,6 +148,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
+
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
@@ -189,8 +190,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 	ginkgo.It("Adds env vars to containers when using TPU", func() {
 		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
-		workerPodSpec := testutils.MakeWorkerPodSpecWithTPUResource()
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
@@ -199,6 +200,52 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		for _, p := range lwsPods.Items {
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(p)).To(gomega.BeTrue())
 		}
+	})
+
+	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
+		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainUniquePerReplica)
+		lwsPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+
+		for _, pod := range lwsPods.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample-0,test-sample-0-1.test-sample-0")).Should(gomega.Succeed())
+		}
+
+		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainShared)
+		lwsPodsAfterUpgrade := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPodsAfterUpgrade)
+
+		for _, pod := range lwsPodsAfterUpgrade.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
+		}
+	})
+
+	ginkgo.It("headless services scale up during MaxSurge", func() {
+		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		// Happen during rolling update.
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
+		// Rolling update completes.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		// Wait for leaderWorkerSet to be ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 	})
 
 	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {

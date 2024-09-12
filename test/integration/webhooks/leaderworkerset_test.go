@@ -124,6 +124,16 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
 			},
 		}),
+		ginkgo.Entry("defaulting of subdomainPolicy applies when spec.NetworkConfig is not set", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lwsWrapper := testutils.BuildLeaderWorkerSet(ns.Name)
+				lwsWrapper.Spec.NetworkConfig = nil
+				return lwsWrapper
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).SubdomainPolicy(leaderworkerset.SubdomainShared)
+			},
+		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).RolloutStrategy(leaderworkerset.RolloutStrategy{}) // unset rollout strategy
@@ -311,6 +321,44 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = testutils.MakeWorkerPodSpec()
 				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = testutils.MakeLeaderPodSpec()
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("subdomainPolicy can be updated from UniquePerReplica to Shared", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				*lws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainShared
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("subdomainPolicy can be updated from Shared to UniquePerReplica", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).SubdomainPolicy(leaderworkerset.SubdomainShared)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				*lws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainUniquePerReplica
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("subdomainPolicy can be updated from nil to UniquePerReplica", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lwsWrapper := testutils.BuildLeaderWorkerSet(ns.Name)
+				lwsWrapper.Spec.NetworkConfig = nil
+				return lwsWrapper
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				*lws.Spec.NetworkConfig.SubdomainPolicy = leaderworkerset.SubdomainUniquePerReplica
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("subdomainPolicy can be updated to nil", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.NetworkConfig.SubdomainPolicy = nil
 			},
 			updateShouldFail: false,
 		}),

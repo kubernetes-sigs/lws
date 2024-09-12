@@ -42,6 +42,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/utils"
+	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -106,7 +107,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Create headless service if it does not exist.
-	if err := r.createHeadlessServiceIfNotExists(ctx, lws); err != nil {
+	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -122,36 +123,12 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) createHeadlessServiceIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	log := ctrl.LoggerFrom(ctx)
-	// If the headless service does not exist in the namespace, create it.
-	var headlessService corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
-		if client.IgnoreNotFound(err) != nil {
+func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
 		}
-		headlessService := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      lws.Name,
-				Namespace: lws.Namespace,
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: "None", // defines service as headless
-				Selector: map[string]string{
-					leaderworkerset.SetNameLabelKey: lws.Name,
-				},
-				PublishNotReadyAddresses: true,
-			},
-		}
-		// Set the controller owner reference for garbage collection and reconciliation.
-		if err := ctrl.SetControllerReference(lws, &headlessService, r.Scheme); err != nil {
-			return err
-		}
-		// create the service in the cluster
-		log.V(2).Info("Creating headless service.")
-		if err := r.Create(ctx, &headlessService); err != nil {
-			return err
-		}
+		return nil
 	}
 	return nil
 }
@@ -581,6 +558,10 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
+	}
+
+	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 

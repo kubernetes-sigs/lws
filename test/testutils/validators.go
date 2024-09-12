@@ -52,32 +52,60 @@ func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorker
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func ExpectValidServices(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, numHeadlessServices int) {
 	gomega.Eventually(func() (bool, error) {
-		var headlessService corev1.Service
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
+
+		// Always got the latest lws.
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
 			return false, err
 		}
-		// we expect exactly one service and it must be of the correct type.
-		if headlessService.ObjectMeta.Name != lws.Name {
-			return false, errors.New("service name mismatch")
+
+		var headlessService corev1.Service
+		var headlessServiceList corev1.ServiceList
+		if err := k8sClient.List(ctx, &headlessServiceList, client.InNamespace(lws.Namespace)); err != nil {
+			return false, err
 		}
-		if headlessService.ObjectMeta.Namespace != lws.Namespace {
-			return false, errors.New("service namespace mismatch")
+
+		if len(headlessServiceList.Items) != (numHeadlessServices) {
+			return false, fmt.Errorf("expected %d headless services, got %d", numHeadlessServices, len(headlessServiceList.Items))
 		}
-		if headlessService.Spec.ClusterIP != "None" {
-			return false, errors.New("service type mismatch")
+
+		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
+				return false, err
+			}
+			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
 		}
-		if !headlessService.Spec.PublishNotReadyAddresses {
-			return false, errors.New("service publish not ready should be true")
-		}
-		selector := headlessService.Spec.Selector
-		value, exists := selector["leaderworkerset.sigs.k8s.io/name"]
-		if !exists || value != lws.Name {
-			return false, errors.New("selector name incorrect")
+
+		for i := 0; i < int(*lws.Spec.Replicas); i++ {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
+				return false, err
+			}
+			if _, err := validateService(headlessService, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
+				return false, err
+			}
 		}
 		return true, nil
 	}, Timeout, Interval).Should(gomega.Equal(true))
+}
+
+func validateService(headlessService corev1.Service, serviceName string, wantSelector map[string]string) (bool, error) {
+	if headlessService.Spec.ClusterIP != "None" {
+		return false, errors.New("service type mismatch")
+	}
+	if !headlessService.Spec.PublishNotReadyAddresses {
+		return false, errors.New("service publish not ready should be true")
+	}
+	if headlessService.OwnerReferences[0].Name != serviceName {
+		return false, fmt.Errorf("service name is %s, expected %s", headlessService.OwnerReferences[0].Name, serviceName)
+	}
+	selector := headlessService.Spec.Selector
+	if diff := cmp.Diff(selector, wantSelector); diff != "" {
+		return false, errors.New("service does not have the correct selectors: " + diff)
+	}
+
+	return true, nil
 }
 
 func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replicas int32) {
@@ -246,9 +274,6 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			hash := utils.LeaderWorkerTemplateHash(&lws)
 			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
 				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
-			}
-			if sts.Spec.ServiceName != lws.Name {
-				return errors.New("worker StatefulSet service name should match leaderWorkerSet name")
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")

@@ -109,6 +109,13 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupSize(subGroupSize int32) *Lead
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leaderworkerset.SubdomainPolicy) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
@@ -143,6 +150,10 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 		},
 	}
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+	subdomainPolicy := leaderworkerset.SubdomainShared
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}
@@ -220,6 +231,7 @@ func MakePodSpecWithInitContainer() corev1.PodSpec {
 				},
 			},
 		},
+		Subdomain: "test-sample",
 	}
 }
 
