@@ -391,9 +391,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is Default", &testCase{
+		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.DefaultRestartPolicy).Replica(1).Size(3)
+				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(3)
 			},
 			updates: []*update{
 				{

@@ -136,7 +136,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Namespace = nsName
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
 	lws.Spec.Replicas = ptr.To[int32](2)
-	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.DefaultRestartPolicy}
+	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.RecreateGroupOnPodRestart}
 	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
