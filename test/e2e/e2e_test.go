@@ -57,7 +57,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can deploy lws with 'replicas', 'size', and 'restart policy' set", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.NoneRestartPolicy).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
@@ -69,7 +69,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		gomega.Expect(*lws.Spec.Replicas).To(gomega.Equal(int32(4)))
 		gomega.Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(gomega.Equal(int32(5)))
-		gomega.Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(gomega.Equal(v1.RecreateGroupOnPodRestart))
+		gomega.Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(gomega.Equal(v1.NoneRestartPolicy))
 
 		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey}
 		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey}
@@ -92,7 +92,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can create/update a lws with size=1", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(1).Size(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(1).Size(1).RestartPolicy(v1.DefaultRestartPolicy).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
@@ -262,8 +262,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
-	ginkgo.It("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+	ginkgo.It("Pod restart will delete the pod group when restart policy is DefaultRestartPolicy", func() {
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.DefaultRestartPolicy).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 

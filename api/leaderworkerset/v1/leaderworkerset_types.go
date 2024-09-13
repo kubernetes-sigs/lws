@@ -152,8 +152,10 @@ type LeaderWorkerTemplate struct {
 	Size *int32 `json:"size,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
-	// +kubebuilder:default=Default
-	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart}
+	// The former named Default policy is deprecated, will be removed in the future,
+	// replace with None policy for the same behavior.
+	// +kubebuilder:default=RecreateGroupOnPodRestart
+	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart,None}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
@@ -255,15 +257,21 @@ const (
 type RestartPolicyType string
 
 const (
-	// RecreateGroupOnPodRestart will recreate all the pods in the group if
+	// DefaultRestartPolicy will recreate all the pods in the group if
 	// 1. Any individual pod in the group is recreated; 2. Any containers/init-containers
 	// in a pod is restarted. This is to ensure all pods/containers in the group will be
 	// started in the same time.
-	RecreateGroupOnPodRestart RestartPolicyType = "RecreateGroupOnPodRestart"
+	DefaultRestartPolicy RestartPolicyType = "RecreateGroupOnPodRestart"
 
 	// Default will follow the same behavior as the StatefulSet where only the failed pod
 	// will be restarted on failure and other pods in the group will not be impacted.
-	DefaultRestartPolicy RestartPolicyType = "Default"
+	//
+	// Note: deprecated, use NoneRestartPolicy instead.
+	DeprecatedDefaultRestartPolicy RestartPolicyType = "Default"
+
+	// None will follow the same behavior as the StatefulSet where only the failed pod
+	// will be restarted on failure and other pods in the group will not be impacted.
+	NoneRestartPolicy RestartPolicyType = "None"
 )
 
 type StartupPolicyType string

@@ -8063,12 +8063,15 @@ spec:
                         type: object
                     type: object
                   restartPolicy:
-                    default: Default
-                    description: RestartPolicy defines the restart policy when pod
-                      failures happen.
+                    default: RecreateGroupOnPodRestart
+                    description: |-
+                      RestartPolicy defines the restart policy when pod failures happen.
+                      The Default policy is deprecated, will be removed in the future, replace
+                      with None for the same behavior.
                     enum:
                     - Default
                     - RecreateGroupOnPodRestart
+                    - None
                     type: string
                   size:
                     default: 1

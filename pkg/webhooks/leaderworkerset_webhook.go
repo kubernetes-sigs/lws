@@ -57,6 +57,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
 	}
 
+	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
+	}
+
 	if lws.Spec.RolloutStrategy.Type == "" {
 		lws.Spec.RolloutStrategy.Type = v1.RollingUpdateStrategyType
 	}
