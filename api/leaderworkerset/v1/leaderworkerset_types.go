@@ -257,11 +257,11 @@ const (
 type RestartPolicyType string
 
 const (
-	// DefaultRestartPolicy will recreate all the pods in the group if
+	// RecreateGroupOnPodRestart will recreate all the pods in the group if
 	// 1. Any individual pod in the group is recreated; 2. Any containers/init-containers
 	// in a pod is restarted. This is to ensure all pods/containers in the group will be
 	// started in the same time.
-	DefaultRestartPolicy RestartPolicyType = "RecreateGroupOnPodRestart"
+	RecreateGroupOnPodRestart RestartPolicyType = "RecreateGroupOnPodRestart"
 
 	// Default will follow the same behavior as the StatefulSet where only the failed pod
 	// will be restarted on failure and other pods in the group will not be impacted.

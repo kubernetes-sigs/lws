@@ -54,7 +54,7 @@ var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	lws := obj.(*v1.LeaderWorkerSet)
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
-		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.DefaultRestartPolicy
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.RecreateGroupOnPodRestart
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {

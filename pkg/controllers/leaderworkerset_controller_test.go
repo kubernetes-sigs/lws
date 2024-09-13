@@ -58,7 +58,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(1).
-				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -125,7 +125,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(2).
-				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -193,7 +193,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 				Size(2).
-				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -259,7 +259,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				}).
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				Size(1).
-				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -326,7 +326,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
 				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 				Size(2).
-				RestartPolicy(leaderworkerset.DefaultRestartPolicy).Obj(),
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),

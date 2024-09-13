@@ -8066,8 +8066,8 @@ spec:
                     default: RecreateGroupOnPodRestart
                     description: |-
                       RestartPolicy defines the restart policy when pod failures happen.
-                      The Default policy is deprecated, will be removed in the future, replace
-                      with None for the same behavior.
+                      The former named Default policy is deprecated, will be removed in the future,
+                      replace with None policy for the same behavior.
                     enum:
                     - Default
                     - RecreateGroupOnPodRestart
