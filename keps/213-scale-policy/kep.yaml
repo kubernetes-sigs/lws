@@ -1,0 +1,19 @@
+title: Scale policy API
+kep-number: 213
+authors:
+  - "@googs1025"
+status: implementable
+creation-date: 2024-09-14
+reviewers:
+  - kerthcet
+  - liurupeng
+  - ahg-g
+approvers:
+  - kerthcet
+  - liurupeng
+  - ahg-g
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v0.5.0"
