@@ -157,7 +157,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 		},
 		corev1.EnvVar{
 			Name:  TpuName,
-			Value: fmt.Sprint(pod.Name),
+			Value: fmt.Sprint(leaderName),
 		},
 	)
 	return nil
@@ -218,7 +218,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		},
 		corev1.EnvVar{
 			Name:  TpuName,
-			Value: fmt.Sprint(pod.Name),
+			Value: fmt.Sprint(leaderName),
 		},
 	)
 	return nil
