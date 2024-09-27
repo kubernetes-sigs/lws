@@ -58,6 +58,7 @@ func main() {
 		probeAddr   string
 		qps         float64
 		burst       int
+		namespace   string
 
 		// leader election
 		enableLeaderElection         bool
@@ -93,6 +94,7 @@ func main() {
 		"The name of resource object that is used for locking during leader election. ")
 	flag.StringVar(&leaderElectResourceNamespace, "leader-elect-resource-namespace", "lws-system",
 		"The namespace of resource object that is used for locking during leader election.")
+	flag.StringVar(&namespace, "namespace", "lws-system", "The namespace that is used to deploy leaderWorkerSet controller")
 
 	opts := zap.Options{
 		Development: true,
@@ -137,7 +139,7 @@ func main() {
 
 	certsReady := make(chan struct{})
 
-	if err = cert.CertsManager(mgr, certsReady); err != nil {
+	if err = cert.CertsManager(mgr, namespace, certsReady); err != nil {
 		setupLog.Error(err, "unable to setup cert rotation")
 		os.Exit(1)
 	}
