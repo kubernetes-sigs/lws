@@ -32,6 +32,7 @@ const (
 	TpuResourceName                 corev1.ResourceName = corev1.ResourceName("google.com/tpu")
 	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
 	TpuWorkerId                     string              = "TPU_WORKER_ID"
+	TpuName                         string              = "TPU_NAME"
 	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
 )
 
@@ -154,6 +155,10 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 			Name:  TpuWorkerId,
 			Value: fmt.Sprint(tpuWorkerId),
 		},
+		corev1.EnvVar{
+			Name:  TpuName,
+			Value: fmt.Sprint(leaderName),
+		},
 	)
 	return nil
 
@@ -210,6 +215,10 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		corev1.EnvVar{
 			Name:  TpuWorkerId,
 			Value: fmt.Sprint(tpuWorkerId),
+		},
+		corev1.EnvVar{
+			Name:  TpuName,
+			Value: fmt.Sprint(leaderName),
 		},
 	)
 	return nil
