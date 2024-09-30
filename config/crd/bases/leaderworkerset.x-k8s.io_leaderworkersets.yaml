@@ -51,6 +51,24 @@ spec:
               gets a workerIndex, and it is always set to 0.
               Worker pods are named using the format: leaderWorkerSetName-leaderIndex-workerIndex.
             properties:
+              groupPlacementPolicy:
+                description: GroupPlacementPolicy defines scheduling policies for
+                  pod groups
+                properties:
+                  topologyKey:
+                    description: TopologyKey when type is set to
+                    type: string
+                  type:
+                    default: None
+                    description: Type defines the placement policy for one pod group
+                    enum:
+                    - Exclusive
+                    - Colocated
+                    - None
+                    type: string
+                required:
+                - type
+                type: object
               leaderWorkerTemplate:
                 description: LeaderWorkerTemplate defines the template for leader/worker
                   pods
