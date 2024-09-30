@@ -550,9 +550,15 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+
+	switch lws.Spec.GroupPlacementPolicy.Type {
+	case leaderworkerset.ExclusiveGroupPlacementPolicyType:
+		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = *lws.Spec.GroupPlacementPolicy.TopologyKey
+	case leaderworkerset.ColocatedGroupPlacementPolicyType:
+		podAnnotations[leaderworkerset.ColocatedKeyAnnotationKey] = *lws.Spec.GroupPlacementPolicy.TopologyKey
+	case leaderworkerset.NoneGroupPlacementPolicyType:
 	}
+
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {

@@ -23,11 +23,11 @@ import (
 	"strconv"
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
-	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -82,6 +82,12 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 		subdomainPolicy := v1.SubdomainShared
 		lws.Spec.NetworkConfig.SubdomainPolicy = &subdomainPolicy
 	}
+
+	if epKey, foundEpKey := lws.Annotations[v1.ExclusiveKeyAnnotationKey]; foundEpKey {
+		lws.Spec.GroupPlacementPolicy.Type = v1.ExclusiveGroupPlacementPolicyType
+		lws.Spec.GroupPlacementPolicy.TopologyKey = ptr.To[string](epKey)
+	}
+
 	return nil
 }
 
@@ -168,6 +174,12 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
 	}
 
+	if epKey, foundEpKey := lws.Annotations[v1.ExclusiveKeyAnnotationKey]; foundEpKey {
+		allErrs = append(allErrs, validateExclusivePlacement(specPath, lws, epKey)...)
+	}
+
+	allErrs = append(allErrs, validateGroupPlacementPolicy(specPath, lws)...)
+
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, validateUpdateSubGroupPolicy(specPath, lws)...)
 	} else {
@@ -241,6 +253,25 @@ func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet)
 	}
 	if size < subGroupSize {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
+	}
+	return allErrs
+}
+
+func validateExclusivePlacement(specPath *field.Path, lws *v1.LeaderWorkerSet, value string) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if lws.Spec.GroupPlacementPolicy.Type != v1.ExclusiveGroupPlacementPolicyType {
+		allErrs = append(allErrs, field.TypeInvalid(specPath.Child("groupPlacementPolicy", "type"), lws.Spec.GroupPlacementPolicy.Type, "groupPlacement must be consistent with annotation key, and if exclusive-topology is set, type must be Exclusive"))
+	}
+	if *lws.Spec.GroupPlacementPolicy.TopologyKey != value {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("groupPlacementPolicy", "topologyKey"), lws.Spec.GroupPlacementPolicy.TopologyKey, "toplogyKey must be similar with annotation value when exclusive-topology is set"))
+	}
+	return allErrs
+}
+
+func validateGroupPlacementPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if lws.Spec.GroupPlacementPolicy.Type != v1.NoneGroupPlacementPolicyType && lws.Spec.GroupPlacementPolicy.TopologyKey == nil {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("groupPlacementPolicy", "type"), lws.Spec.GroupPlacementPolicy.TopologyKey, "toplogyKey must be set when type is not none"))
 	}
 	return allErrs
 }

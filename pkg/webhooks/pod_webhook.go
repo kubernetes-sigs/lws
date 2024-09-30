@@ -125,6 +125,9 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
+		if cpKey, foundCpKey := pod.Annotations[leaderworkerset.ColocatedKeyAnnotationKey]; foundCpKey {
+			SetColocatedAffinities(pod, groupUniqueKey, cpKey, leaderworkerset.GroupUniqueHashLabelKey)
+		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
 			// The leader pod always lands on SubGroup 0.
@@ -204,6 +207,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			}},
 			TopologyKey: topologyKey,
 		})
+
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
@@ -240,6 +244,44 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 		}
 	}
 	return hasAffinity && hasAntiAffinity
+}
+
+func SetColocatedAffinities(pod *corev1.Pod, groupUniqueKey, topologyKey, podAffinityKey string) {
+	if colocatedAffinityApplied(pod, topologyKey) {
+		return
+	}
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &corev1.Affinity{}
+	}
+	if pod.Spec.Affinity.PodAffinity == nil {
+		pod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+	}
+
+	// Pod affinity ensures the pods of this set land on the same topology domain.
+	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{groupUniqueKey},
+				},
+			}},
+			TopologyKey: topologyKey,
+		})
+}
+
+func colocatedAffinityApplied(pod *corev1.Pod, topologyKey string) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	hasAffinity := false
+	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if podAffinityTerm.TopologyKey == topologyKey {
+			hasAffinity = true
+		}
+	}
+	return hasAffinity
 }
 
 func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
