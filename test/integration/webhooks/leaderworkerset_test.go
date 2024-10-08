@@ -176,6 +176,19 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 						}})
 			},
 		}),
+		ginkgo.Entry("set spec.groupPlacementPolicy when exclusive annotation is set", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).ExclusivePlacement()
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).ExclusivePlacement().GroupPlacementPolicy(
+					leaderworkerset.GroupPlacementPolicy{
+						Type:        leaderworkerset.ExclusiveGroupPlacementPolicyType,
+						TopologyKey: ptr.To("cloud.google.com/gke-nodepool"),
+					},
+				)
+			},
+		}),
 	)
 
 	type testValidationCase struct {
@@ -444,6 +457,24 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				lws := testutils.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set spec.groupPlacementPolicy.type and not set spec.groupPlacementPolicy.topologyKey should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.GroupPlacementPolicy.Type = leaderworkerset.ColocatedGroupPlacementPolicyType
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("set spec.groupPlacementPolicy and exclusive annotation to different should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				lws := testutils.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.GroupPlacementPolicy.Type = leaderworkerset.ExclusiveGroupPlacementPolicyType
+				lws.Spec.GroupPlacementPolicy.TopologyKey = ptr.To[string]("key2")
+				lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = "key1"
 				return lws
 			},
 			lwsCreationShouldFail: true,

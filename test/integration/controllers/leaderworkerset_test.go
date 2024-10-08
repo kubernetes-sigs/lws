@@ -1572,6 +1572,19 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("create a leaderworkerset with spec.groupPlacementPolicy=colocated", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).ColocatedPlacement()
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, false)
+					},
+				},
+			},
+		}),
 	) // end of DescribeTable
 }) // end of Describe
 

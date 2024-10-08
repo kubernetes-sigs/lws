@@ -553,3 +553,22 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 		return k8sClient.Delete(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
+
+func ValidatePodColocatedPlacementTerms(pod corev1.Pod, colocatedAnnotationKey string, uniqueHashLabelKey string) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	termsCount := 0
+	validAffinity := false
+	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if podAffinityTerm.TopologyKey == pod.Annotations[colocatedAnnotationKey] {
+			requirement := podAffinityTerm.LabelSelector.MatchExpressions[0]
+			if requirement.Key == uniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpIn && requirement.Values[0] != "" {
+				validAffinity = true
+				termsCount++
+			}
+		}
+	}
+
+	return validAffinity && termsCount == 1
+}
