@@ -538,3 +538,24 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 		return k8sClient.Status().Update(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
+
+// In order for update operation to be properly simulated, need to delete the worker StatefulSets, since the
+// pod controller will only create a new sts if none with the same name exist
+func DeleteWorkerStatefulSets(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	stsSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	})
+	var stsList appsv1.StatefulSetList
+	gomega.Eventually(func() (int, error) {
+		if err := k8sClient.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
+			return 0, err
+		}
+		return len(stsList.Items) - 1, nil
+	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas)))
+
+	for _, sts := range stsList.Items {
+		if sts.Name != lws.Name {
+			gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
+		}
+	}
+}
