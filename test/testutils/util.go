@@ -252,6 +252,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		hash := utils.LeaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+		deleteWorkerStatefulSet(ctx, k8sClient, podName, lws)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
@@ -267,12 +268,15 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 			Status: corev1.ConditionTrue,
 		}
 		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
+		deleteWorkerStatefulSet(ctx, k8sClient, podName, lws)
 		return k8sClient.Status().Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
+	// Delete worker sts so that the pod controller creates a new one with updated values
+	// deleteWorkerStatefulSet(ctx, k8sClient, statefulsetName, lws)
 	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
@@ -465,7 +469,7 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 			SubdomainPolicy: &subdomainPolicy,
 		}
 		return k8sClient.Update(ctx, &newLws)
-	}, Timeout, Interval).Should(gomega.Succeed())
+	}).Should(gomega.Succeed())
 }
 
 func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
@@ -539,23 +543,16 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-// In order for update operation to be properly simulated, need to delete the worker StatefulSets, since the
-// pod controller will only create a new sts if none with the same name exist
-func DeleteWorkerStatefulSets(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	stsSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	})
-	var stsList appsv1.StatefulSetList
-	gomega.Eventually(func() (int, error) {
-		if err := k8sClient.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-			return 0, err
+func deleteWorkerStatefulSet(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
+	// in cases where size = 1, the workerstatefulset does not exist
+	gomega.Eventually(func() error {
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return err
+			}
+			return nil
 		}
-		return len(stsList.Items) - 1, nil
-	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas)))
-
-	for _, sts := range stsList.Items {
-		if sts.Name != lws.Name {
-			gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
-		}
-	}
+		return k8sClient.Delete(ctx, &sts)
+	}, Timeout, Interval).Should(gomega.Succeed())
 }
