@@ -275,8 +275,6 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
-	// Delete worker sts so that the pod controller creates a new one with updated values
-	// deleteWorkerStatefulSet(ctx, k8sClient, statefulsetName, lws)
 	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
@@ -469,7 +467,7 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 			SubdomainPolicy: &subdomainPolicy,
 		}
 		return k8sClient.Update(ctx, &newLws)
-	}).Should(gomega.Succeed())
+	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
 func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
