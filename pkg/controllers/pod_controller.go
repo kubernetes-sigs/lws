@@ -148,10 +148,6 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	workerStatefulSet := &unstructured.Unstructured{
 		Object: obj,
 	}
-	// Use server side apply and add fieldmanagaer to the lws owned fields
-	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
-	// these fields to the ones desired by the lws controller. These fields are specified in the StatefulSetApplyConfiguration
-	// TODO b/316776287 add E2E test for SSA
 
 	var workerSts appsv1.StatefulSet
 	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
