@@ -252,7 +252,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		hash := utils.LeaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
-		deleteWorkerStatefulSet(ctx, k8sClient, podName, lws)
+		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
@@ -268,7 +268,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 			Status: corev1.ConditionTrue,
 		}
 		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
-		deleteWorkerStatefulSet(ctx, k8sClient, podName, lws)
+		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
 		return k8sClient.Status().Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
@@ -541,7 +541,7 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func deleteWorkerStatefulSet(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
+func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	// in cases where size = 1, the workerstatefulset does not exist
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
