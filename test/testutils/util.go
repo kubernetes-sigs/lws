@@ -252,7 +252,6 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		hash := utils.LeaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
-		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
