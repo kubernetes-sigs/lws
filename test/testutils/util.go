@@ -367,7 +367,7 @@ func IsContainerFirstEnvVarLWSLeaderAddress(pod corev1.Pod) error {
 }
 
 func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
-	return hasAllEnvVarPopulated(pod, []string{acceleratorutils.TpuWorkerHostNames, acceleratorutils.TpuWorkerId})
+	return hasAllEnvVarPopulated(pod, []string{acceleratorutils.TpuWorkerHostNames, acceleratorutils.TpuWorkerId, acceleratorutils.TpuName})
 }
 
 func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
