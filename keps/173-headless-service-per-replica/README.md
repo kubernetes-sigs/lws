@@ -1,4 +1,4 @@
-# KEP-173: Headless Service Per Group
+# KEP-173: Headless Service Per Replica
 
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
@@ -26,8 +26,11 @@ tags, and then generate with `hack/update-toc.sh`.
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-  - [API](#api)
+  - [LeaderWorkerSet API](#leaderworkerset-api)
   - [Implementation](#implementation)
+    - [Creation and Deletion of Headless Services](#creation-and-deletion-of-headless-services)
+    - [Transition from Different Subdomain Policies](#transition-from-different-subdomain-policies)
+    - [Environment Variable Injection and Rolling Update](#environment-variable-injection-and-rolling-update)
   - [Test Plan](#test-plan)
       - [Prerequisite testing updates](#prerequisite-testing-updates)
       - [Unit tests](#unit-tests)
@@ -42,19 +45,19 @@ tags, and then generate with `hack/update-toc.sh`.
 ## Summary
 
 LeaderWorkerSet creates a single headless service for the entire object.
-This KEP is about allowing one to create a headless service for all of the leaders, and a headless service per replica for the workers.
+This KEP is about allowing one to create a headless service per LWS replica.
 
 ## Motivation
 
 The number of pods per service is finite. At large scale, it is possible to exhaust this limit.
 See [DNS AT Scale](https://gist.github.com/aojea/32aeaa86aacebcdd93596ecb70fcba4f) for a more indepth explanation.
 
-With large number of replicas and size, we should allow to create a headless service for the leaders, and a headless service per replica for the workers.
+With large number of replicas and size, we should allow to create a headless service
+for every replica of LWS.
 
 ### Goals
 
-- Leaders can have a service
-- Each replica can have a service for the workers 
+- Each replica gets its own headless service
 <!--
 List the specific goals of the KEP. What is it trying to achieve? How will we
 know that this has succeeded?
@@ -120,12 +123,16 @@ required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
 
-### API
+### LeaderWorkerSet API
+
+We extend the LeaderWorkerSet API to introduce a new field: `NetworkConfig`. This field will have a subfield called `subDomainPolicy`. If set to `Shared`, LWS will create a single headless service per LWS manifest. If set to `UniquePerReplica`, it will create a headless service per replica. `subDomainPolicy` is a mutable field, and will trigger a rolling update when changed. 
+
+In order to ensure backwards compatability, the default value will be `Shared`.
 
 ```golang
 type LeaderWorkerSetSpec struct {
- // SubdomainPolicy determines the policy that will be used when creating
- // the headless service
+	// NetworkConfig defines the network configuration of the group
+	// +optional
  NetworkConfig *NetworkConfig`json:"networkConfig,omitempty"`
 }
 
@@ -134,95 +141,51 @@ type NetworkConfig struct {
 }
 type SubdomainPolicy string
 const (
-  // SubdomainShared will create a single headless service that all replicas 
-  // will share. The host names look like:
-  // Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
-  // Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
-  SubdomainShared SubdomainPolicy = "Shared"
-  // SubdomainLeadersSharedWorkersDedicated will create a headless service for each
-  // leader-worker group. 
-  // The leader host names will look like:
-  // Replica 0: my-lws-0.my-lws
-  // Replica 1: my-lws-1.my-lws
-  // The worker host names will look like:
-  // Replica 0: my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
-  // Replica 1: my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
-  SubdomainLeadersSharedWorkersDedicated SubdomainPolicy = "LeadersSharedWorkersDedicated"
+	// SubdomainShared will create a single headless service that all replicas
+	// will share. The host names look like:
+	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
+	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	SubdomainShared SubdomainPolicy = "Shared"
+	// UniquePerReplica will create a headless service per replica
+	// The pod host names look like:
+	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
+	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 ```
 
 ### Implementation
+The existing logic for creating the headless service will be used for the `Shared` option. 
 
-With SubdomainPolicy set to SubdomainLeadersSharedWorkersDedicated, we will create a headless
-service for all of the leaders, and a headless service per replica for the workers. In order 
-to ensure backwards compatability, the default value if non is set will be Shared.
-
-A label will be added to determine whether a pod is a leader or a worker.
-`leaderworkerset.sigs.k8s.io/role`
+#### Creation and Deletion of Headless Services
+The pod controller will create the headless service if a leader pod is being reconciled. The leader pod is set as the owner of the service, so that when a leaderPod is restarted or deleted, the headless service is the deleted as well. The name of each headless service will be the same as the leader pod's name. 
 
 
-The creation and update logic is the following:
-```golang
-// Existing creation logic
-if lws.Spec.SubdomainPolicy == leaderworkerset.SubdomainShared {
-  createHeadlessServiceIfNotExists(
-    name=lws.Name, 
-    selector= {
-      leaderworkerset.SetNameLabelKey: lws.Name
-      }
-    )
-  for i := 0; i < int(*lws.Spec.Replicas); i++ {
-    // If transitioning from LeadersSharedWorkersDedicated to shared, need to delete 
-    // the worker headless services that were created
-    r.deleteHeadlessServiceIfExists(
-      name=fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i))
-      )
-	}
-  return
-}
-// Create the headless service for the leaders
-createHeadlessServiceIfNotExists(
-  name=lws.Name, 
-  selector={
-    leaderworkerset.PodRoleLabelKey: "leader"
-    })
+#### Transition from Different Subdomain Policies
+When transitioning from `Shared` to `UniquePerReplica`, there will be one more headless service than number of replicas. This is because the LWS level headless service will not be deleted, allowing for a safer transition.
 
-// Create the headless service for the workers
-for i := 0; i < int(*lws.Spec.Replicas); i++ {
-  createHeadlessServiceIfNotExists(
-    name=fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), 
-    selector={
-      leaderworkerset.PodRoleLabelKey: "worker", 
-      leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)
-      }
-    )
-}
-```
-
-The headless service created for the leaders will have the same name as the 
-headless service that is created when subdomainPolicy is set to `Shared`. This 
-guarantees that the `LWS_LEADER_ADDRESS` environment variable does not change.
+When transitioning from `UniquePerReplica` to `Shared`, the LWS level headless service is created as soon as the transition starts. Once each replica is updated to `Shared`, their respective headless service will be deleted. 
 
 
-When transitioning between the two policies, the leader headless service won't be
-deleted, but instead will be updated with a new selector.
+#### Environment Variable Injection and Rolling Update
+LWS injects two environment variables that depend on the subdomain's (headless service's) name: 
+* `LWS_LEADER_ADDRESS` 
+* `TPU_WORKER_HOSTNAMES`. 
 
-```golang
-func createHeadlessServiceIfNotExists(serviceName string, serviceSelector map[string]string) {
-  var headlessService corev1.Service
-  if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
-    // creation logic
-    return
-  }
 
-  // if the selectors are different, it means that the subdomainPolicy has changed, so 
-  // need to update the headlessService with the new selector.
-  if eq := reflectDeepEqual(headlessService.Spec.Selector, serviceSelector); !eq {
-    headlessService.Spec.Selector = serviceSelector
-    r.Update(&headlessService)
-  }
-}
-```
+The subdomain's name can be set in two different places:
+* When creating the StatefulSet
+* Directly setting it at the pod level
+
+
+Because the headless service's name depends on the name of the leader pod, the subdomain field cannot be set when creating the leader StatefulSet. Instead, it will be injected by the pod webhook. 
+
+A new label `leaderworkerset.sigs.k8s.io/subdomainPolicy` will be set on the leader pods to determine whether or not to overwrite the subdomain field. 
+
+In contrast, the subdomain field will be set when creating the worker StatefulSet, since it is created by the pod controller. 
+
+When transitioning between subdomain policies, the containers must be restarted in order for the values of the environment variables to be updated. Thus, a change in subdomain policy will trigger a rolling update.
+
 
 ### Test Plan
 
@@ -236,11 +199,6 @@ when drafting this test plan.
 
 [testing-guidelines]: https://git.k8s.io/community/contributors/devel/sig-testing/testing.md
 -->
-
-[x] I/we understand the owners of the involved components may require updates to
-existing tests to make this code solid enough prior to committing the changes necessary
-to implement this enhancement.
-
 ##### Prerequisite testing updates
 
 <!--
@@ -272,6 +230,10 @@ extending the production code to implement this enhancement.
 
 ##### Integration tests
 
+- Validate that the number of headless services matches the number of replicas when `subdomainPolicy` is set to `UniquePerReplica`
+
+- Expected value of environment variables are injected on both policies
+
 <!--
 Integration tests are contained in k8s.io/kubernetes/test/integration.
 Integration tests allow control of the configuration parameters used to start the binaries under test.
@@ -287,12 +249,7 @@ For Beta and GA, add links to added tests together with links to k8s-triage for 
 https://storage.googleapis.com/k8s-triage/index.html
 -->
 
-- When field is set to Shared, verify that there is only one headless service
 
-- When field is set to LeadersSharedWorkersDedicated, verify that the number of headless services is lws.Spec.Replicas + 1
-
-- When updating the field, verify that the correct number of headless
-services exist after update
 ##### e2e tests
 
 <!--
@@ -305,8 +262,10 @@ https://storage.googleapis.com/k8s-triage/index.html
 We expect no non-infra related flakes in the last month as a GA graduation criteria.
 -->
 
-None. This feature is not complicated enough to warrant a e2e test.
-Integration tests will confirm that the service is created and that should be sufficient.
+- Test that the environment variables are updated when transitioning between subdomain policies
+
+- Test that the number of headless services scales up during MaxSurge
+
 
 ### Graduation Criteria
 
@@ -333,6 +292,7 @@ milestones with these graduation criteria:
 ## Implementation History
 
 KEP drafted: August 6th, 2024
+KEP updated: October 17th, 2024
 <!--
 Major milestones in the lifecycle of a KEP should be tracked in this section.
 Major milestones might include:
@@ -351,6 +311,7 @@ Why should this KEP _not_ be implemented?
 -->
 
 ## Alternatives
+The original implementation was to create a headless service per statefulset instead. This meant that we didn't have to update the environment variable `LWS_LEADER_ADDRESS`, as the leaders would have a headless service with name `lws.Name`. However, `TPU_WORKER_HOSTNAMES` would still need to be updated, so there was no clear advantage of using `LeadersSharedWorkersDedicated`. We opted to do `UniquePerReplica` because it is the more intuitive one. 
 
 <!--
 What other approaches did you consider, and why did you rule them out? These do
@@ -358,7 +319,3 @@ not need to be as detailed as the proposal, but should include enough
 information to express the idea and why it was not acceptable.
 -->
 
-Instead of doing a headless service exclusively for the leaders, and a headless service per replica for the workers, we 
-considered having a headless service per replica. Having the leader and its respective workers use the same headless 
-service made more sense at first, but it would require having to update the environment variable `LWS_LEADER_ADDRESS`, 
-significantly complicating the process of updating the field.
