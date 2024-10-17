@@ -158,7 +158,7 @@ const (
 The existing logic for creating the headless service will be used for the `Shared` option. 
 
 #### Creation and Deletion of Headless Services
-The pod controller will create the headless service if a leader pod is being reconciled. The leader pod is set as the owner of the service, so that when a leaderPod is restarted or deleted, the headless service is deleted as well. The name of each headless service will be the same as the leader pod's name. 
+The pod controller will create the headless service if a leader pod is being reconciled. The leader pod is set as the owner of the service, so that when a leaderPod is restarted or deleted, the headless service is deleted as well. The name of each headless service will be the same as the leader pod's name. In order for the headless service only select the pods in each replica, `leaderworkerset.sigs.k8s.io/group-index` will be used as selector to differentiate between LWS replicas, and `leaderworkerset.sigs.k8s.io/name` to differentiate between other LWS deployments.
 
 
 #### Transition from Different Subdomain Policies
