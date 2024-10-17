@@ -26,7 +26,7 @@ tags, and then generate with `hack/update-toc.sh`.
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-  - [LeaderWorkerSet API](#leaderworkerset-api)
+  - [API](#api)
   - [Implementation](#implementation)
     - [Creation and Deletion of Headless Services](#creation-and-deletion-of-headless-services)
     - [Transition from Different Subdomain Policies](#transition-from-different-subdomain-policies)
@@ -123,7 +123,7 @@ required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
 
-### LeaderWorkerSet API
+### API
 
 We extend the LeaderWorkerSet API to introduce a new field: `NetworkConfig`. This field will have a subfield called `subDomainPolicy`. If set to `Shared`, LWS will create a single headless service per LWS manifest. If set to `UniquePerReplica`, it will create a headless service per replica. `subDomainPolicy` is a mutable field, and will trigger a rolling update when changed. 
 
@@ -158,7 +158,7 @@ const (
 The existing logic for creating the headless service will be used for the `Shared` option. 
 
 #### Creation and Deletion of Headless Services
-The pod controller will create the headless service if a leader pod is being reconciled. The leader pod is set as the owner of the service, so that when a leaderPod is restarted or deleted, the headless service is the deleted as well. The name of each headless service will be the same as the leader pod's name. 
+The pod controller will create the headless service if a leader pod is being reconciled. The leader pod is set as the owner of the service, so that when a leaderPod is restarted or deleted, the headless service is deleted as well. The name of each headless service will be the same as the leader pod's name. 
 
 
 #### Transition from Different Subdomain Policies
@@ -292,6 +292,7 @@ milestones with these graduation criteria:
 ## Implementation History
 
 KEP drafted: August 6th, 2024
+
 KEP updated: October 17th, 2024
 <!--
 Major milestones in the lifecycle of a KEP should be tracked in this section.
