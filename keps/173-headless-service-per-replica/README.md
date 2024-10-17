@@ -45,7 +45,7 @@ tags, and then generate with `hack/update-toc.sh`.
 ## Summary
 
 LeaderWorkerSet creates a single headless service for the entire object.
-This KEP is about allowing one to create a headless service per LWS replica.
+This KEP is about allowing one to create a headless service that all replicas will share.
 
 ## Motivation
 
@@ -125,7 +125,7 @@ proposal will be implemented, this is the place to discuss them.
 
 ### API
 
-We extend the LeaderWorkerSet API to introduce a new field: `NetworkConfig`. This field will have a subfield called `subDomainPolicy`. If set to `Shared`, LWS will create a single headless service per LWS manifest. If set to `UniquePerReplica`, it will create a headless service per replica. `subDomainPolicy` is a mutable field, and will trigger a rolling update when changed. 
+We extend the LeaderWorkerSet API to introduce a new field: `NetworkConfig`. This field will have a subfield called `subDomainPolicy`. If set to `Shared`, LWS will create a single headless service for all replicas to share. If set to `UniquePerReplica`, it will create a headless service per replica. `subDomainPolicy` is a mutable field, and will trigger a rolling update when changed. 
 
 In order to ensure backwards compatability, the default value will be `Shared`.
 
@@ -162,9 +162,9 @@ The pod controller will create the headless service if a leader pod is being rec
 
 
 #### Transition from Different Subdomain Policies
-When transitioning from `Shared` to `UniquePerReplica`, there will be one more headless service than number of replicas. This is because the LWS level headless service will not be deleted, allowing for a safer transition.
+When transitioning from `Shared` to `UniquePerReplica`, there will be one more headless service than number of replicas. This is because the shared headless service will not be deleted, allowing for a safer transition.
 
-When transitioning from `UniquePerReplica` to `Shared`, the LWS level headless service is created as soon as the transition starts. Once each replica is updated to `Shared`, their respective headless service will be deleted. 
+When transitioning from `UniquePerReplica` to `Shared`, the shared headless service is created as soon as the transition starts. Once each replica is updated to `Shared`, their respective headless service will be deleted. 
 
 
 #### Environment Variable Injection and Rolling Update
