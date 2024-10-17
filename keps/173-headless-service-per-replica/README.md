@@ -45,7 +45,7 @@ tags, and then generate with `hack/update-toc.sh`.
 ## Summary
 
 LeaderWorkerSet creates a single headless service for the entire object.
-This KEP is about allowing one to create a headless service that all replicas will share.
+This KEP is about allowing one to create a headless service for every replica of LWSs.
 
 ## Motivation
 
