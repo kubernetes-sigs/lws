@@ -584,7 +584,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("leaderTemplate changed with maxUnavailable=2", &testCase{
+		ginkgo.Entry("workerTemplate changed with maxUnavailable=2", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2)
 			},
@@ -662,7 +662,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("leaderTemplate changed with maxUnavailable greater than replicas", &testCase{
+		ginkgo.Entry("workerTemplate changed with maxUnavailable greater than replicas", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(10)
 			},

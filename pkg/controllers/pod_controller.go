@@ -32,7 +32,6 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -146,19 +145,18 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	patch := &unstructured.Unstructured{
+	workerStatefulSet := &unstructured.Unstructured{
 		Object: obj,
 	}
-	// Use server side apply and add fieldmanagaer to the lws owned fields
-	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
-	// these fields to the ones desired by the lws controller. These fields are specified in the StatefulSetApplyConfiguration
-	// TODO b/316776287 add E2E test for SSA
-	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        ptr.To[bool](true),
-	})
-	if err != nil {
-		return ctrl.Result{}, err
+
+	var workerSts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.Create(ctx, workerStatefulSet); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
