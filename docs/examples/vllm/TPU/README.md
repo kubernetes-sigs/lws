@@ -8,7 +8,7 @@ Follow the step-by-step guide on how to install LWS. [View installation guide](h
 
 
 ## Deploy LeaderWorkerSet of vLLM
-We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 4 pods, and 4 TPUs per pod (tensor_parallel_size=16). 
+In this example, we use LeaderWorkerSet to deploy two vLLM server replicas to serve the llama3-70b model on two v5e-16 TPU slices. Since the v5e-16 TPU slice has four hosts, so each vLLM replica will have 4 workers, and each worker will consume 4 TPUs (with tensor_parallel_size=16). 
 The leader pod runs the Ray head and the http server, while the workers run the Ray workers.
 
 ```shell
