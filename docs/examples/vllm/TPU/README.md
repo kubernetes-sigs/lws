@@ -1,6 +1,6 @@
 # Deploy Distributed Inference Service with vLLM and LWS on TPUs
 
-In this example, we will use LeaderWorkerSet to deploy a distributed inference service with vLLM on TPUs. It manages the distributed runtime with [Ray](https://docs.ray.io/en/latest/index.html).
+In this example, we will use LeaderWorkerSet to deploy a multi-host inference service with vLLM on multi-host TPU slice. It relies on the distributed runtime [Ray](https://docs.ray.io/en/latest/index.html).
 
 ## Install LeaderWorkerSet
 
