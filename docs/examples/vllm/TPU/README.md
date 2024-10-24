@@ -1,6 +1,6 @@
 # Deploy Distributed Inference Service with vLLM and LWS on TPUs
 
-In this example, we will use LeaderWorkerSet to deploy a multi-host inference service with vLLM on multi-host TPU slice. It relies on the distributed runtime [Ray](https://docs.ray.io/en/latest/index.html).
+In this example, we will use LeaderWorkerSet to deploy a multi-host inference service with vLLM on multi-host TPU slice. It relies on the distributed runtime [Ray](https://docs.ray.io/en/latest/index.html). The main difference between deploying with TPUs and with GPUs is in the node selector, resource requested, and the vLLM image used. 
 
 ## Install LeaderWorkerSet
 
@@ -8,7 +8,7 @@ Follow the step-by-step guide on how to install LWS. [View installation guide](h
 
 
 ## Deploy LeaderWorkerSet of vLLM
-In this example, we use LeaderWorkerSet to deploy two vLLM server replicas to serve the llama3-70b model on two v5e-16 TPU slices. Since the v5e-16 TPU slice has four hosts, so each vLLM replica will have 4 workers, and each worker will consume 4 TPUs (with tensor_parallel_size=16). 
+In this example, we use LeaderWorkerSet to deploy two vLLM server replicas to serve the llama3-70b model on two v5e-16 TPU slices. You can view how to create a cluster with multiple TPU slices [here](https://cloud.google.com/kubernetes-engine/docs/how-to/tpus). Since the v5e-16 TPU slice has four hosts, so each vLLM replica will have 4 workers, and each worker will consume 4 TPUs (with tensor_parallel_size=16). 
 The leader pod runs the Ray head and the vLLM server, while the workers run the Ray workers.
 
 ```shell
