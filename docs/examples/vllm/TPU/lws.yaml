@@ -3,38 +3,37 @@ kind: LeaderWorkerSet
 metadata:
   name: vllm
 spec:
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 1
+      maxSurge: 1
   replicas: 2
   leaderWorkerTemplate:
-    size: 2
+    size: 4
     restartPolicy: RecreateGroupOnPodRestart
     leaderTemplate:
       metadata:
         labels:
           role: leader
       spec:
+        nodeSelector:
+          cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+          cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-leader
             image: <image-built-from-dockerfile>
             env:
-              - name: RAY_CLUSTER_SIZE
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
               - name: HUGGING_FACE_HUB_TOKEN
                 value: <your-hf-token>
             command:
               - sh
               - -c
-              - "/vllm-workspace/ray_init.sh leader --ray_cluster_size=$RAY_CLUSTER_SIZE; 
-                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3.1-405B-Instruct --tensor-parallel-size 8 --pipeline_parallel_size 2"
+              - "/vllm-workspace/ray_init.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3-70B --tensor-parallel-size=16"
             resources:
               limits:
-                nvidia.com/gpu: "8"
-                memory: 1124Gi
-                ephemeral-storage: 800Gi
-              requests:
-                ephemeral-storage: 800Gi
-                cpu: 125
+                google.com/tpu: "4"
             ports:
               - containerPort: 8080
             readinessProbe:
@@ -49,9 +48,12 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: 15Gi
+            sizeLimit: 30Gi
     workerTemplate:
       spec:
+        nodeSelector:
+          cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+          cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-worker
             image: <image-built-from-dockerfile>
@@ -61,20 +63,15 @@ spec:
               - "/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
             resources:
               limits:
-                nvidia.com/gpu: "8"
-                memory: 1124Gi
-                ephemeral-storage: 800Gi
-              requests:
-                ephemeral-storage: 800Gi
-                cpu: 125
+                google.com/tpu: "4"
             env:
               - name: HUGGING_FACE_HUB_TOKEN
                 value: <your-hf-token>
             volumeMounts:
               - mountPath: /dev/shm
-                name: dshm   
+                name: dshm
         volumes:
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: 15Gi
+            sizeLimit: 30Gi
