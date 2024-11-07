@@ -16116,6 +16116,9 @@ spec:
                     description: |-
                       SubdomainPolicy determines the policy that will be used when creating
                       the headless service, defaults to shared
+                    enum:
+                    - Shared
+                    - UniquePerReplica
                     type: string
                 required:
                 - subdomainPolicy
