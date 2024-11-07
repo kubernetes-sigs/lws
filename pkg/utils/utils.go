@@ -41,7 +41,7 @@ func NonZeroValue(value int32) int32 {
 }
 
 func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
-	if lws.Spec.NetworkConfig == nil {
+	if lws.Spec.NetworkConfig == nil || string(*lws.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared) {
 		return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
 			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
 	}
