@@ -193,6 +193,7 @@ type SubGroupPolicy struct {
 type NetworkConfig struct {
 	// SubdomainPolicy determines the policy that will be used when creating
 	// the headless service, defaults to shared
+	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
 }
 
