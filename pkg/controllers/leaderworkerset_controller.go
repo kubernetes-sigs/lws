@@ -86,6 +86,9 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions/finalizers,verbs=update
 
 func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Get leaderworkerset object
@@ -95,6 +98,16 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
+
+	currentRevision, updateRevision, collisionCount, err := controllerutils.GetStatefulSetRevisions(ctx, r.Client, lws)
+	if err != nil {
+		log.Error(err, "Getting StatefulSet revisions")
+		return ctrl.Result{}, err
+	}
+	lws.Status.CurrentRevision = currentRevision.Name
+	lws.Status.UpdateRevision = updateRevision.Name
+	lws.Status.CollisionCount = new(int32)
+	lws.Status.CollisionCount = &collisionCount
 
 	partition, replicas, err := r.rollingUpdateParameters(ctx, lws)
 	if err != nil {
@@ -547,6 +560,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey:     "0",
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
+		"leaderworkerset.controllerRevision":    "lws-123",
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))

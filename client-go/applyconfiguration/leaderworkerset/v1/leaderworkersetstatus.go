@@ -29,6 +29,9 @@ type LeaderWorkerSetStatusApplyConfiguration struct {
 	UpdatedReplicas *int32                           `json:"updatedReplicas,omitempty"`
 	Replicas        *int32                           `json:"replicas,omitempty"`
 	HPAPodSelector  *string                          `json:"hpaPodSelector,omitempty"`
+	CurrentRevision *string                          `json:"currentRevision,omitempty"`
+	UpdateRevision  *string                          `json:"updateRevision,omitempty"`
+	CollisionCount  *int32                           `json:"collisionCount,omitempty"`
 }
 
 // LeaderWorkerSetStatusApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetStatus type for use with
@@ -79,5 +82,29 @@ func (b *LeaderWorkerSetStatusApplyConfiguration) WithReplicas(value int32) *Lea
 // If called multiple times, the HPAPodSelector field is set to the value of the last call.
 func (b *LeaderWorkerSetStatusApplyConfiguration) WithHPAPodSelector(value string) *LeaderWorkerSetStatusApplyConfiguration {
 	b.HPAPodSelector = &value
+	return b
+}
+
+// WithCurrentRevision sets the CurrentRevision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CurrentRevision field is set to the value of the last call.
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithCurrentRevision(value string) *LeaderWorkerSetStatusApplyConfiguration {
+	b.CurrentRevision = &value
+	return b
+}
+
+// WithUpdateRevision sets the UpdateRevision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdateRevision field is set to the value of the last call.
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithUpdateRevision(value string) *LeaderWorkerSetStatusApplyConfiguration {
+	b.UpdateRevision = &value
+	return b
+}
+
+// WithCollisionCount sets the CollisionCount field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CollisionCount field is set to the value of the last call.
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithCollisionCount(value int32) *LeaderWorkerSetStatusApplyConfiguration {
+	b.CollisionCount = &value
 	return b
 }

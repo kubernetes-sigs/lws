@@ -303,6 +303,20 @@ type LeaderWorkerSetStatus struct {
 	// needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
 	// we only select the leader pods.
 	HPAPodSelector string `json:"hpaPodSelector,omitempty"`
+
+	// currentRevision, if not empty, indicates the version of the  worker StatefulSet
+	// used to generate the worker pods in sequence [0,currentReplicas)
+	CurrentRevision string `json:"currentRevision,omitempty"`
+
+	// updateRevision, if not empty, indicates the version of the  worker StatefulSet
+	// used to generate the worker pods in sequence [replicas-updatedReplicas,replicas)
+	UpdateRevision string `json:"updateRevision,omitempty"`
+
+	// collisionCount is the count of hash collisions for the StatefulSet. The StatefulSet controller
+	// uses this field as a collision avoidance mechanism when it needs to create the name for the
+	// newest ControllerRevision.
+	// +optional
+	CollisionCount *int32 `json:"collisionCount,omitempty"`
 }
 
 type LeaderWorkerSetConditionType string
