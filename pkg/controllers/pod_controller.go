@@ -55,6 +55,7 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme) *PodReconcil
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
+//+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
