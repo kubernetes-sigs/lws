@@ -119,7 +119,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-	currentRevision, _, _, err := controllerutils.GetStatefulSetRevisions(ctx, r.Client, &leaderWorkerSet)
+	currentRevision, _, _, err := controllerutils.GetLeaderWorkerSetRevisions(ctx, r.Client, &leaderWorkerSet)
 	if err != nil {
 		log.Error(err, "Getting StatefulSet revisions")
 		return ctrl.Result{}, err
