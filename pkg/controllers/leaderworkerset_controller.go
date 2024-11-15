@@ -99,7 +99,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
-	currentRevision, updateRevision, collisionCount, err := controllerutils.GetStatefulSetRevisions(ctx, r.Client, lws)
+	currentRevision, updateRevision, collisionCount, err := controllerutils.GetLeaderWorkerSetRevisions(ctx, r.Client, lws)
 	if err != nil {
 		log.Error(err, "Getting StatefulSet revisions")
 		return ctrl.Result{}, err

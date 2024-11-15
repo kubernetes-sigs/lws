@@ -72,13 +72,13 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 	return nil
 }
 
-// getStatefulSetRevisions returns the current and update ControllerRevisions for set. It also
+// GetLeaderWorkerSetRevisions returns the current and update ControllerRevisions for leaerWorkerSet. It also
 // returns a collision count that records the number of name collisions set saw when creating
 // new ControllerRevisions. This count is incremented on every name collision and is used in
 // building the ControllerRevision names for name collision avoidance. This method may create
 // a new revision, or modify the Revision of an existing revision if an update to set is detected.
 // This method expects that revisions is sorted when supplied.
-func GetStatefulSetRevisions(
+func GetLeaderWorkerSetRevisions(
 	ctx context.Context,
 	k8sClient client.Client,
 	lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, *appsv1.ControllerRevision, int32, error) {
@@ -154,9 +154,9 @@ func GetStatefulSetRevisions(
 	return currentRevision, updateRevision, collisionCount, nil
 }
 
-// getPatch returns a strategic merge patch that can be applied to restore a StatefulSet to a
-// previous version. If the returned error is nil the patch is valid. The current state that we save is just the
-// PodSpecTemplate. We can modify this later to encompass more state (or less) and remain compatible with previously
+// getPatch returns a strategic merge patch that can be applied to restore a LeaderWorkerSet to a
+// previous version. If the returned error is nil the patch is valid. The current state that we save is the
+// leaderWorkerTemplate. We can modify this later to encompass more state (or less) and remain compatible with previously
 // recorded patches.
 func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	str := &bytes.Buffer{}
@@ -180,10 +180,10 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	return patch, err
 }
 
-// newRevision creates a new ControllerRevision containing a patch that reapplies the target state of set.
+// newRevision creates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
 // The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
-// ControllerRevision is valid. StatefulSet revisions are stored as patches that re-apply the current state of set
-// to a new StatefulSet using a strategic merge patch to replace the saved state of the new StatefulSet.
+// ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
+// to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
 func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collisionCount *int32) (*appsv1.ControllerRevision, error) {
 	patch, err := getPatch(lws)
 	if err != nil {
@@ -214,8 +214,8 @@ func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collision
 	return cr, nil
 }
 
-// ApplyRevision returns a new StatefulSet constructed by restoring the state in revision to set. If the returned error
-// is nil, the returned StatefulSet is valid.
+// ApplyRevision returns a new LeaderWorkerSet constructed by restoring the state in revision to set. If the returned error
+// is nil, the returned LeaderWorkerSet is valid.
 func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*leaderworkerset.LeaderWorkerSet, error) {
 	clone := lws.DeepCopy()
 	str := &bytes.Buffer{}
