@@ -1,4 +1,4 @@
-# KEP-NNNN: Your short, descriptive title
+# KEP-238: Controller-Revision
 
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
@@ -175,7 +175,7 @@ type LeaderWorkerSetStatus struct {
 
 ### LWS controller
 
-The status of the revisions will be updated before the rollingUpdate is started
+The status of the revisions will be updated before rolling update starts.
 
 ```golang
 func Reconcile() {
