@@ -61,13 +61,12 @@ func main() {
 		namespace   string
 
 		// leader election
-		enableLeaderElection         bool
-		leaderElectLeaseDuration     time.Duration
-		leaderElectRenewDeadline     time.Duration
-		leaderElectRetryPeriod       time.Duration
-		leaderElectResourceLock      string
-		leaderElectionID             string
-		leaderElectResourceNamespace string
+		enableLeaderElection     bool
+		leaderElectLeaseDuration time.Duration
+		leaderElectRenewDeadline time.Duration
+		leaderElectRetryPeriod   time.Duration
+		leaderElectResourceLock  string
+		leaderElectionID         string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -92,8 +91,6 @@ func main() {
 			"'endpoints', 'configmaps', 'leases', 'endpointsleases' and 'configmapsleases'")
 	flag.StringVar(&leaderElectionID, "leader-elect-resource-name", "b8b2488c.x-k8s.io",
 		"The name of resource object that is used for locking during leader election. ")
-	flag.StringVar(&leaderElectResourceNamespace, "leader-elect-resource-namespace", "lws-system",
-		"The namespace of resource object that is used for locking during leader election.")
 	flag.StringVar(&namespace, "namespace", "lws-system", "The namespace that is used to deploy leaderWorkerSet controller")
 
 	opts := zap.Options{
@@ -115,7 +112,7 @@ func main() {
 		LeaderElection:             enableLeaderElection,
 		LeaderElectionID:           leaderElectionID,
 		LeaderElectionResourceLock: leaderElectResourceLock,
-		LeaderElectionNamespace:    leaderElectResourceNamespace,
+		LeaderElectionNamespace:    namespace, // Using namespace variable here
 		LeaseDuration:              &leaderElectLeaseDuration,
 		RenewDeadline:              &leaderElectRenewDeadline,
 		RetryPeriod:                &leaderElectRetryPeriod,
