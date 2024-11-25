@@ -5,7 +5,7 @@ go 1.22.0
 require (
 	github.com/google/go-cmp v0.6.0
 	github.com/onsi/ginkgo/v2 v2.21.0
-	github.com/onsi/gomega v1.35.1
+	github.com/onsi/gomega v1.36.0
 	github.com/open-policy-agent/cert-controller v0.12.0
 	k8s.io/api v0.31.2
 	k8s.io/apiextensions-apiserver v0.31.2
