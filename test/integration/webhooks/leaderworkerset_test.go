@@ -213,6 +213,12 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				}
 			}
 		},
+		ginkgo.Entry("creation with invalid name should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
+				return testutils.BuildLeaderWorkerSet(ns.Name).Name("2cube")
+			},
+			lwsCreationShouldFail: true,
+		}),
 		ginkgo.Entry("creation with invalid replicas and size should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *testutils.LeaderWorkerSetWrapper {
 				return testutils.BuildLeaderWorkerSet(ns.Name).Replica(100000).Size(1000000)

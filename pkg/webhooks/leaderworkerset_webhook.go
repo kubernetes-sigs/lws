@@ -129,7 +129,9 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 	specPath := field.NewPath("spec")
 	metadataPath := field.NewPath("metadata")
 
-	var allErrs field.ErrorList
+	// Since the lws name is used as the name for headless service, it must be DNS-1035 compliant
+	ValidateName := apivalidation.NameIsDNS1035Label
+	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
 	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
