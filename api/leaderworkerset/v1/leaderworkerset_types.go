@@ -31,6 +31,10 @@ const (
 	// which will be used for 1:1 exclusive scheduling in a given subgroup.
 	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"
 
+	// Colocated topology annotation is used to specify the topology where
+	// one pod group will be scheduled to one topology domain.
+	ColocatedKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/colocated-topology"
+
 	// Set name label will record the leaderworkerset name that those resources
 	// (Pod/Service/StatefulSets) belong to.
 	SetNameLabelKey string = "leaderworkerset.sigs.k8s.io/name"
@@ -127,6 +131,10 @@ type LeaderWorkerSetSpec struct {
 	// NetworkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+
+	// GroupPlacementPolicy defines scheduling policies for pod groups
+	// +optional
+	GroupPlacementPolicy GroupPlacementPolicy `json:"groupPlacementPolicy"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -210,6 +218,25 @@ const (
 	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
 	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
+)
+
+type GroupPlacementPolicy struct {
+	// Type defines the placement policy for one pod group
+	// +kubebuilder:validation:Enum={Exclusive,Colocated,None}
+	// +kubebuilder:default=None
+	Type GroupPlacementPolicyType `json:"type"`
+
+	// TopologyKey when type is set to
+	// +optional
+	TopologyKey *string `json:"topologyKey,omitempty"`
+}
+
+type GroupPlacementPolicyType string
+
+const (
+	ExclusiveGroupPlacementPolicyType GroupPlacementPolicyType = "Exclusive"
+	ColocatedGroupPlacementPolicyType GroupPlacementPolicyType = "Colocated"
+	NoneGroupPlacementPolicyType      GroupPlacementPolicyType = "None"
 )
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.

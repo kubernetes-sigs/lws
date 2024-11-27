@@ -268,3 +268,87 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		})
 	}
 }
+
+func TestSetColocatedAffinities(t *testing.T) {
+	tests := []struct {
+		name           string
+		pod            *corev1.Pod
+		groupUniqueKey string
+		topologyKey    string
+		podAffinityKey string
+		expectedPod    *corev1.Pod
+	}{
+		{
+			name:           "Pod with nothing",
+			pod:            &corev1.Pod{},
+			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
+			expectedPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "In",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			SetColocatedAffinities(tc.pod, tc.groupUniqueKey, tc.topologyKey, tc.podAffinityKey)
+			if diff := cmp.Diff(tc.pod, tc.expectedPod); diff != "" {
+				t.Errorf("unexpected set colocated affinities operation: %s", diff)
+			}
+		})
+	}
+}
+
+func TestColocatedAffinitiesApplied(t *testing.T) {
+	tests := []struct {
+		name                              string
+		pod                               *corev1.Pod
+		expectedAppliedColocatedPlacement bool
+		topologyKey                       string
+	}{
+		{
+			name: "Has annotiation, Pod Affinity and Pod AntiAffinity",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
+						},
+					},
+				},
+			},
+			expectedAppliedColocatedPlacement: true,
+			topologyKey:                       "topologyKey",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			applied := colocatedAffinityApplied(tc.pod, tc.topologyKey)
+			if applied != tc.expectedAppliedColocatedPlacement {
+				t.Errorf("Expected value %t, got %t", tc.expectedAppliedColocatedPlacement, applied)
+			}
+		})
+	}
+}

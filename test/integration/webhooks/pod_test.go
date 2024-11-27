@@ -804,6 +804,29 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Leader pod with colocated placement enabled will have pod affinity", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:         "4",
+							leaderworkerset.ColocatedKeyAnnotationKey: "topologyKey",
+						},
+					},
+					Spec: testutils.MakeLeaderPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodColocatedPlacementTerms(got, leaderworkerset.ColocatedKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				return nil
+			},
+		}),
 	)
 
 	type testValidationCase struct {

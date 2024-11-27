@@ -78,6 +78,12 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacement() *LeaderWorkerSetW
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) ColocatedPlacement() *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.GroupPlacementPolicy.Type = leaderworkerset.ColocatedGroupPlacementPolicyType
+	lwsWrapper.Spec.GroupPlacementPolicy.TopologyKey = ptr.To[string]("cloud.google.com/gke-nodepool")
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) RestartPolicy(policy leaderworkerset.RestartPolicyType) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.RestartPolicy = policy
 	return lwsWrapper
@@ -113,6 +119,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) GroupPlacementPolicy(groupPlacementPolicy leaderworkerset.GroupPlacementPolicy) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.GroupPlacementPolicy = groupPlacementPolicy
 	return lwsWrapper
 }
 
@@ -273,6 +284,23 @@ func MakeLeaderPodSpec() corev1.PodSpec {
 }
 
 func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "worker",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Limits: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+					},
+				},
+			},
+		},
+		Subdomain: "default",
+	}
+}
+
+func MakePodWithExclusivePlacementPolicy() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{
 			{
