@@ -72,7 +72,7 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 	return nil
 }
 
-// GetLeaderWorkerSetRevisions returns the current and update ControllerRevisions for leaerWorkerSet. It also
+// GetLeaderWorkerSetRevisions returns the current and update ControllerRevisions for leaderWorkerSet. It also
 // returns a collision count that records the number of name collisions set saw when creating
 // new ControllerRevisions. This count is incremented on every name collision and is used in
 // building the ControllerRevision names for name collision avoidance. This method may create
