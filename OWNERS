@@ -3,9 +3,11 @@
 approvers:
   - ahg-g
   - kerthcet
-  - liurupeng
 
 reviewers:
   - ahg-g
   - kerthcet
-  - liurupeng
+  - edwinhr716
+
+emeritus_approvers:
+  - liurupeng 
