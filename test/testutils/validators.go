@@ -439,3 +439,23 @@ func ExpectSpecifiedWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient 
 		return true
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
+
+func ExpectCurrentRevisionToEqualUpdateRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() bool {
+		var fetchedLWS leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &fetchedLWS); err != nil {
+			return false
+		}
+		return fetchedLWS.Status.CurrentRevision == fetchedLWS.Status.UpdateRevision
+	}, Timeout, Interval).Should(gomega.Equal(true))
+}
+
+func ExpectCurrentRevisionToNotEqualUpdateRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() bool {
+		var fetchedLWS leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &fetchedLWS); err != nil {
+			return false
+		}
+		return fetchedLWS.Status.CurrentRevision != fetchedLWS.Status.UpdateRevision
+	}, Timeout, Interval).Should(gomega.Equal(true))
+}

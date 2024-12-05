@@ -504,6 +504,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -520,6 +521,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// soon updated to 3 (replicas-maxUnavailable), it's fine here.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -534,6 +536,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -548,6 +551,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -565,6 +569,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						// 3-index status is unready but template already updated.
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -580,6 +585,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -600,6 +606,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -614,6 +621,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -628,6 +636,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -642,6 +651,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -658,6 +668,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -678,6 +689,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -692,6 +704,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -707,6 +720,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -727,6 +741,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -752,6 +767,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
 						// We haven't set the replica-4, replica-5 to ready, so the readyReplicas is 4, the updatedReplicas is 0.
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -767,6 +783,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -787,6 +804,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -801,6 +819,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -815,6 +834,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -844,6 +864,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 3)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -859,6 +880,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -879,6 +901,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -900,6 +923,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 5)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -924,6 +948,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -939,6 +964,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 3)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -959,6 +985,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -985,6 +1012,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -999,6 +1027,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1013,6 +1042,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1027,6 +1057,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 3)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1043,6 +1074,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 3)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1058,6 +1090,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -1078,6 +1111,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1104,6 +1138,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1127,6 +1162,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -1147,6 +1183,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1167,6 +1204,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 						// Partition is updated from 3 to 2.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 					},
@@ -1193,6 +1231,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 3)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -1213,6 +1252,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1238,6 +1278,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1249,6 +1290,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1263,6 +1305,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -1283,6 +1326,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1309,6 +1353,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1336,6 +1381,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						// The last 2 replicas are updated but not ready.
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1351,6 +1397,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1375,6 +1422,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1389,6 +1437,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1405,6 +1454,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 1)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1420,6 +1470,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
@@ -1440,6 +1491,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1466,6 +1518,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1481,6 +1534,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1503,6 +1557,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// Partition will transit from 4 to 3.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
+						testing.ExpectCurrentRevisionToNotEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 				{
@@ -1527,6 +1582,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectCurrentRevisionToEqualUpdateRevision(ctx, k8sClient, lws)
 					},
 				},
 			},
