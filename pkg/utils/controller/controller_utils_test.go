@@ -19,16 +19,46 @@ package controller
 import (
 	"testing"
 
-	"sigs.k8s.io/lws/test/testutils"
+	"github.com/google/go-cmp/cmp"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/history"
+	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
-func TestCreateApplyRevision(t *testing.T) {
+func TestApplyRevision(t *testing.T) {
+
 	lws := testutils.BuildLeaderWorkerSet("default").Obj()
 	lws.Status.CollisionCount = new(int32)
 	revision, err := NewRevision(lws, 1, lws.Status.CollisionCount)
+	currentLws := lws.DeepCopy()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Name = "update-name"
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
+	restoredLws, err := ApplyRevision(lws, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	restoredLws, err := ApplyRevision(lws, re)
+	restoredRevision, err := NewRevision(restoredLws, 2, restoredLws.Status.CollisionCount)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	if !history.EqualRevision(revision, restoredRevision) {
+		t.Errorf("expected value %v, got %v", revision, restoredRevision)
+	}
+
+	if diff := cmp.Diff(currentLws.Spec.LeaderWorkerTemplate, restoredLws.Spec.LeaderWorkerTemplate); diff != "" {
+		t.Errorf("unexpected restored LeaderWorkerTemplate: %s", diff)
+	}
+
+	if diff := cmp.Diff(currentLws, restoredLws); diff == "" {
+		t.Errorf("LWS Spec fields should not be restored")
+	}
 }

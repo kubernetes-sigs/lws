@@ -15,12 +15,17 @@ limitations under the License.
 package testutils
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -288,4 +293,29 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 		},
 		Subdomain: "default",
 	}
+}
+
+func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet, t *testing.T) runtime.RawExtension {
+	str := &bytes.Buffer{}
+	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	err = json.Unmarshal(str.Bytes(), &raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objCopy := make(map[string]interface{})
+	specCopy := make(map[string]interface{})
+	spec := raw["spec"].(map[string]interface{})
+	template := spec["leaderWorkerTemplate"].(map[string]interface{})
+	specCopy["leaderWorkerTemplate"] = template
+	template["$patch"] = "replace"
+	objCopy["spec"] = specCopy
+	patch, err := json.Marshal(objCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime.RawExtension{Raw: patch}
 }
