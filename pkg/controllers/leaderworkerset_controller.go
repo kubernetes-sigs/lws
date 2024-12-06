@@ -101,7 +101,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	currentRevision, updateRevision, collisionCount, err := controllerutils.GetLeaderWorkerSetRevisions(ctx, r.Client, lws)
 	if err != nil {
-		log.Error(err, "Getting StatefulSet revisions")
+		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
 	}
 	lws.Status.CurrentRevision = currentRevision.Name

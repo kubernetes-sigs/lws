@@ -32,18 +32,18 @@ func TestFindEqualRevisions(t *testing.T) {
 	lws1 := testutils.BuildLeaderWorkerSet("test-sample").Obj()
 	lws2 := testutils.BuildLeaderWorkerSet("test-sample").LeaderTemplateSpec(testutils.MakeLeaderPodSpecWithTPUResource()).Obj()
 
-	lws1Revision, err := NewControllerRevision(lws1, parentKind, lws1.Labels, testutils.RawLWSTemplate(lws1, t), 1, lws1.Status.CollisionCount)
+	lws1Revision, err := NewControllerRevision(lws1, parentKind, lws1.Labels, testutils.RawLWSTemplate(lws1), 1, lws1.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	lws2Revision, err := NewControllerRevision(lws2, parentKind, lws2.Labels, testutils.RawLWSTemplate(lws2, t), 1, lws2.Status.CollisionCount)
+	lws2Revision, err := NewControllerRevision(lws2, parentKind, lws2.Labels, testutils.RawLWSTemplate(lws2), 1, lws2.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	lws1.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Name = "update-name"
-	lws1Revision2, err := NewControllerRevision(lws1, parentKind, lws1.Labels, testutils.RawLWSTemplate(lws1, t), 1, lws1.Status.CollisionCount)
+	lws1Revision2, err := NewControllerRevision(lws1, parentKind, lws1.Labels, testutils.RawLWSTemplate(lws1), 1, lws1.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,15 +91,15 @@ func TestFindEqualRevisions(t *testing.T) {
 
 func TestSortControllerRevisions(t *testing.T) {
 	lws := testutils.BuildLeaderWorkerSet("test-sample").Obj()
-	lwsRevision1, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws, t), 1, lws.Status.CollisionCount)
+	lwsRevision1, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1, lws.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lwsRevision2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws, t), 2, lws.Status.CollisionCount)
+	lwsRevision2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 2, lws.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lwsRevision1Time2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws, t), 1, lws.Status.CollisionCount)
+	lwsRevision1Time2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1, lws.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}

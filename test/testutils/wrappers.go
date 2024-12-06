@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -295,16 +294,16 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 	}
 }
 
-func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet, t *testing.T) runtime.RawExtension {
+func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
 	str := &bytes.Buffer{}
 	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	var raw map[string]interface{}
 	err = json.Unmarshal(str.Bytes(), &raw)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	objCopy := make(map[string]interface{})
 	specCopy := make(map[string]interface{})
@@ -315,7 +314,7 @@ func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet, t *testing.T) runtime.
 	objCopy["spec"] = specCopy
 	patch, err := json.Marshal(objCopy)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return runtime.RawExtension{Raw: patch}
 }

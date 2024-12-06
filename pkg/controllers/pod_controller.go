@@ -121,7 +121,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 	currentRevision, _, _, err := controllerutils.GetLeaderWorkerSetRevisions(ctx, r.Client, &leaderWorkerSet)
 	if err != nil {
-		log.Error(err, "Getting StatefulSet revisions")
+		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
 	}
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, currentRevision)

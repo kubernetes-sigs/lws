@@ -39,7 +39,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	updateTemplateHash := utils.LeaderWorkerTemplateHash(lws)
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "worker"
 	lws.Status.CollisionCount = new(int32)
-	currentRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws, t), 1, lws.Status.CollisionCount)
+	currentRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1, lws.Status.CollisionCount)
 	if err != nil {
 		t.Fatal(err)
 	}
