@@ -319,7 +319,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			// use the original lws object instead of newest, since we are comparing with the old worker template
 			podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 			if sts.Spec.Template.Spec.Containers[0].Name != podTemplateSpec.Spec.Containers[0].Name {
-				return fmt.Errorf("StatefulSet did not have the expected container name: " + sts.Spec.Template.Spec.Containers[0].Name)
+				return fmt.Errorf("StatefulSet did not have the expected container name")
 			}
 			return nil
 		}, timeout, interval).Should(gomega.Succeed())
