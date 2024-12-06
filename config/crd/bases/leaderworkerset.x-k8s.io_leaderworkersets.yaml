@@ -16206,7 +16206,7 @@ spec:
             properties:
               collisionCount:
                 description: |-
-                  collisionCount is the count of hash collisions for the StatefulSet. The StatefulSet controller
+                  collisionCount is the count of hash collisions for lws. The lws controller
                   uses this field as a collision avoidance mechanism when it needs to create the name for the
                   newest ControllerRevision.
                 format: int32

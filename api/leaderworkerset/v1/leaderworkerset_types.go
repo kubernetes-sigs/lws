@@ -312,7 +312,7 @@ type LeaderWorkerSetStatus struct {
 	// used to generate the worker pods in sequence [replicas-updatedReplicas,replicas)
 	UpdateRevision string `json:"updateRevision,omitempty"`
 
-	// collisionCount is the count of hash collisions for the StatefulSet. The StatefulSet controller
+	// collisionCount is the count of hash collisions for lws. The lws controller
 	// uses this field as a collision avoidance mechanism when it needs to create the name for the
 	// newest ControllerRevision.
 	// +optional

@@ -98,8 +98,8 @@ func GetLeaderWorkerSetRevisions(
 	revisionCount := len(revisions)
 	history.SortControllerRevisions(revisions)
 
-	// Use a local copy of set.Status.CollisionCount to avoid modifying set.Status directly.
-	// This copy is returned so the value gets carried over to set.Status in updateStatefulSet.
+	// Use a local copy of lws.Status.CollisionCount to avoid modifying lws.Status directly.
+	// This copy is returned so the value gets carried over to lws reconcile.
 	var collisionCount int32
 	if lws.Status.CollisionCount != nil {
 		collisionCount = *lws.Status.CollisionCount
