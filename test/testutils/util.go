@@ -563,7 +563,7 @@ func CreateControllerRevisionForHashCollision(ctx context.Context, k8sClient cli
 	hash := hashControllerRevision(cr, lws.Status.CollisionCount)
 	cr.Name = controllerRevisionName(lws.GetName(), hash)
 	cr.Labels[controllerRevisionHashLabel] = hash
-	// Change the lws that is used for the data, This create a controller revision
+	// Change the lws that is used for the data, This creates a controller revision
 	// with same name but different contents, triggering a hash collision
 	modifiedLws := lws.DeepCopy()
 	modifiedLws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "hash-collision"
