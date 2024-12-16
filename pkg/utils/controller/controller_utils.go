@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -72,95 +73,60 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 	return nil
 }
 
-// GetLeaderWorkerSetRevisions returns the current and update ControllerRevisions for leaderWorkerSet. It also
-// returns a collision count that records the number of name collisions set saw when creating
-// new ControllerRevisions. This count is incremented on every name collision and is used in
-// building the ControllerRevision names for name collision avoidance. This method may create
-// a new revision, or modify the Revision of an existing revision if an update to set is detected.
-// This method expects that revisions is sorted when supplied.
-func GetLeaderWorkerSetRevisions(
-	ctx context.Context,
-	k8sClient client.Client,
-	lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, *appsv1.ControllerRevision, int32, error) {
-	var currentRevision *appsv1.ControllerRevision
+func GetLeaderWorkerSetRevisionFromTemplateHash(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
-	controllerHistory := history.NewHistory(k8sClient, ctx)
-	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{})
+	controllerHistory := history.NewHistory(ctx, k8sClient)
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
+		leaderworkerset.TemplateRevisionHashKey: templateHash,
+	}})
 	if err != nil {
-		return nil, nil, int32(-1), err
+		return nil, err
 	}
 	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
 	if err != nil {
 		log.Error(err, "Listing all controller revisions")
-		return nil, nil, int32(-1), err
-	}
-	revisionCount := len(revisions)
-	history.SortControllerRevisions(revisions)
-
-	// Use a local copy of lws.Status.CollisionCount to avoid modifying lws.Status directly.
-	// This copy is returned so the value gets carried over to lws reconcile.
-	var collisionCount int32
-	if lws.Status.CollisionCount != nil {
-		collisionCount = *lws.Status.CollisionCount
+		return nil, err
 	}
 
-	// create a new revision from the current set
-	updateRevision, err := NewRevision(lws, NextRevision(revisions), &collisionCount)
+	if len(revisions) == 0 {
+		return nil, fmt.Errorf("could not find LWS revision based on %s", templateHash)
+	}
+
+	if len(revisions) > 1 {
+		// Since we only create a controllerRevision when the template hash changes, only one should match
+		return nil, fmt.Errorf("found more than one revision matching templateHash %s", templateHash)
+	}
+
+	return revisions[0], nil
+}
+
+func ExistingControllerRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
+	ctx = ctrl.LoggerInto(ctx, log)
+	controllerHistory := history.NewHistory(ctx, k8sClient)
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{})
 	if err != nil {
-		log.Error(err, "Creating new revision for lws")
-		return nil, nil, collisionCount, err
+		return false, err
 	}
-
-	// find any equivalent revisions
-	equalRevisions := history.FindEqualRevisions(revisions, updateRevision)
-	equalCount := len(equalRevisions)
-
-	if equalCount > 0 && history.EqualRevision(revisions[revisionCount-1], equalRevisions[equalCount-1]) {
-		// if the equivalent revision is immediately prior the update revision has not changed
-		updateRevision = revisions[revisionCount-1]
-	} else if equalCount > 0 {
-		// if the equivalent revision is not immediately prior we will roll back by incrementing the
-		// Revision of the equivalent revision
-		updateRevision, err = controllerHistory.UpdateControllerRevision(
-			equalRevisions[equalCount-1],
-			updateRevision.Revision)
-		if err != nil {
-			log.Error(err, "updating controller revision")
-			return nil, nil, collisionCount, err
-		}
-	} else {
-		//if there is no equivalent revision we create a new one
-		updateRevision, err = controllerHistory.CreateControllerRevision(lws, updateRevision, &collisionCount)
-		if err != nil {
-			log.Error(err, "Creating new controller revision for lws")
-			return nil, nil, collisionCount, err
-		}
+	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	if err != nil {
+		return false, err
 	}
-
-	// attempt to find the revision that corresponds to the current revision
-	for i := range revisions {
-		if revisions[i].Name == lws.Status.CurrentRevision {
-			currentRevision = revisions[i]
-			break
-		}
-	}
-
-	// if the current revision is nil we initialize the history by setting it to the update revision
-	if currentRevision == nil {
-		currentRevision = updateRevision
-	}
-
-	return currentRevision, updateRevision, collisionCount, nil
+	return len(revisions) > 0, nil
 }
 
 // getPatch returns a strategic merge patch that can be applied to restore a LeaderWorkerSet to a
 // previous version. If the returned error is nil the patch is valid. The current state that we save is the
 // leaderWorkerTemplate. We can modify this later to encompass more state (or less) and remain compatible with previously
 // recorded patches.
+
 func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	str := &bytes.Buffer{}
-	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
+	clone := lws.DeepCopy()
+	// ResourceVersion will always be different even if the underlying LWS object is the same.
+	clone.ResourceVersion = ""
+	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
 	if err != nil {
 		return nil, err
 	}
@@ -169,36 +135,78 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	objCopy := make(map[string]interface{})
-	specCopy := make(map[string]interface{})
-	spec := raw["spec"].(map[string]interface{})
-	template := spec["leaderWorkerTemplate"].(map[string]interface{})
-	specCopy["leaderWorkerTemplate"] = template
-	template["$patch"] = "replace"
-	objCopy["spec"] = specCopy
-	patch, err := json.Marshal(objCopy)
+	patch, err := json.Marshal(raw)
 	return patch, err
+}
+
+func CreateLeaderWorkerSetRevision(
+	ctx context.Context,
+	k8sClient client.Client,
+	lws *leaderworkerset.LeaderWorkerSet,
+	templateHash string) error {
+	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
+	ctx = ctrl.LoggerInto(ctx, log)
+	controllerHistory := history.NewHistory(ctx, k8sClient)
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{})
+	if err != nil {
+		return err
+	}
+	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	if err != nil {
+		log.Error(err, "Listing all controller revisions")
+		return err
+	}
+	revisionCount := len(revisions)
+	history.SortControllerRevisions(revisions)
+
+	currentRevision, err := NewRevision(lws, NextRevision(revisions), new(int32), templateHash)
+	if err != nil {
+		log.Error(err, "Creating new revision for lws")
+		return err
+	}
+
+	equalRevisions := history.FindEqualRevisions(revisions, currentRevision)
+	equalCount := len(equalRevisions)
+	log.V(2).Info(fmt.Sprintf("found %d equal revisions", equalCount))
+	if len(equalRevisions) > 0 && history.EqualRevision(revisions[revisionCount-1], equalRevisions[equalCount-1]) {
+		return nil
+	}
+
+	if len(equalRevisions) > 0 {
+		// if the equivalent revision is not immediately prior we will roll back by incrementing the
+		// Revision of the equivalent revision
+		_, err = controllerHistory.UpdateControllerRevision(
+			equalRevisions[equalCount-1],
+			currentRevision.Revision)
+		if err != nil {
+			log.Error(err, "updating controller revision")
+			return nil
+		}
+		return nil
+	}
+
+	_, err = controllerHistory.CreateControllerRevision(lws, currentRevision, new(int32))
+	log.V(2).Info("Created new controller revision")
+	if err != nil {
+		log.Error(err, "Creating new controller revision for lws")
+		return err
+	}
+
+	return nil
 }
 
 // newRevision creates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
 // The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
 // ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
 // to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
-func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collisionCount *int32) (*appsv1.ControllerRevision, error) {
+func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collisionCount *int32, templateHash string) (*appsv1.ControllerRevision, error) {
 	patch, err := getPatch(lws)
 	if err != nil {
 		return nil, err
 	}
-	combinedLabels := make(map[string]string)
-	for k, v := range lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels {
-		combinedLabels[k] = v
-	}
-	for k, v := range lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels {
-		combinedLabels[k] = v
-	}
 	cr, err := history.NewControllerRevision(lws,
 		controllerKind,
-		combinedLabels,
+		map[string]string{leaderworkerset.TemplateRevisionHashKey: templateHash},
 		runtime.RawExtension{Raw: patch},
 		revision,
 		collisionCount)

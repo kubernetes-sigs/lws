@@ -38,7 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -119,7 +118,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-	currentRevision, _, _, err := controllerutils.GetLeaderWorkerSetRevisions(ctx, r.Client, &leaderWorkerSet)
+	currentRevision, err := controllerutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
 		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
@@ -265,15 +264,11 @@ func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1
 
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
 func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	updatedTemplateHash := utils.LeaderWorkerTemplateHash(&lws)
-	podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-	if updatedTemplateHash != leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] {
-		originalLws, err := controllerutils.ApplyRevision(&lws, currentRevision)
-		if err != nil {
-			return nil, err
-		}
-		podTemplateSpec = *originalLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+	currentLws, err := controllerutils.ApplyRevision(&lws, currentRevision)
+	if err != nil {
+		return nil, err
 	}
+	podTemplateSpec := *currentLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {

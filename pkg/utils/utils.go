@@ -20,6 +20,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"os"
+	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -44,6 +45,21 @@ func NonZeroValue(value int32) int32 {
 		return 0
 	}
 	return value
+}
+
+func EqualLeaderWorkerTemplates(lhs *leaderworkerset.LeaderWorkerSet, rhs *leaderworkerset.LeaderWorkerSet) bool {
+	if !reflect.DeepEqual(lhs.Spec.LeaderWorkerTemplate, rhs.Spec.LeaderWorkerTemplate) {
+		return false
+	}
+	if (lhs.Spec.NetworkConfig == nil || string(*lhs.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared)) && (rhs.Spec.NetworkConfig == nil || string(*rhs.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared)) {
+		return true
+	}
+
+	if lhs.Spec.NetworkConfig == nil || rhs.Spec.NetworkConfig == nil {
+		return false
+	}
+
+	return string(*lhs.Spec.NetworkConfig.SubdomainPolicy) == string(*rhs.Spec.NetworkConfig.SubdomainPolicy)
 }
 
 func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
