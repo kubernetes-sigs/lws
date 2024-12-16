@@ -6,11 +6,9 @@ status: implementable
 creation-date: 2024-11-20
 reviewers:
   - kerthcet
-  - liurupeng
   - ahg-g
 approvers:
   - kerthcet
-  - liurupeng
   - ahg-g
 
 # The most recent milestone for which work toward delivery of this KEP has been
