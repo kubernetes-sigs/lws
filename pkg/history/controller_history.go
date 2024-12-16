@@ -29,6 +29,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -110,6 +111,11 @@ func SortControllerRevisions(revisions []*appsv1.ControllerRevision) {
 // contain semantically equivalent data. Otherwise this method returns false.
 func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
 	var lhsHash, rhsHash *uint32
+
+	if lhs.Labels[leaderworkerset.TemplateRevisionHashKey] == rhs.Labels[leaderworkerset.TemplateRevisionHashKey] {
+		return true
+	}
+
 	if lhs == nil || rhs == nil {
 		return lhs == rhs
 	}
@@ -202,7 +208,7 @@ type Interface interface {
 
 // NewHistory returns an instance of Interface that uses client to communicate with the API Server and lister to list
 // ControllerRevisions. This method should be used to create an Interface for all scenarios other than testing.
-func NewHistory(k8sclient client.Client, context context.Context) Interface {
+func NewHistory(context context.Context, k8sclient client.Client) Interface {
 	return &realHistory{k8sclient, context}
 }
 

@@ -177,7 +177,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		}
 
 		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
-			return errors.New("pod number not right")
+			return fmt.Errorf("expected %d pods, got %d", (int((*lws.Spec.Replicas) * (*lws.Spec.LeaderWorkerTemplate.Size))), len(podList.Items))
 		}
 
 		var leaderTemplateSpec corev1.PodTemplateSpec
