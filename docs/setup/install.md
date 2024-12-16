@@ -67,6 +67,18 @@ To uninstall LeaderWorkerSet, run the following command:
 make undeploy
 ```
 
+# Install in a different namespace
+
+To install the leaderWorkerSet controller in a different namespace rather than `lws-system`, you should first:
+```sh
+git clone https://github.com/kubernetes-sigs/lws.git
+cd lws
+```
+Then change the [kustomization.yaml](../../config/default/kustomization.yaml) _namespace_ field as:
+```yaml
+namespace: <your-namespace>
+```
+
 # Optional: Use cert manager instead of internal cert
 The webhooks use an internal certificate by default. However, if you wish to use cert-manager (which
 supports cert rotation), instead of internal cert, you can by performing the following steps.
