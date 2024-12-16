@@ -15,12 +15,16 @@ limitations under the License.
 package testutils
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -154,6 +158,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}
@@ -287,4 +292,29 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 		},
 		Subdomain: "default",
 	}
+}
+
+func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
+	str := &bytes.Buffer{}
+	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
+	if err != nil {
+		panic(err)
+	}
+	var raw map[string]interface{}
+	err = json.Unmarshal(str.Bytes(), &raw)
+	if err != nil {
+		panic(err)
+	}
+	objCopy := make(map[string]interface{})
+	specCopy := make(map[string]interface{})
+	spec := raw["spec"].(map[string]interface{})
+	template := spec["leaderWorkerTemplate"].(map[string]interface{})
+	specCopy["leaderWorkerTemplate"] = template
+	template["$patch"] = "replace"
+	objCopy["spec"] = specCopy
+	patch, err := json.Marshal(objCopy)
+	if err != nil {
+		panic(err)
+	}
+	return runtime.RawExtension{Raw: patch}
 }
