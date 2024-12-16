@@ -36,6 +36,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
 	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	//+kubebuilder:scaffold:imports
 )
@@ -58,7 +59,6 @@ func main() {
 		probeAddr   string
 		qps         float64
 		burst       int
-		namespace   string
 
 		// leader election
 		enableLeaderElection     bool
@@ -91,7 +91,6 @@ func main() {
 			"'endpoints', 'configmaps', 'leases', 'endpointsleases' and 'configmapsleases'")
 	flag.StringVar(&leaderElectionID, "leader-elect-resource-name", "b8b2488c.x-k8s.io",
 		"The name of resource object that is used for locking during leader election. ")
-	flag.StringVar(&namespace, "namespace", "lws-system", "The namespace that is used to deploy leaderWorkerSet controller")
 
 	opts := zap.Options{
 		Development: true,
@@ -104,6 +103,7 @@ func main() {
 	kubeConfig := ctrl.GetConfigOrDie()
 	kubeConfig.QPS = float32(qps)
 	kubeConfig.Burst = burst
+	namespace := utils.GetOperatorNamespace()
 
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
 		Scheme:                     scheme,
