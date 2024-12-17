@@ -1,0 +1,66 @@
+# Default values for lws.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+nameOverride: ""
+fullnameOverride: ""
+
+enablePrometheus: false
+enableCertManager: false
+
+replicaCount: 1
+imagePullSecrets: []
+
+# Customize controlerManager
+image:
+  manager:
+    repository: gcr.io/k8s-staging-lws/lws
+    # tag, if defined will use the given image tag, else Chart.AppVersion will be used
+    tag: main
+    pullPolicy: IfNotPresent
+  kubeRbacProxy:
+    repository: gcr.io/kubebuilder/kube-rbac-proxy
+    # tag
+    tag: v0.15.0
+    # This should be set to 'IfNotPresent' for released version
+    pullPolicy: IfNotPresent
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  # fsGroup: 2000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 9443
+
+resources:
+  requests:
+    cpu: 1
+    memory: 1Gi
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

@@ -95,3 +95,6 @@ Next, in the file ``lws/config/default/kustomization.yaml`` replace ``../interna
 
 Finally, install the cert manager follwing the link: https://cert-manager.io/docs/installation/#default-static-install
 and apply these configurations to your cluster with ``kubectl apply --server-side -k config/default``.
+
+# Install with helm chart
+See [lws/charts](../../charts/lws/README.md)
