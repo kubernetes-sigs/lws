@@ -295,23 +295,19 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 }
 
 func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
+	clone := lws.DeepCopy()
 	str := &bytes.Buffer{}
-	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
+	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
 	if err != nil {
 		panic(err)
 	}
 	var raw map[string]interface{}
 	err = json.Unmarshal(str.Bytes(), &raw)
-	if err != nil {
-		panic(err)
-	}
 	objCopy := make(map[string]interface{})
-	specCopy := make(map[string]interface{})
 	spec := raw["spec"].(map[string]interface{})
-	template := spec["leaderWorkerTemplate"].(map[string]interface{})
-	specCopy["leaderWorkerTemplate"] = template
-	template["$patch"] = "replace"
-	objCopy["spec"] = specCopy
+	specCopy := spec
+	specCopy["$patch"] = "replace"
+	objCopy["spec"] = spec
 	patch, err := json.Marshal(objCopy)
 	if err != nil {
 		panic(err)

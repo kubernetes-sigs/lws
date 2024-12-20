@@ -439,33 +439,3 @@ func ExpectSpecifiedWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient 
 		return true
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
-
-func ExpectCurrentRevisionToEqualUpdateRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	gomega.Eventually(func() bool {
-		var fetchedLws leaderworkerset.LeaderWorkerSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &fetchedLws); err != nil {
-			return false
-		}
-		return fetchedLws.Status.CurrentRevision == fetchedLws.Status.UpdateRevision
-	}, Timeout, Interval).Should(gomega.Equal(true))
-}
-
-func ExpectCurrentRevisionToNotEqualUpdateRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	gomega.Eventually(func() bool {
-		var fetchedLws leaderworkerset.LeaderWorkerSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &fetchedLws); err != nil {
-			return false
-		}
-		return fetchedLws.Status.CurrentRevision != fetchedLws.Status.UpdateRevision
-	}, Timeout, Interval).Should(gomega.Equal(true))
-}
-
-func ExpectCollisionCountEqualTo(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, collisionCount int32) {
-	gomega.Eventually(func() int32 {
-		var fetchedLws leaderworkerset.LeaderWorkerSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &fetchedLws); err != nil {
-			return -1
-		}
-		return *fetchedLws.Status.CollisionCount
-	}, Timeout, Interval).Should(gomega.Equal(collisionCount))
-}

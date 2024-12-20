@@ -124,18 +124,22 @@ func ExistingControllerRevisions(ctx context.Context, k8sClient client.Client, l
 func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	str := &bytes.Buffer{}
 	clone := lws.DeepCopy()
-	// ResourceVersion will always be different even if the underlying LWS object is the same.
-	clone.ResourceVersion = ""
 	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
 	if err != nil {
 		return nil, err
 	}
 	var raw map[string]interface{}
 	err = json.Unmarshal(str.Bytes(), &raw)
+	objCopy := make(map[string]interface{})
+	specCopy := make(map[string]interface{})
+	spec := raw["spec"].(map[string]interface{})
+	specCopy = spec
+	specCopy["$patch"] = "replace"
+	objCopy["spec"] = spec
 	if err != nil {
 		return nil, err
 	}
-	patch, err := json.Marshal(raw)
+	patch, err := json.Marshal(objCopy)
 	return patch, err
 }
 
@@ -159,7 +163,7 @@ func CreateLeaderWorkerSetRevision(
 	revisionCount := len(revisions)
 	history.SortControllerRevisions(revisions)
 
-	currentRevision, err := NewRevision(lws, NextRevision(revisions), new(int32), templateHash)
+	currentRevision, err := NewRevision(lws, NextRevision(revisions), templateHash)
 	if err != nil {
 		log.Error(err, "Creating new revision for lws")
 		return err
@@ -185,7 +189,7 @@ func CreateLeaderWorkerSetRevision(
 		return nil
 	}
 
-	_, err = controllerHistory.CreateControllerRevision(lws, currentRevision, new(int32))
+	_, err = controllerHistory.CreateControllerRevision(lws, currentRevision)
 	log.V(2).Info("Created new controller revision")
 	if err != nil {
 		log.Error(err, "Creating new controller revision for lws")
@@ -199,7 +203,7 @@ func CreateLeaderWorkerSetRevision(
 // The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
 // ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
 // to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
-func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collisionCount *int32, templateHash string) (*appsv1.ControllerRevision, error) {
+func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, templateHash string) (*appsv1.ControllerRevision, error) {
 	patch, err := getPatch(lws)
 	if err != nil {
 		return nil, err
@@ -208,8 +212,7 @@ func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, collision
 		controllerKind,
 		map[string]string{leaderworkerset.TemplateRevisionHashKey: templateHash},
 		runtime.RawExtension{Raw: patch},
-		revision,
-		collisionCount)
+		revision)
 	if err != nil {
 		return nil, err
 	}
@@ -254,11 +257,25 @@ func NextRevision(revisions []*appsv1.ControllerRevision) int64 {
 	return revisions[count-1].Revision + 1
 }
 
-// TruncateHistory cleans up all other controller revisions expect the currentRevision and updateRevision
-func TruncateHistory(history history.Interface, revisions []*appsv1.ControllerRevision, updateRevision *appsv1.ControllerRevision, currentRevision *appsv1.ControllerRevision) error {
+// TruncateHistory cleans up all other controller revisions except the currentRevision.
+// currentRevision is the one that matches the templateHash that is passed
+func TruncateHistory(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
+	controllerHistory := history.NewHistory(ctx, k8sClient)
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{})
+	if err != nil {
+		return err
+	}
+	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	if err != nil {
+		return err
+	}
+	currentRevision, err := GetLeaderWorkerSetRevisionFromTemplateHash(ctx, k8sClient, lws, templateHash)
+	if err != nil {
+		return err
+	}
 	for i, revision := range revisions {
-		if revision.Name != updateRevision.Name && revision.Name != currentRevision.Name {
-			if err := history.DeleteControllerRevision(revisions[i]); err != nil {
+		if revision.Name != currentRevision.Name {
+			if err := controllerHistory.DeleteControllerRevision(revisions[i]); err != nil {
 				return err
 			}
 		}

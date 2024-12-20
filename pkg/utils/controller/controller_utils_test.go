@@ -28,8 +28,7 @@ import (
 func TestApplyRevision(t *testing.T) {
 
 	lws := testutils.BuildLeaderWorkerSet("default").Obj()
-	lws.Status.CollisionCount = new(int32)
-	revision, err := NewRevision(lws, 1, lws.Status.CollisionCount, "")
+	revision, err := NewRevision(lws, 1, "")
 	currentLws := lws.DeepCopy()
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +44,7 @@ func TestApplyRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoredRevision, err := NewRevision(restoredLws, 2, restoredLws.Status.CollisionCount, "")
+	restoredRevision, err := NewRevision(restoredLws, 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +57,7 @@ func TestApplyRevision(t *testing.T) {
 		t.Errorf("unexpected restored LeaderWorkerTemplate: %s", diff)
 	}
 
-	if diff := cmp.Diff(currentLws, restoredLws); diff == "" {
+	if diff := cmp.Diff(currentLws, restoredLws); diff != "" {
 		t.Errorf("LWS Spec fields should not be restored")
 	}
 }
