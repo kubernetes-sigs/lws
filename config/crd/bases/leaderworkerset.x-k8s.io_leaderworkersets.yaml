@@ -16204,13 +16204,6 @@ spec:
           status:
             description: LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet
             properties:
-              collisionCount:
-                description: |-
-                  collisionCount is the count of hash collisions for lws. The lws controller
-                  uses this field as a collision avoidance mechanism when it needs to create the name for the
-                  newest ControllerRevision.
-                format: int32
-                type: integer
               conditions:
                 description: Conditions track the condition of the leaderworkerset.
                 items:
@@ -16268,11 +16261,6 @@ spec:
                   - type
                   type: object
                 type: array
-              currentRevision:
-                description: |-
-                  currentRevision, if not empty, indicates the version of the  worker StatefulSet
-                  used to generate the worker pods in sequence [0,currentReplicas)
-                type: string
               hpaPodSelector:
                 description: |-
                   HPAPodSelector for pods that belong to the LeaderWorkerSet object, this is
@@ -16289,11 +16277,6 @@ spec:
                   created (updated or not, ready or not)
                 format: int32
                 type: integer
-              updateRevision:
-                description: |-
-                  updateRevision, if not empty, indicates the version of the  worker StatefulSet
-                  used to generate the worker pods in sequence [replicas-updatedReplicas,replicas)
-                type: string
               updatedReplicas:
                 description: UpdatedReplicas track the number of groups that have
                   been updated (ready or not).

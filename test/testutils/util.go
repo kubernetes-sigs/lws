@@ -557,17 +557,17 @@ func CreateControllerRevisionForHashCollision(ctx context.Context, k8sClient cli
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, parentKind)},
 			Namespace:       lws.GetNamespace(),
 		},
-		Data:     RawLWSTemplate(lws),
+		// Data:     RawLWSTemplate(lws),
 		Revision: 1,
 	}
-	hash := hashControllerRevision(cr, lws.Status.CollisionCount)
+	hash := hashControllerRevision(cr)
 	cr.Name = controllerRevisionName(lws.GetName(), hash)
 	cr.Labels[controllerRevisionHashLabel] = hash
 	// Change the lws that is used for the data, This creates a controller revision
 	// with same name but different contents, triggering a hash collision
 	modifiedLws := lws.DeepCopy()
 	modifiedLws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "hash-collision"
-	cr.Data = RawLWSTemplate(modifiedLws)
+	// cr.Data = RawLWSTemplate(modifiedLws)
 	gomega.Expect(k8sClient.Create(ctx, cr)).Should(gomega.Succeed())
 }
 
@@ -585,16 +585,13 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func hashControllerRevision(revision *appsv1.ControllerRevision, probe *int32) string {
+func hashControllerRevision(revision *appsv1.ControllerRevision) string {
 	hf := fnv.New32()
 	if len(revision.Data.Raw) > 0 {
 		hf.Write(revision.Data.Raw)
 	}
 	if revision.Data.Object != nil {
 		deepHashObject(hf, revision.Data.Object)
-	}
-	if probe != nil {
-		hf.Write([]byte(strconv.FormatInt(int64(*probe), 10)))
 	}
 	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
 }

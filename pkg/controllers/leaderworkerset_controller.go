@@ -198,6 +198,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	ctx = ctrl.LoggerInto(ctx, log)
 	lwsReplicas := *lws.Spec.Replicas
 
+	// Case 1:
+	// If sts not created yet, all partitions should be updated,
+	// replicas should not change.
 	stsExists, sts, err := stsCreated(ctx, r.Client, lws)
 	if err != nil {
 		return 0, 0, err
@@ -211,6 +214,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if err != nil {
 		return 0, 0, err
 	}
+
 	if !existingControllerRevisions {
 		// Updating from version that did not support Controller Revision. Need to create one first before checking if template has been updated
 		log.V(2).Info(fmt.Sprintf("Creating new controller revision create/update operation for %+v ", lws))
@@ -430,6 +434,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
+		controllerutils.TruncateHistory(ctx, r.Client, lws, templateHash)
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
@@ -729,8 +734,6 @@ func templateUpdated(ctx context.Context, k8sClient client.Client, sts *appsv1.S
 	if err != nil {
 		return false, err
 	}
-	log.V(2).Info(fmt.Sprintf("comparing networkConfig %s, with %s", string(*lws.Spec.NetworkConfig.SubdomainPolicy), string(*baselineLws.Spec.NetworkConfig.SubdomainPolicy)))
-	log.V(2).Info(fmt.Sprintf("Fetching controller revision with hash %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey]))
 	return !utils.EqualLeaderWorkerTemplates(baselineLws, lws), nil
 }
 
@@ -738,9 +741,6 @@ func stsCreated(ctx context.Context, k8sClient client.Client, lws *leaderworkers
 	sts := &appsv1.StatefulSet{}
 	err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
 	if err != nil {
-		// Case 1:
-		// If sts not created yet, all partitions should be updated,
-		// replicas should not change.
 		if apierrors.IsNotFound(err) {
 			return false, nil, nil
 		}

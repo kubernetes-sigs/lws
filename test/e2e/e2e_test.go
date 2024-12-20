@@ -303,7 +303,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			return numberOfPodsInCommon, nil
 		}, timeout, interval).Should(gomega.Equal(0))
 	})
-	ginkgo.It("unupdated worker StatefulSet restarted during rolling update will be restored with old worker spec", func() {
+	ginkgo.It("Not updated worker StatefulSet restarted during rolling update will be restored with old worker spec", func() {
 		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")

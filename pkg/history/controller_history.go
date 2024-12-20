@@ -58,15 +58,13 @@ func ControllerRevisionName(prefix string, hash string) string {
 
 // NewControllerRevision returns a ControllerRevision with a ControllerRef pointing to parent and indicating that
 // parent is of parentKind. The ControllerRevision has labels matching template labels, contains Data equal to data, and
-// has a Revision equal to revision. The collisionCount is used when creating the name of the ControllerRevision
-// so the name is likely unique. If the returned error is nil, the returned ControllerRevision is valid. If the
+// has a Revision equal to revision. If the returned error is nil, the returned ControllerRevision is valid. If the
 // returned error is not nil, the returned ControllerRevision is invalid for use.
 func NewControllerRevision(parent metav1.Object,
 	parentKind schema.GroupVersionKind,
 	templateLabels map[string]string,
 	data runtime.RawExtension,
-	revision int64,
-	collisionCount *int32) (*appsv1.ControllerRevision, error) {
+	revision int64) (*appsv1.ControllerRevision, error) {
 	labelMap := make(map[string]string)
 	for k, v := range templateLabels {
 		labelMap[k] = v
@@ -80,24 +78,21 @@ func NewControllerRevision(parent metav1.Object,
 		Data:     data,
 		Revision: revision,
 	}
-	hash := HashControllerRevision(cr, collisionCount)
+	hash := HashControllerRevision(cr)
 	cr.Name = ControllerRevisionName(parent.GetName(), hash)
 	cr.Labels[ControllerRevisionHashLabel] = hash
 	return cr, nil
 }
 
-// HashControllerRevision hashes the contents of revision's Data using FNV hashing. If probe is not nil, the byte value
-// of probe is added written to the hash as well. The returned hash will be a safe encoded string to avoid bad words.
-func HashControllerRevision(revision *appsv1.ControllerRevision, probe *int32) string {
+// HashControllerRevision hashes the contents of revision's Data using FNV hashing.
+// The returned hash will be a safe encoded string to avoid bad words.
+func HashControllerRevision(revision *appsv1.ControllerRevision) string {
 	hf := fnv.New32()
 	if len(revision.Data.Raw) > 0 {
 		hf.Write(revision.Data.Raw)
 	}
 	if revision.Data.Object != nil {
 		DeepHashObject(hf, revision.Data.Object)
-	}
-	if probe != nil {
-		hf.Write([]byte(strconv.FormatInt(int64(*probe), 10)))
 	}
 	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
 }
@@ -181,14 +176,11 @@ type Interface interface {
 	// controller. If the returned error is nil the returned slice of ControllerRevisions is valid. If the
 	// returned error is not nil, the returned slice is not valid.
 	ListControllerRevisions(parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error)
-	// CreateControllerRevision attempts to create the revision as owned by parent via a ControllerRef. If name
-	// collision occurs, collisionCount (incremented each time collision occurs except for the first time) is
-	// added to the hash of the revision and it is renamed using ControllerRevisionName. Implementations may
+	// CreateControllerRevision attempts to create the revision as owned by parent via a ControllerRef. Implementations may
 	// cease to attempt to retry creation after some number of attempts and return an error. If the returned
 	// error is not nil, creation failed. If the returned error is nil, the returned ControllerRevision has been
 	// created.
-	// Callers must make sure that collisionCount is not nil. An error is returned if it is.
-	CreateControllerRevision(parent metav1.Object, revision *appsv1.ControllerRevision, collisionCount *int32) (*appsv1.ControllerRevision, error)
+	CreateControllerRevision(parent metav1.Object, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error)
 	// DeleteControllerRevision attempts to delete revision. If the returned error is not nil, deletion has failed.
 	DeleteControllerRevision(revision *appsv1.ControllerRevision) error
 	// UpdateControllerRevision updates revision such that its Revision is equal to newRevision. Implementations
@@ -236,35 +228,30 @@ func (rh *realHistory) ListControllerRevisions(parent metav1.Object, selector la
 	return owned, err
 }
 
-func (rh *realHistory) CreateControllerRevision(parent metav1.Object, revision *appsv1.ControllerRevision, collisionCount *int32) (*appsv1.ControllerRevision, error) {
-	if collisionCount == nil {
-		return nil, fmt.Errorf("collisionCount should not be nil")
-	}
-
+func (rh *realHistory) CreateControllerRevision(parent metav1.Object, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	// Clone the input
 	clone := revision.DeepCopy()
 
-	// Continue to attempt to create the revision updating the name with a new hash on each iteration
-	for {
-		hash := HashControllerRevision(revision, collisionCount)
-		// Update the revisions name
-		clone.Name = ControllerRevisionName(parent.GetName(), hash)
-		ns := parent.GetNamespace()
-		err := rh.Create(rh.context, clone)
-		if errors.IsAlreadyExists(err) {
-			exists := &appsv1.ControllerRevision{}
-			err := rh.Get(rh.context, types.NamespacedName{Namespace: ns, Name: clone.Name}, exists)
-			if err != nil {
-				return nil, err
-			}
-			if bytes.Equal(exists.Data.Raw, clone.Data.Raw) {
-				return exists, nil
-			}
-			*collisionCount++
-			continue
+	hash := HashControllerRevision(revision)
+	// Update the revisions name
+	clone.Name = ControllerRevisionName(parent.GetName(), hash)
+	ns := parent.GetNamespace()
+	err := rh.Create(rh.context, clone)
+	if errors.IsAlreadyExists(err) {
+		exists := &appsv1.ControllerRevision{}
+		err := rh.Get(rh.context, types.NamespacedName{Namespace: ns, Name: clone.Name}, exists)
+		if err != nil {
+			return nil, err
 		}
-		return clone, err
+		if bytes.Equal(exists.Data.Raw, clone.Data.Raw) {
+			return exists, nil
+		} else {
+			// Since the contents of the revision are used to create the hash, the only way this
+			// happens is if the contents of the revision were changed, which is unintended behavior
+			return nil, fmt.Errorf("controller Revision with same name but different content exists")
+		}
 	}
+	return clone, err
 }
 
 func (rh *realHistory) UpdateControllerRevision(revision *appsv1.ControllerRevision, newRevision int64) (*appsv1.ControllerRevision, error) {
