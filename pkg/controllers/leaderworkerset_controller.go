@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -99,13 +100,31 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
-	partition, replicas, err := r.rollingUpdateParameters(ctx, lws)
+	leaderSts, err := r.getLeaderStatefulSet(ctx, lws)
+	if err != nil {
+		log.Error(err, "Fetching leader statefulset")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.createControllerRevisionIfNonExist(ctx, leaderSts, lws); err != nil {
+		log.Error(err, "Creating controller revision")
+		return ctrl.Result{}, err
+	}
+
+	lwsUpdated, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws)
+	if err != nil {
+		log.Error(err, "Validating if LWS has been updated")
+		return ctrl.Result{}, err
+	}
+
+	templateHash := getLeaderWorkerTemplateHash(leaderSts, lws, lwsUpdated)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, lwsUpdated)
 	if err != nil {
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, templateHash); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -117,7 +136,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	err = r.updateStatus(ctx, lws)
+	err = r.updateStatus(ctx, lws, templateHash)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -193,7 +212,7 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //   - Otherwise, Replicas is equal to spec.Replicas
 //   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, leaderWorkerSetUpdated bool) (int32, int32, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 	lwsReplicas := *lws.Spec.Replicas
@@ -201,26 +220,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 1:
 	// If sts not created yet, all partitions should be updated,
 	// replicas should not change.
-	stsExists, sts, err := stsCreated(ctx, r.Client, lws)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	if !stsExists {
-		return 0, lwsReplicas, nil
-	}
-
-	existingControllerRevisions, err := controllerutils.ExistingControllerRevisions(ctx, r.Client, lws)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	if !existingControllerRevisions {
-		// Updating from version that did not support Controller Revision. Need to create one first before checking if template has been updated
-		log.V(2).Info(fmt.Sprintf("Creating new controller revision create/update operation for %+v ", lws))
-		if err := controllerutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey]); err != nil {
-			return 0, 0, nil
-		}
+	if sts == nil {
 		return 0, lwsReplicas, nil
 	}
 
@@ -248,11 +248,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// Case 2:
 	// Indicates a new rolling update here.
-	hasTemplateUdated, err := templateUpdated(ctx, r.Client, sts, lws)
-	if err != nil {
-		return 0, 0, err
-	}
-	if hasTemplateUdated {
+	if leaderWorkerSetUpdated {
 		// Processing scaling up/down first prior to rolling update.
 		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
 	}
@@ -297,29 +293,10 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), wantReplicas(lwsUnreadyReplicas), nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32) error {
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, templateHash string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	// templateHash is not a reliable way to determine whether or not an lws object has been updated as seen in
-	// https://github.com/kubernetes-sigs/lws/issues/281
-	// If a leader sts already exists, but the template has not been updated, the templateHash of the leader is
-	// used to keep consistency in cases where two different templateHashes are calculated from the same LWS object
-	stsExists, sts, err := stsCreated(ctx, r.Client, lws)
-	if err != nil {
-		return err
-	}
-	templateHash := utils.LeaderWorkerTemplateHash(lws)
-	if stsExists {
-		templateUpdated, err := templateUpdated(ctx, r.Client, sts, lws)
-		if err != nil {
-			return err
-		}
-		if !templateUpdated {
-			templateHash = sts.Labels[leaderworkerset.TemplateRevisionHashKey]
-		}
-	}
-
-	if err = controllerutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, templateHash); err != nil {
+	if err := revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, templateHash); err != nil {
 		log.Error(err, "Creating LWS Revision")
 		return err
 	}
@@ -359,7 +336,7 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 }
 
 // updates the condition of the leaderworkerset to either Progressing or Available.
-func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
@@ -373,7 +350,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount, updatedCount, updatedNonBurstWorkerCount, currentNonBurstWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
-	templateHash := utils.LeaderWorkerTemplateHash(lws)
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 
 	// Iterate through all leaderPods.
@@ -434,7 +410,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		controllerutils.TruncateHistory(ctx, r.Client, lws, templateHash)
+		revisionutils.TruncateHistory(ctx, r.Client, lws, templateHash)
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
@@ -448,7 +424,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 }
 
 // Updates status and condition of LeaderWorkerSet and returns whether or not an update actually occurred.
-func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
 	updateStatus := false
 	log := ctrl.LoggerFrom(ctx)
 
@@ -484,7 +460,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	}
 
 	// check if an update is needed
-	updateConditions, err := r.updateConditions(ctx, lws)
+	updateConditions, err := r.updateConditions(ctx, lws, templateHash)
 	if err != nil {
 		return err
 	}
@@ -529,7 +505,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, stsList.Items, int(stsReplicas))
 
-	templateHash := utils.LeaderWorkerTemplateHash(lws)
+	templateHash := revisionutils.LeaderWorkerTemplateHash(lws)
 	// Once size==1, no worker statefulSets will be created.
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	processReplica := func(index int32) (ready bool) {
@@ -569,6 +545,70 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 	}
 
 	return continuousReadyReplicas, lwsUnreadyReplicas, nil
+}
+
+func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.StatefulSet, error) {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return sts, nil
+}
+
+// Creates a Controller Revision if the leader statefulset exists but no revisions have been created yet. This happens when updating from a version that doesn't
+// support controller revision
+func (r *LeaderWorkerSetReconciler) createControllerRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) error {
+
+	if sts == nil {
+		return nil
+	}
+
+	existingControllerRevisions, err := revisionutils.ExistingControllerRevisions(ctx, r.Client, lws)
+	if err != nil {
+		return err
+	}
+
+	if !existingControllerRevisions {
+		return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
+	}
+
+	return nil
+}
+
+func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+
+	if sts == nil {
+		return false, nil
+	}
+
+	controllerRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
+	if err != nil {
+		return false, err
+	}
+	baselineLws, err := revisionutils.ApplyRevision(lws, controllerRevision)
+	if err != nil {
+		return false, err
+	}
+	return !revisionutils.EqualLeaderWorkerTemplates(baselineLws, lws), nil
+}
+
+// templateHash is not a reliable way to determine whether or not an lws object has been updated as seen in https://github.com/kubernetes-sigs/lws/issues/281
+// If a leader sts already exists, but the template has not been updated, the templateHash of the leader is used to keep consistency in cases where two
+// different templateHashes are calculated from the same LWS object
+func getLeaderWorkerTemplateHash(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, leaderWorkerSetUpdated bool) string {
+
+	if sts != nil {
+		if !leaderWorkerSetUpdated {
+			return sts.Labels[leaderworkerset.TemplateRevisionHashKey]
+		}
+	}
+
+	return revisionutils.LeaderWorkerTemplateHash(lws)
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
@@ -720,32 +760,4 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	}
 
 	return false
-}
-
-func templateUpdated(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
-	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
-	ctx = ctrl.LoggerInto(ctx, log)
-	controllerRevision, err := controllerutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, k8sClient, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
-	if err != nil {
-		return false, err
-	}
-
-	baselineLws, err := controllerutils.ApplyRevision(lws, controllerRevision)
-	if err != nil {
-		return false, err
-	}
-	return !utils.EqualLeaderWorkerTemplates(baselineLws, lws), nil
-}
-
-func stsCreated(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) (bool, *appsv1.StatefulSet, error) {
-	sts := &appsv1.StatefulSet{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil, nil
-		}
-		return false, nil, err
-	}
-
-	return true, sts, nil
 }

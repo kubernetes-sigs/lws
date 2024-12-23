@@ -16,27 +16,24 @@ package testutils
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
-	"hash/fnv"
 	"strconv"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
@@ -137,7 +134,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(lws),
+					leaderworkerset.TemplateRevisionHashKey: leaderWorkerTemplateHash(lws),
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -166,7 +163,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 			return err
 		}
 
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		hash := leaderWorkerTemplateHash(lws)
 		labelSelector := client.MatchingLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey:         lws.Name,
 			leaderworkerset.TemplateRevisionHashKey: hash,
@@ -253,7 +250,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
 			return err
 		}
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		hash := leaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
 		return k8sClient.Update(ctx, &leaderPod)
@@ -544,33 +541,6 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func CreateControllerRevisionForHashCollision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
-	parentKind := appsv1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
-	controllerRevisionHashLabel := "controller.kubernetes.io/hash"
-	labels := lws.Labels
-	if lws.Labels == nil {
-		labels = make(map[string]string)
-	}
-	cr := &appsv1.ControllerRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:          labels,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, parentKind)},
-			Namespace:       lws.GetNamespace(),
-		},
-		// Data:     RawLWSTemplate(lws),
-		Revision: 1,
-	}
-	hash := hashControllerRevision(cr)
-	cr.Name = controllerRevisionName(lws.GetName(), hash)
-	cr.Labels[controllerRevisionHashLabel] = hash
-	// Change the lws that is used for the data, This creates a controller revision
-	// with same name but different contents, triggering a hash collision
-	modifiedLws := lws.DeepCopy()
-	modifiedLws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "hash-collision"
-	// cr.Data = RawLWSTemplate(modifiedLws)
-	gomega.Expect(k8sClient.Create(ctx, cr)).Should(gomega.Succeed())
-}
-
 func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	// in cases where size = 1, the workerstatefulset does not exist
 	gomega.Eventually(func() error {
@@ -585,31 +555,20 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func hashControllerRevision(revision *appsv1.ControllerRevision) string {
-	hf := fnv.New32()
-	if len(revision.Data.Raw) > 0 {
-		hf.Write(revision.Data.Raw)
-	}
-	if revision.Data.Object != nil {
-		deepHashObject(hf, revision.Data.Object)
-	}
-	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
+// sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
+func sha1Hash(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
-func controllerRevisionName(prefix string, hash string) string {
-	return fmt.Sprintf("%s-%s", prefix, hash)
-}
+// added to avoid import cycle between testutils, pkg/history, and pkg/utils/revision
+func leaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
+	if lws.Spec.NetworkConfig == nil || string(*lws.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared) {
+		return sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
+	}
 
-func deepHashObject(hasher hash.Hash, objectToWrite interface{}) {
-	hasher.Reset()
-	printer := spew.ConfigState{
-		Indent:         " ",
-		SortKeys:       true,
-		DisableMethods: true,
-		SpewKeys:       true,
-	}
-	_, err := printer.Fprintf(hasher, "%#v", objectToWrite)
-	if err != nil {
-		return
-	}
+	return sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(*lws.Spec.NetworkConfig.SubdomainPolicy))
 }

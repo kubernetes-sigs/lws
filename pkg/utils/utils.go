@@ -47,31 +47,6 @@ func NonZeroValue(value int32) int32 {
 	return value
 }
 
-func EqualLeaderWorkerTemplates(lhs *leaderworkerset.LeaderWorkerSet, rhs *leaderworkerset.LeaderWorkerSet) bool {
-	if !reflect.DeepEqual(lhs.Spec.LeaderWorkerTemplate, rhs.Spec.LeaderWorkerTemplate) {
-		return false
-	}
-	if (lhs.Spec.NetworkConfig == nil || string(*lhs.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared)) && (rhs.Spec.NetworkConfig == nil || string(*rhs.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared)) {
-		return true
-	}
-
-	if lhs.Spec.NetworkConfig == nil || rhs.Spec.NetworkConfig == nil {
-		return false
-	}
-
-	return string(*lhs.Spec.NetworkConfig.SubdomainPolicy) == string(*rhs.Spec.NetworkConfig.SubdomainPolicy)
-}
-
-func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
-	if lws.Spec.NetworkConfig == nil || string(*lws.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared) {
-		return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
-			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
-	}
-
-	return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(*lws.Spec.NetworkConfig.SubdomainPolicy))
-}
-
 // SortByIndex returns an ascending list, the length of the list is always specified by the parameter.
 func SortByIndex[T appsv1.StatefulSet | corev1.Pod | int](indexFunc func(T) (int, error), items []T, length int) []T {
 	result := make([]T, length)

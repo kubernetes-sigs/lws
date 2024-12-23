@@ -30,15 +30,16 @@ import (
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
+
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
-	hash1 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+	hash1 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
-	hash2 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+	hash2 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
 
 	tests := []struct {

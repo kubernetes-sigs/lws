@@ -23,30 +23,39 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/history"
-	"sigs.k8s.io/lws/pkg/utils"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	parentKind := appsv1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
 	lws := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Size(1).Obj()
-	updateTemplateHash := utils.LeaderWorkerTemplateHash(lws)
-	updateRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1)
+	updateTemplateHash := revisionutils.LeaderWorkerTemplateHash(lws)
+	patch, err := revisionutils.GetPatch(lws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, runtime.RawExtension{Raw: patch}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "worker"
-	currentRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 2)
+	patch, err = revisionutils.GetPatch(lws)
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentTemplateHash := utils.LeaderWorkerTemplateHash(lws)
+	currentRevision, err := history.NewControllerRevision(lws, parentKind, lws.Labels, runtime.RawExtension{Raw: patch}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTemplateHash := revisionutils.LeaderWorkerTemplateHash(lws)
 
 	tests := []struct {
 		name                  string

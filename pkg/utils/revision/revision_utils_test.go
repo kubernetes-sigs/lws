@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package revision
 
 import (
 	"testing"
@@ -28,7 +28,7 @@ import (
 func TestApplyRevision(t *testing.T) {
 
 	lws := testutils.BuildLeaderWorkerSet("default").Obj()
-	revision, err := NewRevision(lws, 1, "")
+	revision, err := NewRevision(lws, 1, LeaderWorkerTemplateHash(lws))
 	currentLws := lws.DeepCopy()
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestApplyRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoredRevision, err := NewRevision(restoredLws, 2, "")
+	restoredRevision, err := NewRevision(restoredLws, 2, LeaderWorkerTemplateHash(restoredLws))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestApplyRevision(t *testing.T) {
 		t.Errorf("unexpected restored LeaderWorkerTemplate: %s", diff)
 	}
 
-	if diff := cmp.Diff(currentLws, restoredLws); diff != "" {
-		t.Errorf("LWS Spec fields should not be restored")
+	if diff := cmp.Diff(currentLws.Spec.NetworkConfig, restoredLws.Spec.NetworkConfig); diff != "" {
+		t.Errorf("NetworkConfig should be restored %s", diff)
 	}
 }

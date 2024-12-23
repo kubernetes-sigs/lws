@@ -15,16 +15,12 @@ limitations under the License.
 package testutils
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -294,6 +290,7 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 	}
 }
 
+/*
 func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
 	clone := lws.DeepCopy()
 	str := &bytes.Buffer{}
@@ -314,3 +311,4 @@ func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
 	}
 	return runtime.RawExtension{Raw: patch}
 }
+*/

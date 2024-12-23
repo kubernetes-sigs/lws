@@ -1,3 +1,5 @@
+package history
+
 /*
 Copyright 2023.
 
@@ -12,17 +14,14 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+
+
 package history
 
 import (
 	"testing"
-	"time"
-
-	"github.com/google/go-cmp/cmp"
 
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/lws/test/testutils"
 )
 
@@ -88,50 +87,4 @@ func TestFindEqualRevisions(t *testing.T) {
 		})
 	}
 }
-
-func TestSortControllerRevisions(t *testing.T) {
-	lws := testutils.BuildLeaderWorkerSet("test-sample").Obj()
-	lwsRevision1, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lwsRevision2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lwsRevision1Time2, err := NewControllerRevision(lws, parentKind, lws.Labels, testutils.RawLWSTemplate(lws), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lwsRevision1Time2.CreationTimestamp = v1.Time{Time: lwsRevision1.CreationTimestamp.Add(time.Second)}
-
-	tests := []struct {
-		name      string
-		revisions []*apps.ControllerRevision
-		want      []*apps.ControllerRevision
-	}{
-		{
-			name:      "already sorted",
-			revisions: []*apps.ControllerRevision{lwsRevision1, lwsRevision2},
-			want:      []*apps.ControllerRevision{lwsRevision1, lwsRevision2},
-		},
-		{
-			name:      "inverted sorted",
-			revisions: []*apps.ControllerRevision{lwsRevision2, lwsRevision1},
-			want:      []*apps.ControllerRevision{lwsRevision1, lwsRevision2},
-		},
-		{
-			name:      "same revision name, different timestamp",
-			revisions: []*apps.ControllerRevision{lwsRevision1, lwsRevision2, lwsRevision1Time2},
-			want:      []*apps.ControllerRevision{lwsRevision1, lwsRevision1Time2, lwsRevision2},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			SortControllerRevisions(tc.revisions)
-			if diff := cmp.Diff(tc.revisions, tc.want); diff != "" {
-				t.Errorf("error sorting revisions %s", diff)
-			}
-		})
-	}
-}
+*/

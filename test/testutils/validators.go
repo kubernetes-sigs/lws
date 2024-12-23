@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -150,7 +149,7 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return fmt.Errorf("leader statefulset pod template misses leaderworkerset label")
 		}
-		hash := utils.LeaderWorkerTemplateHash(&lws)
+		hash := leaderWorkerTemplateHash(&lws)
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
 			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
 		}
@@ -182,7 +181,7 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
 			leaderworkerset.SetNameLabelKey:         lws.Name,
 			leaderworkerset.WorkerIndexLabelKey:     "0",
-			leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(&lws),
+			leaderworkerset.TemplateRevisionHashKey: leaderWorkerTemplateHash(&lws),
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}
@@ -271,7 +270,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
-			hash := utils.LeaderWorkerTemplateHash(&lws)
+			hash := leaderWorkerTemplateHash(&lws)
 			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
 				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
 			}

@@ -28,9 +28,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -174,7 +174,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 }
 
 func genGroupUniqueKey(ns string, podName string) string {
-	return utils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
+	return revisionutils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
