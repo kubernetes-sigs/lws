@@ -20,13 +20,10 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"os"
-	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
