@@ -74,18 +74,20 @@ func ExistingControllerRevisions(ctx context.Context, k8sClient client.Client, l
 
 // getPatch returns a strategic merge patch that can be applied to restore a LeaderWorkerSet to a
 // previous version. If the returned error is nil the patch is valid. The current state that we save is the
-// leaderWorkerTemplate. We can modify this later to encompass more state (or less) and remain compatible with previously
-// recorded patches.
+// leaderWorkerTemplate and NetworkConfig. We can modify this later to encompass more state (or less) and
+// remain compatible with previously recorded patches.
 
 func GetPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	str := &bytes.Buffer{}
 	clone := lws.DeepCopy()
 	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
-	if err != nil {
+	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
 		return nil, err
 	}
 	var raw map[string]interface{}
-	err = json.Unmarshal(str.Bytes(), &raw)
+	if err = json.Unmarshal(str.Bytes(), &raw); err != nil {
+		return nil, err
+	}
 	objCopy := make(map[string]interface{})
 	specCopy := make(map[string]interface{})
 	spec := raw["spec"].(map[string]interface{})
@@ -93,9 +95,6 @@ func GetPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	specCopy["leaderWorkerTemplate"] = spec["leaderWorkerTemplate"].(map[string]interface{})
 	specCopy["$patch"] = "replace"
 	objCopy["spec"] = specCopy
-	if err != nil {
-		return nil, err
-	}
 	return json.Marshal(objCopy)
 }
 
@@ -169,8 +168,7 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 		return nil, err
 	}
 	restoredLws := &leaderworkerset.LeaderWorkerSet{}
-	err = json.Unmarshal(patched, restoredLws)
-	if err != nil {
+	if err = json.Unmarshal(patched, restoredLws); err != nil {
 		return nil, err
 	}
 	return restoredLws, nil

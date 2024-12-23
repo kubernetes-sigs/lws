@@ -410,7 +410,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		revisionutils.TruncateHistory(ctx, r.Client, lws, templateHash)
+		if err := revisionutils.TruncateHistory(ctx, r.Client, lws, templateHash); err != nil {
+			return false, err
+		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
