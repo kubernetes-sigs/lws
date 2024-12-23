@@ -30,24 +30,27 @@ import (
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
+
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
-	hash1 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+	hash1 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
-	hash2 := utils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+	hash2 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
 
 	tests := []struct {
 		name            string
+		templateHash    string
 		lws             *leaderworkerset.LeaderWorkerSet
 		wantApplyConfig *appsapplyv1.StatefulSetApplyConfiguration
 	}{
 		{
-			name: "1 replica, size 1, with empty leader template, exclusive placement disabled",
+			name:         "1 replica, size 1, with empty leader template, exclusive placement disabled",
+			templateHash: hash2,
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -112,7 +115,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "1 replica, size 2 , with empty leader template, exclusive placement enabled",
+			name:         "1 replica, size 2 , with empty leader template, exclusive placement enabled",
+			templateHash: hash2,
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Annotation(map[string]string{
 					"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
@@ -180,7 +184,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "2 replica, size 2, with leader template, exclusive placement enabled",
+			name:         "2 replica, size 2, with leader template, exclusive placement enabled",
+			templateHash: hash1,
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 			}).Replica(2).
@@ -247,7 +252,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "2 maxUnavailable, 1 maxSurge, with empty leader template, exclusive placement disabled",
+			name:         "2 maxUnavailable, 1 maxSurge, with empty leader template, exclusive placement disabled",
+			templateHash: hash2,
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -313,7 +319,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "1 replica, size 2, with leader template, exclusive placement enabled, subgroupsize enabled",
+			name:         "1 replica, size 2, with leader template, exclusive placement enabled, subgroupsize enabled",
+			templateHash: hash1,
 			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 			}).SubGroupSize(2).Replica(1).
@@ -383,7 +390,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0, *tc.lws.Spec.Replicas)
+			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0, *tc.lws.Spec.Replicas, tc.templateHash)
 			if err != nil {
 				t.Errorf("failed with error: %s", err.Error())
 			}

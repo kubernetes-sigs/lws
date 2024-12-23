@@ -16,6 +16,8 @@ package testutils
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -32,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
@@ -133,7 +134,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(lws),
+					leaderworkerset.TemplateRevisionHashKey: leaderWorkerTemplateHash(lws),
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -162,7 +163,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 			return err
 		}
 
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		hash := leaderWorkerTemplateHash(lws)
 		labelSelector := client.MatchingLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey:         lws.Name,
 			leaderworkerset.TemplateRevisionHashKey: hash,
@@ -173,7 +174,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		}
 
 		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
-			return errors.New("pod number not right")
+			return fmt.Errorf("expected %d pods, got %d", (int((*lws.Spec.Replicas) * (*lws.Spec.LeaderWorkerTemplate.Size))), len(podList.Items))
 		}
 
 		var leaderTemplateSpec corev1.PodTemplateSpec
@@ -249,7 +250,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
 			return err
 		}
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		hash := leaderWorkerTemplateHash(lws)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
 		return k8sClient.Update(ctx, &leaderPod)
@@ -552,4 +553,22 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 		}
 		return k8sClient.Delete(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
+func sha1Hash(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// added to avoid import cycle between testutils, pkg/history, and pkg/utils/revision
+func leaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
+	if lws.Spec.NetworkConfig == nil || string(*lws.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared) {
+		return sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
+	}
+
+	return sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(*lws.Spec.NetworkConfig.SubdomainPolicy))
 }

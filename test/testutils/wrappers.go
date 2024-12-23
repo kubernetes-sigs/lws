@@ -154,6 +154,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+
 	return &LeaderWorkerSetWrapper{
 		lws,
 	}
@@ -288,3 +289,26 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 		Subdomain: "default",
 	}
 }
+
+/*
+func RawLWSTemplate(lws *leaderworkerset.LeaderWorkerSet) runtime.RawExtension {
+	clone := lws.DeepCopy()
+	str := &bytes.Buffer{}
+	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
+	if err != nil {
+		panic(err)
+	}
+	var raw map[string]interface{}
+	err = json.Unmarshal(str.Bytes(), &raw)
+	objCopy := make(map[string]interface{})
+	spec := raw["spec"].(map[string]interface{})
+	specCopy := spec
+	specCopy["$patch"] = "replace"
+	objCopy["spec"] = spec
+	patch, err := json.Marshal(objCopy)
+	if err != nil {
+		panic(err)
+	}
+	return runtime.RawExtension{Raw: patch}
+}
+*/

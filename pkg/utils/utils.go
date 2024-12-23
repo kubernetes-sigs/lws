@@ -24,8 +24,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
@@ -44,16 +42,6 @@ func NonZeroValue(value int32) int32 {
 		return 0
 	}
 	return value
-}
-
-func LeaderWorkerTemplateHash(lws *leaderworkerset.LeaderWorkerSet) string {
-	if lws.Spec.NetworkConfig == nil || string(*lws.Spec.NetworkConfig.SubdomainPolicy) == string(leaderworkerset.SubdomainShared) {
-		return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
-			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String())
-	}
-
-	return Sha1Hash(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.String() +
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.String() + string(*lws.Spec.NetworkConfig.SubdomainPolicy))
 }
 
 // SortByIndex returns an ascending list, the length of the list is always specified by the parameter.
