@@ -29,10 +29,10 @@ func TestApplyRevision(t *testing.T) {
 
 	lws := testutils.BuildLeaderWorkerSet("default").Obj()
 	revision, err := NewRevision(lws, 1, LeaderWorkerTemplateHash(lws))
-	currentLws := lws.DeepCopy()
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentLws := lws.DeepCopy()
 
 	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Name = "update-name"
 	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica

@@ -80,12 +80,11 @@ func ExistingControllerRevisions(ctx context.Context, k8sClient client.Client, l
 func GetPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	str := &bytes.Buffer{}
 	clone := lws.DeepCopy()
-	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
 	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
 		return nil, err
 	}
 	var raw map[string]interface{}
-	if err = json.Unmarshal(str.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(str.Bytes(), &raw); err != nil {
 		return nil, err
 	}
 	objCopy := make(map[string]interface{})
