@@ -20,15 +20,16 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/history"
-	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestApplyRevision(t *testing.T) {
 
-	lws := testutils.BuildLeaderWorkerSet("default").Obj()
-	revision, err := NewRevision(lws, 1, LeaderWorkerTemplateHash(lws))
+	lws := BuildLeaderWorkerSet("default")
+	revision, err := NewRevision(lws, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,12 +45,12 @@ func TestApplyRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoredRevision, err := NewRevision(restoredLws, 2, LeaderWorkerTemplateHash(restoredLws))
+	restoredRevision, err := NewRevision(restoredLws, 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !history.EqualRevision(revision, restoredRevision) {
+	if !EqualRevision(revision, restoredRevision) {
 		t.Errorf("expected value %v, got %v", revision, restoredRevision)
 	}
 
@@ -59,5 +60,61 @@ func TestApplyRevision(t *testing.T) {
 
 	if diff := cmp.Diff(currentLws.Spec.NetworkConfig, restoredLws.Spec.NetworkConfig); diff != "" {
 		t.Errorf("NetworkConfig should be restored %s", diff)
+	}
+}
+
+func BuildLeaderWorkerSet(nsName string) *leaderworkerset.LeaderWorkerSet {
+	lws := leaderworkerset.LeaderWorkerSet{}
+	lws.Name = "test-sample"
+	lws.Namespace = nsName
+	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
+	lws.Spec.Replicas = ptr.To[int32](2)
+	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.RecreateGroupOnPodRestart}
+	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
+	// Manually set this for we didn't enable webhook in controller tests.
+	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
+		Type: leaderworkerset.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromInt32(1),
+			MaxSurge:       intstr.FromInt(0),
+		},
+	}
+	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+	subdomainPolicy := leaderworkerset.SubdomainShared
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+		SubdomainPolicy: &subdomainPolicy,
+	}
+
+	return &lws
+}
+
+func MakeLeaderPodSpec() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "worker",
+				Image: "nginx:1.14.2",
+			},
+		},
+	}
+}
+
+func MakeWorkerPodSpec() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
 	}
 }

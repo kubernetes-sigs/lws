@@ -119,12 +119,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-	currentRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
+	revision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
 		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
 	}
-	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, currentRevision)
+	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -184,6 +184,9 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			return false, err
+		}
+		if leader.Labels[leaderworkerset.TemplateRevisionHashKey] != pod.Labels[leaderworkerset.TemplateRevisionHashKey] {
+			return false, nil
 		}
 	} else {
 		leader = pod

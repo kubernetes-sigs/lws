@@ -332,4 +332,31 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
 	})
+	ginkgo.It("Rolling update with restart policy RecreateGroupOnPodRestart only restarts the leader once", func() {
+		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).MaxSurge(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		initialLeaderPod := &corev1.Pod{}
+		testing.GetLeaderPod(ctx, lws, k8sClient, initialLeaderPod)
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		// Happens during update
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 3)
+		midUpdateLeaderPod := &corev1.Pod{}
+		testing.GetLeaderPod(ctx, lws, k8sClient, midUpdateLeaderPod)
+
+		gomega.Eventually(func() (bool, error) {
+			return initialLeaderPod.UID == midUpdateLeaderPod.UID, nil
+		}, timeout, interval).Should(gomega.Equal(false))
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		finalLeaderPod := &corev1.Pod{}
+		testing.GetLeaderPod(ctx, lws, k8sClient, finalLeaderPod)
+
+		gomega.Eventually(func() (bool, error) {
+			return finalLeaderPod.UID == midUpdateLeaderPod.UID, nil
+		}, timeout, interval).Should(gomega.Equal(true))
+	})
 })

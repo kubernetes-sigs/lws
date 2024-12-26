@@ -106,25 +106,25 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if err := r.createControllerRevisionIfNonExist(ctx, leaderSts, lws); err != nil {
+	revision, err := r.createControllerRevisionIfNonExist(ctx, leaderSts, lws)
+	if err != nil {
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
 
-	lwsUpdated, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws)
+	lwsUpdated, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
 	}
 
-	templateHash := getLeaderWorkerTemplateHash(leaderSts, lws, lwsUpdated)
-	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, lwsUpdated)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revision, lwsUpdated)
 	if err != nil {
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, templateHash); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revision.Labels[leaderworkerset.TemplateRevisionHashKey]); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -136,7 +136,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	err = r.updateStatus(ctx, lws, templateHash)
+	err = r.updateStatus(ctx, lws, revision.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -212,7 +212,7 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //   - Otherwise, Replicas is equal to spec.Replicas
 //   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, leaderWorkerSetUpdated bool) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revision *appsv1.ControllerRevision, leaderWorkerSetUpdated bool) (int32, int32, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 	lwsReplicas := *lws.Spec.Replicas
@@ -261,7 +261,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return 0, lwsReplicas, nil
 	}
 
-	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas)
+	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas, revision)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -295,11 +295,6 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, templateHash string) error {
 	log := ctrl.LoggerFrom(ctx)
-
-	if err := revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, templateHash); err != nil {
-		log.Error(err, "Creating LWS Revision")
-		return err
-	}
 
 	// construct the statefulset apply configuration
 	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas, templateHash)
@@ -480,7 +475,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 //   - The first value represents the number of continuous ready replicas ranging from the last index to 0,
 //     to help us judge whether we can update the Partition or not.
 //   - The second value represents the unready replicas whose index is smaller than leaderWorkerSet Replicas.
-func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, revision *appsv1.ControllerRevision) (int32, int32, error) {
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.WorkerIndexLabelKey: "0",
@@ -507,7 +502,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, stsList.Items, int(stsReplicas))
 
-	templateHash := revisionutils.LeaderWorkerTemplateHash(lws)
+	templateHash := revision.Labels[leaderworkerset.TemplateRevisionHashKey]
 	// Once size==1, no worker statefulSets will be created.
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	processReplica := func(index int32) (ready bool) {
@@ -562,55 +557,37 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 	return sts, nil
 }
 
-// Creates a Controller Revision if the leader statefulset exists but no revisions have been created yet. This happens when updating from a version that doesn't
-// support controller revision
-func (r *LeaderWorkerSetReconciler) createControllerRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) error {
-
+func (r *LeaderWorkerSetReconciler) createControllerRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
 	if sts == nil {
-		return nil
+		return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, "")
 	}
 
-	existingControllerRevisions, err := revisionutils.ExistingControllerRevisions(ctx, r.Client, lws)
+	stsRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if !existingControllerRevisions {
+	if stsRevision == nil {
 		return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
 	}
 
-	return nil
+	return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, "")
 }
 
-func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
-
+func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (bool, error) {
 	if sts == nil {
 		return false, nil
 	}
 
-	controllerRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
+	stsRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
 		return false, err
 	}
-	baselineLws, err := revisionutils.ApplyRevision(lws, controllerRevision)
-	if err != nil {
-		return false, err
-	}
-	return !revisionutils.EqualLeaderWorkerTemplates(baselineLws, lws), nil
-}
-
-// templateHash is not a reliable way to determine whether or not an lws object has been updated as seen in https://github.com/kubernetes-sigs/lws/issues/281
-// If a leader sts already exists, but the template has not been updated, the templateHash of the leader is used to keep consistency in cases where two
-// different templateHashes are calculated from the same LWS object
-func getLeaderWorkerTemplateHash(sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, leaderWorkerSetUpdated bool) string {
-
-	if sts != nil {
-		if !leaderWorkerSetUpdated {
-			return sts.Labels[leaderworkerset.TemplateRevisionHashKey]
-		}
+	if stsRevision == nil {
+		return false, fmt.Errorf("did not find a revision for the existing leader sts")
 	}
 
-	return revisionutils.LeaderWorkerTemplateHash(lws)
+	return !revisionutils.EqualRevision(stsRevision, revision), nil
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet

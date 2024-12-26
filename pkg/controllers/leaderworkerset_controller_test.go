@@ -23,6 +23,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
@@ -36,11 +37,24 @@ import (
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
-	hash1 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+	parentKind := appsv1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
+	lws1 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
-		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
-	hash2 := revisionutils.LeaderWorkerTemplateHash(testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
-		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj())
+		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
+	patch, err := revisionutils.GetPatch(lws1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr1 := revisionutils.NewControllerRevision(lws1, parentKind, lws1.Labels, runtime.RawExtension{Raw: patch}, 1)
+	hash1 := cr1.Labels[leaderworkerset.TemplateRevisionHashKey]
+	lws2 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
+	patch, err = revisionutils.GetPatch(lws2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr2 := revisionutils.NewControllerRevision(lws2, parentKind, lws2.Labels, runtime.RawExtension{Raw: patch}, 1)
+	hash2 := cr2.Labels[leaderworkerset.TemplateRevisionHashKey]
 
 	tests := []struct {
 		name            string
