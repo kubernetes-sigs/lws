@@ -28,7 +28,7 @@ import (
 // Functions in this package are adapted from https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/statefulset/ and
 // https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/history/controller_history.go
 
-// EqualRevision returns true if lhs and rhs are either both nil, if the templateRevisionHash is the same,
+// EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
 // or if they are semantically equivalent.
 func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
 	if lhs == nil || rhs == nil {
@@ -64,14 +64,16 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 	return owned, err
 }
 
-func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
+// GetRevision returns the controllerRevision that matches the revisionKey that is passed. A nil controllerRevision will be returned if the passed revisionKey is nil,
+// or if no controllerRevisions match the revisionKey passed. If more than one controllerRevision matches, the latest revision will be passed.
+func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsv1.ControllerRevision, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
-	if templateHash == "" {
+	if revisionKey == "" {
 		return nil, nil
 	}
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
-		leaderworkerset.RevisionKey: templateHash,
+		leaderworkerset.RevisionKey: revisionKey,
 	}})
 	if err != nil {
 		return nil, err
@@ -116,11 +118,11 @@ func CreateRevision(
 	return created, nil
 }
 
-// newRevision instantiates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
+// NewRevision instantiates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
 // The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
 // ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
 // to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
-func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
+func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsv1.ControllerRevision, error) {
 	var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
@@ -139,7 +141,7 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 	}
 
 	templateLabels := map[string]string{
-		leaderworkerset.RevisionKey:     templateHash,
+		leaderworkerset.RevisionKey:     revisionKey,
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}
 
@@ -182,8 +184,8 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 }
 
 // TruncateRevisions cleans up all other controller revisions except the currentRevision.
-// currentRevision is the one that matches the templateHash that is passed
-func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
+// currentRevision is the one that matches the revisionKey that is passed
+func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}})
@@ -196,7 +198,7 @@ func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leader
 	}
 
 	for i, revision := range revisions {
-		if revision.Labels[leaderworkerset.RevisionKey] != templateHash {
+		if revision.Labels[leaderworkerset.RevisionKey] != revisionKey {
 			if err := k8sClient.Delete(ctx, revisions[i]); err != nil {
 				return err
 			}
@@ -244,8 +246,7 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 }
 
 // nextRevision finds the next valid revision number based on revisions. If the length of revisions
-// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision. This method
-// assumes that revisions has been sorted by Revision.
+// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision.
 func nextRevision(revisions []*appsv1.ControllerRevision) int64 {
 	count := len(revisions)
 	if count <= 0 {
@@ -261,8 +262,8 @@ func nextRevision(revisions []*appsv1.ControllerRevision) int64 {
 	return max + 1
 }
 
-// RevisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length
-// of prefix is greater than 223 bytes, it is truncated to allow for a name that is no larger than 253 bytes.
+// revisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length
+// of prefix is greater than 220 bytes, it is truncated to allow for a name that is no larger than 253 bytes.
 // revision-number allows us to avoid collisions if the created prefix-hash already exists in the history, since revision
 // will be unique.
 func revisionName(prefix string, hash string, revisionNumber int64) string {
@@ -273,7 +274,7 @@ func revisionName(prefix string, hash string, revisionNumber int64) string {
 	return fmt.Sprintf("%s-%s-%v", prefix, hash, revisionNumber)
 }
 
-// HashRevision hashes the contents of revision's Data using FNV hashing.
+// hashRevision hashes the contents of revision's Data using FNV hashing.
 // The returned hash will be a safe encoded string to avoid bad words.
 func hashRevision(revision *appsv1.ControllerRevision) string {
 	hf := fnv.New32()
