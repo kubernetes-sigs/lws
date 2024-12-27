@@ -28,47 +28,21 @@ import (
 // Functions in this package are adapted from https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/statefulset/ and
 // https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/history/controller_history.go
 
-// ControllerRevisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length
-// of prefix is greater than 223 bytes, it is truncated to allow for a name that is no larger than 253 bytes.
-// revision-number allows us to avoid collisions if the created prefix-hash already exists in the history, since revision
-// will be unique.
-func RevisionName(prefix string, hash string, revisionNumber int64) string {
-	if len(prefix) > 223 {
-		prefix = prefix[:223]
-	}
-
-	return fmt.Sprintf("%s-%s-%v", prefix, hash, revisionNumber)
-}
-
-// HashControllerRevision hashes the contents of revision's Data using FNV hashing.
-// The returned hash will be a safe encoded string to avoid bad words.
-func HashRevision(revision *appsv1.ControllerRevision) string {
-	hf := fnv.New32()
-	if len(revision.Data.Raw) > 0 {
-		hf.Write(revision.Data.Raw)
-	}
-	if revision.Data.Object != nil {
-		DeepHashObject(hf, revision.Data.Object)
-	}
-	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
-}
-
 // EqualRevision returns true if lhs and rhs are either both nil, if the templateRevisionHash is the same,
 // or if they are semantically equivalent.
 func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
-
 	if lhs == nil || rhs == nil {
 		return lhs == rhs
 	}
 
-	if lhs.Labels[leaderworkerset.TemplateRevisionHashKey] == rhs.Labels[leaderworkerset.TemplateRevisionHashKey] {
+	if GetRevisionKey(lhs) == GetRevisionKey(rhs) {
 		return true
 	}
 
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
 }
 
-// ListControllerRevisions lists all ControllerRevisions matching selector and owned by parent or no other
+// ListRevisions lists all ControllerRevisions matching selector and owned by parent or no other
 // controller. If the returned error is nil the returned slice of ControllerRevisions is valid. If the
 // returned error is not nil, the returned slice is not valid.
 func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
@@ -90,20 +64,6 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 	return owned, err
 }
 
-func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
-	hasher.Reset()
-	printer := spew.ConfigState{
-		Indent:         " ",
-		SortKeys:       true,
-		DisableMethods: true,
-		SpewKeys:       true,
-	}
-	_, err := printer.Fprintf(hasher, "%#v", objectToWrite)
-	if err != nil {
-		return
-	}
-}
-
 func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
@@ -111,7 +71,7 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 		return nil, nil
 	}
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
-		leaderworkerset.TemplateRevisionHashKey: templateHash,
+		leaderworkerset.RevisionKey: templateHash,
 	}})
 	if err != nil {
 		return nil, err
@@ -135,59 +95,22 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 	return revisions[0], nil
 }
 
-// GetPatch returns a strategic merge patch that can be applied to restore a LeaderWorkerSet to a
-// previous version. If the returned error is nil the patch is valid. The current state that we save is the
-// leaderWorkerTemplate and NetworkConfig. We can modify this later to encompass more state (or less) and
-// remain compatible with previously recorded patches.
-func GetPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
-	str := &bytes.Buffer{}
-	clone := lws.DeepCopy()
-	// When upgrading from an LWS version that doesn't contain NetworkConfig, NetworkConfig will be nil
-	// until another field in the LWS object is changed triggering the LWS webhook. This allows the revision
-	// to be the same before and after the LWS webhook actually defaults the value.
-	if clone.Spec.NetworkConfig == nil {
-		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
-		subdomainPolicy := leaderworkerset.SubdomainShared
-		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-			SubdomainPolicy: &subdomainPolicy,
-		}
+func GetRevisionKey(obj metav1.Object) string {
+	if obj.GetLabels() != nil {
+		return obj.GetLabels()[leaderworkerset.RevisionKey]
 	}
-
-	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
-		return nil, err
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(str.Bytes(), &raw); err != nil {
-		return nil, err
-	}
-	objCopy := make(map[string]interface{})
-	specCopy := make(map[string]interface{})
-	spec := raw["spec"].(map[string]interface{})
-	specCopy["networkConfig"] = spec["networkConfig"]
-	specCopy["leaderWorkerTemplate"] = spec["leaderWorkerTemplate"].(map[string]interface{})
-	specCopy["$patch"] = "replace"
-	objCopy["spec"] = specCopy
-	return json.Marshal(objCopy)
+	return ""
 }
 
 func CreateRevision(
 	ctx context.Context,
 	k8sClient client.Client,
-	lws *leaderworkerset.LeaderWorkerSet,
-	templateHash string) (*appsv1.ControllerRevision, error) {
-	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
-	ctx = ctrl.LoggerInto(ctx, log)
-
-	revision, err := NewRevision(ctx, k8sClient, lws, templateHash)
-	if err != nil {
-		return nil, err
-	}
+	revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	if err := k8sClient.Create(ctx, revision); err != nil {
-		log.Error(err, "Creating new revision for lws")
 		return nil, err
 	}
 	created := &appsv1.ControllerRevision{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: revision.Name}, created); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: revision.Namespace, Name: revision.Name}, created); err != nil {
 		return nil, err
 	}
 	return created, nil
@@ -206,18 +129,18 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 		return nil, err
 	}
 	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
-	revision := NextRevision(revisions)
+	revision := nextRevision(revisions)
 	if err != nil {
 		return nil, err
 	}
-	patch, err := GetPatch(lws)
+	patch, err := getPatch(lws)
 	if err != nil {
 		return nil, err
 	}
 
 	templateLabels := map[string]string{
-		leaderworkerset.TemplateRevisionHashKey: templateHash,
-		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.RevisionKey:     templateHash,
+		leaderworkerset.SetNameLabelKey: lws.Name,
 	}
 
 	cr := &appsv1.ControllerRevision{
@@ -230,10 +153,10 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 		Revision: revision,
 	}
 
-	hash := HashRevision(cr)
-	cr.Name = RevisionName(lws.Name, hash, revision)
-	if cr.Labels[leaderworkerset.TemplateRevisionHashKey] == "" {
-		cr.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+	hash := hashRevision(cr)
+	cr.Name = revisionName(lws.Name, hash, revision)
+	if cr.Labels[leaderworkerset.RevisionKey] == "" {
+		cr.Labels[leaderworkerset.RevisionKey] = hash
 	}
 	return cr, nil
 }
@@ -258,24 +181,6 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	return restoredLws, nil
 }
 
-// nextRevision finds the next valid revision number based on revisions. If the length of revisions
-// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision. This method
-// assumes that revisions has been sorted by Revision.
-func NextRevision(revisions []*appsv1.ControllerRevision) int64 {
-	count := len(revisions)
-	if count <= 0 {
-		return 1
-	}
-
-	max := int64(1)
-	for _, revision := range revisions {
-		if max < revision.Revision {
-			max = revision.Revision
-		}
-	}
-	return max + 1
-}
-
 // TruncateRevisions cleans up all other controller revisions except the currentRevision.
 // currentRevision is the one that matches the templateHash that is passed
 func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
@@ -291,11 +196,106 @@ func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leader
 	}
 
 	for i, revision := range revisions {
-		if revision.Labels[leaderworkerset.TemplateRevisionHashKey] != templateHash {
+		if revision.Labels[leaderworkerset.RevisionKey] != templateHash {
 			if err := k8sClient.Delete(ctx, revisions[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// getPatch returns a strategic merge patch that can be applied to restore a LeaderWorkerSet to a
+// previous version. If the returned error is nil the patch is valid. The current state that we save is the
+// leaderWorkerTemplate and NetworkConfig. We can modify this later to encompass more state (or less) and
+// remain compatible with previously recorded patches.
+func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
+	str := &bytes.Buffer{}
+	clone := lws.DeepCopy()
+	// When upgrading from an LWS version that doesn't contain NetworkConfig, NetworkConfig will be nil
+	// until another field in the LWS object is changed triggering the LWS webhook. This allows the revision
+	// to be the same before and after the LWS webhook actually defaults the value.
+	if clone.Spec.NetworkConfig == nil {
+		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
+		subdomainPolicy := leaderworkerset.SubdomainShared
+		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+			SubdomainPolicy: &subdomainPolicy,
+		}
+	}
+
+	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
+		return nil, err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(str.Bytes(), &raw); err != nil {
+		return nil, err
+	}
+	objCopy := make(map[string]interface{})
+	specCopy := make(map[string]interface{})
+	spec := raw["spec"].(map[string]interface{})
+	networkConfig := spec["networkConfig"].(map[string]interface{})
+	specCopy["networkConfig"] = networkConfig
+	template := spec["leaderWorkerTemplate"].(map[string]interface{})
+	specCopy["leaderWorkerTemplate"] = template
+	networkConfig["$patch"] = "replace"
+	template["$patch"] = "replace"
+	objCopy["spec"] = specCopy
+	return json.Marshal(objCopy)
+}
+
+// nextRevision finds the next valid revision number based on revisions. If the length of revisions
+// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision. This method
+// assumes that revisions has been sorted by Revision.
+func nextRevision(revisions []*appsv1.ControllerRevision) int64 {
+	count := len(revisions)
+	if count <= 0 {
+		return 1
+	}
+
+	max := int64(1)
+	for _, revision := range revisions {
+		if max < revision.Revision {
+			max = revision.Revision
+		}
+	}
+	return max + 1
+}
+
+// RevisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length
+// of prefix is greater than 223 bytes, it is truncated to allow for a name that is no larger than 253 bytes.
+// revision-number allows us to avoid collisions if the created prefix-hash already exists in the history, since revision
+// will be unique.
+func revisionName(prefix string, hash string, revisionNumber int64) string {
+	if len(prefix) > 220 {
+		prefix = prefix[:220]
+	}
+
+	return fmt.Sprintf("%s-%s-%v", prefix, hash, revisionNumber)
+}
+
+// HashRevision hashes the contents of revision's Data using FNV hashing.
+// The returned hash will be a safe encoded string to avoid bad words.
+func hashRevision(revision *appsv1.ControllerRevision) string {
+	hf := fnv.New32()
+	if len(revision.Data.Raw) > 0 {
+		hf.Write(revision.Data.Raw)
+	}
+	if revision.Data.Object != nil {
+		deepHashObject(hf, revision.Data.Object)
+	}
+	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
+}
+
+func deepHashObject(hasher hash.Hash, objectToWrite interface{}) {
+	hasher.Reset()
+	printer := spew.ConfigState{
+		Indent:         " ",
+		SortKeys:       true,
+		DisableMethods: true,
+		SpewKeys:       true,
+	}
+	_, err := printer.Fprintf(hasher, "%#v", objectToWrite)
+	if err != nil {
+		return
+	}
 }

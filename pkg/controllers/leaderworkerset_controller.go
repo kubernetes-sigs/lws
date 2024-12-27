@@ -101,39 +101,41 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	ctx = ctrl.LoggerInto(ctx, log)
 
 	leaderSts, err := r.getLeaderStatefulSet(ctx, lws)
-	log.V(2).Info(fmt.Sprintf("leader sts %v", leaderSts))
 	if err != nil {
 		log.Error(err, "Fetching leader statefulset")
 		return ctrl.Result{}, err
 	}
 
-	revision, err := r.createControllerRevisionIfNonExist(ctx, leaderSts, lws)
+	// Handles two cases:
+	// Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
+	// Case 2: Creating the controller revision for a newly created LWS object
+	revision, err := r.getOrCreateRevisionIfNonExist(ctx, leaderSts, lws)
 	if err != nil {
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
 
 	updatedRevision, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
-	lwsUpdated := updatedRevision != nil
-	if lwsUpdated {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, lws, updatedRevision.Labels[leaderworkerset.TemplateRevisionHashKey])
-		if err != nil {
-			log.Error(err, "Creating revisions for updated lws")
-			return ctrl.Result{}, err
-		}
-	}
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
 	}
+	lwsUpdated := updatedRevision != nil
+	if lwsUpdated {
+		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+		if err != nil {
+			log.Error(err, "Creating revision for updated LWS")
+			return ctrl.Result{}, err
+		}
+	}
 
-	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revision, lwsUpdated)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated)
 	if err != nil {
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revision.Labels[leaderworkerset.TemplateRevisionHashKey]); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -145,11 +147,16 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	err = r.updateStatus(ctx, lws, revision.Labels[leaderworkerset.TemplateRevisionHashKey])
+	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
+	if updateDone {
+		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	log.V(2).Info("Leader Reconcile completed.")
 	return ctrl.Result{}, nil
 }
@@ -221,7 +228,7 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //   - Otherwise, Replicas is equal to spec.Replicas
 //   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revision *appsv1.ControllerRevision, leaderWorkerSetUpdated bool) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, templateHash string, leaderWorkerSetUpdated bool) (int32, int32, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 	lwsReplicas := *lws.Spec.Replicas
@@ -270,7 +277,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return 0, lwsReplicas, nil
 	}
 
-	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas, revision)
+	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas, templateHash)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -340,7 +347,7 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 }
 
 // updates the condition of the leaderworkerset to either Progressing or Available.
-func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (bool, error) {
+func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (bool, bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
@@ -349,7 +356,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	leaderPodList := &corev1.PodList{}
 	if err := r.List(ctx, leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
 		log.Error(err, "Fetching leaderPods")
-		return false, err
+		return false, false, err
 	}
 
 	updateStatus := false
@@ -360,7 +367,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	for _, pod := range leaderPodList.Items {
 		index, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if index < int(*lws.Spec.Replicas) {
 			currentNonBurstWorkerCount++
@@ -370,7 +377,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if !noWorkerSts {
 			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: pod.Name}, &sts); err != nil {
 				log.Error(err, "Fetching worker statefulSet")
-				return false, err
+				return false, false, err
 			}
 		}
 
@@ -379,7 +386,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			ready = true
 			readyCount++
 		}
-		if (noWorkerSts || sts.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash) && pod.Labels[leaderworkerset.TemplateRevisionHashKey] == templateHash {
+		if (noWorkerSts || sts.Labels[leaderworkerset.RevisionKey] == templateHash) && pod.Labels[leaderworkerset.RevisionKey] == templateHash {
 			updated = true
 			updatedCount++
 			if index < int(*lws.Spec.Replicas) {
@@ -407,6 +414,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
+	updateDone := false
 	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
@@ -414,9 +422,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, templateHash); err != nil {
-			return false, err
-		}
+		updateDone = true
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
@@ -426,11 +432,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	if updateCondition {
 		r.Record.Eventf(lws, corev1.EventTypeNormal, conditions[0].Reason, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
-	return updateStatus || updateCondition, nil
+	return updateStatus || updateCondition, updateDone, nil
 }
 
 // Updates status and condition of LeaderWorkerSet and returns whether or not an update actually occurred.
-func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
+func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (bool, error) {
 	updateStatus := false
 	log := ctrl.LoggerFrom(ctx)
 
@@ -438,7 +444,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	sts := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, sts); err != nil {
 		log.Error(err, "Error retrieving leader StatefulSet")
-		return err
+		return false, err
 	}
 
 	// retrieve the current number of replicas -- the number of leaders
@@ -458,7 +464,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 		selector, err := metav1.LabelSelectorAsSelector(labelSelector)
 		if err != nil {
 			log.Error(err, "Converting label selector to selector")
-			return err
+			return false, err
 		}
 
 		lws.Status.HPAPodSelector = selector.String()
@@ -466,17 +472,17 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	}
 
 	// check if an update is needed
-	updateConditions, err := r.updateConditions(ctx, lws, templateHash)
+	updateConditions, updateDone, err := r.updateConditions(ctx, lws, templateHash)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if updateStatus || updateConditions {
 		if err := r.Status().Update(ctx, lws); err != nil {
 			log.Error(err, "Updating LeaderWorkerSet status and/or condition.")
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return updateDone, nil
 }
 
 // iterateReplicas will iterate the leader pods together with corresponding worker statefulsets
@@ -484,7 +490,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 //   - The first value represents the number of continuous ready replicas ranging from the last index to 0,
 //     to help us judge whether we can update the Partition or not.
 //   - The second value represents the unready replicas whose index is smaller than leaderWorkerSet Replicas.
-func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, revision *appsv1.ControllerRevision) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, templateHash string) (int32, int32, error) {
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.WorkerIndexLabelKey: "0",
@@ -511,7 +517,6 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, stsList.Items, int(stsReplicas))
 
-	templateHash := revision.Labels[leaderworkerset.TemplateRevisionHashKey]
 	// Once size==1, no worker statefulSets will be created.
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	processReplica := func(index int32) (ready bool) {
@@ -522,7 +527,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return false
 		}
 
-		podTemplateHash := sortedPods[index].Labels[leaderworkerset.TemplateRevisionHashKey]
+		podTemplateHash := sortedPods[index].Labels[leaderworkerset.RevisionKey]
 		if !(podTemplateHash == templateHash && podutils.PodRunningAndReady(sortedPods[index])) {
 			return false
 		}
@@ -531,7 +536,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return true
 		}
 
-		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.TemplateRevisionHashKey]
+		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.RevisionKey]
 		return stsTemplateHash == templateHash && statefulsetutils.StatefulsetReady(sortedSts[index])
 	}
 
@@ -565,15 +570,21 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 	return sts, nil
 }
 
-func (r *LeaderWorkerSetReconciler) createControllerRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
+func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
 	templateHash := ""
 	if sts != nil && sts.Labels != nil {
-		templateHash = sts.Labels[leaderworkerset.TemplateRevisionHashKey]
+		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
+		// the templateHash was used to detect update instead of controller revision.
+		templateHash = revisionutils.GetRevisionKey(sts)
 	}
 	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, templateHash); sts != nil || err != nil {
 		return stsRevision, err
 	}
-	return revisionutils.CreateRevision(ctx, r.Client, lws, templateHash)
+	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, templateHash)
+	if err != nil {
+		return nil, err
+	}
+	return revisionutils.CreateRevision(ctx, r.Client, revision)
 }
 
 func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
@@ -613,9 +624,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 
 	podTemplateApplyConfiguration.WithLabels(map[string]string{
-		leaderworkerset.WorkerIndexLabelKey:     "0",
-		leaderworkerset.SetNameLabelKey:         lws.Name,
-		leaderworkerset.TemplateRevisionHashKey: templateHash,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.RevisionKey:         templateHash,
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
@@ -650,8 +661,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 					leaderworkerset.WorkerIndexLabelKey: "0",
 				}))).
 		WithLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.TemplateRevisionHashKey: templateHash,
+			leaderworkerset.SetNameLabelKey: lws.Name,
+			leaderworkerset.RevisionKey:     templateHash,
 		}).
 		WithAnnotations(map[string]string{
 			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),

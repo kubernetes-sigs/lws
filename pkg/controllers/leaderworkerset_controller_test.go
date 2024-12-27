@@ -46,7 +46,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash1 := cr1.Labels[leaderworkerset.TemplateRevisionHashKey]
+	hash1 := revisionutils.GetRevisionKey(cr1)
 
 	lws2 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
@@ -54,7 +54,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash2 := cr2.Labels[leaderworkerset.TemplateRevisionHashKey]
+	hash2 := revisionutils.GetRevisionKey(cr2)
 
 	tests := []struct {
 		name            string

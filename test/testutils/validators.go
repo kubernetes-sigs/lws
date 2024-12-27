@@ -154,9 +154,9 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if err != nil {
 			return err
 		}
-		hash := cr.Labels[leaderworkerset.TemplateRevisionHashKey]
-		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
-			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
+		hash := revisionutils.GetRevisionKey(cr)
+		if revisionutils.GetRevisionKey(&sts) != hash {
+			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
@@ -184,9 +184,9 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		}
 		// check pod template has correct label
 		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.WorkerIndexLabelKey:     "0",
-			leaderworkerset.TemplateRevisionHashKey: hash,
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.RevisionKey:         hash,
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}
@@ -279,9 +279,9 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if err != nil {
 				return err
 			}
-			hash := cr.Labels[leaderworkerset.TemplateRevisionHashKey]
-			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
-				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
+			hash := revisionutils.GetRevisionKey(cr)
+			if sts.Labels[leaderworkerset.RevisionKey] != hash {
+				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")

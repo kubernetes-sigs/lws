@@ -54,10 +54,10 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 					Name:      leaderPod.Name + "-" + strconv.Itoa(i),
 					Namespace: leaderPod.Namespace,
 					Labels: map[string]string{
-						leaderworkerset.SetNameLabelKey:         lws.Name,
-						"worker.pod":                            "workers",
-						leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(i),
-						leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						"worker.pod":                        "workers",
+						leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(i),
+						leaderworkerset.RevisionKey:         leaderPod.Labels[leaderworkerset.RevisionKey],
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -138,7 +138,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.TemplateRevisionHashKey: cr.Labels[leaderworkerset.TemplateRevisionHashKey],
+					leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(cr),
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -171,8 +171,8 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 			return err
 		}
 		labelSelector := client.MatchingLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.TemplateRevisionHashKey: cr.Labels[leaderworkerset.TemplateRevisionHashKey],
+			leaderworkerset.SetNameLabelKey: lws.Name,
+			leaderworkerset.RevisionKey:     revisionutils.GetRevisionKey(cr),
 		})
 
 		if err := k8sClient.List(ctx, podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
@@ -229,8 +229,8 @@ func GetLeaderPod(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8s
 		if err != nil {
 			return err
 		}
-		if cr.Labels[leaderworkerset.TemplateRevisionHashKey] != pod.Labels[leaderworkerset.TemplateRevisionHashKey] {
-			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", cr.Labels[leaderworkerset.TemplateRevisionHashKey], pod.Labels[leaderworkerset.TemplateRevisionHashKey])
+		if revisionutils.GetRevisionKey(cr) != pod.Labels[leaderworkerset.RevisionKey] {
+			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", revisionutils.GetRevisionKey(cr), pod.Labels[leaderworkerset.RevisionKey])
 		}
 		return nil
 	}, Timeout, Interval).Should(gomega.Succeed())
@@ -283,7 +283,7 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 			return err
 		}
 
-		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = cr.Labels[leaderworkerset.TemplateRevisionHashKey]
+		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(cr)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 

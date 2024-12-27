@@ -73,7 +73,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		gomega.Expect(*lws.Spec.LeaderWorkerTemplate.Size).To(gomega.Equal(int32(5)))
 		gomega.Expect(lws.Spec.LeaderWorkerTemplate.RestartPolicy).To(gomega.Equal(v1.NoneRestartPolicy))
 
-		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey}
+		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.RevisionKey}
 		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey}
 
 		for _, pod := range pods.Items {
@@ -154,7 +154,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		lwsPods := &corev1.PodList{}
 		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
 
-		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.TemplateRevisionHashKey, v1.SubGroupIndexLabelKey}
+		expectedLabels := []string{v1.SetNameLabelKey, v1.GroupIndexLabelKey, v1.WorkerIndexLabelKey, v1.RevisionKey, v1.SubGroupIndexLabelKey}
 		expectedAnnotations := []string{v1.LeaderPodNameAnnotationKey, v1.SizeAnnotationKey, v1.SubGroupSizeAnnotationKey}
 
 		for _, pod := range lwsPods.Items {

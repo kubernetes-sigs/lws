@@ -58,10 +58,8 @@ const (
 	// Worker pods will have an annotation that is the leader pod's name.
 	LeaderPodNameAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-name"
 
-	// SHAed leaderWorkerTemplate value for version tracking.
-	// This will be applied to all API objects including:
-	// leaderStatefulset, leaderPods, workerStatefulsets, workerPods.
-	TemplateRevisionHashKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
+	// Hash to track the controller revision that matches an LWS object
+	RevisionKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
 
 	// Environment variable added to all containers in the LeaderWorkerSet to
 	// address the leader via the headless service.

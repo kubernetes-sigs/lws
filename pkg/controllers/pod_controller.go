@@ -119,7 +119,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.RevisionKey])
 	if err != nil {
 		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
@@ -185,7 +185,8 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			return false, err
 		}
-		if leader.Labels[leaderworkerset.TemplateRevisionHashKey] != pod.Labels[leaderworkerset.TemplateRevisionHashKey] {
+		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
+		if leader.Labels[leaderworkerset.RevisionKey] != pod.Labels[leaderworkerset.RevisionKey] {
 			return false, nil
 		}
 	} else {
@@ -292,7 +293,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
-		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
+		leaderworkerset.RevisionKey:             leaderPod.Labels[leaderworkerset.RevisionKey],
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)

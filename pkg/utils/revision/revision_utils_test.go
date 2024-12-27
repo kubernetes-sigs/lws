@@ -43,6 +43,13 @@ func TestApplyRevision(t *testing.T) {
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
+		Type: leaderworkerset.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromInt32(2),
+			MaxSurge:       intstr.FromInt(1),
+		},
+	}
 	restoredLws, err := ApplyRevision(lws, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +70,10 @@ func TestApplyRevision(t *testing.T) {
 
 	if diff := cmp.Diff(currentLws.Spec.NetworkConfig, restoredLws.Spec.NetworkConfig); diff != "" {
 		t.Errorf("NetworkConfig should be restored %s", diff)
+	}
+
+	if diff := cmp.Diff(lws.Spec.RolloutStrategy, restoredLws.Spec.RolloutStrategy); diff != "" {
+		t.Errorf("It should not restore/clear non NetworkConfig Spec fields %s,", diff)
 	}
 }
 
