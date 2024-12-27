@@ -29,7 +29,6 @@ import (
 )
 
 func TestApplyRevision(t *testing.T) {
-
 	client := fake.NewClientBuilder().Build()
 
 	lws := BuildLeaderWorkerSet("default")
