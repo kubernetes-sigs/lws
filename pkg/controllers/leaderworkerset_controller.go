@@ -101,6 +101,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	ctx = ctrl.LoggerInto(ctx, log)
 
 	leaderSts, err := r.getLeaderStatefulSet(ctx, lws)
+	log.V(2).Info(fmt.Sprintf("leader sts %v", leaderSts))
 	if err != nil {
 		log.Error(err, "Fetching leader statefulset")
 		return ctrl.Result{}, err
@@ -112,7 +113,15 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	lwsUpdated, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
+	updatedRevision, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
+	lwsUpdated := updatedRevision != nil
+	if lwsUpdated {
+		revision, err = revisionutils.CreateRevision(ctx, r.Client, lws, updatedRevision.Labels[leaderworkerset.TemplateRevisionHashKey])
+		if err != nil {
+			log.Error(err, "Creating revisions for updated lws")
+			return ctrl.Result{}, err
+		}
+	}
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
@@ -405,7 +414,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		if err := revisionutils.TruncateHistory(ctx, r.Client, lws, templateHash); err != nil {
+		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, templateHash); err != nil {
 			return false, err
 		}
 	} else {
@@ -553,41 +562,35 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 		}
 		return nil, err
 	}
-
 	return sts, nil
 }
 
 func (r *LeaderWorkerSetReconciler) createControllerRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
+	templateHash := ""
+	if sts != nil && sts.Labels != nil {
+		templateHash = sts.Labels[leaderworkerset.TemplateRevisionHashKey]
+	}
+	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, templateHash); sts != nil || err != nil {
+		return stsRevision, err
+	}
+	return revisionutils.CreateRevision(ctx, r.Client, lws, templateHash)
+}
+
+func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	if sts == nil {
-		return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, "")
+		return nil, nil
 	}
 
-	stsRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
+	currentRevision, err := revisionutils.NewRevision(ctx, r.Client, lws, "")
 	if err != nil {
 		return nil, err
 	}
 
-	if stsRevision == nil {
-		return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
+	if !revisionutils.EqualRevision(currentRevision, revision) {
+		return currentRevision, nil
 	}
 
-	return revisionutils.CreateLeaderWorkerSetRevision(ctx, r.Client, lws, "")
-}
-
-func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (bool, error) {
-	if sts == nil {
-		return false, nil
-	}
-
-	stsRevision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, lws, sts.Labels[leaderworkerset.TemplateRevisionHashKey])
-	if err != nil {
-		return false, err
-	}
-	if stsRevision == nil {
-		return false, fmt.Errorf("did not find a revision for the existing leader sts")
-	}
-
-	return !revisionutils.EqualRevision(stsRevision, revision), nil
+	return nil, nil
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet

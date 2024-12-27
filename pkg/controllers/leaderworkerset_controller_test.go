@@ -17,13 +17,13 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
@@ -32,28 +32,28 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
-	parentKind := appsv1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
+	client := fake.NewClientBuilder().Build()
 	lws1 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
-	patch, err := revisionutils.GetPatch(lws1)
+	cr1, err := revisionutils.NewRevision(context.TODO(), client, lws1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cr1 := revisionutils.NewControllerRevision(lws1, parentKind, lws1.Labels, runtime.RawExtension{Raw: patch}, 1)
 	hash1 := cr1.Labels[leaderworkerset.TemplateRevisionHashKey]
+
 	lws2 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
 		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
-	patch, err = revisionutils.GetPatch(lws2)
+	cr2, err := revisionutils.NewRevision(context.TODO(), client, lws2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cr2 := revisionutils.NewControllerRevision(lws2, parentKind, lws2.Labels, runtime.RawExtension{Raw: patch}, 1)
 	hash2 := cr2.Labels[leaderworkerset.TemplateRevisionHashKey]
 
 	tests := []struct {

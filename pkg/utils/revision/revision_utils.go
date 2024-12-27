@@ -3,8 +3,6 @@ package revision
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash"
@@ -13,12 +11,10 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	appsv1 "k8s.io/api/apps/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -32,52 +28,21 @@ import (
 // Functions in this package are adapted from https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/statefulset/ and
 // https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/history/controller_history.go
 
-// controllerKind contains the schema.GroupVersionKind for this controller type.
-var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
-
-// ControllerRevisionName returns the Name for a ControllerRevision in the form prefix-hash. If the length
+// ControllerRevisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length
 // of prefix is greater than 223 bytes, it is truncated to allow for a name that is no larger than 253 bytes.
-func ControllerRevisionName(prefix string, hash string) string {
+// revision-number allows us to avoid collisions if the created prefix-hash already exists in the history, since revision
+// will be unique.
+func RevisionName(prefix string, hash string, revisionNumber int64) string {
 	if len(prefix) > 223 {
 		prefix = prefix[:223]
 	}
 
-	return fmt.Sprintf("%s-%s", prefix, hash)
-}
-
-// NewControllerRevision returns a ControllerRevision with a ControllerRef pointing to parent and indicating that
-// parent is of parentKind. The ControllerRevision has labels matching template labels, contains Data equal to data, and
-// has a Revision equal to revision. If the returned error is nil, the returned ControllerRevision is valid. If the
-// returned error is not nil, the returned ControllerRevision is invalid for use.
-func NewControllerRevision(parent metav1.Object,
-	parentKind schema.GroupVersionKind,
-	templateLabels map[string]string,
-	data runtime.RawExtension,
-	revision int64) *appsv1.ControllerRevision {
-	labelMap := make(map[string]string)
-	for k, v := range templateLabels {
-		labelMap[k] = v
-	}
-	cr := &appsv1.ControllerRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:          labelMap,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(parent, parentKind)},
-			Namespace:       parent.GetNamespace(),
-		},
-		Data:     data,
-		Revision: revision,
-	}
-	hash := HashControllerRevision(cr)
-	cr.Name = ControllerRevisionName(parent.GetName(), hash)
-	if cr.Labels[leaderworkerset.TemplateRevisionHashKey] == "" {
-		cr.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
-	}
-	return cr
+	return fmt.Sprintf("%s-%s-%v", prefix, hash, revisionNumber)
 }
 
 // HashControllerRevision hashes the contents of revision's Data using FNV hashing.
 // The returned hash will be a safe encoded string to avoid bad words.
-func HashControllerRevision(revision *appsv1.ControllerRevision) string {
+func HashRevision(revision *appsv1.ControllerRevision) string {
 	hf := fnv.New32()
 	if len(revision.Data.Raw) > 0 {
 		hf.Write(revision.Data.Raw)
@@ -103,18 +68,13 @@ func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevisio
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
 }
 
-type History struct {
-	client.Client
-	context context.Context
-}
-
 // ListControllerRevisions lists all ControllerRevisions matching selector and owned by parent or no other
 // controller. If the returned error is nil the returned slice of ControllerRevisions is valid. If the
 // returned error is not nil, the returned slice is not valid.
-func (h *History) ListControllerRevisions(parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
+func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
 	// List all revisions in the namespace that match the selector
 	revisionList := new(appsv1.ControllerRevisionList)
-	err := h.List(h.context, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
+	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
@@ -128,42 +88,6 @@ func (h *History) ListControllerRevisions(parent metav1.Object, selector labels.
 
 	}
 	return owned, err
-}
-
-// CreateControllerRevision attempts to create the revision as owned by parent via a ControllerRef. If the returned
-// error is not nil, creation failed. If the returned error is nil, the returned ControllerRevision has been
-// created.
-func (h *History) CreateControllerRevision(parent metav1.Object, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	ns := parent.GetNamespace()
-	err := h.Create(h.context, revision)
-	if errors.IsAlreadyExists(err) {
-		exists := &appsv1.ControllerRevision{}
-		err := h.Get(h.context, types.NamespacedName{Namespace: ns, Name: revision.Name}, exists)
-		if err != nil {
-			return nil, err
-		}
-		if bytes.Equal(exists.Data.Raw, revision.Data.Raw) {
-			return exists, nil
-		} else {
-			// Since the contents of the revision are used to create the hash, the only way this
-			// happens is if the contents of the revision were changed, which is unintended behavior
-			return nil, fmt.Errorf("controller Revision with same name but different content exists")
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	// Fetched the controller revision that was created, in case the revision webhook modified it.
-	created := &appsv1.ControllerRevision{}
-	if err := h.Get(h.context, types.NamespacedName{Namespace: ns, Name: revision.Name}, created); err != nil {
-		return nil, err
-	}
-	return created, err
-}
-
-// DeleteControllerRevision attempts to delete revision. If the returned error is not nil, deletion has failed.
-func (h *History) DeleteControllerRevision(revision *appsv1.ControllerRevision) error {
-	return h.Delete(h.context, revision)
 }
 
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
@@ -180,21 +104,19 @@ func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	}
 }
 
-func GenerateDeleteOwnerRefStrategicMergeBytes(revisionUID types.UID, parentUID types.UID) []byte {
-	return []byte(fmt.Sprintf(`{"metadata":{"ownerReferences":[{"$patch":"delete","uid":"%s"}],"uid":"%s"}}`, revisionUID, parentUID))
-}
-
-func GetLeaderWorkerSetRevisionFromTemplateHash(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
+func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
-	controllerHistory := History{Client: k8sClient, context: ctx}
+	if templateHash == "" {
+		return nil, nil
+	}
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.TemplateRevisionHashKey: templateHash,
 	}})
 	if err != nil {
 		return nil, err
 	}
-	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
 	if err != nil {
 		log.Error(err, "Listing all controller revisions")
 		return nil, err
@@ -206,7 +128,7 @@ func GetLeaderWorkerSetRevisionFromTemplateHash(ctx context.Context, k8sClient c
 
 	if len(revisions) > 1 {
 		// Since we only create a controllerRevision when the template hash changes, only one should match
-		log.Error(err, "More than one revision exists for the given templateHash")
+		log.Error(err, "More than one revision exists for the given template hash; returning the latest revision")
 		return revisions[len(revisions)-1], nil
 	}
 
@@ -248,53 +170,72 @@ func GetPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	return json.Marshal(objCopy)
 }
 
-func CreateLeaderWorkerSetRevision(
+func CreateRevision(
 	ctx context.Context,
 	k8sClient client.Client,
 	lws *leaderworkerset.LeaderWorkerSet,
 	templateHash string) (*appsv1.ControllerRevision, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
-	controllerHistory := History{Client: k8sClient, context: ctx}
+
+	revision, err := NewRevision(ctx, k8sClient, lws, templateHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := k8sClient.Create(ctx, revision); err != nil {
+		log.Error(err, "Creating new revision for lws")
+		return nil, err
+	}
+	created := &appsv1.ControllerRevision{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: revision.Name}, created); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// newRevision instantiates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
+// The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
+// ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
+// to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
+func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) (*appsv1.ControllerRevision, error) {
+	var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}})
 	if err != nil {
 		return nil, err
 	}
-	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
+	revision := NextRevision(revisions)
 	if err != nil {
-		log.Error(err, "Listing all controller revisions")
 		return nil, err
 	}
-
-	currentRevision, err := NewRevision(lws, NextRevision(revisions), templateHash)
-	if err != nil {
-		log.Error(err, "Creating new revision for lws")
-		return nil, err
-	}
-
-	return controllerHistory.CreateControllerRevision(lws, currentRevision)
-}
-
-// newRevision creates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
-// The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
-// ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
-// to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
-func NewRevision(lws *leaderworkerset.LeaderWorkerSet, revision int64, templateHash string) (*appsv1.ControllerRevision, error) {
 	patch, err := GetPatch(lws)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewControllerRevision(lws,
-		controllerKind,
-		map[string]string{
-			leaderworkerset.TemplateRevisionHashKey: templateHash,
-			leaderworkerset.SetNameLabelKey:         lws.Name,
+	templateLabels := map[string]string{
+		leaderworkerset.TemplateRevisionHashKey: templateHash,
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+	}
+
+	cr := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:          templateLabels,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, controllerKind)},
+			Namespace:       lws.Namespace,
 		},
-		runtime.RawExtension{Raw: patch},
-		revision), nil
+		Data:     runtime.RawExtension{Raw: patch},
+		Revision: revision,
+	}
+
+	hash := HashRevision(cr)
+	cr.Name = RevisionName(lws.Name, hash, revision)
+	if cr.Labels[leaderworkerset.TemplateRevisionHashKey] == "" {
+		cr.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+	}
+	return cr, nil
 }
 
 // ApplyRevision returns a new LeaderWorkerSet constructed by restoring the state in revision to set. If the returned error
@@ -335,34 +276,26 @@ func NextRevision(revisions []*appsv1.ControllerRevision) int64 {
 	return max + 1
 }
 
-// TruncateHistory cleans up all other controller revisions except the currentRevision.
+// TruncateRevisions cleans up all other controller revisions except the currentRevision.
 // currentRevision is the one that matches the templateHash that is passed
-func TruncateHistory(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
-	controllerHistory := History{Client: k8sClient, context: ctx}
+func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, templateHash string) error {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}})
 	if err != nil {
 		return err
 	}
-	revisions, err := controllerHistory.ListControllerRevisions(lws, selector)
+	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
 	if err != nil {
 		return err
 	}
 
 	for i, revision := range revisions {
 		if revision.Labels[leaderworkerset.TemplateRevisionHashKey] != templateHash {
-			if err := controllerHistory.DeleteControllerRevision(revisions[i]); err != nil {
+			if err := k8sClient.Delete(ctx, revisions[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// Sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
-func Sha1Hash(s string) string {
-	h := sha1.New()
-	h.Write([]byte(s))
-	return hex.EncodeToString(h.Sum(nil))
 }

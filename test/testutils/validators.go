@@ -29,7 +29,6 @@ import (
 	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -151,11 +150,10 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return fmt.Errorf("leader statefulset pod template misses leaderworkerset label")
 		}
-		patch, err := revisionutils.GetPatch(&lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
 		if err != nil {
 			return err
 		}
-		cr := revisionutils.NewControllerRevision(&lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 		hash := cr.Labels[leaderworkerset.TemplateRevisionHashKey]
 		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
 			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
@@ -277,11 +275,10 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
-			patch, err := revisionutils.GetPatch(&lws)
+			cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
 			if err != nil {
 				return err
 			}
-			cr := revisionutils.NewControllerRevision(&lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 			hash := cr.Labels[leaderworkerset.TemplateRevisionHashKey]
 			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
 				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)

@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -36,8 +35,6 @@ import (
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
-
-var parentKind = appsv1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
 
 func MustCreateLws(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
 	gomega.Expect(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
@@ -127,11 +124,10 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	}
-	patch, err := revisionutils.GetPatch(lws)
+	cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
 	if err != nil {
 		return err
 	}
-	cr := revisionutils.NewControllerRevision(lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 	for i := start; i < end; i++ {
 		pod := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -170,12 +166,10 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
 			return err
 		}
-
-		patch, err := revisionutils.GetPatch(lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
 		if err != nil {
 			return err
 		}
-		cr := revisionutils.NewControllerRevision(lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 		labelSelector := client.MatchingLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey:         lws.Name,
 			leaderworkerset.TemplateRevisionHashKey: cr.Labels[leaderworkerset.TemplateRevisionHashKey],
@@ -231,11 +225,10 @@ func GetLeaderPod(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8s
 			return err
 		}
 
-		patch, err := revisionutils.GetPatch(lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
 		if err != nil {
 			return err
 		}
-		cr := revisionutils.NewControllerRevision(lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 		if cr.Labels[leaderworkerset.TemplateRevisionHashKey] != pod.Labels[leaderworkerset.TemplateRevisionHashKey] {
 			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", cr.Labels[leaderworkerset.TemplateRevisionHashKey], pod.Labels[leaderworkerset.TemplateRevisionHashKey])
 		}
@@ -285,11 +278,10 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
 			return err
 		}
-		patch, err := revisionutils.GetPatch(lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
 		if err != nil {
 			return err
 		}
-		cr := revisionutils.NewControllerRevision(lws, parentKind, make(map[string]string), runtime.RawExtension{Raw: patch}, 1)
 
 		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = cr.Labels[leaderworkerset.TemplateRevisionHashKey]
 		return k8sClient.Update(ctx, &leaderPod)

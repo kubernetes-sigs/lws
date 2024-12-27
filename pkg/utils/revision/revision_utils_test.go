@@ -17,19 +17,23 @@ limitations under the License.
 package revision
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func TestApplyRevision(t *testing.T) {
 
+	client := fake.NewClientBuilder().Build()
+
 	lws := BuildLeaderWorkerSet("default")
-	revision, err := NewRevision(lws, 1, "")
+	revision, err := NewRevision(context.TODO(), client, lws, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +49,7 @@ func TestApplyRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoredRevision, err := NewRevision(restoredLws, 2, "")
+	restoredRevision, err := NewRevision(context.TODO(), client, restoredLws, "")
 	if err != nil {
 		t.Fatal(err)
 	}

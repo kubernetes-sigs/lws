@@ -119,7 +119,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-	revision, err := revisionutils.GetLeaderWorkerSetRevisionFromTemplateHash(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, pod.Labels[leaderworkerset.TemplateRevisionHashKey])
 	if err != nil {
 		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
