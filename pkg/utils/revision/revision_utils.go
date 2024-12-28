@@ -76,11 +76,14 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 }
 
 func CreateRevision(ctx context.Context, k8sClient client.Client, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(revision))
+	ctx = ctrl.LoggerInto(ctx, log)
 	if err := k8sClient.Create(ctx, revision); err != nil {
 		return nil, err
 	}
 	created := &appsv1.ControllerRevision{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: revision.Namespace, Name: revision.Name}, created); err != nil {
+		log.Error(err, "failed to find the created revision")
 		return nil, err
 	}
 	return created, nil
@@ -131,8 +134,6 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 // returned error is not nil, the returned slice is not valid.
 func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
 	// List all revisions in the namespace that match the selector
-	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(parent))
-	ctx = ctrl.LoggerInto(ctx, log)
 	revisionList := new(appsv1.ControllerRevisionList)
 	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
