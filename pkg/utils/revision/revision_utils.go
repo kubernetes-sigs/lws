@@ -87,7 +87,7 @@ func CreateRevision(ctx context.Context, k8sClient client.Client, revision *apps
 }
 
 func GetRevisionKey(obj metav1.Object) string {
-	if obj != nil && obj.GetLabels() != nil {
+	if obj.GetLabels() != nil {
 		return obj.GetLabels()[leaderworkerset.RevisionKey]
 	}
 	return ""
