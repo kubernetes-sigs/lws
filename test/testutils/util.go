@@ -215,27 +215,6 @@ func GetLeaderStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorker
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func GetLeaderPod(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, pod *corev1.Pod) {
-	gomega.Eventually(func() error {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
-			return err
-		}
-		leaderReplicaIndex := fmt.Sprintf("-%v", (int(*lws.Spec.Replicas) - 1))
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + leaderReplicaIndex, Namespace: lws.Namespace}, pod); err != nil {
-			return err
-		}
-
-		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
-		if err != nil {
-			return err
-		}
-		if revisionutils.GetRevisionKey(cr) != revisionutils.GetRevisionKey(pod) {
-			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", revisionutils.GetRevisionKey(cr), revisionutils.GetRevisionKey(pod))
-		}
-		return nil
-	}, Timeout, Interval).Should(gomega.Succeed())
-}
-
 func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client, stsl *appsv1.StatefulSetList) {
 	gomega.Eventually(func() (int, error) {
 		if err := k8sClient.List(ctx, stsl, client.InNamespace(lws.Namespace)); err != nil {

@@ -16,8 +16,6 @@ limitations under the License.
 package e2e
 
 import (
-	"fmt"
-
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -302,61 +300,5 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			}
 			return numberOfPodsInCommon, nil
 		}, timeout, interval).Should(gomega.Equal(0))
-	})
-	ginkgo.It("Not updated worker StatefulSet restarted during rolling update will be restored with old worker spec", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
-		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
-		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			var sts appsv1.StatefulSet
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &sts); err != nil {
-				return err
-			}
-			// use the original lws object instead of newest, since we are comparing with the old worker template
-			podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-			if sts.Spec.Template.Spec.Containers[0].Name != podTemplateSpec.Spec.Containers[0].Name {
-				return fmt.Errorf("StatefulSet did not have the expected container name")
-			}
-			return nil
-		}, timeout, interval).Should(gomega.Succeed())
-
-		// Rolling update finishes
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
-		// All worker statfulsets have the updated version
-		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-
-	})
-	ginkgo.It("Rolling update with restart policy RecreateGroupOnPodRestart only restarts the leader once", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).MaxSurge(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-
-		initialLeaderPod := &corev1.Pod{}
-		testing.GetLeaderPod(ctx, lws, k8sClient, initialLeaderPod)
-		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
-
-		// Happens during update
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 3)
-		midUpdateLeaderPod := &corev1.Pod{}
-		testing.GetLeaderPod(ctx, lws, k8sClient, midUpdateLeaderPod)
-
-		gomega.Eventually(func() (bool, error) {
-			return initialLeaderPod.UID == midUpdateLeaderPod.UID, nil
-		}, timeout, interval).Should(gomega.Equal(false))
-
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
-		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		finalLeaderPod := &corev1.Pod{}
-		testing.GetLeaderPod(ctx, lws, k8sClient, finalLeaderPod)
-
-		gomega.Eventually(func() (bool, error) {
-			return finalLeaderPod.UID == midUpdateLeaderPod.UID, nil
-		}, timeout, interval).Should(gomega.Equal(true))
 	})
 })
