@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
 
 func MustCreateLws(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
@@ -57,6 +57,7 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 						leaderworkerset.SetNameLabelKey:     lws.Name,
 						"worker.pod":                        "workers",
 						leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(i),
+						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(&leaderPod),
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -123,6 +124,10 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	}
+	cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+	if err != nil {
+		return err
+	}
 	for i := start; i < end; i++ {
 		pod := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -133,7 +138,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(lws),
+					leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(cr),
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -161,11 +166,13 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, lws); err != nil {
 			return err
 		}
-
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+		if err != nil {
+			return err
+		}
 		labelSelector := client.MatchingLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.TemplateRevisionHashKey: hash,
+			leaderworkerset.SetNameLabelKey: lws.Name,
+			leaderworkerset.RevisionKey:     revisionutils.GetRevisionKey(cr),
 		})
 
 		if err := k8sClient.List(ctx, podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
@@ -173,7 +180,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		}
 
 		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
-			return errors.New("pod number not right")
+			return fmt.Errorf("expected %d pods, got %d", (int((*lws.Spec.Replicas) * (*lws.Spec.LeaderWorkerTemplate.Size))), len(podList.Items))
 		}
 
 		var leaderTemplateSpec corev1.PodTemplateSpec
@@ -194,6 +201,7 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 				return errors.New("container name not right")
 			}
 		}
+
 		return nil
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
@@ -249,9 +257,12 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
 			return err
 		}
-		hash := utils.LeaderWorkerTemplateHash(lws)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+		if err != nil {
+			return err
+		}
 
-		leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey] = hash
+		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(cr)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 

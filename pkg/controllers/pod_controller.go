@@ -41,6 +41,7 @@ import (
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -118,8 +119,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 		return ctrl.Result{}, nil
 	}
-
-	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet)
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -179,6 +184,10 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			return false, err
+		}
+		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
+		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
+			return false, nil
 		}
 	} else {
 		leader = pod
@@ -259,8 +268,12 @@ func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1
 }
 
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
+	if err != nil {
+		return nil, err
+	}
+	podTemplateSpec := *currentLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
@@ -280,7 +293,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.GroupIndexLabelKey:      leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
-		leaderworkerset.TemplateRevisionHashKey: leaderPod.Labels[leaderworkerset.TemplateRevisionHashKey],
+		leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(&leaderPod),
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)

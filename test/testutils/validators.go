@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/utils"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -150,9 +150,13 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return fmt.Errorf("leader statefulset pod template misses leaderworkerset label")
 		}
-		hash := utils.LeaderWorkerTemplateHash(&lws)
-		if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
-			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
+		if err != nil {
+			return err
+		}
+		hash := revisionutils.GetRevisionKey(cr)
+		if revisionutils.GetRevisionKey(&sts) != hash {
+			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
@@ -180,9 +184,9 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		}
 		// check pod template has correct label
 		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
-			leaderworkerset.SetNameLabelKey:         lws.Name,
-			leaderworkerset.WorkerIndexLabelKey:     "0",
-			leaderworkerset.TemplateRevisionHashKey: utils.LeaderWorkerTemplateHash(&lws),
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.RevisionKey:         hash,
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}
@@ -271,9 +275,13 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
-			hash := utils.LeaderWorkerTemplateHash(&lws)
-			if sts.Labels[leaderworkerset.TemplateRevisionHashKey] != hash {
-				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", sts.Labels[leaderworkerset.TemplateRevisionHashKey], hash)
+			cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
+			if err != nil {
+				return err
+			}
+			hash := revisionutils.GetRevisionKey(cr)
+			if revisionutils.GetRevisionKey(&sts) != hash {
+				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")

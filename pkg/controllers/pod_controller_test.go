@@ -17,6 +17,7 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -27,28 +28,42 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testutils "sigs.k8s.io/lws/test/testutils"
 )
 
 func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	lws := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Size(1).Obj()
+	updateRevision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRevisionKey := revisionutils.GetRevisionKey(updateRevision)
+
 	tests := []struct {
 		name                  string
 		pod                   *corev1.Pod
 		lws                   *leaderworkerset.LeaderWorkerSet
 		wantStatefulSetConfig *appsapplyv1.StatefulSetApplyConfiguration
+		revision              *appsv1.ControllerRevision
 	}{
 		{
-			name: "1 replica, size 1, exclusive placement disabled",
+			name:     "1 replica, size 1, exclusive placement disabled",
+			revision: updateRevision,
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index": "0",
-						"leaderworkerset.sigs.k8s.io/name":         "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":  "1",
-						"leaderworkerset.sigs.k8s.io/group-key":    "test-key",
+						leaderworkerset.WorkerIndexLabelKey:     "0",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
 			},
@@ -65,28 +80,28 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":            "1",
-						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](0),
 					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
 						MatchLabels: map[string]string{
-							"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-							"leaderworkerset.sigs.k8s.io/group-index": "1",
-							"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+							leaderworkerset.SetNameLabelKey:         "test-sample",
+							leaderworkerset.GroupIndexLabelKey:      "1",
+							leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						},
 					},
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-								"leaderworkerset.sigs.k8s.io/group-index":            "1",
-								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+								leaderworkerset.SetNameLabelKey:         "test-sample",
+								leaderworkerset.GroupIndexLabelKey:      "1",
+								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+								leaderworkerset.RevisionKey:             updateRevisionKey,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -111,17 +126,18 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name: "1 replica, size 2, exclusive placement enabled",
+			name:     "1 replica, size 2, exclusive placement enabled",
+			revision: updateRevision,
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index":           "0",
-						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":            "1",
-						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.WorkerIndexLabelKey:     "0",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
 			},
@@ -140,28 +156,28 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":            "1",
-						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
 					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
 						MatchLabels: map[string]string{
-							"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-							"leaderworkerset.sigs.k8s.io/group-index": "1",
-							"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+							leaderworkerset.SetNameLabelKey:         "test-sample",
+							leaderworkerset.GroupIndexLabelKey:      "1",
+							leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						},
 					},
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-								"leaderworkerset.sigs.k8s.io/group-index":            "1",
-								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+								leaderworkerset.SetNameLabelKey:         "test-sample",
+								leaderworkerset.GroupIndexLabelKey:      "1",
+								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+								leaderworkerset.RevisionKey:             updateRevisionKey,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -187,17 +203,18 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name: "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
+			name:     "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
+			revision: updateRevision,
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
 					Namespace: "default",
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/worker-index":           "0",
-						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":            "1",
-						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
-						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
+						leaderworkerset.WorkerIndexLabelKey:     "0",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
 			},
@@ -216,28 +233,28 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Name:      ptr.To[string]("test-sample"),
 					Namespace: ptr.To[string]("default"),
 					Labels: map[string]string{
-						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-						"leaderworkerset.sigs.k8s.io/group-index":            "1",
-						"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
-						"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
 					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
 						MatchLabels: map[string]string{
-							"leaderworkerset.sigs.k8s.io/name":        "test-sample",
-							"leaderworkerset.sigs.k8s.io/group-index": "1",
-							"leaderworkerset.sigs.k8s.io/group-key":   "test-key",
+							leaderworkerset.SetNameLabelKey:         "test-sample",
+							leaderworkerset.GroupIndexLabelKey:      "1",
+							leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						},
 					},
 					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
 						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
 							Labels: map[string]string{
-								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
-								"leaderworkerset.sigs.k8s.io/group-index":            "1",
-								"leaderworkerset.sigs.k8s.io/template-revision-hash": "",
-								"leaderworkerset.sigs.k8s.io/group-key":              "test-key",
+								leaderworkerset.SetNameLabelKey:         "test-sample",
+								leaderworkerset.GroupIndexLabelKey:      "1",
+								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",
@@ -267,7 +284,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws)
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, tc.revision)
 			if err != nil {
 				t.Errorf("failed with error %s", err.Error())
 			}
