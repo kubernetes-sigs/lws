@@ -122,7 +122,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	lwsUpdated := updatedRevision != nil
 	if lwsUpdated {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision, lws)
 		if err != nil {
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
@@ -584,7 +584,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	return revisionutils.CreateRevision(ctx, r.Client, revision)
+	return revisionutils.CreateRevision(ctx, r.Client, revision, lws)
 }
 
 func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {

@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/klog/v2"
@@ -75,18 +74,11 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 	return cr, nil
 }
 
-func CreateRevision(ctx context.Context, k8sClient client.Client, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(revision))
-	ctx = ctrl.LoggerInto(ctx, log)
+func CreateRevision(ctx context.Context, k8sClient client.Client, revision *appsv1.ControllerRevision, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
 	if err := k8sClient.Create(ctx, revision); err != nil {
 		return nil, err
 	}
-	created := &appsv1.ControllerRevision{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: revision.Namespace, Name: revision.Name}, created); err != nil {
-		log.Error(err, "failed to find the created revision")
-		return nil, err
-	}
-	return created, nil
+	return revision, nil
 }
 
 func GetRevisionKey(obj metav1.Object) string {
