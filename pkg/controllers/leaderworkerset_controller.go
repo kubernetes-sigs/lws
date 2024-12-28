@@ -386,7 +386,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			ready = true
 			readyCount++
 		}
-		if (noWorkerSts || sts.Labels[leaderworkerset.RevisionKey] == revisionKey) && pod.Labels[leaderworkerset.RevisionKey] == revisionKey {
+		if (noWorkerSts || revisionutils.GetRevisionKey(&sts) == revisionKey) && revisionutils.GetRevisionKey(&pod) == revisionKey {
 			updated = true
 			updatedCount++
 			if index < int(*lws.Spec.Replicas) {
@@ -527,7 +527,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return false
 		}
 
-		podTemplateHash := sortedPods[index].Labels[leaderworkerset.RevisionKey]
+		podTemplateHash := revisionutils.GetRevisionKey(&sortedPods[index])
 		if !(podTemplateHash == revisionKey && podutils.PodRunningAndReady(sortedPods[index])) {
 			return false
 		}
@@ -536,7 +536,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return true
 		}
 
-		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.RevisionKey]
+		stsTemplateHash := revisionutils.GetRevisionKey(&sortedSts[index])
 		return stsTemplateHash == revisionKey && statefulsetutils.StatefulsetReady(sortedSts[index])
 	}
 
@@ -572,7 +572,7 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 
 func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
 	revisionKey := ""
-	if sts != nil && sts.Labels != nil {
+	if sts != nil {
 		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
 		// the revisionKey was used to detect update instead of controller revision.
 		revisionKey = revisionutils.GetRevisionKey(sts)

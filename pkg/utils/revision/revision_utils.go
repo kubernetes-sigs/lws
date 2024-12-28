@@ -28,40 +28,72 @@ import (
 // Functions in this package are adapted from https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/statefulset/ and
 // https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/history/controller_history.go
 
-// EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
-// or if they are semantically equivalent.
-func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
-	if lhs == nil || rhs == nil {
-		return lhs == rhs
-	}
-
-	if GetRevisionKey(lhs) == GetRevisionKey(rhs) {
-		return true
-	}
-
-	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
-}
-
-// ListRevisions lists all ControllerRevisions matching selector and owned by parent or no other
-// controller. If the returned error is nil the returned slice of ControllerRevisions is valid. If the
-// returned error is not nil, the returned slice is not valid.
-func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
-	// List all revisions in the namespace that match the selector
-	revisionList := new(appsv1.ControllerRevisionList)
-	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
+// NewRevision instantiates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
+// The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
+// ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
+// to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
+func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsv1.ControllerRevision, error) {
+	var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}})
 	if err != nil {
 		return nil, err
 	}
-	history := revisionList.Items
-	var owned []*appsv1.ControllerRevision
-	for i := range history {
-		ref := metav1.GetControllerOfNoCopy(&history[i])
-		if ref == nil || ref.UID == parent.GetUID() {
-			owned = append(owned, &history[i])
-		}
-
+	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
+	highestRevision := getHighestRevision(revisions)
+	revision := int64(1)
+	if highestRevision != nil {
+		revision = highestRevision.Revision + 1
 	}
-	return owned, err
+	if err != nil {
+		return nil, err
+	}
+	patch, err := getPatch(lws)
+	if err != nil {
+		return nil, err
+	}
+
+	cr := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, controllerKind)},
+			Namespace:       lws.Namespace,
+		},
+		Data:     runtime.RawExtension{Raw: patch},
+		Revision: revision,
+	}
+
+	hash := hashRevision(cr)
+	if revisionKey == "" {
+		revisionKey = hash
+	}
+	cr.Name = revisionName(lws.Name, hash, revision)
+	cr.Labels[leaderworkerset.RevisionKey] = revisionKey
+	return cr, nil
+}
+
+func CreateRevision(
+	ctx context.Context,
+	k8sClient client.Client,
+	revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	if err := k8sClient.Create(ctx, revision); err != nil {
+		return nil, err
+	}
+	created := &appsv1.ControllerRevision{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: revision.Namespace, Name: revision.Name}, created); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func GetRevisionKey(obj metav1.Object) string {
+	if obj != nil && obj.GetLabels() != nil {
+		return obj.GetLabels()[leaderworkerset.RevisionKey]
+	}
+	return ""
 }
 
 // GetRevision returns the controllerRevision that matches the revisionKey that is passed. A nil controllerRevision will be returned if the passed revisionKey is nil,
@@ -91,76 +123,32 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 	if len(revisions) > 1 {
 		// Since we only create a controllerRevision when the template hash changes, only one should match
 		log.Error(err, "More than one revision exists for the given template hash; returning the latest revision")
-		return revisions[len(revisions)-1], nil
+		return getHighestRevision(revisions), nil
 	}
 
 	return revisions[0], nil
 }
 
-func GetRevisionKey(obj metav1.Object) string {
-	if obj.GetLabels() != nil {
-		return obj.GetLabels()[leaderworkerset.RevisionKey]
-	}
-	return ""
-}
-
-func CreateRevision(
-	ctx context.Context,
-	k8sClient client.Client,
-	revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	if err := k8sClient.Create(ctx, revision); err != nil {
-		return nil, err
-	}
-	created := &appsv1.ControllerRevision{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: revision.Namespace, Name: revision.Name}, created); err != nil {
-		return nil, err
-	}
-	return created, nil
-}
-
-// NewRevision instantiates a new ControllerRevision containing a patch that reapplies the target state of LeaderWorkerSet.
-// The Revision of the returned ControllerRevision is set to revision. If the returned error is nil, the returned
-// ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
-// to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
-func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsv1.ControllerRevision, error) {
-	var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
-	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	}})
+// ListRevisions lists all ControllerRevisions matching selector and owned by parent or no other
+// controller. If the returned error is nil the returned slice of ControllerRevisions is valid. If the
+// returned error is not nil, the returned slice is not valid.
+func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
+	// List all revisions in the namespace that match the selector
+	revisionList := new(appsv1.ControllerRevisionList)
+	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
-	revisions, err := ListRevisions(ctx, k8sClient, lws, selector)
-	revision := nextRevision(revisions)
-	if err != nil {
-		return nil, err
-	}
-	patch, err := getPatch(lws)
-	if err != nil {
-		return nil, err
-	}
+	history := revisionList.Items
+	var owned []*appsv1.ControllerRevision
+	for i := range history {
+		ref := metav1.GetControllerOfNoCopy(&history[i])
+		if ref == nil || ref.UID == parent.GetUID() {
+			owned = append(owned, &history[i])
+		}
 
-	templateLabels := map[string]string{
-		leaderworkerset.RevisionKey:     revisionKey,
-		leaderworkerset.SetNameLabelKey: lws.Name,
 	}
-
-	cr := &appsv1.ControllerRevision{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:          templateLabels,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, controllerKind)},
-			Namespace:       lws.Namespace,
-		},
-		Data:     runtime.RawExtension{Raw: patch},
-		Revision: revision,
-	}
-
-	hash := hashRevision(cr)
-	cr.Name = revisionName(lws.Name, hash, revision)
-	if cr.Labels[leaderworkerset.RevisionKey] == "" {
-		cr.Labels[leaderworkerset.RevisionKey] = hash
-	}
-	return cr, nil
+	return owned, err
 }
 
 // ApplyRevision returns a new LeaderWorkerSet constructed by restoring the state in revision to set. If the returned error
@@ -183,6 +171,20 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	return restoredLws, nil
 }
 
+// EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
+// or if they are semantically equivalent.
+func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
+	if lhs == nil || rhs == nil {
+		return lhs == rhs
+	}
+
+	if GetRevisionKey(lhs) == GetRevisionKey(rhs) {
+		return true
+	}
+
+	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
+}
+
 // TruncateRevisions cleans up all other controller revisions except the currentRevision.
 // currentRevision is the one that matches the revisionKey that is passed
 func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
@@ -198,7 +200,7 @@ func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leader
 	}
 
 	for i, revision := range revisions {
-		if revision.Labels[leaderworkerset.RevisionKey] != revisionKey {
+		if GetRevisionKey(revision) != revisionKey {
 			if err := k8sClient.Delete(ctx, revisions[i]); err != nil {
 				return err
 			}
@@ -245,21 +247,24 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	return json.Marshal(objCopy)
 }
 
-// nextRevision finds the next valid revision number based on revisions. If the length of revisions
-// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision.
-func nextRevision(revisions []*appsv1.ControllerRevision) int64 {
+// getHighestRevision finds the next valid revision number based on revisions. If the length of revisions
+// is 0 this is 1. Otherwise, it is 1 greater than the largest revision's Revision. It also returns the revision
+// with the highest Revision value.
+func getHighestRevision(revisions []*appsv1.ControllerRevision) *appsv1.ControllerRevision {
 	count := len(revisions)
 	if count <= 0 {
-		return 1
+		return nil
 	}
 
 	max := int64(1)
+	var maxRevision *appsv1.ControllerRevision
 	for _, revision := range revisions {
 		if max < revision.Revision {
 			max = revision.Revision
+			maxRevision = revision
 		}
 	}
-	return max + 1
+	return maxRevision
 }
 
 // revisionName returns the Name for a ControllerRevision in the form prefix-hash-revisionnumber. If the length

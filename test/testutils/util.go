@@ -57,7 +57,7 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 						leaderworkerset.SetNameLabelKey:     lws.Name,
 						"worker.pod":                        "workers",
 						leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(i),
-						leaderworkerset.RevisionKey:         leaderPod.Labels[leaderworkerset.RevisionKey],
+						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(&leaderPod),
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -229,8 +229,8 @@ func GetLeaderPod(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8s
 		if err != nil {
 			return err
 		}
-		if revisionutils.GetRevisionKey(cr) != pod.Labels[leaderworkerset.RevisionKey] {
-			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", revisionutils.GetRevisionKey(cr), pod.Labels[leaderworkerset.RevisionKey])
+		if revisionutils.GetRevisionKey(cr) != revisionutils.GetRevisionKey(pod) {
+			return fmt.Errorf("TemplateHash does not match, expected %s, got %s", revisionutils.GetRevisionKey(cr), revisionutils.GetRevisionKey(pod))
 		}
 		return nil
 	}, Timeout, Interval).Should(gomega.Succeed())

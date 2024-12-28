@@ -280,7 +280,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 				return err
 			}
 			hash := revisionutils.GetRevisionKey(cr)
-			if sts.Labels[leaderworkerset.RevisionKey] != hash {
+			if revisionutils.GetRevisionKey(&sts) != hash {
 				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
