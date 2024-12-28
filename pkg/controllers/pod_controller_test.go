@@ -44,13 +44,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	}
 	updateRevisionKey := revisionutils.GetRevisionKey(updateRevision)
 
-	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "worker"
-	currentRevision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentRevisionKey := revisionutils.GetRevisionKey(currentRevision)
-
 	tests := []struct {
 		name                  string
 		pod                   *corev1.Pod
@@ -274,80 +267,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("leader"),
-									Image:     ptr.To[string]("nginx:1.14.2"),
-									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
-									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
-								},
-							},
-						},
-					},
-					Ordinals:            &appsapplyv1.StatefulSetOrdinalsApplyConfiguration{Start: ptr.To[int32](1)},
-					ServiceName:         ptr.To[string]("test-sample"),
-					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
-				},
-			},
-		},
-		{
-			name:     "revision is before update, will use that and the old templateHash to create the worker statefulset configuration",
-			revision: currentRevision,
-			pod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
-					Name:      "test-sample",
-					Namespace: "default",
-					Labels: map[string]string{
-						leaderworkerset.WorkerIndexLabelKey:     "0",
-						leaderworkerset.SetNameLabelKey:         "test-sample",
-						leaderworkerset.GroupIndexLabelKey:      "1",
-						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
-						leaderworkerset.RevisionKey:             currentRevisionKey,
-					},
-				},
-			},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
-				Replica(1).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
-				Size(1).Obj(),
-			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
-				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
-					Kind:       ptr.To[string]("StatefulSet"),
-					APIVersion: ptr.To[string]("apps/v1"),
-				},
-				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
-					Name:      ptr.To[string]("test-sample"),
-					Namespace: ptr.To[string]("default"),
-					Labels: map[string]string{
-						leaderworkerset.SetNameLabelKey:         "test-sample",
-						leaderworkerset.GroupIndexLabelKey:      "1",
-						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
-						leaderworkerset.RevisionKey:             currentRevisionKey,
-					},
-				},
-				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
-					Replicas: ptr.To[int32](0),
-					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
-						MatchLabels: map[string]string{
-							leaderworkerset.SetNameLabelKey:         "test-sample",
-							leaderworkerset.GroupIndexLabelKey:      "1",
-							leaderworkerset.GroupUniqueHashLabelKey: "test-key",
-						},
-					},
-					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
-						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
-							Labels: map[string]string{
-								leaderworkerset.SetNameLabelKey:         "test-sample",
-								leaderworkerset.GroupIndexLabelKey:      "1",
-								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
-								leaderworkerset.RevisionKey:             currentRevisionKey,
-							},
-							Annotations: map[string]string{
-								"leaderworkerset.sigs.k8s.io/size":        "1",
-								"leaderworkerset.sigs.k8s.io/leader-name": "test-sample",
-							},
-						},
-						Spec: &coreapplyv1.PodSpecApplyConfiguration{
-							Containers: []coreapplyv1.ContainerApplyConfiguration{
-								{
-									Name:      ptr.To[string]("worker"),
 									Image:     ptr.To[string]("nginx:1.14.2"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},

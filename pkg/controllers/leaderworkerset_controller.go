@@ -114,8 +114,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
-
-	updatedRevision, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
+	// none nil updatedRevision means that an update is detected. The revisionKey generated
+	// for updatedRevision will be applied to the leaderSts to trigger a rolling update
+	updatedRevision, err := r.getUpdateRevision(ctx, leaderSts, lws, revision)
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
@@ -571,12 +572,10 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 }
 
 func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
-	revisionKey := ""
-	if sts != nil {
-		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
-		// the revisionKey was used to detect update instead of controller revision.
-		revisionKey = revisionutils.GetRevisionKey(sts)
-	}
+	// Uses the revisionKey in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
+	// the revisionKey was used to detect update instead of controller revision. If the sts does not exist, the returned revisionKey will
+	// be nil.
+	revisionKey := revisionutils.GetRevisionKey(sts)
 	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); sts != nil || err != nil {
 		return stsRevision, err
 	}
@@ -587,7 +586,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 	return revisionutils.CreateRevision(ctx, r.Client, revision)
 }
 
-func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+func (r *LeaderWorkerSetReconciler) getUpdateRevision(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	if sts == nil {
 		return nil, nil
 	}
