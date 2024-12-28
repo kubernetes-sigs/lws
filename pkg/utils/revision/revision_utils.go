@@ -131,12 +131,16 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 // returned error is not nil, the returned slice is not valid.
 func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.Object, selector labels.Selector) ([]*appsv1.ControllerRevision, error) {
 	// List all revisions in the namespace that match the selector
+	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(parent))
+	ctx = ctrl.LoggerInto(ctx, log)
+	log.Error(nil, fmt.Sprintf("Looking up controller revision list with selector %v", selector))
 	revisionList := new(appsv1.ControllerRevisionList)
 	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
 	history := revisionList.Items
+	log.Error(nil, fmt.Sprintf("Found %d items that matched the selector", len(history)))
 	var owned []*appsv1.ControllerRevision
 	for i := range history {
 		ref := metav1.GetControllerOfNoCopy(&history[i])
@@ -145,6 +149,7 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 		}
 
 	}
+	log.Error(nil, fmt.Sprintf("After filtering out the owned ones, we have %d", len(owned)))
 	return owned, err
 }
 
