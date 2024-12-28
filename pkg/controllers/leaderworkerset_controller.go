@@ -115,7 +115,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	updatedRevision, err := r.leaderWorkerSetUpdated(ctx, leaderSts, lws, revision)
+	updatedRevision, err := r.getUpdatedRevision(ctx, leaderSts, lws, revision)
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
@@ -386,7 +386,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			ready = true
 			readyCount++
 		}
-		if (noWorkerSts || sts.Labels[leaderworkerset.RevisionKey] == revisionKey) && pod.Labels[leaderworkerset.RevisionKey] == revisionKey {
+		if (noWorkerSts || revisionutils.GetRevisionKey(&sts) == revisionKey) && revisionutils.GetRevisionKey(&pod) == revisionKey {
 			updated = true
 			updatedCount++
 			if index < int(*lws.Spec.Replicas) {
@@ -527,7 +527,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return false
 		}
 
-		podTemplateHash := sortedPods[index].Labels[leaderworkerset.RevisionKey]
+		podTemplateHash := revisionutils.GetRevisionKey(&sortedPods[index])
 		if !(podTemplateHash == revisionKey && podutils.PodRunningAndReady(sortedPods[index])) {
 			return false
 		}
@@ -536,7 +536,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 			return true
 		}
 
-		stsTemplateHash := sortedSts[index].Labels[leaderworkerset.RevisionKey]
+		stsTemplateHash := revisionutils.GetRevisionKey(&sortedSts[index])
 		return stsTemplateHash == revisionKey && statefulsetutils.StatefulsetReady(sortedSts[index])
 	}
 
@@ -587,7 +587,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 	return revisionutils.CreateRevision(ctx, r.Client, revision)
 }
 
-func (r *LeaderWorkerSetReconciler) leaderWorkerSetUpdated(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	if sts == nil {
 		return nil, nil
 	}

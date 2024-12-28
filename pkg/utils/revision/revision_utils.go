@@ -133,14 +133,12 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 	// List all revisions in the namespace that match the selector
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(parent))
 	ctx = ctrl.LoggerInto(ctx, log)
-	log.Error(nil, fmt.Sprintf("Looking up controller revision list with selector %v", selector))
 	revisionList := new(appsv1.ControllerRevisionList)
 	err := k8sClient.List(ctx, revisionList, client.InNamespace(parent.GetNamespace()), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
 	history := revisionList.Items
-	log.Error(nil, fmt.Sprintf("Found %d items that matched the selector", len(history)))
 	var owned []*appsv1.ControllerRevision
 	for i := range history {
 		ref := metav1.GetControllerOfNoCopy(&history[i])
@@ -149,7 +147,6 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 		}
 
 	}
-	log.Error(nil, fmt.Sprintf("After filtering out the owned ones, we have %d", len(owned)))
 	return owned, err
 }
 
@@ -258,10 +255,10 @@ func getHighestRevision(revisions []*appsv1.ControllerRevision) *appsv1.Controll
 		return nil
 	}
 
-	max := int64(1)
+	max := int64(0)
 	var maxRevision *appsv1.ControllerRevision
 	for _, revision := range revisions {
-		if max < revision.Revision {
+		if max <= revision.Revision {
 			max = revision.Revision
 			maxRevision = revision
 		}
