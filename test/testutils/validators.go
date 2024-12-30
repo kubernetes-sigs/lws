@@ -497,3 +497,38 @@ func ExpectSpecifiedWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient 
 		return true
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
+
+func ExpectRevisions(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, numRevisions int) {
+	gomega.Eventually(func() error {
+		selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
+			leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name,
+		}})
+		if err != nil {
+			return err
+		}
+		revisions, err := revisionutils.ListRevisions(ctx, k8sClient, leaderWorkerSet, selector)
+		if err != nil {
+			return err
+		}
+		if len(revisions) != numRevisions {
+			return fmt.Errorf("expected %d revisions, got %d instead", numRevisions, len(revisions))
+		}
+
+		var leaderSts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &leaderSts); err != nil {
+			return err
+		}
+		foundRevisionKeyMatch := false
+		for _, revision := range revisions {
+			if revisionutils.GetRevisionKey(revision) == revisionutils.GetRevisionKey(&leaderSts) {
+				foundRevisionKeyMatch = true
+			}
+		}
+
+		if !foundRevisionKeyMatch {
+			return fmt.Errorf("no revision matches the leader sts's key")
+		}
+
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
