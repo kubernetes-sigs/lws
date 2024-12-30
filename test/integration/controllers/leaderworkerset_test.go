@@ -1531,6 +1531,158 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Not updated worker gets recreated with old worker spec if restarted during update", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+				{
+					// Check the rolling update initial state.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+					},
+				},
+				{
+					// Rolling update 1 replica.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-3")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-2")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-1")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-0")
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+					},
+				},
+				{
+					// Delete the leaderPod and re-create it to force workerSts to be created
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.DeleteLeaderPod(ctx, k8sClient, lws, 0, 1)
+						var leaderSts appsv1.StatefulSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+						testing.CreateNotUpdatedLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-3")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-2")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-1")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-0")
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+					},
+				},
+				{
+					// Rolling update all the replicas will make the leader statefulset ready again.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("leader with RecreateGroupOnPodRestart only gets restarted once during rolling update", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
+				return testing.BuildLeaderWorkerSet(nsName).Replica(4).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+				{
+					// Check the rolling update initial state.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+					},
+				},
+				{
+					// Update LeaderPod. Triggers the first restart
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+					},
+				},
+				{ // The workerPods are deleted to update them. This should not delete the leaderPod
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.DeleteWorkerPods(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						gomega.Expect(leaderPod.DeletionTimestamp == nil).To(gomega.BeTrue())
+					},
+				},
+				{
+					// Rolling update all the replicas will make the leader statefulset ready again.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("create a leaderworkerset with spec.startupPolicy=LeaderReady", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
 				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)

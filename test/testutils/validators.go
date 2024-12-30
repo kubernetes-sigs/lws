@@ -302,6 +302,56 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+func ExpectUpdatedWorkerStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, statefulsetName string) {
+	gomega.Eventually(func() error {
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
+			return err
+		}
+		revision, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
+		if err != nil {
+			return err
+		}
+		if revisionutils.GetRevisionKey(&sts) != revisionutils.GetRevisionKey(revision) {
+			return errors.New("workerStatefulSet doesn't have the correct revisionKey")
+		}
+		podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+		if podTemplateSpec.Spec.Containers[0].Name != sts.Spec.Template.Spec.Containers[0].Name {
+			return errors.New("pod template is not updated")
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func ExpectNotUpdatedWorkerStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, statefulsetName string) {
+	gomega.Eventually(func() error {
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+		var sts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
+			return err
+		}
+		revision, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
+		if err != nil {
+			return err
+		}
+		if revisionutils.GetRevisionKey(&sts) == revisionutils.GetRevisionKey(revision) {
+			return errors.New("workerStatefulSet has an updated revisionKey")
+		}
+		podTemplateSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+		if podTemplateSpec.Spec.Containers[0].Name == sts.Spec.Template.Spec.Containers[0].Name {
+			return errors.New("pod template is updated")
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 func ExpectLeaderWorkerSetProgressing(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
 	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetProgressing))
 	condition := metav1.Condition{

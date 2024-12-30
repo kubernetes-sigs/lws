@@ -1,3 +1,19 @@
+/*
+Copyright 2023.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package revision
 
 import (
@@ -97,7 +113,8 @@ func GetRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 		return nil, nil
 	}
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
-		leaderworkerset.RevisionKey: revisionKey,
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RevisionKey:     revisionKey,
 	}})
 	if err != nil {
 		return nil, err
@@ -168,10 +185,6 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevision) bool {
 	if lhs == nil || rhs == nil {
 		return lhs == rhs
-	}
-
-	if GetRevisionKey(lhs) == GetRevisionKey(rhs) {
-		return true
 	}
 
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)

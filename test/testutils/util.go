@@ -77,6 +77,21 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 	}).Should(gomega.Succeed())
 }
 
+func DeleteWorkerPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		var workers corev1.PodList
+		if err := k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"}); err != nil {
+			return err
+		}
+		for i := range workers.Items {
+			if err := k8sClient.Delete(ctx, &workers.Items[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
 	// delete pods with the highest indexes
 	var leaders corev1.PodList
@@ -158,6 +173,74 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 		}
 	}
 	return nil
+}
+
+func CreateNotUpdatedLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start int, end int) {
+	gomega.Eventually(func() error {
+		selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
+			leaderworkerset.SetNameLabelKey: lws.Name,
+		}})
+		if err != nil {
+			return err
+		}
+		revisions, err := revisionutils.ListRevisions(ctx, k8sClient, lws, selector)
+		if err != nil {
+			return err
+		}
+
+		if len(revisions) > 2 {
+			return fmt.Errorf("there are %d revisions, should not be larger than 2", len(revisions))
+		}
+		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+		if err != nil {
+			return err
+		}
+		oldRevision := revisions[0]
+		if revisionutils.GetRevisionKey(revisions[0]) == revisionutils.GetRevisionKey(cr) {
+			oldRevision = revisions[1]
+		}
+		oldLws, err := revisionutils.ApplyRevision(lws, oldRevision)
+		if err != nil {
+			return err
+		}
+		var podTemplateSpec corev1.PodTemplateSpec
+		// if leader template is nil, use worker template
+		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+			podTemplateSpec = *oldLws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+		} else {
+			podTemplateSpec = *oldLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+		}
+		for i := start; i < end; i++ {
+			pod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      lws.Name + "-" + strconv.Itoa(i),
+					Namespace: lws.Namespace,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:         lws.Name,
+						leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
+						leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
+						leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
+						leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(oldRevision),
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
+					},
+				},
+				Spec: podTemplateSpec.Spec,
+			}
+			if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
+				pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+			}
+			// Set the controller owner reference for garbage collection and reconciliation.
+			if err := ctrl.SetControllerReference(&leaderSts, &pod, scheme.Scheme); err != nil {
+				return err
+			}
+			if err := k8sClient.Create(ctx, &pod); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
 // This should only be used in e2e test, since integration test will not automatically create worker pods.
