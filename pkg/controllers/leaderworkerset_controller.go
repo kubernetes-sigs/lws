@@ -387,7 +387,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			readyCount++
 		}
 		if (noWorkerSts || revisionutils.GetRevisionKey(&sts) == revisionKey) && revisionutils.GetRevisionKey(&pod) == revisionKey {
-			// log.Error(nil, fmt.Sprintf("revisionKey of %s does not match the revisionKey in pod %s", sts.Name, pod.Name))
 			updated = true
 			updatedCount++
 			if index < int(*lws.Spec.Replicas) {
