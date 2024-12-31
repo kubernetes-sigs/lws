@@ -31,6 +31,8 @@ import (
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
 	// Group=leaderworkerset.x-k8s.io, Version=v1
+	case v1.SchemeGroupVersion.WithKind("GroupPlacementPolicy"):
+		return &leaderworkersetv1.GroupPlacementPolicyApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSet"):
 		return &leaderworkersetv1.LeaderWorkerSetApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSetSpec"):
