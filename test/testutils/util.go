@@ -600,7 +600,6 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-<<<<<<< HEAD
 func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) {
 	var leaderSts appsv1.StatefulSet
 	gomega.Eventually(func() error {
@@ -612,7 +611,8 @@ func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Cl
 
 	leaderSts.Labels[leaderworkerset.RevisionKey] = revisionKey
 	gomega.Expect(k8sClient.Update(ctx, &leaderSts)).To(gomega.Succeed())
-=======
+}
+
 // GetProjectDir will return the directory where the project is
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
@@ -655,5 +655,4 @@ func GetNonEmptyLines(output string) []string {
 	}
 
 	return res
->>>>>>> 2457681 (Review changes)
 }
