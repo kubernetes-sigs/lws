@@ -4,7 +4,6 @@ metadata:
   labels:
     app.kubernetes.io/name: clusterrolebinding
     app.kubernetes.io/instance: proxy-rolebinding
-    app.kubernetes.io/component: kube-rbac-proxy
     app.kubernetes.io/created-by: lws
     app.kubernetes.io/part-of: lws
     app.kubernetes.io/managed-by: kustomize
