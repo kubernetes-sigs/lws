@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"os"
 	"time"
@@ -106,6 +107,15 @@ func main() {
 	kubeConfig.Burst = burst
 	namespace := utils.GetOperatorNamespace()
 
+	// Disabling http/2 to prevent being vulnerable to the HTTP/2 Stream Cancellation and
+	// Rapid Reset CVEs. For more information see:
+	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
+	// - https://github.com/advisories/GHSA-4374-p667-p6c8
+	disableHTTP2 := func(c *tls.Config) {
+		setupLog.Info("disabling http/2")
+		c.NextProtos = []string{"http/1.1"}
+	}
+
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/metrics/server
@@ -114,6 +124,7 @@ func main() {
 		BindAddress:    metricsAddr,
 		SecureServing:  true,
 		FilterProvider: filters.WithAuthenticationAndAuthorization,
+		TLSOpts:        []func(*tls.Config){disableHTTP2},
 	}
 
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{

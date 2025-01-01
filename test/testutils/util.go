@@ -18,8 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -596,6 +600,7 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+<<<<<<< HEAD
 func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) {
 	var leaderSts appsv1.StatefulSet
 	gomega.Eventually(func() error {
@@ -607,4 +612,48 @@ func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Cl
 
 	leaderSts.Labels[leaderworkerset.RevisionKey] = revisionKey
 	gomega.Expect(k8sClient.Update(ctx, &leaderSts)).To(gomega.Succeed())
+=======
+// GetProjectDir will return the directory where the project is
+func GetProjectDir() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return wd, err
+	}
+	wd = strings.Replace(wd, "/test/e2e", "", -1)
+	return wd, nil
+}
+
+// Run executes the provided command within this context
+func Run(cmd *exec.Cmd) (string, error) {
+	dir, _ := GetProjectDir()
+	cmd.Dir = dir
+
+	if err := os.Chdir(cmd.Dir); err != nil {
+		_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "chdir dir: %s\n", err)
+	}
+
+	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	command := strings.Join(cmd.Args, " ")
+	_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "running: %s\n", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
+	}
+
+	return string(output), nil
+}
+
+// GetNonEmptyLines converts given command output string into individual objects
+// according to line breakers, and ignores the empty elements in it.
+func GetNonEmptyLines(output string) []string {
+	var res []string
+	elements := strings.Split(output, "\n")
+	for _, element := range elements {
+		if element != "" {
+			res = append(res, element)
+		}
+	}
+
+	return res
+>>>>>>> 2457681 (Review changes)
 }
