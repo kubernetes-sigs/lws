@@ -302,6 +302,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+// Expect that the revisionKey and the container name in the Worker Sts have been updated
 func ExpectUpdatedWorkerStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, statefulsetName string) {
 	gomega.Eventually(func() error {
 		var lws leaderworkerset.LeaderWorkerSet
@@ -327,6 +328,7 @@ func ExpectUpdatedWorkerStatefulSet(ctx context.Context, k8sClient client.Client
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+// Expect that the revisionKey and the container name in the Worker Sts have not been updated
 func ExpectNotUpdatedWorkerStatefulSet(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, statefulsetName string) {
 	gomega.Eventually(func() error {
 		var lws leaderworkerset.LeaderWorkerSet
@@ -514,19 +516,24 @@ func ExpectRevisions(ctx context.Context, k8sClient client.Client, leaderWorkerS
 			return fmt.Errorf("expected %d revisions, got %d instead", numRevisions, len(revisions))
 		}
 
+		currentRevision, err := revisionutils.NewRevision(ctx, k8sClient, leaderWorkerSet, "")
+		if err != nil {
+			return err
+		}
+
 		var leaderSts appsv1.StatefulSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &leaderSts); err != nil {
 			return err
 		}
-		foundRevisionKeyMatch := false
+		foundRevisionMatch := false
 		for _, revision := range revisions {
-			if revisionutils.GetRevisionKey(revision) == revisionutils.GetRevisionKey(&leaderSts) {
-				foundRevisionKeyMatch = true
+			if revisionutils.GetRevisionKey(revision) == revisionutils.GetRevisionKey(&leaderSts) && revisionutils.EqualRevision(currentRevision, revision) {
+				foundRevisionMatch = true
 			}
 		}
 
-		if !foundRevisionKeyMatch {
-			return fmt.Errorf("no revision matches the leader sts's key")
+		if !foundRevisionMatch {
+			return fmt.Errorf("no revision matches the current state of lws")
 		}
 
 		return nil

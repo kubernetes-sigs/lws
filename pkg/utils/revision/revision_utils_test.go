@@ -113,6 +113,14 @@ func TestEqualRevision(t *testing.T) {
 			equal:            true,
 		},
 		{
+			name:             "semantically same LeaderWorkerTemplate, different fields set, same networkConfig, should be equal",
+			leftLws:          BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeWorkerPodSpecWithVolumeAndNilImage()).Obj(),
+			rightLws:         BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeWorkerPodSpecWithVolume()).Obj(),
+			leftRevisionKey:  "",
+			rightRevisionKey: "",
+			equal:            true,
+		},
+		{
 			name:             "left nil, right non-nil, should not be equal",
 			leftLws:          nil,
 			rightLws:         BuildLeaderWorkerSet("default").Obj(),
@@ -124,6 +132,14 @@ func TestEqualRevision(t *testing.T) {
 			name:             "same LeaderWorkerTemplate, different networkConfig, should not be equal",
 			leftLws:          BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj(),
 			rightLws:         BuildLeaderWorkerSet("default").Obj(),
+			leftRevisionKey:  "",
+			rightRevisionKey: "",
+			equal:            false,
+		},
+		{
+			name:             "different LeaderWorkerTemplate, same networkConfig, should not be equal",
+			leftLws:          BuildLeaderWorkerSet("default").Obj(),
+			rightLws:         BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeLeaderPodSpec()).Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            false,
@@ -283,4 +299,56 @@ func MakeWorkerPodSpec() corev1.PodSpec {
 			},
 		},
 	}
+}
+
+func MakeWorkerPodSpecWithVolume() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: "dshm",
+			},
+		},
+	}
+}
+
+func MakeWorkerPodSpecWithVolumeAndNilImage() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: "dshm",
+				VolumeSource: corev1.VolumeSource{
+					Image: nil,
+				},
+			},
+		},
+	}
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) WorkerTemplateSpec(spec corev1.PodSpec) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = spec
+	return lwsWrapper
 }

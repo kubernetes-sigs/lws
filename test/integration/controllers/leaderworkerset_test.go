@@ -1592,7 +1592,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.DeleteLeaderPod(ctx, k8sClient, lws, 0, 1)
 						var leaderSts appsv1.StatefulSet
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
-						testing.CreateNotUpdatedLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)
+						testing.CreateLeaderPodsFromRevisionNumber(ctx, leaderSts, k8sClient, lws, 0, 1, 1)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
@@ -1675,7 +1675,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						var leaderPod corev1.Pod
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-						gomega.Expect(leaderPod.DeletionTimestamp == nil).To(gomega.BeTrue())
+						gomega.Consistently(leaderPod.DeletionTimestamp == nil, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 					},
 				},
 				{
