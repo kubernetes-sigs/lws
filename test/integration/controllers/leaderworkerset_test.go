@@ -1699,15 +1699,17 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{ // Validate that RecreateGroupOnPodRestart works as intended after update
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						var workers corev1.PodList
-						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers", leaderworkerset.GroupIndexLabelKey: "3"})).To(gomega.Succeed())
 						gomega.Expect(k8sClient.Delete(ctx, &workers.Items[0])).To(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						// we could only check the leader pod is marked for deletion since it will be pending on its dependents; and the dependents
 						// won't be deleted automatically in integration test
 						var leaderPod corev1.Pod
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-						gomega.Expect(leaderPod.DeletionTimestamp != nil).To(gomega.BeTrue())
+						gomega.Eventually(func() bool {
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-3", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+							return leaderPod.DeletionTimestamp != nil
+						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 					},
 				},
 			},

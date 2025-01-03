@@ -58,6 +58,7 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 						"worker.pod":                        "workers",
 						leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(i),
 						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(&leaderPod),
+						leaderworkerset.GroupIndexLabelKey:  leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
