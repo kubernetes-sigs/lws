@@ -105,6 +105,14 @@ func TestEqualRevision(t *testing.T) {
 			equal:            true,
 		},
 		{
+			name:             "same LeaderWorkerTemplate, shared subdomainpolicy & nil, should be equal",
+			leftLws:          BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
+			rightLws:         BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
+			leftRevisionKey:  "",
+			rightRevisionKey: "",
+			equal:            true,
+		},
+		{
 			name:             "left nil, right nil, should be equal",
 			leftLws:          nil,
 			rightLws:         nil,
@@ -260,6 +268,10 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+	return lwsWrapper
+}
+func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.NetworkConfig = nil
 	return lwsWrapper
 }
 
