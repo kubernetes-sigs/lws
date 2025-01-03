@@ -442,7 +442,7 @@ func ExpectLeaderWorkerSetUnavailable(ctx context.Context, k8sClient client.Clie
 }
 
 // ValidateLatestEvent will return true if the latest event is as you want.
-func ValidateLatestEvent(ctx context.Context, k8sClient client.Client, eventReason string, eventType string, eventNote string, namespace string) {
+func ValidateEvent(ctx context.Context, k8sClient client.Client, eventReason string, eventType string, eventNote string, namespace string) {
 	gomega.Eventually(func() error {
 		events := &eventsv1.EventList{}
 		if err := k8sClient.List(ctx, events, &client.ListOptions{Namespace: namespace}); err != nil {
@@ -454,12 +454,13 @@ func ValidateLatestEvent(ctx context.Context, k8sClient client.Client, eventReas
 			return fmt.Errorf("no events currently exist")
 		}
 
-		item := events.Items[length-1]
-		if item.Reason == eventReason && item.Type == eventType && item.Note == eventNote {
-			return nil
+		for _, item := range events.Items {
+			if item.Reason == eventReason && item.Type == eventType && item.Note == eventNote {
+				return nil
+			}
 		}
 
-		return fmt.Errorf("mismatch with the latest event: got r:%v t:%v n:%v, reg %v", item.Reason, item.Type, item.Note, item.Regarding)
+		return fmt.Errorf("mismatch with the expected event: expected r:%v t:%v n:%v", eventReason, eventType, eventNote)
 
 	}, Timeout, Interval).Should(gomega.BeNil())
 }

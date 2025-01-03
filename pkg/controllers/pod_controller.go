@@ -57,6 +57,7 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record recor
 	return &PodReconciler{Client: client, Scheme: schema, Record: record}
 }
 
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
