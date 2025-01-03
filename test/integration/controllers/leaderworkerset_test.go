@@ -1723,14 +1723,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					// Set lws to available condition.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.UpdateLeaderStatefulSetRevisionKey(ctx, k8sClient, lws, "template-hash")
-						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 2)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
-						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},
 			},

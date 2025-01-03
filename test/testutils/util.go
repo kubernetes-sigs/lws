@@ -614,7 +614,7 @@ func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Cl
 
 	gomega.Eventually(func() bool {
 		var leaderStsAfterUpdate appsv1.StatefulSet
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderStsAfterUpdate)).To(gomega.Succeed())
 		return revisionutils.GetRevisionKey(&leaderStsAfterUpdate) == revisionKey
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
