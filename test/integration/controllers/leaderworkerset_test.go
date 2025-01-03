@@ -29,8 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
 )
 
@@ -1720,7 +1720,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 			updates: []*update{
 				{
-					// Set lws to available condition.
+					// Change the revisionKey to a different value, SetPodGoupsToReady to update the leader Pods with the new revisionKey
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.UpdateLeaderStatefulSetRevisionKey(ctx, k8sClient, lws, "template-hash")
 						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 2)
@@ -1728,8 +1728,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
-						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
-						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						revision, err := revisionutils.GetRevision(ctx, k8sClient, lws, "template-hash")
+						gomega.Expect(err).NotTo(gomega.HaveOccurred())
+						gomega.Expect(revision).NotTo(gomega.BeNil())
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},

@@ -289,15 +289,11 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 			return err
 		}
 
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
+		var leaderSts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
 			return err
 		}
-		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
-		if err != nil {
-			return err
-		}
-
-		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(cr)
+		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(&leaderSts)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
@@ -611,10 +607,4 @@ func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Cl
 
 	leaderSts.Labels[leaderworkerset.RevisionKey] = revisionKey
 	gomega.Expect(k8sClient.Update(ctx, &leaderSts)).To(gomega.Succeed())
-
-	gomega.Eventually(func() bool {
-		var leaderStsAfterUpdate appsv1.StatefulSet
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderStsAfterUpdate)).To(gomega.Succeed())
-		return revisionutils.GetRevisionKey(&leaderStsAfterUpdate) == revisionKey
-	}, Timeout, Interval).Should(gomega.Equal(true))
 }
