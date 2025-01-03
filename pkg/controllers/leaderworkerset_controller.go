@@ -149,6 +149,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -376,8 +379,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		var sts appsv1.StatefulSet
 		if !noWorkerSts {
 			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: pod.Name}, &sts); err != nil {
-				log.Error(err, "Fetching worker statefulSet")
-				return false, false, err
+				if client.IgnoreNotFound(err) != nil {
+					log.Error(err, "Fetching worker statefulSet")
+					return false, false, err
+				}
+				continue
 			}
 		}
 
@@ -476,9 +482,12 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	if err != nil {
 		return false, err
 	}
+
 	if updateStatus || updateConditions {
 		if err := r.Status().Update(ctx, lws); err != nil {
-			log.Error(err, "Updating LeaderWorkerSet status and/or condition.")
+			if !apierrors.IsConflict(err) {
+				log.Error(err, "Updating LeaderWorkerSet status and/or condition.")
+			}
 			return false, err
 		}
 	}
