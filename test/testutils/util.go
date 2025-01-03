@@ -58,6 +58,7 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 						"worker.pod":                        "workers",
 						leaderworkerset.WorkerIndexLabelKey: strconv.Itoa(i),
 						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(&leaderPod),
+						leaderworkerset.GroupIndexLabelKey:  leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -75,6 +76,17 @@ func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8s
 		}
 		return nil
 	}).Should(gomega.Succeed())
+}
+
+func DeleteWorkerPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	var workers corev1.PodList
+	gomega.Eventually(func() bool {
+		gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+		return len(workers.Items) == int(*lws.Spec.LeaderWorkerTemplate.Size)
+	}, Timeout, Interval).Should(gomega.Equal(true))
+	for i := range workers.Items {
+		gomega.Expect(k8sClient.Delete(ctx, &workers.Items[i])).To(gomega.Succeed())
+	}
 }
 
 func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
@@ -117,16 +129,38 @@ func DeleteLeaderPod(ctx context.Context, k8sClient client.Client, lws *leaderwo
 }
 
 func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start int, end int) error {
+	cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+	if err != nil {
+		return err
+	}
+
+	return createLeaderPods(ctx, k8sClient, leaderSts, lws, revisionutils.GetRevisionKey(cr), start, end)
+}
+
+func CreateLeaderPodsFromRevisionNumber(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end, revisionNumber int) {
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}})
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	revisions, err := revisionutils.ListRevisions(ctx, k8sClient, lws, selector)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	var targetRevision *appsv1.ControllerRevision
+	for i, revision := range revisions {
+		if revision.Revision == int64(revisionNumber) {
+			targetRevision = revisions[i]
+		}
+	}
+	targetLws, err := revisionutils.ApplyRevision(lws, targetRevision)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Expect(createLeaderPods(ctx, k8sClient, leaderSts, targetLws, revisionutils.GetRevisionKey(targetRevision), start, end)).To(gomega.Succeed())
+}
+
+func createLeaderPods(ctx context.Context, k8sClient client.Client, leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, start, end int) error {
 	var podTemplateSpec corev1.PodTemplateSpec
-	// if leader template is nil, use worker template
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-	}
-	cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
-	if err != nil {
-		return err
 	}
 	for i := start; i < end; i++ {
 		pod := corev1.Pod{
@@ -138,7 +172,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
 					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
 					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(cr),
+					leaderworkerset.RevisionKey:             revisionKey,
 				},
 				Annotations: map[string]string{
 					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
@@ -157,6 +191,7 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -254,15 +289,11 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 			return err
 		}
 
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, lws); err != nil {
+		var leaderSts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
 			return err
 		}
-		cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
-		if err != nil {
-			return err
-		}
-
-		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(cr)
+		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(&leaderSts)
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
@@ -563,4 +594,17 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 		}
 		return k8sClient.Delete(ctx, &sts)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func UpdateLeaderStatefulSetRevisionKey(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) {
+	var leaderSts appsv1.StatefulSet
+	gomega.Eventually(func() error {
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts); err != nil {
+			return err
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+
+	leaderSts.Labels[leaderworkerset.RevisionKey] = revisionKey
+	gomega.Expect(k8sClient.Update(ctx, &leaderSts)).To(gomega.Succeed())
 }

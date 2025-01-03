@@ -577,7 +577,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 		// the revisionKey was used to detect update instead of controller revision.
 		revisionKey = revisionutils.GetRevisionKey(sts)
 	}
-	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); sts != nil || err != nil {
+	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); stsRevision != nil || err != nil {
 		return stsRevision, err
 	}
 	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
