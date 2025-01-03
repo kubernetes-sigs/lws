@@ -149,6 +149,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -479,17 +482,12 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	if err != nil {
 		return false, err
 	}
-	// Get the most up to date lws object to merge the status with
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
-	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, leaderWorkerSet); err != nil {
-		return false, err
-	}
-	lwsCopy := leaderWorkerSet.DeepCopy()
-	lwsCopy.Status = *lws.Status.DeepCopy()
-	patch := client.MergeFrom(leaderWorkerSet)
+
 	if updateStatus || updateConditions {
-		if err := r.Status().Patch(ctx, lwsCopy, patch); err != nil {
-			log.Error(err, "Updating LeaderWorkerSet status and/or condition.")
+		if err := r.Status().Update(ctx, lws); err != nil {
+			if !apierrors.IsConflict(err) {
+				log.Error(err, "Updating LeaderWorkerSet status and/or condition.")
+			}
 			return false, err
 		}
 	}
