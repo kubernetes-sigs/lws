@@ -102,7 +102,7 @@ var _ = BeforeSuite(func() {
 	err = lwsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	podController := controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme())
+	podController := controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("pod"))
 	err = podController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

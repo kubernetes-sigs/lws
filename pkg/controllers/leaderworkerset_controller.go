@@ -135,7 +135,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, leaderSts, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -257,6 +257,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// When we have n unready replicas and n bursted replicas, we should
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
+			r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreUpgrading", fmt.Sprintf("deleting maxSurge %s-%d replica", lws.Name, lwsReplicas+utils.NonZeroValue(int32(unreadyReplicas)-1)))
 			return lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
 		}
 		return burstReplicas
@@ -290,6 +291,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 4:
 	// Replicas changed during rolling update.
 	if replicasUpdated {
+		if partition > burstReplicas {
+			r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreUpgrading", fmt.Sprintf("changing partition from %d, to %d", partition, burstReplicas))
+		}
 		return min(partition, burstReplicas), wantReplicas(lwsUnreadyReplicas), nil
 	}
 
@@ -306,10 +310,13 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// When updated replicas become not ready again or scaled up replicas are not ready yet,
 	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
+	if partition > utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas) {
+		r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreUpgrading", fmt.Sprintf("changing partition from %d, to %d", partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)))
+	}
 	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), wantReplicas(lwsUnreadyReplicas), nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderSts *appsv1.StatefulSet, partition, replicas int32, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	// construct the statefulset apply configuration
@@ -334,6 +341,9 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
 	// these fields to the ones desired by the lws controller
 	// TODO b/316776287 add E2E test for SSA
+	if leaderSts == nil {
+		r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreProgressing", fmt.Sprintf("Creating leader sts %s", lws.Name))
+	}
 	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        ptr.To[bool](true),
@@ -418,8 +428,8 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
 		updateDone = true

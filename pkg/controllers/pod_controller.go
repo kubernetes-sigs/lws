@@ -31,6 +31,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,10 +50,11 @@ import (
 type PodReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Record record.EventRecorder
 }
 
-func NewPodReconciler(client client.Client, schema *runtime.Scheme) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema}
+func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder) *PodReconciler {
+	return &PodReconciler{Client: client, Scheme: schema, Record: record}
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
@@ -163,6 +165,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "GroupsAreProgressing", fmt.Sprintf("creating worker sts for leader pod %s", pod.Name))
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
@@ -202,6 +205,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}); err != nil {
 		return false, err
 	}
+	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "RecreatePodGroup", fmt.Sprintf("deleting %s pod to recreate group %s", leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
 }
 
