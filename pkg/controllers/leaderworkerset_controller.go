@@ -67,7 +67,9 @@ const (
 const (
 	// FailedCreate Event reason used when a resource creation fails.
 	// The event uses the error(s) as the reason.
-	FailedCreate = "FailedCreate"
+	FailedCreate         = "FailedCreate"
+	GroupsAreProgressing = "GroupsAreProgressing"
+	GroupsAreUpdating    = "GroupsAreUpdating"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -105,9 +107,6 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Fetching leader statefulset")
 		return ctrl.Result{}, err
 	}
-	if leaderSts == nil {
-		r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreProgressing", fmt.Sprintf("Creating leader sts %s", lws.Name))
-	}
 
 	// Handles two cases:
 	// Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
@@ -139,13 +138,20 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if !lwsUpdated {
-		// in the cases where lws is updated, the Partition in leaderSts is zero, not a useful event to record
+		// An event is logged to track update progress.
 		if leaderSts != nil && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
-			r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreUpgrading", fmt.Sprintf("Upgrading replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
+			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
 		}
 	}
 
+	if leaderSts == nil {
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Creating leader statefulset %s", lws.Name))
+	}
+
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+		if leaderSts == nil {
+			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -268,7 +274,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
 			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
-			r.Record.Eventf(lws, corev1.EventTypeNormal, "GroupsAreUpgrading", fmt.Sprintf("deleting maxSurge %s-%d replica", lws.Name, finalReplicas))
+			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
 		}
 		return burstReplicas
@@ -352,7 +358,6 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 	})
 	if err != nil {
 		log.Error(err, "Using server side apply to update leader statefulset")
-		r.Record.Eventf(lws, corev1.EventTypeWarning, "FailedPatch", fmt.Sprintf("Failed patching the leaderSts %s", lws.Name))
 		return err
 	}
 
@@ -431,7 +436,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
@@ -690,13 +695,13 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) m
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
 		message = "All replicas are ready"
-	case leaderworkerset.LeaderWorkerSetUpgradeInProgress:
-		condtype = string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
-		reason = "GroupsAreUpgrading"
+	case leaderworkerset.LeaderWorkerSetUpdateInProgress:
+		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
+		reason = GroupsAreUpdating
 		message = "Rolling Upgrade is in progress"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
-		reason = "GroupsAreProgressing"
+		reason = GroupsAreProgressing
 		message = "Replicas are progressing"
 	}
 
@@ -760,8 +765,8 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 		return true
 	}
 
-	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)) ||
-		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
+	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress)) ||
+		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
 	}
 

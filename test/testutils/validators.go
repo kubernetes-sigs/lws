@@ -375,9 +375,9 @@ func ExpectLeaderWorkerSetNotProgressing(ctx context.Context, k8sClient client.C
 }
 
 func ExpectLeaderWorkerSetUpgradeInProgress(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
-	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpdateInProgress))
 	condition := metav1.Condition{
-		Type:    string(leaderworkerset.LeaderWorkerSetUpgradeInProgress),
+		Type:    string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
 		Status:  metav1.ConditionTrue,
 		Message: message,
 	}
@@ -385,9 +385,9 @@ func ExpectLeaderWorkerSetUpgradeInProgress(ctx context.Context, k8sClient clien
 }
 
 func ExpectLeaderWorkerSetNoUpgradeInProgress(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, message string) {
-	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpgradeInProgress))
+	ginkgo.By(fmt.Sprintf("checking leaderworkerset status(%s) is true", leaderworkerset.LeaderWorkerSetUpdateInProgress))
 	condition := metav1.Condition{
-		Type:    string(leaderworkerset.LeaderWorkerSetUpgradeInProgress),
+		Type:    string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
 		Status:  metav1.ConditionFalse,
 		Message: message,
 	}
