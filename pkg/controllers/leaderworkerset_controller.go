@@ -67,7 +67,9 @@ const (
 const (
 	// FailedCreate Event reason used when a resource creation fails.
 	// The event uses the error(s) as the reason.
-	FailedCreate = "FailedCreate"
+	FailedCreate      = "FailedCreate"
+	GroupsProgressing = "GroupsProgressing"
+	GroupsUpdating    = "GroupsUpdating"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -136,7 +138,18 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+		if leaderSts == nil {
+			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
+		}
 		return ctrl.Result{}, err
+	}
+
+	if leaderSts == nil {
+		// An event is logged to track sts creation.
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("Created leader statefulset %s", lws.Name))
+	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
+		// An event is logged to track update progress.
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
 	}
 
 	// Create headless service if it does not exist.
@@ -260,7 +273,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// When we have n unready replicas and n bursted replicas, we should
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
-			return lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			return finalReplicas
 		}
 		return burstReplicas
 	}
@@ -424,8 +439,8 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpgradeInProgress))
 	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
 		updateDone = true
@@ -686,13 +701,13 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) m
 		condtype = string(leaderworkerset.LeaderWorkerSetAvailable)
 		reason = "AllGroupsReady"
 		message = "All replicas are ready"
-	case leaderworkerset.LeaderWorkerSetUpgradeInProgress:
-		condtype = string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)
-		reason = "GroupsAreUpgrading"
+	case leaderworkerset.LeaderWorkerSetUpdateInProgress:
+		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
+		reason = GroupsUpdating
 		message = "Rolling Upgrade is in progress"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
-		reason = "GroupsAreProgressing"
+		reason = GroupsProgressing
 		message = "Replicas are progressing"
 	}
 
@@ -756,8 +771,8 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 		return true
 	}
 
-	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress)) ||
-		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpgradeInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
+	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress)) ||
+		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
 	}
 

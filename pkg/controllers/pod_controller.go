@@ -31,6 +31,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,12 +50,14 @@ import (
 type PodReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Record record.EventRecorder
 }
 
-func NewPodReconciler(client client.Client, schema *runtime.Scheme) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema}
+func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder) *PodReconciler {
+	return &PodReconciler{Client: client, Scheme: schema, Record: record}
 }
 
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
@@ -161,8 +164,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, err
 		}
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
-			return ctrl.Result{}, err
+			r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create worker statefulset for leader pod %s", pod.Name))
+			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
+		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
@@ -202,6 +207,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}); err != nil {
 		return false, err
 	}
+	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "RecreateGroupOnPodRestart", fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
 }
 
