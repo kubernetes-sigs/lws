@@ -201,9 +201,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					checkLWSState: func(deployment *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderSetExist(ctx, deployment, k8sClient)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Creating leader statefulset test-sample", deployment.Namespace)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Creating worker statefulset for leader pod test-sample-0", deployment.Namespace)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Creating worker statefulset for leader pod test-sample-1", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created leader statefulset test-sample", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-0", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-1", deployment.Namespace)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, deployment, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, deployment, k8sClient, true)
 					},

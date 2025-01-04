@@ -137,22 +137,19 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if !lwsUpdated {
-		// An event is logged to track update progress.
-		if leaderSts != nil && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
-			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
-		}
-	}
-
-	if leaderSts == nil {
-		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Creating leader statefulset %s", lws.Name))
-	}
-
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
 		}
 		return ctrl.Result{}, err
+	}
+
+	if leaderSts == nil {
+		// An event is logged to track sts creation.
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Created leader statefulset %s", lws.Name))
+	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
+		// An event is logged to track update progress.
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
 	}
 
 	// Create headless service if it does not exist.

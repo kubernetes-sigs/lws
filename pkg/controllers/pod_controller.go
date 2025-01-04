@@ -24,7 +24,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -166,12 +165,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
 			r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create worker statefulset for leader pod %s", pod.Name))
-			if apierrors.IsAlreadyExists(err) {
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, err
+			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
-		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Creating worker statefulset for leader pod %s", pod.Name))
+		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
