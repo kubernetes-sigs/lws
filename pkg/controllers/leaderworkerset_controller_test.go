@@ -440,25 +440,25 @@ func TestExclusiveConditionTypes(t *testing.T) {
 			condition2: metav1.Condition{Type: "Progressing"},
 		},
 		{
-			name:                          "First Condition UpradeInProgress, second Available",
-			condition1:                    metav1.Condition{Type: "UpgradeInProgress"},
+			name:                          "First Condition UpdateInProgress, second Available",
+			condition1:                    metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress)},
 			condition2:                    metav1.Condition{Type: "Available"},
 			expectExclusiveConditionTypes: true,
 		},
 		{
-			name:                          "First Condition Available, second UpgradeInProgress",
+			name:                          "First Condition Available, second UpdateInProgress",
 			condition1:                    metav1.Condition{Type: "Available"},
-			condition2:                    metav1.Condition{Type: "UpgradeInProgress"},
+			condition2:                    metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress)},
 			expectExclusiveConditionTypes: true,
 		},
 		{
-			name:       "First Condition Progressing, second UpgradeInProgress",
+			name:       "First Condition Progressing, second UpdateInProgress",
 			condition1: metav1.Condition{Type: "Progressing"},
-			condition2: metav1.Condition{Type: "UpgradeInProgress"},
+			condition2: metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress)},
 		},
 		{
-			name:       "First Condition UpgradeInProgress, second Progressing",
-			condition1: metav1.Condition{Type: "UpgradeInProgress"},
+			name:       "First Condition UpdateInProgress, second Progressing",
+			condition1: metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress)},
 			condition2: metav1.Condition{Type: "Progressing"},
 		},
 	}
