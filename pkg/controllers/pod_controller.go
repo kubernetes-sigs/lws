@@ -167,7 +167,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create worker statefulset for leader pod %s", pod.Name))
 			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
-		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
+		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil

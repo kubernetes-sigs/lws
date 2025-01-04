@@ -67,9 +67,9 @@ const (
 const (
 	// FailedCreate Event reason used when a resource creation fails.
 	// The event uses the error(s) as the reason.
-	FailedCreate         = "FailedCreate"
-	GroupsAreProgressing = "GroupsAreProgressing"
-	GroupsAreUpdating    = "GroupsAreUpdating"
+	FailedCreate      = "FailedCreate"
+	GroupsProgressing = "GroupsProgressing"
+	GroupsUpdating    = "GroupsUpdating"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -146,10 +146,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
-		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("Created leader statefulset %s", lws.Name))
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("Created leader statefulset %s", lws.Name))
 	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
 		// An event is logged to track update progress.
-		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
+		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
 	}
 
 	// Create headless service if it does not exist.
@@ -271,7 +271,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
 			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
-			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsAreProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
 		}
 		return burstReplicas
@@ -694,11 +694,11 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) m
 		message = "All replicas are ready"
 	case leaderworkerset.LeaderWorkerSetUpdateInProgress:
 		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
-		reason = GroupsAreUpdating
+		reason = GroupsUpdating
 		message = "Rolling Upgrade is in progress"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
-		reason = GroupsAreProgressing
+		reason = GroupsProgressing
 		message = "Replicas are progressing"
 	}
 

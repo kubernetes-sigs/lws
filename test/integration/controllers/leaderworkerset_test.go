@@ -201,9 +201,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					checkLWSState: func(deployment *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderSetExist(ctx, deployment, k8sClient)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created leader statefulset test-sample", deployment.Namespace)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-0", deployment.Namespace)
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-1", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Created leader statefulset test-sample", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-0", deployment.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Created worker statefulset for leader pod test-sample-1", deployment.Namespace)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, deployment, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, deployment, k8sClient, true)
 					},
@@ -352,7 +352,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
 						// Force groups to ready.
 						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
@@ -377,7 +377,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						// Check most recent event.
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 2 groups ready of total 3 groups", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 2 groups ready of total 3 groups", lws.Namespace)
 					},
 				},
 			},
@@ -458,7 +458,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsProgressing, corev1.EventTypeNormal, "Replicas are progressing, with 0 groups ready of total 2 groups", lws.Namespace)
 					},
 				},
 			},
@@ -523,7 +523,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						// This should be 4 at the first step, however, reconciliation syncs quickly and
 						// soon updated to 3 (replicas-maxUnavailable), it's fine here.
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreUpdating, corev1.EventTypeNormal, "Updating replicas 4 to 3", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsUpdating, corev1.EventTypeNormal, "Updating replicas 4 to 3", lws.Namespace)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
@@ -538,7 +538,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsAreUpdating, corev1.EventTypeNormal, "Updating replicas 3 to 2", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsUpdating, corev1.EventTypeNormal, "Updating replicas 3 to 2", lws.Namespace)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
 					},
