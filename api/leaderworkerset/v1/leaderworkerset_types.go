@@ -321,7 +321,7 @@ const (
 	// LeaderWorkerSetUpgradeInProgress means lws is performing a rolling update. UpgradeInProgress
 	// is true when the lws is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpgradeInProgress.
-	LeaderWorkerSetUpgradeInProgress LeaderWorkerSetConditionType = "UpgradeInProgress"
+	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
 )
 
 // +genclient
