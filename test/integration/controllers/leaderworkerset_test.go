@@ -445,7 +445,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var leaderPod corev1.Pod
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
 						gomega.Expect(leaderPod.DeletionTimestamp != nil).To(gomega.BeTrue())
-						testing.ValidateEvent(ctx, k8sClient, "RecreateGroupOnPodRestart", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleting leader pod test-sample-0 to recreate group 0", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, "RecreateGroupOnPodRestart", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleted leader pod test-sample-0 to recreate group 0", lws.Namespace)
 					},
 				},
 			},
