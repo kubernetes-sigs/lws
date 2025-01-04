@@ -104,6 +104,13 @@ when a revision is made to the leaderWorkerTemplate.</p>
    <p>StartupPolicy determines the startup policy for the worker statefulset.</p>
 </td>
 </tr>
+<tr><td><code>networkConfig</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-NetworkConfig"><code>NetworkConfig</code></a>
+</td>
+<td>
+   <p>NetworkConfig defines the network configuration of the group</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -212,7 +219,9 @@ Default to 1.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-RestartPolicyType"><code>RestartPolicyType</code></a>
 </td>
 <td>
-   <p>RestartPolicy defines the restart policy when pod failures happen.</p>
+   <p>RestartPolicy defines the restart policy when pod failures happen.
+The former named Default policy is deprecated, will be removed in the future,
+replace with None policy for the same behavior.</p>
 </td>
 </tr>
 <tr><td><code>subGroupPolicy</code><br/>
@@ -221,6 +230,31 @@ Default to 1.</p>
 <td>
    <p>SubGroupPolicy describes the policy that will be applied when creating subgroups
 in each replica.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `NetworkConfig`     {#leaderworkerset-x-k8s-io-v1-NetworkConfig}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>subdomainPolicy</code> <B>[Required]</B><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-SubdomainPolicy"><code>SubdomainPolicy</code></a>
+</td>
+<td>
+   <p>SubdomainPolicy determines the policy that will be used when creating
+the headless service, defaults to shared</p>
 </td>
 </tr>
 </tbody>
@@ -378,4 +412,16 @@ the extra pod, and will be part of the first subgroup.</p>
 </tr>
 </tbody>
 </table>
+
+## `SubdomainPolicy`     {#leaderworkerset-x-k8s-io-v1-SubdomainPolicy}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [NetworkConfig](#leaderworkerset-x-k8s-io-v1-NetworkConfig)
+
+
+
+
   
