@@ -10,7 +10,7 @@ spec:
   type: {{ .Values.service.type }}
   ports:
     - name: https
-      port: 8080
+      port: 8443
       protocol: TCP
       targetPort: https
   selector:
