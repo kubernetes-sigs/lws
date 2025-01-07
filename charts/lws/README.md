@@ -40,7 +40,7 @@ lws-system-controller-manager   1/1     1            1           14s
 
 ### Configuration
 
-The following table lists the configurable parameters of the kueue chart and their default values.
+The following table lists the configurable parameters of the LWS chart and their default values.
 
 | Parameter                                   | Description                                    | Default                              |
 |---------------------------------------------|------------------------------------------------|--------------------------------------|
