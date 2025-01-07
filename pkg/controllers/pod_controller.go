@@ -188,6 +188,8 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
+			// If the error is not found, it is likely caused by the fact that the leader was deleted but the worker statefulset
+			// deletion hasn't deleted all the worker pods
 			return false, client.IgnoreNotFound(err)
 		}
 		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
