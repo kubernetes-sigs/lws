@@ -17,7 +17,7 @@ Please do not remove items from the checklist
   - [ ] an OWNER creates a vanilla release branch with
         `git branch release-$MAJ.$MIN main`
   - [ ] An OWNER pushes the new release branch with
-        `git push release-$MAJ.$MIN`
+        `git push --set-upstream upstream release-$MAJ.$MIN`
 - [ ] Update things like README, deployment templates, docs, configuration, test/e2e flags.
       Submit a PR against the release branch: <!-- example #211 #214 under Kueue repo -->
 - [ ] An OWNER [prepares a draft release](https://github.com/kubernetes-sigs/lws/releases)
