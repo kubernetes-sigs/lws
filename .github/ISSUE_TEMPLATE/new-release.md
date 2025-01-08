@@ -19,7 +19,7 @@ Please do not remove items from the checklist
   - [ ] An OWNER pushes the new release branch with
         `git push --set-upstream upstream release-$MAJ.$MIN`
 - [ ] Update things like README, deployment templates, docs, configuration, test/e2e flags.
-      Submit a PR against the release branch: <!-- example #211 #214 under Kueue repo -->
+      Submit a PR against the release branch: example #309
 - [ ] An OWNER [prepares a draft release](https://github.com/kubernetes-sigs/lws/releases)
   - [ ] Write the change log into the draft release.
   - [ ] Run
@@ -34,7 +34,7 @@ Please do not remove items from the checklist
       `git push $VERSION`
   - Triggers prow to build and publish a staging container image
       `gcr.io/k8s-staging-lws/lws:$VERSION`
-- [ ] Submit a PR against [k8s.io](https://github.com/kubernetes/k8s.io), 
+- [ ] Submit a PR against [k8s.io](https://github.com/kubernetes/k8s.io) ([example PR](https://github.com/kubernetes/k8s.io/pull/7664)), 
       updating `k8s.gcr.io/images/k8s-staging-lws/images.yaml` to
       [promote the container images](https://github.com/kubernetes/k8s.io/tree/main/k8s.gcr.io#image-promoter)
       to production: <!-- example kubernetes/k8s.io#3612-->
@@ -45,11 +45,6 @@ Please do not remove items from the checklist
 - [ ] Add a link to the release announcement in this issue: <!-- example https://groups.google.com/a/kubernetes.io/g/wg-batch/c/-gZOrSnwDV4 -->
 - [ ] For a major or minor release, update `README.md`, `docs/setup/install.md`, `charts/lws/Chart.yaml` (`version`,`appVersion`) and `charts/lws/values.yaml`(`image.manager.tag`)
       in `main` branch: <!-- example #215 -->
-- [ ] For a major or minor release, create an unannotated _devel_ tag in the
-      `main` branch, on the first commit that gets merged after the release
-       branch has been created (presumably the README update commit above), and, push the tag:
-      `DEVEL=v0.$(($MAJ+1)).0-devel; git tag $DEVEL main && git push $DEVEL`
-      This ensures that the devel builds on the `main` branch will have a meaningful version number.
 - [ ] Close this issue
 
 
