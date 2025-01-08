@@ -33,8 +33,6 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - args:
-          - --health-probe-bind-address=:8081
-          - --metrics-bind-address=127.0.0.1:8080
           - --leader-elect
           - --zap-log-level=2
           command:
@@ -66,28 +64,6 @@ spec:
             - mountPath: /tmp/k8s-webhook-server/serving-certs
               name: cert
               readOnly: true
-        - args:
-          - --secure-listen-address=0.0.0.0:8443
-          - --upstream=http://127.0.0.1:8080/
-          - --logtostderr=true
-          - --v=0
-          name: kube-rbac-proxy
-          image: "{{ .Values.image.kubeRbacProxy.repository }}:{{ .Values.image.kubeRbacProxy.tag | default .Chart.AppVersion }}"
-          ports:
-          - containerPort: 8443
-            name: https
-            protocol: TCP
-          resources:
-            limits:
-              memory: 1Gi
-            requests:
-              cpu: 5m
-              memory: 64Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
