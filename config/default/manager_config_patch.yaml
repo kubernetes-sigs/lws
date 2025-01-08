@@ -8,3 +8,5 @@ spec:
     spec:
       containers:
       - name: manager
+        args:
+          - "--zap-log-level=2"

@@ -347,7 +347,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 			output, err := testutils.Run(cmd)
 			g.Expect(err).Should(gomega.BeNil())
-			g.Expect(output).To(gomega.ContainSubstring("8080"), "Metrics endpoint is not ready")
+			g.Expect(output).To(gomega.ContainSubstring("8443"), "Metrics endpoint is not ready")
 		}
 		gomega.Eventually(verifyMetricsEndpointReady).Should(gomega.Succeed())
 
@@ -366,7 +366,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			"--namespace", namespace,
 			"--image=curlimages/curl:7.78.0",
 			"--", "/bin/sh", "-c", fmt.Sprintf(
-				"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8080/metrics",
+				"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics",
 				token, metricsServiceName, namespace))
 		_, err = testutils.Run(cmd)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create curl-metrics pod")
