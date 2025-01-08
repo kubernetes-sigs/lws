@@ -16,6 +16,13 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -301,4 +308,148 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			return numberOfPodsInCommon, nil
 		}, timeout, interval).Should(gomega.Equal(0))
 	})
+
+	// metricsRoleBindingName := "lws-metrics-reader-rolebinding"
+	serviceAccountName := "lws-controller-manager"
+	metricsServiceName := "lws-controller-manager-metrics-service"
+	namespace := "lws-system"
+	var controllerPodName string
+
+	ginkgo.It("should ensure the metrics endpoint is serving metrics", func() {
+
+		ginkgo.By("fetching the controller pod name")
+		cmd := exec.Command("kubectl", "get",
+			"pods", "-l", "control-plane=controller-manager",
+			"-n", namespace,
+			"-o", "go-template={{ range .items }}"+
+				"{{ if not .metadata.deletionTimestamp }}"+
+				"{{ .metadata.name }}"+
+				"{{ \"\\n\" }}{{ end }}{{ end }}",
+		)
+		podOutput, err := testutils.Run(cmd)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to retrieve controller-manager pod information")
+		podNames := testutils.GetNonEmptyLines(podOutput)
+		controllerPodName = podNames[0]
+
+		ginkgo.By("validating that the metrics service is available")
+		cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+		_, err = testutils.Run(cmd)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Metrics service should exist")
+
+		ginkgo.By("getting the service account token")
+		token, err := serviceAccountToken(serviceAccountName, namespace)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(token).NotTo(gomega.BeEmpty())
+
+		ginkgo.By("waiting for the metrics endpoint to be ready")
+		verifyMetricsEndpointReady := func(g gomega.Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			output, err := testutils.Run(cmd)
+			g.Expect(err).Should(gomega.BeNil())
+			g.Expect(output).To(gomega.ContainSubstring("8080"), "Metrics endpoint is not ready")
+		}
+		gomega.Eventually(verifyMetricsEndpointReady).Should(gomega.Succeed())
+
+		ginkgo.By("verifying that the controller manager is serving the metrics server")
+		verifyMetricsServerStarted := func(g gomega.Gomega) {
+			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			output, err := testutils.Run(cmd)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(output).To(gomega.ContainSubstring("controller-runtime.metrics\tServing metrics server"),
+				"Metrics server not yet started")
+		}
+		gomega.Eventually(verifyMetricsServerStarted).Should(gomega.Succeed())
+
+		ginkgo.By("creating the curl-metrics pod to access the metrics endpoint")
+		cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
+			"--namespace", namespace,
+			"--image=curlimages/curl:7.78.0",
+			"--", "/bin/sh", "-c", fmt.Sprintf(
+				"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8080/metrics",
+				token, metricsServiceName, namespace))
+		_, err = testutils.Run(cmd)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create curl-metrics pod")
+
+		ginkgo.By("waiting for the curl-metrics pod to complete.")
+		verifyCurlUp := func(g gomega.Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
+				"-o", "jsonpath={.status.phase}",
+				"-n", namespace)
+			output, err := testutils.Run(cmd)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(output).To(gomega.Equal("Succeeded"), "curl pod in wrong status")
+		}
+		gomega.Eventually(verifyCurlUp, 5*time.Minute).Should(gomega.Succeed())
+
+		ginkgo.By("getting the metrics by checking curl-metrics logs")
+		metricsOutput := getMetricsOutput(namespace)
+		gomega.Expect(metricsOutput).To(gomega.ContainSubstring(
+			"controller_runtime_reconcile_total",
+		))
+
+		ginkgo.By("cleaning up the curl-metrics pod")
+		cmd = exec.Command("kubectl", "delete", "pod", "-n", namespace, "curl-metrics")
+		_, err = testutils.Run(cmd)
+		gomega.Expect(err).To(gomega.BeNil())
+	})
 })
+
+// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
+// containing only the token field that we need to extract.
+type tokenRequest struct {
+	Status struct {
+		Token string `json:"token"`
+	} `json:"status"`
+}
+
+// serviceAccountToken returns a token for the specified service account in the given namespace.
+// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
+// and parsing the resulting token from the API response.
+func serviceAccountToken(serviceAccountName, namespace string) (string, error) {
+	const tokenRequestRawString = `{
+		"apiVersion": "authentication.k8s.io/v1",
+		"kind": "TokenRequest"
+	}`
+
+	// Temporary file to store the token request
+	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
+	tokenRequestFile := filepath.Join("/tmp", secretName)
+	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
+	if err != nil {
+		return "", err
+	}
+
+	var out string
+	verifyTokenCreation := func(g gomega.Gomega) {
+		// Execute kubectl command to create the token
+		cmd := exec.Command("kubectl", "create", "--raw", fmt.Sprintf(
+			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
+			namespace,
+			serviceAccountName,
+		), "-f", tokenRequestFile)
+
+		output, err := cmd.CombinedOutput()
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+
+		// Parse the JSON output to extract the token
+		var token tokenRequest
+		err = json.Unmarshal(output, &token)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+
+		out = token.Status.Token
+	}
+	gomega.Eventually(verifyTokenCreation).Should(gomega.Succeed())
+
+	return out, err
+}
+
+// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
+func getMetricsOutput(namespace string) string {
+	ginkgo.By("getting the curl-metrics logs")
+	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
+	metricsOutput, err := testutils.Run(cmd)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to retrieve logs from curl pod")
+	gomega.Expect(metricsOutput).To(gomega.ContainSubstring("< HTTP/1.1 200 OK"))
+	return metricsOutput
+}
