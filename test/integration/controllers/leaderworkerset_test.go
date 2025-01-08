@@ -1727,6 +1727,10 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 			updates: []*update{
 				{
+					// Update LeaderPod. Triggers the first restart
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 2)
+					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
@@ -1738,9 +1742,6 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							}
 							leaderSts.Labels[leaderworkerset.RevisionKey] = "template-hash"
 							if err := k8sClient.Update(ctx, &leaderSts); err != nil {
-								return false
-							}
-							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts); err != nil {
 								return false
 							}
 							revision, err := revisionutils.GetRevision(ctx, k8sClient, lws, "template-hash")

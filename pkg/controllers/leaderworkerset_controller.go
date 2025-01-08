@@ -607,15 +607,15 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 		return stsRevision, err
 	}
 	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
-	message := fmt.Sprintf("Creating revision with key %s because of new Leader StatefulSet", revision.Labels[leaderworkerset.RevisionKey])
-	if revisionKey != "" {
-		message = fmt.Sprintf("Creating revision with key %s because of LWS version upgrade", revision.Labels[leaderworkerset.RevisionKey])
-	}
 	if err != nil {
 		return nil, err
 	}
 	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision, lws)
 	if err == nil {
+		message := fmt.Sprintf("Creating revision with key %s for a newly created LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
+		if revisionKey != "" {
+			message = fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
+		}
 		recorder.Eventf(lws, corev1.EventTypeNormal, CreatingRevision, message)
 	}
 	return newRevision, err
