@@ -70,6 +70,7 @@ const (
 	FailedCreate      = "FailedCreate"
 	GroupsProgressing = "GroupsProgressing"
 	GroupsUpdating    = "GroupsUpdating"
+	CreatingRevision  = "CreatingRevision"
 )
 
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
@@ -111,7 +112,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Handles two cases:
 	// Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
 	// Case 2: Creating the controller revision for a newly created LWS object
-	revision, err := r.getOrCreateRevisionIfNonExist(ctx, leaderSts, lws)
+	revision, err := r.getOrCreateRevisionIfNonExist(ctx, leaderSts, lws, r.Record)
 	if err != nil {
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
@@ -129,6 +130,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
 		}
+		r.Record.Eventf(lws, corev1.EventTypeNormal, CreatingRevision, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
 	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated)
@@ -594,7 +596,7 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 	return sts, nil
 }
 
-func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
+func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, recorder record.EventRecorder) (*appsv1.ControllerRevision, error) {
 	revisionKey := ""
 	if sts != nil {
 		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
@@ -608,7 +610,15 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	return revisionutils.CreateRevision(ctx, r.Client, revision, lws)
+	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision, lws)
+	if err == nil {
+		message := fmt.Sprintf("Creating revision with key %s for a newly created LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
+		if revisionKey != "" {
+			message = fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
+		}
+		recorder.Eventf(lws, corev1.EventTypeNormal, CreatingRevision, message)
+	}
+	return newRevision, err
 }
 
 func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
