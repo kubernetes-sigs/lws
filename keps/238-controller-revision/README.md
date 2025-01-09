@@ -29,10 +29,8 @@ tags, and then generate with `hack/update-toc.sh`.
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [LWS controller](#lws-controller)
-    - [Case 1: No exsting controller revisions in history](#case-1-no-exsting-controller-revisions-in-history)
-    - [Case 2 &amp; 3: Regular create and update](#case-2--3-regular-create-and-update)
+    - [Lifecycle of Revisions](#lifecycle-of-revisions)
   - [Pod Controller](#pod-controller)
-  - [Controller Revision Implementation](#controller-revision-implementation)
   - [Test Plan](#test-plan)
       - [Prerequisite testing updates](#prerequisite-testing-updates)
       - [Unit tests](#unit-tests)
@@ -170,57 +168,72 @@ Taking those into account, we'll combine controller revisions and template hashe
 ### LWS controller
 In order to fix #281, we will use the hash key in the leaderSts to make a controller revision lookup, and get the LWS object that was used to create it. To determine if an update has happened, we'll compare the fields that are used to generate the template hash.
 
+There are three different cases where we need to create a new revision
+- Case 1: Upgrading from the LWS controller from a version that doesn't support controller revision
+- Case 2: Newly created LWS object
+- Case 3: Updating the LWS Object
+
+
+#### Lifecycle of Revisions
+To cover Case 1 & 2, we create a controller revision if it doesn't exist. 
+
+For Case 1, we use the revisionKey that the leader statefulset has, so that the revisionKey label in the leader statefulset isn't updated, 
+triggering a rolling update. 
+
+For Case 2, we hash the revision and use that as the revisionKey.
+
 
 ```golang
-func templateUpdated(sts, lws) bool {
-	controllerRevision := GetLeaderWorkerSetRevisionFromTemplateHash(sts.Labels[templateHash])
-	baselineLws:= controllerutils.ApplyRevision(lws, controllerRevision)
-	return !utils.EqualLeaderWorkerTemplates(baselineLws, lws)
+func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(leaderSts, lws) (*appsv1.ControllerRevision) {
+	revisionKey := ""
+	if leaderSts != nil {
+		revisionKey = GetRevisionKey(sts)
+	}
+	if stsRevision, err := GetRevision(ctx, r.Client, lws, revisionKey); stsRevision != nil || err != nil {
+		return stsRevision
+	}
+	revision := NewRevision(ctx, r.Client, lws, revisionKey)
+	return CreateRevision(ctx, r.Client, revision, lws)
 }
 ```
 
-There are three cases where we need to create a new controllerRevision: 
-- There are no existing controller revisions in the history
-- A new LWS object is created
-- An update has been made to the LWS object
+For Case 3, a revision already exists, so there is no need to create a new one. This revision represents the state of the LWS object that matches 
+the current state of the leader and the worker statefulset. This means that in the case where the LWS object has been updated, but the statefulsets haven't, 
+it will represent the latter state. 
 
-#### Case 1: No exsting controller revisions in history
-This is the case when upgrading from a version that did not have controller revisions. Since a controller revision is needed to determine whether or not an update has happened, it will be created in `rollingUpdateParameters`, so that way an update isn't triggered until a controller revision has been created.
+
+Therefore, in order to determine if the LWS object has been updated, we'll generate a revision to match the state of the LWS object, and do a semantic compare against 
+the revision that already exists. If it isn't equal, we create the revision with the current LWS state, and update the revisionKey by hashing the new revision, triggering 
+a rolling update.
 
 ```golang
-func rollingUpdateParameters() {
-	if !existingControllerRevisions {
-		createLeaderWorkerSetRevision(lws, leaderSts.labels[templateHash])
-		return
+func getUpdatedRevision(leaderSts, lws, revision) (*appsv1.ControllerRevision) {
+
+	currentRevision := NewRevision(ctx, r.Client, lws, "")
+	if !EqualRevision(currentRevision, revision) {
+		return currentRevision
 	}
 
-	if templateUpdated(leaderSts, lws) {
-		// triggers the rolling update
-	}
+	return nil
 }
 ```
 
-#### Case 2 & 3: Regular create and update
-Because an update can be triggered by changing the value of a label, what templateHash value is used when building the leader sts also has to be safeguarded.
+Finally, all the revisions are deleted, only leaving the revision that matches the current leader statefulset.
 
 ```golang
-func SSAwithStatefulSet(lws, partition, lws) {
-	templateHash := utils.LeaderWorkerTemplateHash(lws)
-	if leaderStsExists && !templateUpdated(leaderSts, lws){
-		templatehash := leaderSts.Labels[templateHash]
+func Reconcile() {
+	leaderSts, err := getLeaderStatefulSet(lws)
+	revision, err := r.getOrCreateRevisionIfNonExist(leaderSts, lws)
+	updatedRevision := getUpdatedRevision(leaderSts, lws, revision)
+	lwsUpdated := updatedRevision != nil
+	if lwsUpdated {
+		revision := CreateRevision(updatedRevision)
 	}
-	createLeaderWorkerSetRevision(lws, templateHash)
-	constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas, templateHash)
-}
-```
-
-Once the update has been determined to be done, we'll reset the history to only have the revision of the current LWS object  in the history.
-
-```golang
-func updateConditions() {
-	if updatedAndReadyCount == int(*lws.Spec.Replicas) {
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		truncateHistory()
+	// Patches the leaderSts. We pass the revisionKey so that if it is different, it will trigger a rollingUpdate
+	SSAWithStatefulset(GetRevisionKey(revision))
+	updateDone = updateStatus()
+	if updateDone {
+		TruncateRevisions(GetRevisionKey(revision));
 	}
 }
 ```
@@ -240,17 +253,7 @@ func constructWorkerStatefulSetApplyConfiguration(currentRevision) {
 	podTemplateSpec := **currentLws.WorkerTemplate.DeepCopy()
 }
 ```
-
-### Controller Revision Implementation
-A new package will be created for the functions that interact with controllerRevision, similar to how it is done in [upstream](https://github.com/kubernetes/kubernetes/blob/cb31e42b85d0a1e2be6639ecd4f7b9414887552a/pkg/controller/history/controller_history.go).
-
-Functions for creating patches, applying revisions, and truncating history will be added to `controller_utils` since both the pod and lws controllers need to access these functions.
-
-We'll store the whole LWS spec to make it easier to compare LWS objects when determining if it has been updated.
-
-In order to ensure that there only exists one revision per templateHash, two controller revisions will be determined to be equal if they have the same template hash label.
-
-
+ 
 
 <!--
 This section should contain enough information that the specifics of your
