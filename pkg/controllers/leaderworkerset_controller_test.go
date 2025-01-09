@@ -34,22 +34,22 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
-	testutils "sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
-	lws1 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
-		LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
-		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
+	lws1 := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		LeaderTemplateSpec(wrappers.MakeLeaderPodSpec()).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).Obj()
 	cr1, err := revisionutils.NewRevision(context.TODO(), client, lws1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	revisionKey1 := revisionutils.GetRevisionKey(cr1)
 
-	lws2 := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
-		WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Obj()
+	lws2 := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).Obj()
 	cr2, err := revisionutils.NewRevision(context.TODO(), client, lws2, "")
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name:        "1 replica, size 1, with empty leader template, exclusive placement disabled",
 			revisionKey: revisionKey2,
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
@@ -73,7 +73,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						MaxUnavailable: intstr.FromInt32(1),
 					},
 				}).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Size(1).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
@@ -131,7 +131,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name:        "1 replica, size 2 , with empty leader template, exclusive placement enabled",
 			revisionKey: revisionKey2,
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Annotation(map[string]string{
 					"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 				}).Replica(1).
@@ -141,7 +141,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						MaxUnavailable: intstr.FromInt32(1),
 					},
 				}).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Size(2).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
@@ -200,7 +200,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name:        "2 replica, size 2, with leader template, exclusive placement enabled",
 			revisionKey: revisionKey1,
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 			}).Replica(2).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -209,8 +209,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						MaxUnavailable: intstr.FromInt32(1),
 					},
 				}).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
-				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				LeaderTemplateSpec(wrappers.MakeLeaderPodSpec()).
 				Size(2).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
@@ -268,7 +268,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name:        "2 maxUnavailable, 1 maxSurge, with empty leader template, exclusive placement disabled",
 			revisionKey: revisionKey2,
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
@@ -277,7 +277,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						MaxSurge:       intstr.FromInt32(1),
 					},
 				}).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Size(1).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
@@ -335,7 +335,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		{
 			name:        "1 replica, size 2, with leader template, exclusive placement enabled, subgroupsize enabled",
 			revisionKey: revisionKey1,
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 			}).SubGroupSize(2).Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -344,8 +344,8 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						MaxUnavailable: intstr.FromInt32(1),
 					},
 				}).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
-				LeaderTemplateSpec(testutils.MakeLeaderPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				LeaderTemplateSpec(wrappers.MakeLeaderPodSpec()).
 				Size(2).
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
 			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
@@ -483,7 +483,7 @@ func TestSetCondition(t *testing.T) {
 		{
 			name:      "Different condition type, same condition status",
 			condition: metav1.Condition{Type: "Progressing", Status: "True"},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Available", Status: "True"}}).
 				Obj(),
 			expectedShouldUpdate: true,
@@ -491,7 +491,7 @@ func TestSetCondition(t *testing.T) {
 		{
 			name:      "Same condition type, different condition status",
 			condition: metav1.Condition{Type: "Progressing", Status: "True"},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Progressing", Status: "False"}}).
 				Obj(),
 			expectedShouldUpdate: true,
@@ -499,7 +499,7 @@ func TestSetCondition(t *testing.T) {
 		{
 			name:      "Different conditio type, new condition status is true",
 			condition: metav1.Condition{Type: "Progressing", Status: "True"},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Available", Status: "False"}}).
 				Obj(),
 			expectedShouldUpdate: true,
@@ -507,20 +507,20 @@ func TestSetCondition(t *testing.T) {
 		{
 			name:                 "No initial condition",
 			condition:            metav1.Condition{Type: "Progressing", Status: "True"},
-			lws:                  testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Obj(),
+			lws:                  wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Obj(),
 			expectedShouldUpdate: true,
 		},
 		{
 			name:      "Different condition type, new condition status is false",
 			condition: metav1.Condition{Type: "Progressing", Status: "False"},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Available", Status: "True"}}).
 				Obj(),
 		},
 		{
 			name:      "Same condition type, Same condition status",
 			condition: metav1.Condition{Type: "Progressing", Status: "False"},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Progressing", Status: "False"}}).
 				Obj(),
 		},

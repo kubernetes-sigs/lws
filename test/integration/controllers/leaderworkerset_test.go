@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/lws/pkg/controllers"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
@@ -44,7 +45,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 	}
 	// class representing a testCase
 	type testCase struct {
-		makeLeaderWorkerSet func(nsName string) *testing.LeaderWorkerSetWrapper
+		makeLeaderWorkerSet func(nsName string) *wrappers.LeaderWorkerSetWrapper
 		updates             []*update
 	}
 	ginkgo.DescribeTable("leaderWorkerSet creating or updating",
@@ -86,8 +87,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			}
 		},
 		ginkgo.Entry("scale up number of groups", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2)
 			},
 			updates: []*update{
 				{
@@ -105,8 +106,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("scale down number of groups", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{
 				{
@@ -124,8 +125,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("scale down to 0", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2)
 			},
 			updates: []*update{
 				{
@@ -143,8 +144,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("scale up from 0", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(0)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(0)
 			},
 			updates: []*update{
 				{
@@ -162,8 +163,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("group size is 1", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Size(1)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Size(1)
 			},
 			updates: []*update{
 				{
@@ -183,8 +184,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("zero replicas", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(0)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(0)
 			},
 			updates: []*update{
 				{
@@ -196,7 +197,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Successfully create a leaderworkerset with 2 groups, size as 4.", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(deployment *leaderworkerset.LeaderWorkerSet) {
@@ -211,8 +212,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Deleted worker statefulSet will be recreated", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2)
 			},
 			updates: []*update{
 				{
@@ -229,7 +230,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("headless service created", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -239,7 +240,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("service deleted will be recreated", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -261,8 +262,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("subdomain policy LeadersSharedWorkersDedicated, more than one headless service created", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
 			},
 			updates: []*update{
 				{
@@ -273,7 +274,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					// Fetch the headless service and force delete it, so we can test if it is recreated.
@@ -290,7 +291,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Able to get scale subResource information", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -304,7 +305,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("HPA is able trigger scaling up/down through scale endpoint", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -334,7 +335,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Test available state", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -347,7 +348,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Testing condition switch from progressing to available to progressing", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -383,8 +384,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Leader/worker pods/Statefulset have required labels and annotations when exclusive placement enabled", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).ExclusivePlacement()
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).ExclusivePlacement()
 			},
 			updates: []*update{
 				{
@@ -396,8 +397,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(3)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(3)
 			},
 			updates: []*update{
 				{
@@ -425,8 +426,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(3)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(3)
 			},
 			updates: []*update{
 				{
@@ -451,7 +452,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Replicas are processing will set condition to progressing with correct message with correct event", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -464,7 +465,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Test default progressing state", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -478,7 +479,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Leaderworkerset has available state with correct event", &testCase{
-			makeLeaderWorkerSet: testing.BuildLeaderWorkerSet,
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
@@ -494,8 +495,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 
 		// Rolling update test cases
 		ginkgo.Entry("leaderTemplate changed with default strategy", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{
 				{
@@ -592,8 +593,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("workerTemplate changed with maxUnavailable=2", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2)
 			},
 			updates: []*update{
 				{
@@ -670,8 +671,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("workerTemplate changed with maxUnavailable greater than replicas", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(10)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(10)
 			},
 			updates: []*update{
 				{
@@ -719,8 +720,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("rolling update with both worker template and number of replicas changed", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{
 				{
@@ -779,8 +780,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("replicas increases during rolling update", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{
 				{
@@ -871,8 +872,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("replicas decreases during rolling update", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(6)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(6)
 			},
 			updates: []*update{
 				{
@@ -951,8 +952,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("rolling update with maxSurge set", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(1)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(1)
 			},
 			updates: []*update{
 				{
@@ -1070,8 +1071,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("rolling update with replicas scaled up and maxSurge set", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).MaxSurge(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).MaxSurge(2)
 			},
 			updates: []*update{
 				{
@@ -1139,8 +1140,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("rolling update with replicas scaled down and maxSurge set", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(6).MaxSurge(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(6).MaxSurge(2)
 			},
 			updates: []*update{
 				{
@@ -1205,8 +1206,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("rolling update with maxSurge greater than replicas", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).MaxSurge(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).MaxSurge(4)
 			},
 			updates: []*update{
 				{
@@ -1275,8 +1276,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("scale up and down during rolling update with maxSurge set", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(2)
 			},
 			updates: []*update{
 				{
@@ -1432,8 +1433,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("multiple rolling update with maxSurge set", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(2)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(2)
 			},
 			updates: []*update{
 				{
@@ -1544,8 +1545,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("Not updated worker gets recreated with old worker spec if restarted during update", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{
 				{
@@ -1630,8 +1631,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("leader with RecreateGroupOnPodRestart only gets restarted once during rolling update", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
 			},
 			updates: []*update{
 				{
@@ -1722,8 +1723,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("if a leaderSts exists, but a matching controllerRevision doesn't, it will create one that matches the leaderSts", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName)
 			},
 			updates: []*update{
 				{
@@ -1757,8 +1758,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("create a leaderworkerset with spec.startupPolicy=LeaderReady", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
 			},
 			updates: []*update{
 				{
@@ -1786,8 +1787,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 		}),
 		ginkgo.Entry("create a leaderworkerset with spec.startupPolicy=LeaderCreated", &testCase{
-			makeLeaderWorkerSet: func(nsName string) *testing.LeaderWorkerSetWrapper {
-				return testing.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderCreatedStartupPolicy)
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).StartupPolicy(leaderworkerset.LeaderCreatedStartupPolicy)
 			},
 			updates: []*update{
 				{

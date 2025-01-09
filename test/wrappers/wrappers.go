@@ -12,7 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package testutils
+package wrappers
 
 import (
 	"fmt"
@@ -113,6 +113,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.NetworkConfig = nil
 	return lwsWrapper
 }
 
@@ -287,5 +292,79 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 			},
 		},
 		Subdomain: "default",
+	}
+}
+
+func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "worker",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Limits: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+					},
+				},
+			},
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
+		Subdomain: "default",
+	}
+}
+
+func MakeWorkerPodSpecWithVolume() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: "dshm",
+			},
+		},
+	}
+}
+
+func MakeWorkerPodSpecWithVolumeAndNilImage() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "leader",
+				Image: "nginx:1.14.2",
+				Ports: []corev1.ContainerPort{
+					{
+						ContainerPort: 8080,
+						Protocol:      "TCP",
+					},
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: "dshm",
+				VolumeSource: corev1.VolumeSource{
+					Image: nil,
+				},
+			},
+		},
 	}
 }

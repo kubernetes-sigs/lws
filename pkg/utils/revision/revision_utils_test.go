@@ -22,17 +22,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestApplyRevision(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
-	lws := BuildLeaderWorkerSet("default").Obj()
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
 	revision, err := NewRevision(context.TODO(), client, lws, "")
 	if err != nil {
 		t.Fatal(err)
@@ -90,24 +89,24 @@ func TestEqualRevision(t *testing.T) {
 	}{
 		{
 			name:             "same LeaderWorkerTemplate, networkConfig, should be equal",
-			leftLws:          BuildLeaderWorkerSet("default").Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            true,
 		},
 		{
 			name:             "same LeaderWorkerTemplate, networkConfig, different revisionKey, should be equal",
-			leftLws:          BuildLeaderWorkerSet("default").Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "templateHash",
 			equal:            true,
 		},
 		{
 			name:             "same LeaderWorkerTemplate, shared subdomainpolicy & nil, should be equal",
-			leftLws:          BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            true,
@@ -122,8 +121,8 @@ func TestEqualRevision(t *testing.T) {
 		},
 		{
 			name:             "semantically same LeaderWorkerTemplate, different fields set, same networkConfig, should be equal",
-			leftLws:          BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeWorkerPodSpecWithVolumeAndNilImage()).Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeWorkerPodSpecWithVolume()).Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").WorkerTemplateSpec(wrappers.MakeWorkerPodSpecWithVolumeAndNilImage()).Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").WorkerTemplateSpec(wrappers.MakeWorkerPodSpecWithVolume()).Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            true,
@@ -131,23 +130,23 @@ func TestEqualRevision(t *testing.T) {
 		{
 			name:             "left nil, right non-nil, should not be equal",
 			leftLws:          nil,
-			rightLws:         BuildLeaderWorkerSet("default").Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            false,
 		},
 		{
 			name:             "same LeaderWorkerTemplate, different networkConfig, should not be equal",
-			leftLws:          BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            false,
 		},
 		{
 			name:             "different LeaderWorkerTemplate, same networkConfig, should not be equal",
-			leftLws:          BuildLeaderWorkerSet("default").Obj(),
-			rightLws:         BuildLeaderWorkerSet("default").WorkerTemplateSpec(MakeLeaderPodSpec()).Obj(),
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").WorkerTemplateSpec(wrappers.MakeLeaderPodSpec()).Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            false,
@@ -180,7 +179,7 @@ func TestEqualRevision(t *testing.T) {
 
 func TestGetHighestRevision(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
-	lws := BuildLeaderWorkerSet("default").Obj()
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
 	revision1, err := NewRevision(context.TODO(), client, lws, "")
 	if err != nil {
 		t.Fatal(err)
@@ -224,143 +223,4 @@ func TestGetHighestRevision(t *testing.T) {
 			}
 		})
 	}
-}
-
-type LeaderWorkerSetWrapper struct {
-	leaderworkerset.LeaderWorkerSet
-}
-
-func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
-	lws := leaderworkerset.LeaderWorkerSet{}
-	lws.Name = "test-sample"
-	lws.Namespace = nsName
-	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
-	lws.Spec.Replicas = ptr.To[int32](2)
-	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.RecreateGroupOnPodRestart}
-	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
-	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
-	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec = MakeLeaderPodSpec()
-	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = MakeWorkerPodSpec()
-	// Manually set this for we didn't enable webhook in controller tests.
-	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
-		Type: leaderworkerset.RollingUpdateStrategyType,
-		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-			MaxUnavailable: intstr.FromInt32(1),
-			MaxSurge:       intstr.FromInt(0),
-		},
-	}
-	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
-	subdomainPolicy := leaderworkerset.SubdomainShared
-	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-		SubdomainPolicy: &subdomainPolicy,
-	}
-
-	return &LeaderWorkerSetWrapper{
-		lws,
-	}
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) Obj() *leaderworkerset.LeaderWorkerSet {
-	return &lwsWrapper.LeaderWorkerSet
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leaderworkerset.SubdomainPolicy) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-		SubdomainPolicy: &subdomainPolicy,
-	}
-	return lwsWrapper
-}
-func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.NetworkConfig = nil
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) MaxUnavailable(value int) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(value)
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) MaxSurge(value int) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt(value)
-	return lwsWrapper
-}
-
-func MakeLeaderPodSpec() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "worker",
-				Image: "nginx:1.14.2",
-			},
-		},
-	}
-}
-
-func MakeWorkerPodSpec() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "leader",
-				Image: "nginx:1.14.2",
-				Ports: []corev1.ContainerPort{
-					{
-						ContainerPort: 8080,
-						Protocol:      "TCP",
-					},
-				},
-			},
-		},
-	}
-}
-
-func MakeWorkerPodSpecWithVolume() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "leader",
-				Image: "nginx:1.14.2",
-				Ports: []corev1.ContainerPort{
-					{
-						ContainerPort: 8080,
-						Protocol:      "TCP",
-					},
-				},
-			},
-		},
-		Volumes: []corev1.Volume{
-			{
-				Name: "dshm",
-			},
-		},
-	}
-}
-
-func MakeWorkerPodSpecWithVolumeAndNilImage() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "leader",
-				Image: "nginx:1.14.2",
-				Ports: []corev1.ContainerPort{
-					{
-						ContainerPort: 8080,
-						Protocol:      "TCP",
-					},
-				},
-			},
-		},
-		Volumes: []corev1.Volume{
-			{
-				Name: "dshm",
-				VolumeSource: corev1.VolumeSource{
-					Image: nil,
-				},
-			},
-		},
-	}
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) WorkerTemplateSpec(spec corev1.PodSpec) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = spec
-	return lwsWrapper
 }

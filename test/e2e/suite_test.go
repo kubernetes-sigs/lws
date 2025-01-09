@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
-	"sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -89,7 +89,7 @@ func LwsReadyForTesting(client client.Client) {
 	By("waiting for webhooks to come up")
 
 	// To verify that webhooks are ready, let's create a simple lws.
-	lws := testutils.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
+	lws := wrappers.BuildLeaderWorkerSet(metav1.NamespaceDefault).Replica(3).Obj()
 
 	// Once the creation succeeds, that means the webhooks are ready
 	// and we can begin testing.

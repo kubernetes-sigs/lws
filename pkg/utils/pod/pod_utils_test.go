@@ -22,7 +22,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestContainerRestarted(t *testing.T) {
@@ -109,37 +109,37 @@ func TestAddLWSVariables(t *testing.T) {
 	}{
 		{
 			name:                     "Leader pod",
-			pod:                      testutils.MakePodWithLabels("test-sample", "0", "", "default", 3),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "0", "", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
 			expectedGroupSize:        3,
 		},
 		{
 			name:                     "Worker pod",
-			pod:                      testutils.MakePodWithLabels("test-sample", "0", "1", "default", 3),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "0", "1", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
 			expectedGroupSize:        3,
 		},
 		{
 			name:                     "Leader pod, group 1",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "", "default", 2),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
 			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Worker pod, group 1",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "default", 2),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
 			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Leader pod, group 1, non-default namespace",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
 			expectedGroupSize:        2,
 		},
 		{
 			name:                     "Worker pod, group 1, non-default namespace",
-			pod:                      testutils.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
 			expectedGroupSize:        2,
 		},

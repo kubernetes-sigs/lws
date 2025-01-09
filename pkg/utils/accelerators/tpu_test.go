@@ -22,6 +22,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/resource"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/test/wrappers"
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +41,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Worker Index is 0",
 			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-1",
 					Namespace: "default",
@@ -58,7 +59,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Worker Index is non-zero, size is above 2",
 			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-1-3",
 					Namespace: "default",
@@ -117,7 +118,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 		{
 			name: "Leader requests TPU resources",
 			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-1-3",
 					Namespace: "default",
@@ -138,7 +139,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 		{
 			name: "Leader requests TPU resources, worker with subgroup index > 0",
 			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-1-7",
 					Namespace: "default",
@@ -159,7 +160,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 		{
 			name: "Leader does not request TPU resources, worker with subgroup index > 0",
 			pod: &corev1.Pod{
-				Spec: MakeLeaderPodSpecWithTPUResource(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-1-5",
 					Namespace: "default",
@@ -204,7 +205,7 @@ func TestGetContainerRequestingTPUs(t *testing.T) {
 	}{
 		{
 			name:    "Single Container with TPU Resource",
-			podSpec: MakeLeaderPodSpecWithTPUResource(),
+			podSpec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 			expectedContainer: &corev1.Container{
 				Name:  "worker",
 				Image: "busybox",
@@ -217,7 +218,7 @@ func TestGetContainerRequestingTPUs(t *testing.T) {
 		},
 		{
 			name:    "Multiple Containers, one with TPU Resource",
-			podSpec: MakeLeaderPodSpecWithTPUResourceMultipleContainers(),
+			podSpec: wrappers.MakeLeaderPodSpecWithTPUResourceMultipleContainers(),
 			expectedContainer: &corev1.Container{
 				Name:  "worker",
 				Image: "busybox",
@@ -230,7 +231,7 @@ func TestGetContainerRequestingTPUs(t *testing.T) {
 		},
 		{
 			name:              "Container without TPU Resource",
-			podSpec:           MakeLeaderPodSpec(),
+			podSpec:           wrappers.MakeLeaderPodSpec(),
 			expectedContainer: nil,
 		},
 	}
@@ -241,60 +242,5 @@ func TestGetContainerRequestingTPUs(t *testing.T) {
 				t.Errorf("unexpected get container operation %s", diff)
 			}
 		})
-	}
-}
-
-func MakeLeaderPodSpec() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "worker",
-				Image: "busybox",
-			},
-		},
-	}
-}
-
-func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "worker",
-				Image: "busybox",
-				Resources: corev1.ResourceRequirements{
-					Limits: map[corev1.ResourceName]resource.Quantity{
-						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
-					},
-				},
-			},
-		},
-		Subdomain: "default",
-	}
-}
-
-func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
-	return corev1.PodSpec{
-		Containers: []corev1.Container{
-			{
-				Name:  "worker",
-				Image: "busybox",
-				Resources: corev1.ResourceRequirements{
-					Limits: map[corev1.ResourceName]resource.Quantity{
-						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
-					},
-				},
-			},
-			{
-				Name:  "leader",
-				Image: "nginx:1.14.2",
-				Ports: []corev1.ContainerPort{
-					{
-						ContainerPort: 8080,
-						Protocol:      "TCP",
-					},
-				},
-			},
-		},
-		Subdomain: "default",
 	}
 }

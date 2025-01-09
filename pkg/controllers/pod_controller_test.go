@@ -31,13 +31,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
-	testutils "sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
-	lws := testutils.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).Size(1).Obj()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).Size(1).Obj()
 	updateRevision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
 	if err != nil {
 		t.Fatal(err)
@@ -67,9 +67,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					},
 				},
 			},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Size(1).Obj(),
 			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
@@ -141,9 +141,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					},
 				},
 			},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
 					"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
 				}).Size(2).Obj(),
@@ -218,9 +218,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					},
 				},
 			},
-			lws: testutils.BuildBasicLeaderWorkerSet("test-sample", "default").
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
-				WorkerTemplateSpec(testutils.MakeWorkerPodSpec()).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
 					leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 				}).Size(2).SubGroupSize(2).Obj(),

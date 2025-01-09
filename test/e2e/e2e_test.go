@@ -35,6 +35,7 @@ import (
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/testutils"
 	testing "sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
@@ -64,7 +65,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can deploy lws with 'replicas', 'size', and 'restart policy' set", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.NoneRestartPolicy).Obj()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).Size(5).RestartPolicy(v1.NoneRestartPolicy).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
@@ -99,7 +100,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can create/update a lws with size=1", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(1).Size(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(1).Size(1).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
@@ -116,7 +117,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can perform a rolling update", func() {
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Obj()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		// Wait for leaderWorkerSet to be ready then update it.
@@ -131,7 +132,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can perform a rolling update with maxSurge set", func() {
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).Obj()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		// Wait for leaderWorkerSet to be ready then update it.
@@ -150,9 +151,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Can deploy lws with subgroupsize set", func() {
-		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
-		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := wrappers.MakeWorkerPodSpecWithTPUResource()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).SubGroupSize(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
@@ -177,7 +178,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 	ginkgo.It("Can perform a rolling update with subgroupsize and MaxSurge set", func() {
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubGroupSize(1).Obj()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubGroupSize(1).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		// Wait for leaderWorkerSet to be ready then update it.
@@ -196,9 +197,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Adds env vars to containers when using TPU", func() {
-		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
-		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := wrappers.MakeWorkerPodSpecWithTPUResource()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(4).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
@@ -210,9 +211,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
-		leaderPodSpec := testing.MakeLeaderPodSpecWithTPUResource()
-		workerPodSpec := testing.MakeWorkerPodSpecWithTPUResource()
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := wrappers.MakeWorkerPodSpecWithTPUResource()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 		testing.UpdateSubdomainPolicy(ctx, k8sClient, lws, leaderworkerset.SubdomainUniquePerReplica)
@@ -235,7 +236,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("headless services scale up during MaxSurge", func() {
-		lws := testing.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		// Happen during rolling update.
@@ -256,9 +257,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {
-		leaderPodSpec := testutils.MakeLeaderPodSpec()
-		workerPodSpec := testutils.MakeWorkerPodSpec()
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		leaderPodSpec := wrappers.MakeLeaderPodSpec()
+		workerPodSpec := wrappers.MakeWorkerPodSpec()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
 
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		lwsPods := &corev1.PodList{}
@@ -270,7 +271,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	})
 
 	ginkgo.It("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", func() {
-		lws = testing.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(3).RestartPolicy(v1.RecreateGroupOnPodRestart).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
