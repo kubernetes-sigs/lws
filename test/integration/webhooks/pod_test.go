@@ -31,6 +31,7 @@ import (
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	testutils "sigs.k8s.io/lws/test/testutils"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", func() {
@@ -72,7 +73,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							"random-label": "random-value",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpec(),
+					Spec: wrappers.MakeLeaderPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -99,7 +100,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: wrappers.MakeWorkerPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -128,7 +129,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: wrappers.MakeWorkerPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -163,7 +164,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey:        "4",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -204,7 +205,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey:        "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: wrappers.MakeWorkerPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -240,7 +241,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -266,7 +267,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						Name:      "test-1",
 						Namespace: ns.Name,
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -290,7 +291,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: wrappers.MakeWorkerPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -314,7 +315,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "3",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpec(),
+					Spec: wrappers.MakeWorkerPodSpec(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -338,7 +339,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "5",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -366,7 +367,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubdomainPolicyAnnotationKey: string(leaderworkerset.SubdomainUniquePerReplica),
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -404,7 +405,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey: "5",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -433,7 +434,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -463,7 +464,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey:        "5",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -491,7 +492,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "5",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -520,7 +521,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey: "5",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -549,7 +550,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							acceleratorutils.LeaderRequestsTPUsAnnotationKey: "true",
 						},
 					},
-					Spec: testutils.MakeWorkerPodSpecWithTPUResource(),
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -576,7 +577,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "1",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -604,7 +605,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -629,7 +630,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -656,7 +657,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -679,7 +680,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "4",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -702,7 +703,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 				webhooks.SetExclusiveAffinities(pod, "uniquehash", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey)
 				return *pod
@@ -727,7 +728,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpecWithTPUResource(),
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
 				pod.Spec.Affinity = &corev1.Affinity{}
 				pod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
@@ -783,7 +784,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							leaderworkerset.SizeAnnotationKey: "2",
 						},
 					},
-					Spec: testutils.MakePodSpecWithInitContainer(),
+					Spec: wrappers.MakePodSpecWithInitContainer(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
@@ -848,7 +849,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 							"random-label": "random-value",
 						},
 					},
-					Spec: testutils.MakeLeaderPodSpec(),
+					Spec: wrappers.MakeLeaderPodSpec(),
 				}
 			},
 			podCreationShouldFail: false,
