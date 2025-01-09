@@ -166,10 +166,10 @@ Taking those into account, we'll combine controller revisions and template hashe
 
 
 ### LWS controller
-In order to fix #281, we will use the hash key in the leaderSts to make a controller revision lookup, and get the LWS object that was used to create it. To determine if an update has happened, we'll compare the fields that are used to generate the template hash.
+In order to fix #281, we will use the hash key in the leaderSts to make a controller revision lookup, and get the LWS object that was used to create it. To determine if an update has happened, we'll compare the fields that were used to generate the template hash, `NetworkConfig` and `LeaderWorkerTemplate`. Template hash will be repurposed to RevisionKey.
 
 There are three different cases where we need to create a new revision
-- Case 1: Upgrading from the LWS controller from a version that doesn't support controller revision
+- Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
 - Case 2: Newly created LWS object
 - Case 3: Updating the LWS Object
 
