@@ -1,4 +1,2 @@
-# The TPU vllm image can be built using the dockerfile found in 
-# in the vllm repo https://github.com/vllm-project/vllm/blob/main/Dockerfile.tpu
-FROM tpu_vllm_image
+FROM docker.io/vllm/vllm-tpu:2e33fe419186c65a18da6668972d61d7bbc31564
 COPY ray_init.sh /vllm-workspace/ray_init.sh
