@@ -66,6 +66,7 @@ rules:
   - apiGroups:
       - apps
     resources:
+      - controllerrevisions
       - statefulsets
     verbs:
       - create
@@ -78,12 +79,14 @@ rules:
   - apiGroups:
       - apps
     resources:
+      - controllerrevisions/finalizers
       - statefulsets/finalizers
     verbs:
       - update
   - apiGroups:
       - apps
     resources:
+      - controllerrevisions/status
       - statefulsets/status
     verbs:
       - get
