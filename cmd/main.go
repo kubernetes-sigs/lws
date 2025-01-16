@@ -35,8 +35,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
+	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/webhooks"
@@ -46,12 +48,14 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	flagsSet = make(map[string]bool)
 )
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(leaderworkersetv1.AddToScheme(scheme))
+	utilruntime.Must(configapi.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -69,6 +73,7 @@ func main() {
 		leaderElectRetryPeriod   time.Duration
 		leaderElectResourceLock  string
 		leaderElectionID         string
+		configFile               string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
@@ -93,6 +98,10 @@ func main() {
 			"'endpoints', 'configmaps', 'leases', 'endpointsleases' and 'configmapsleases'")
 	flag.StringVar(&leaderElectionID, "leader-elect-resource-name", "b8b2488c.x-k8s.io",
 		"The name of resource object that is used for locking during leader election. ")
+	flag.StringVar(&configFile, "config", "",
+		"The controller will load its initial configuration from this file. "+
+			"Command-line flags will override any configurations set in this file. "+
+			"Omit this flag to use the default configuration values.")
 
 	opts := zap.Options{
 		Development: true,
@@ -100,11 +109,29 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	flag.Visit(func(f *flag.Flag) {
+		flagsSet[f.Name] = true
+	})
+
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID)
+	if err != nil {
+		setupLog.Error(err, "unable to load the configuration")
+		os.Exit(1)
+	}
+
 	kubeConfig := ctrl.GetConfigOrDie()
-	kubeConfig.QPS = float32(qps)
-	kubeConfig.Burst = burst
+
+	kubeConfig.QPS = *cfg.ClientConnection.QPS
+	if flagsSet["kube-api-qps"] {
+		kubeConfig.QPS = float32(qps)
+	}
+	kubeConfig.Burst = int(*cfg.ClientConnection.Burst)
+	if flagsSet["kube-api-burst"] {
+		kubeConfig.Burst = burst
+	}
+
 	namespace := utils.GetOperatorNamespace()
 
 	// Disabling http/2 to prevent being vulnerable to the HTTP/2 Stream Cancellation and
@@ -114,6 +141,10 @@ func main() {
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("disabling http/2")
 		c.NextProtos = []string{"http/1.1"}
+	}
+
+	if !flagsSet["metrics-bind-address"] {
+		metricsAddr = cfg.Metrics.BindAddress
 	}
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
@@ -127,40 +158,23 @@ func main() {
 		TLSOpts:        []func(*tls.Config){disableHTTP2},
 	}
 
-	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
-		Scheme:                     scheme,
-		Metrics:                    metricsServerOptions,
-		HealthProbeBindAddress:     probeAddr,
-		LeaderElection:             enableLeaderElection,
-		LeaderElectionID:           leaderElectionID,
-		LeaderElectionResourceLock: leaderElectResourceLock,
-		LeaderElectionNamespace:    namespace, // Using namespace variable here
-		LeaseDuration:              &leaderElectLeaseDuration,
-		RenewDeadline:              &leaderElectRenewDeadline,
-		RetryPeriod:                &leaderElectRetryPeriod,
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
-	})
+	options.Metrics = metricsServerOptions
+	options.LeaderElectionNamespace = namespace
 
+	mgr, err := ctrl.NewManager(kubeConfig, options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
 	certsReady := make(chan struct{})
-
-	if err = cert.CertsManager(mgr, namespace, certsReady); err != nil {
-		setupLog.Error(err, "unable to setup cert rotation")
-		os.Exit(1)
+	if cfg.InternalCertManagement != nil && *cfg.InternalCertManagement.Enable {
+		if err = cert.CertsManager(mgr, namespace, *cfg.InternalCertManagement.WebhookServiceName, *cfg.InternalCertManagement.WebhookSecretName, certsReady); err != nil {
+			setupLog.Error(err, "unable to setup cert rotation")
+			os.Exit(1)
+		}
+	} else {
+		close(certsReady)
 	}
 
 	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
@@ -225,4 +239,46 @@ func setupHealthzAndReadyzCheck(mgr ctrl.Manager) {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+}
+
+func apply(configFile string,
+	probeAddr string,
+	enableLeaderElection bool,
+	leaderElectLeaseDuration time.Duration,
+	leaderElectRenewDeadline time.Duration,
+	leaderElectRetryPeriod time.Duration,
+	leaderElectResourceLock, leaderElectionID string) (ctrl.Options, configapi.Configuration, error) {
+	options, cfg, err := config.Load(scheme, configFile)
+	if err != nil {
+		return options, cfg, err
+	}
+	cfgStr, err := config.Encode(scheme, &cfg)
+	if err != nil {
+		return options, cfg, err
+	}
+
+	if flagsSet["health-probe-bind-address"] {
+		options.HealthProbeBindAddress = probeAddr
+	}
+	if flagsSet["leader-elect"] {
+		options.LeaderElection = enableLeaderElection
+	}
+	if flagsSet["leader-elect-lease-duration"] {
+		options.LeaseDuration = &leaderElectLeaseDuration
+	}
+	if flagsSet["leader-elect-renew-deadline"] {
+		options.RenewDeadline = &leaderElectRenewDeadline
+	}
+	if flagsSet["leader-elect-retry-period"] {
+		options.RetryPeriod = &leaderElectRetryPeriod
+	}
+	if flagsSet["leader-elect-resource-lock"] {
+		options.LeaderElectionResourceLock = leaderElectResourceLock
+	}
+	if flagsSet["leader-elect-resource-name"] {
+		options.LeaderElectionID = leaderElectionID
+	}
+
+	setupLog.Info("Successfully loaded configuration", "config", cfgStr)
+	return options, cfg, nil
 }

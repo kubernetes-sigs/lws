@@ -21,4 +21,12 @@ resources:
     defaulting: true
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: lws.x-k8s.io
+  group: lws
+  kind: Configuration
+  path: sigs.k8s.io/lws/api/config/v1alpha1
+  version: v1alpha1
 version: "3"
