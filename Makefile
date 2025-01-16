@@ -18,13 +18,6 @@ endif
 CONTAINER_TOOL ?= docker
 
 GIT_TAG ?= $(shell git describe --tags --dirty --always)
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 # Image URL to use all building/pushing image targets
 DOCKER_BUILDX_CMD ?= docker buildx
 IMAGE_BUILD_CMD ?= $(DOCKER_BUILDX_CMD) build
@@ -156,7 +149,6 @@ run: manifests fmt vet ## Run a controller from your host.
 .PHONY: image-build
 image-build:
 	$(IMAGE_BUILD_CMD) -t $(IMG) \
-		--platform=$(PLATFORMS) \
 		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg CGO_ENABLED=$(CGO_ENABLED) \
@@ -167,11 +159,22 @@ image-build:
 image-push: PUSH=--push
 image-push: image-build
 
+# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
+# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
+# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
+# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
+# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
+# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
+PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	- $(CONTAINER_TOOL) buildx create --name project-v3-builder --use
-	- $(MAKE) image-build PUSH=$(PUSH)
+	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+	- $(CONTAINER_TOOL) buildx create --name project-v3-builder
+	$(CONTAINER_TOOL) buildx use project-v3-builder
+	- $(CONTAINER_TOOL) buildx build --build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) --build-arg CGO_ENABLED=$(CGO_ENABLED) --build-arg BASE_IMAGE=$(BASE_IMAGE) --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm project-v3-builder
+	rm Dockerfile.cross
 
 ##@ Deployment
 
