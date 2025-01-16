@@ -52,9 +52,6 @@ The following table lists the configurable parameters of the LWS chart and their
 | `image.manager.repository`                  | Repository for manager image                   | `gcr.io/k8s-staging-lws/lws`         |
 | `image.manager.tag`                         | Tag for manager image                          | `main`                               |
 | `image.manager.pullPolicy`                  | Pull policy for manager image                  | `IfNotPresent`                       |
-| `image.kubeRbacProxy.repository`            | Repository for kubeRbacProxy image             | `gcr.io/kubebuilder/kube-rbac-proxy` |
-| `image.kubeRbacProxy.tag`                   | Tag for kubeRbacProxy image                    | `v0.15.0`                            |
-| `image.kubeRbacProxy.pullPolicy`            | Pull policy for kubeRbacProxy image            | `IfNotPresent`                       |
 | `podAnnotations`                            | Annotations for pods                           | `{}`                                 |
 | `podSecurityContext.runAsNonRoot`           | Run pod as non-root user                       | `true`                               |
 | `securityContext.allowPrivilegeEscalation`  | Allow privilege escalation in security context | `false`                              |
