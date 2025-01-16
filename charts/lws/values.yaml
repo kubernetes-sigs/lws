@@ -18,12 +18,6 @@ image:
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
     pullPolicy: IfNotPresent
-  kubeRbacProxy:
-    repository: gcr.io/kubebuilder/kube-rbac-proxy
-    # tag
-    tag: v0.15.0
-    # This should be set to 'IfNotPresent' for released version
-    pullPolicy: IfNotPresent
 
 podAnnotations: {}
 
