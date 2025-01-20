@@ -18,24 +18,24 @@ limitations under the License.
 package v1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
-	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	apileaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	versioned "sigs.k8s.io/lws/client-go/clientset/versioned"
 	internalinterfaces "sigs.k8s.io/lws/client-go/informers/externalversions/internalinterfaces"
-	v1 "sigs.k8s.io/lws/client-go/listers/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/client-go/listers/leaderworkerset/v1"
 )
 
 // LeaderWorkerSetInformer provides access to a shared informer and lister for
 // LeaderWorkerSets.
 type LeaderWorkerSetInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1.LeaderWorkerSetLister
+	Lister() leaderworkersetv1.LeaderWorkerSetLister
 }
 
 type leaderWorkerSetInformer struct {
@@ -70,7 +70,7 @@ func NewFilteredLeaderWorkerSetInformer(client versioned.Interface, namespace st
 				return client.LeaderworkersetV1().LeaderWorkerSets(namespace).Watch(context.TODO(), options)
 			},
 		},
-		&leaderworkersetv1.LeaderWorkerSet{},
+		&apileaderworkersetv1.LeaderWorkerSet{},
 		resyncPeriod,
 		indexers,
 	)
@@ -81,9 +81,9 @@ func (f *leaderWorkerSetInformer) defaultInformer(client versioned.Interface, re
 }
 
 func (f *leaderWorkerSetInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&leaderworkersetv1.LeaderWorkerSet{}, f.defaultInformer)
+	return f.factory.InformerFor(&apileaderworkersetv1.LeaderWorkerSet{}, f.defaultInformer)
 }
 
-func (f *leaderWorkerSetInformer) Lister() v1.LeaderWorkerSetLister {
-	return v1.NewLeaderWorkerSetLister(f.Informer().GetIndexer())
+func (f *leaderWorkerSetInformer) Lister() leaderworkersetv1.LeaderWorkerSetLister {
+	return leaderworkersetv1.NewLeaderWorkerSetLister(f.Informer().GetIndexer())
 }

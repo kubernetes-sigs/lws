@@ -18,10 +18,10 @@ limitations under the License.
 package v1
 
 import (
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/listers"
-	"k8s.io/client-go/tools/cache"
-	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // LeaderWorkerSetLister helps list LeaderWorkerSets.
@@ -29,7 +29,7 @@ import (
 type LeaderWorkerSetLister interface {
 	// List lists all LeaderWorkerSets in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1.LeaderWorkerSet, err error)
+	List(selector labels.Selector) (ret []*leaderworkersetv1.LeaderWorkerSet, err error)
 	// LeaderWorkerSets returns an object that can list and get LeaderWorkerSets.
 	LeaderWorkerSets(namespace string) LeaderWorkerSetNamespaceLister
 	LeaderWorkerSetListerExpansion
@@ -37,17 +37,17 @@ type LeaderWorkerSetLister interface {
 
 // leaderWorkerSetLister implements the LeaderWorkerSetLister interface.
 type leaderWorkerSetLister struct {
-	listers.ResourceIndexer[*v1.LeaderWorkerSet]
+	listers.ResourceIndexer[*leaderworkersetv1.LeaderWorkerSet]
 }
 
 // NewLeaderWorkerSetLister returns a new LeaderWorkerSetLister.
 func NewLeaderWorkerSetLister(indexer cache.Indexer) LeaderWorkerSetLister {
-	return &leaderWorkerSetLister{listers.New[*v1.LeaderWorkerSet](indexer, v1.Resource("leaderworkerset"))}
+	return &leaderWorkerSetLister{listers.New[*leaderworkersetv1.LeaderWorkerSet](indexer, leaderworkersetv1.Resource("leaderworkerset"))}
 }
 
 // LeaderWorkerSets returns an object that can list and get LeaderWorkerSets.
 func (s *leaderWorkerSetLister) LeaderWorkerSets(namespace string) LeaderWorkerSetNamespaceLister {
-	return leaderWorkerSetNamespaceLister{listers.NewNamespaced[*v1.LeaderWorkerSet](s.ResourceIndexer, namespace)}
+	return leaderWorkerSetNamespaceLister{listers.NewNamespaced[*leaderworkersetv1.LeaderWorkerSet](s.ResourceIndexer, namespace)}
 }
 
 // LeaderWorkerSetNamespaceLister helps list and get LeaderWorkerSets.
@@ -55,15 +55,15 @@ func (s *leaderWorkerSetLister) LeaderWorkerSets(namespace string) LeaderWorkerS
 type LeaderWorkerSetNamespaceLister interface {
 	// List lists all LeaderWorkerSets in the indexer for a given namespace.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1.LeaderWorkerSet, err error)
+	List(selector labels.Selector) (ret []*leaderworkersetv1.LeaderWorkerSet, err error)
 	// Get retrieves the LeaderWorkerSet from the indexer for a given namespace and name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1.LeaderWorkerSet, error)
+	Get(name string) (*leaderworkersetv1.LeaderWorkerSet, error)
 	LeaderWorkerSetNamespaceListerExpansion
 }
 
 // leaderWorkerSetNamespaceLister implements the LeaderWorkerSetNamespaceLister
 // interface.
 type leaderWorkerSetNamespaceLister struct {
-	listers.ResourceIndexer[*v1.LeaderWorkerSet]
+	listers.ResourceIndexer[*leaderworkersetv1.LeaderWorkerSet]
 }

@@ -18,17 +18,17 @@ limitations under the License.
 package v1
 
 import (
-	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // LeaderWorkerSetStatusApplyConfiguration represents a declarative configuration of the LeaderWorkerSetStatus type for use
 // with apply.
 type LeaderWorkerSetStatusApplyConfiguration struct {
-	Conditions      []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	ReadyReplicas   *int32                           `json:"readyReplicas,omitempty"`
-	UpdatedReplicas *int32                           `json:"updatedReplicas,omitempty"`
-	Replicas        *int32                           `json:"replicas,omitempty"`
-	HPAPodSelector  *string                          `json:"hpaPodSelector,omitempty"`
+	Conditions      []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	ReadyReplicas   *int32                               `json:"readyReplicas,omitempty"`
+	UpdatedReplicas *int32                               `json:"updatedReplicas,omitempty"`
+	Replicas        *int32                               `json:"replicas,omitempty"`
+	HPAPodSelector  *string                              `json:"hpaPodSelector,omitempty"`
 }
 
 // LeaderWorkerSetStatusApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetStatus type for use with
@@ -40,7 +40,7 @@ func LeaderWorkerSetStatus() *LeaderWorkerSetStatusApplyConfiguration {
 // WithConditions adds the given value to the Conditions field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the Conditions field.
-func (b *LeaderWorkerSetStatusApplyConfiguration) WithConditions(values ...*v1.ConditionApplyConfiguration) *LeaderWorkerSetStatusApplyConfiguration {
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithConditions(values ...*metav1.ConditionApplyConfiguration) *LeaderWorkerSetStatusApplyConfiguration {
 	for i := range values {
 		if values[i] == nil {
 			panic("nil value passed to WithConditions")
