@@ -28,10 +28,20 @@ rules:
   - apiGroups:
       - ""
     resources:
-      - pods
       - services
     verbs:
       - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
       - delete
       - get
       - list
