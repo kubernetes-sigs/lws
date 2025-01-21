@@ -18,14 +18,14 @@ limitations under the License.
 package v1
 
 import (
-	"context"
+	context "context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	gentype "k8s.io/client-go/gentype"
-	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	applyconfigurationleaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 	scheme "sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
 )
 
@@ -37,36 +37,37 @@ type LeaderWorkerSetsGetter interface {
 
 // LeaderWorkerSetInterface has methods to work with LeaderWorkerSet resources.
 type LeaderWorkerSetInterface interface {
-	Create(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.CreateOptions) (*v1.LeaderWorkerSet, error)
-	Update(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (*v1.LeaderWorkerSet, error)
+	Create(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, opts metav1.CreateOptions) (*leaderworkersetv1.LeaderWorkerSet, error)
+	Update(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, opts metav1.UpdateOptions) (*leaderworkersetv1.LeaderWorkerSet, error)
 	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-	UpdateStatus(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (*v1.LeaderWorkerSet, error)
+	UpdateStatus(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, opts metav1.UpdateOptions) (*leaderworkersetv1.LeaderWorkerSet, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
-	Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.LeaderWorkerSet, error)
-	List(ctx context.Context, opts metav1.ListOptions) (*v1.LeaderWorkerSetList, error)
+	Get(ctx context.Context, name string, opts metav1.GetOptions) (*leaderworkersetv1.LeaderWorkerSet, error)
+	List(ctx context.Context, opts metav1.ListOptions) (*leaderworkersetv1.LeaderWorkerSetList, error)
 	Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.LeaderWorkerSet, err error)
-	Apply(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *leaderworkersetv1.LeaderWorkerSet, err error)
+	Apply(ctx context.Context, leaderWorkerSet *applyconfigurationleaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *leaderworkersetv1.LeaderWorkerSet, err error)
 	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-	ApplyStatus(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error)
+	ApplyStatus(ctx context.Context, leaderWorkerSet *applyconfigurationleaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *leaderworkersetv1.LeaderWorkerSet, err error)
 	LeaderWorkerSetExpansion
 }
 
 // leaderWorkerSets implements LeaderWorkerSetInterface
 type leaderWorkerSets struct {
-	*gentype.ClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration]
+	*gentype.ClientWithListAndApply[*leaderworkersetv1.LeaderWorkerSet, *leaderworkersetv1.LeaderWorkerSetList, *applyconfigurationleaderworkersetv1.LeaderWorkerSetApplyConfiguration]
 }
 
 // newLeaderWorkerSets returns a LeaderWorkerSets
 func newLeaderWorkerSets(c *LeaderworkersetV1Client, namespace string) *leaderWorkerSets {
 	return &leaderWorkerSets{
-		gentype.NewClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration](
+		gentype.NewClientWithListAndApply[*leaderworkersetv1.LeaderWorkerSet, *leaderworkersetv1.LeaderWorkerSetList, *applyconfigurationleaderworkersetv1.LeaderWorkerSetApplyConfiguration](
 			"leaderworkersets",
 			c.RESTClient(),
 			scheme.ParameterCodec,
 			namespace,
-			func() *v1.LeaderWorkerSet { return &v1.LeaderWorkerSet{} },
-			func() *v1.LeaderWorkerSetList { return &v1.LeaderWorkerSetList{} }),
+			func() *leaderworkersetv1.LeaderWorkerSet { return &leaderworkersetv1.LeaderWorkerSet{} },
+			func() *leaderworkersetv1.LeaderWorkerSetList { return &leaderworkersetv1.LeaderWorkerSetList{} },
+		),
 	}
 }

@@ -18,179 +18,33 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-	json "encoding/json"
-	"fmt"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	gentype "k8s.io/client-go/gentype"
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
+	typedleaderworkersetv1 "sigs.k8s.io/lws/client-go/clientset/versioned/typed/leaderworkerset/v1"
 )
 
-// FakeLeaderWorkerSets implements LeaderWorkerSetInterface
-type FakeLeaderWorkerSets struct {
+// fakeLeaderWorkerSets implements LeaderWorkerSetInterface
+type fakeLeaderWorkerSets struct {
+	*gentype.FakeClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration]
 	Fake *FakeLeaderworkersetV1
-	ns   string
 }
 
-var leaderworkersetsResource = v1.SchemeGroupVersion.WithResource("leaderworkersets")
-
-var leaderworkersetsKind = v1.SchemeGroupVersion.WithKind("LeaderWorkerSet")
-
-// Get takes name of the leaderWorkerSet, and returns the corresponding leaderWorkerSet object, and an error if there is any.
-func (c *FakeLeaderWorkerSets) Get(ctx context.Context, name string, options metav1.GetOptions) (result *v1.LeaderWorkerSet, err error) {
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewGetActionWithOptions(leaderworkersetsResource, c.ns, name, options), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
+func newFakeLeaderWorkerSets(fake *FakeLeaderworkersetV1, namespace string) typedleaderworkersetv1.LeaderWorkerSetInterface {
+	return &fakeLeaderWorkerSets{
+		gentype.NewFakeClientWithListAndApply[*v1.LeaderWorkerSet, *v1.LeaderWorkerSetList, *leaderworkersetv1.LeaderWorkerSetApplyConfiguration](
+			fake.Fake,
+			namespace,
+			v1.SchemeGroupVersion.WithResource("leaderworkersets"),
+			v1.SchemeGroupVersion.WithKind("LeaderWorkerSet"),
+			func() *v1.LeaderWorkerSet { return &v1.LeaderWorkerSet{} },
+			func() *v1.LeaderWorkerSetList { return &v1.LeaderWorkerSetList{} },
+			func(dst, src *v1.LeaderWorkerSetList) { dst.ListMeta = src.ListMeta },
+			func(list *v1.LeaderWorkerSetList) []*v1.LeaderWorkerSet { return gentype.ToPointerSlice(list.Items) },
+			func(list *v1.LeaderWorkerSetList, items []*v1.LeaderWorkerSet) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// List takes label and field selectors, and returns the list of LeaderWorkerSets that match those selectors.
-func (c *FakeLeaderWorkerSets) List(ctx context.Context, opts metav1.ListOptions) (result *v1.LeaderWorkerSetList, err error) {
-	emptyResult := &v1.LeaderWorkerSetList{}
-	obj, err := c.Fake.
-		Invokes(testing.NewListActionWithOptions(leaderworkersetsResource, leaderworkersetsKind, c.ns, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1.LeaderWorkerSetList{ListMeta: obj.(*v1.LeaderWorkerSetList).ListMeta}
-	for _, item := range obj.(*v1.LeaderWorkerSetList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested leaderWorkerSets.
-func (c *FakeLeaderWorkerSets) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewWatchActionWithOptions(leaderworkersetsResource, c.ns, opts))
-
-}
-
-// Create takes the representation of a leaderWorkerSet and creates it.  Returns the server's representation of the leaderWorkerSet, and an error, if there is any.
-func (c *FakeLeaderWorkerSets) Create(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.CreateOptions) (result *v1.LeaderWorkerSet, err error) {
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewCreateActionWithOptions(leaderworkersetsResource, c.ns, leaderWorkerSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// Update takes the representation of a leaderWorkerSet and updates it. Returns the server's representation of the leaderWorkerSet, and an error, if there is any.
-func (c *FakeLeaderWorkerSets) Update(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (result *v1.LeaderWorkerSet, err error) {
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateActionWithOptions(leaderworkersetsResource, c.ns, leaderWorkerSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeLeaderWorkerSets) UpdateStatus(ctx context.Context, leaderWorkerSet *v1.LeaderWorkerSet, opts metav1.UpdateOptions) (result *v1.LeaderWorkerSet, err error) {
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceActionWithOptions(leaderworkersetsResource, "status", c.ns, leaderWorkerSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// Delete takes name of the leaderWorkerSet and deletes it. Returns an error if one occurs.
-func (c *FakeLeaderWorkerSets) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewDeleteActionWithOptions(leaderworkersetsResource, c.ns, name, opts), &v1.LeaderWorkerSet{})
-
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeLeaderWorkerSets) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
-	action := testing.NewDeleteCollectionActionWithOptions(leaderworkersetsResource, c.ns, opts, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1.LeaderWorkerSetList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched leaderWorkerSet.
-func (c *FakeLeaderWorkerSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.LeaderWorkerSet, err error) {
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(leaderworkersetsResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// Apply takes the given apply declarative configuration, applies it and returns the applied leaderWorkerSet.
-func (c *FakeLeaderWorkerSets) Apply(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error) {
-	if leaderWorkerSet == nil {
-		return nil, fmt.Errorf("leaderWorkerSet provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(leaderWorkerSet)
-	if err != nil {
-		return nil, err
-	}
-	name := leaderWorkerSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("leaderWorkerSet.Name must be provided to Apply")
-	}
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(leaderworkersetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
-}
-
-// ApplyStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-func (c *FakeLeaderWorkerSets) ApplyStatus(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSetApplyConfiguration, opts metav1.ApplyOptions) (result *v1.LeaderWorkerSet, err error) {
-	if leaderWorkerSet == nil {
-		return nil, fmt.Errorf("leaderWorkerSet provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(leaderWorkerSet)
-	if err != nil {
-		return nil, err
-	}
-	name := leaderWorkerSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("leaderWorkerSet.Name must be provided to Apply")
-	}
-	emptyResult := &v1.LeaderWorkerSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(leaderworkersetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1.LeaderWorkerSet), err
 }

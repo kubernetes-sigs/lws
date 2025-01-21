@@ -28,7 +28,7 @@ type FakeLeaderworkersetV1 struct {
 }
 
 func (c *FakeLeaderworkersetV1) LeaderWorkerSets(namespace string) v1.LeaderWorkerSetInterface {
-	return &FakeLeaderWorkerSets{c, namespace}
+	return newFakeLeaderWorkerSets(c, namespace)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

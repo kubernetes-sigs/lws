@@ -18,13 +18,13 @@ limitations under the License.
 package v1
 
 import (
-	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // RolloutStrategyApplyConfiguration represents a declarative configuration of the RolloutStrategy type for use
 // with apply.
 type RolloutStrategyApplyConfiguration struct {
-	Type                       *v1.RolloutStrategyType                       `json:"type,omitempty"`
+	Type                       *leaderworkersetv1.RolloutStrategyType        `json:"type,omitempty"`
 	RollingUpdateConfiguration *RollingUpdateConfigurationApplyConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 
@@ -37,7 +37,7 @@ func RolloutStrategy() *RolloutStrategyApplyConfiguration {
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *RolloutStrategyApplyConfiguration) WithType(value v1.RolloutStrategyType) *RolloutStrategyApplyConfiguration {
+func (b *RolloutStrategyApplyConfiguration) WithType(value leaderworkersetv1.RolloutStrategyType) *RolloutStrategyApplyConfiguration {
 	b.Type = &value
 	return b
 }
