@@ -54,6 +54,7 @@ apiVersion: config.lws.x-k8s.io/v1alpha1
 kind: Configuration
 health:
   healthProbeBindAddress: :38081
+  readinessEndpointName:  test
 metrics:
   bindAddress: :38080
 leaderElection:
@@ -161,6 +162,8 @@ webhook:
 
 	defaultControlOptions := ctrl.Options{
 		HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
+		ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
+		LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
 		Metrics: metricsserver.Options{
 			BindAddress: configapi.DefaultMetricsBindAddress,
 		},
@@ -172,7 +175,8 @@ webhook:
 		RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
 		WebhookServer: &webhook.DefaultServer{
 			Options: webhook.Options{
-				Port: configapi.DefaultWebhookPort,
+				Port:    configapi.DefaultWebhookPort,
+				CertDir: configapi.DefaultWebhookCertDir,
 			},
 		},
 	}
@@ -218,6 +222,8 @@ webhook:
 			},
 			wantOptions: ctrl.Options{
 				HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
+				ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
+				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
 				Metrics: metricsserver.Options{
 					BindAddress: configapi.DefaultMetricsBindAddress,
 				},
@@ -229,7 +235,8 @@ webhook:
 				RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
-						Port: configapi.DefaultWebhookPort,
+						Port:    configapi.DefaultWebhookPort,
+						CertDir: configapi.DefaultWebhookCertDir,
 					},
 				},
 			},
@@ -256,6 +263,8 @@ webhook:
 			},
 			wantOptions: ctrl.Options{
 				HealthProbeBindAddress: ":38081",
+				ReadinessEndpointName:  "test",
+				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
 				Metrics: metricsserver.Options{
 					BindAddress: ":38080",
 				},
@@ -267,7 +276,8 @@ webhook:
 				RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
-						Port: 9444,
+						Port:    9444,
+						CertDir: configapi.DefaultWebhookCertDir,
 					},
 				},
 			},
@@ -317,6 +327,8 @@ webhook:
 			},
 			wantOptions: ctrl.Options{
 				HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
+				ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
+				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
 				Metrics: metricsserver.Options{
 					BindAddress: configapi.DefaultMetricsBindAddress,
 				},
@@ -328,7 +340,8 @@ webhook:
 				LeaderElection:             false,
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
-						Port: configapi.DefaultWebhookPort,
+						Port:    configapi.DefaultWebhookPort,
+						CertDir: configapi.DefaultWebhookCertDir,
 					},
 				},
 			},
@@ -417,13 +430,16 @@ func TestEncode(t *testing.T) {
 				"apiVersion": "config.lws.x-k8s.io/v1alpha1",
 				"kind":       "Configuration",
 				"webhook": map[string]any{
-					"port": int64(configapi.DefaultWebhookPort),
+					"port":    int64(configapi.DefaultWebhookPort),
+					"certDir": configapi.DefaultWebhookCertDir,
 				},
 				"metrics": map[string]any{
 					"bindAddress": configapi.DefaultMetricsBindAddress,
 				},
 				"health": map[string]any{
 					"healthProbeBindAddress": configapi.DefaultHealthProbeBindAddress,
+					"readinessEndpointName":  configapi.DefaultReadinessEndpoint,
+					"livenessEndpointName":   configapi.DefaultLivenessEndpoint,
 				},
 				"leaderElection": map[string]any{
 					"leaderElect":       true,
