@@ -11,9 +11,6 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
-GO_CMD ?= go
-
-
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -150,7 +147,7 @@ verify: lint toc-verify
 
 .PHONY: build
 build: manifests fmt vet ## Build manager binary.
-	$(GO_BUILD_ENV) $(GO_CMD) build -o bin/manager cmd/main.go
+	go build -o bin/manager cmd/main.go
 
 .PHONY: run
 run: manifests fmt vet ## Run a controller from your host.
