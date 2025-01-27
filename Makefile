@@ -11,6 +11,9 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+GO_CMD ?= go
+
+
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -131,7 +134,7 @@ test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 
 .PHONY: test-e2e
 test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
-	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ./hack/e2e-test.sh
+	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
@@ -147,7 +150,7 @@ verify: lint toc-verify
 
 .PHONY: build
 build: manifests fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	$(GO_BUILD_ENV) $(GO_CMD) build -o bin/manager cmd/main.go
 
 .PHONY: run
 run: manifests fmt vet ## Run a controller from your host.
