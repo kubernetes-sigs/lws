@@ -22,8 +22,6 @@ import (
 )
 
 const (
-	serviceName             = "lws-webhook-service"
-	secretName              = "lws-webhook-server-cert"
 	certDir                 = "/tmp/k8s-webhook-server/serving-certs"
 	validateWebhookConfName = "lws-validating-webhook-configuration"
 	mutatingWebhookConfName = "lws-mutating-webhook-configuration"
@@ -37,13 +35,6 @@ const (
 
 // CertsManager creates certs for webhooks.
 func CertsManager(mgr ctrl.Manager, namespace string, configServiceName string, configSecretName string, setupFinish chan struct{}) error {
-	if configServiceName == "" {
-		configServiceName = serviceName
-	}
-	if configSecretName == "" {
-		configSecretName = secretName
-	}
-
 	// dnsName is the format of <service name>.<namespace>.svc
 	var dnsName = fmt.Sprintf("%s.%s.svc", configServiceName, namespace)
 
