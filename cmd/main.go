@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/pkg/utils"
+	"sigs.k8s.io/lws/pkg/utils/useragent"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	//+kubebuilder:scaffold:imports
 )
@@ -130,6 +131,10 @@ func main() {
 	kubeConfig.Burst = int(*cfg.ClientConnection.Burst)
 	if flagsSet["kube-api-burst"] {
 		kubeConfig.Burst = burst
+	}
+
+	if kubeConfig.UserAgent == "" {
+		kubeConfig.UserAgent = useragent.Default()
 	}
 
 	namespace := utils.GetOperatorNamespace()
