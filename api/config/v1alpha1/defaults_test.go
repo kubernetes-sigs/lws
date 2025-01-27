@@ -43,13 +43,16 @@ func TestSetDefaults_Configuration(t *testing.T) {
 			ResourceName:  DefaultLeaderElectionID,
 		},
 		Webhook: ControllerWebhook{
-			Port: ptr.To(DefaultWebhookPort),
+			Port:    ptr.To(DefaultWebhookPort),
+			CertDir: DefaultWebhookCertDir,
 		},
 		Metrics: ControllerMetrics{
 			BindAddress: DefaultMetricsBindAddress,
 		},
 		Health: ControllerHealth{
 			HealthProbeBindAddress: DefaultHealthProbeBindAddress,
+			ReadinessEndpointName:  DefaultReadinessEndpoint,
+			LivenessEndpointName:   DefaultLivenessEndpoint,
 		},
 	}
 	defaultClientConnection := &ClientConnection{
@@ -89,13 +92,16 @@ func TestSetDefaults_Configuration(t *testing.T) {
 			want: &Configuration{
 				ControllerManager: ControllerManager{
 					Webhook: ControllerWebhook{
-						Port: ptr.To(DefaultWebhookPort),
+						Port:    ptr.To(DefaultWebhookPort),
+						CertDir: DefaultWebhookCertDir,
 					},
 					Metrics: ControllerMetrics{
 						BindAddress: DefaultMetricsBindAddress,
 					},
 					Health: ControllerHealth{
 						HealthProbeBindAddress: DefaultHealthProbeBindAddress,
+						ReadinessEndpointName:  DefaultReadinessEndpoint,
+						LivenessEndpointName:   DefaultLivenessEndpoint,
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(true),
@@ -140,13 +146,16 @@ func TestSetDefaults_Configuration(t *testing.T) {
 			want: &Configuration{
 				ControllerManager: ControllerManager{
 					Webhook: ControllerWebhook{
-						Port: ptr.To(overwriteWebhookPort),
+						Port:    ptr.To(overwriteWebhookPort),
+						CertDir: DefaultWebhookCertDir,
 					},
 					Metrics: ControllerMetrics{
 						BindAddress: overwriteMetricBindAddress,
 					},
 					Health: ControllerHealth{
 						HealthProbeBindAddress: overwriteHealthProbeBindAddress,
+						ReadinessEndpointName:  DefaultReadinessEndpoint,
+						LivenessEndpointName:   DefaultLivenessEndpoint,
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(true),
@@ -177,13 +186,16 @@ func TestSetDefaults_Configuration(t *testing.T) {
 			want: &Configuration{
 				ControllerManager: ControllerManager{
 					Webhook: ControllerWebhook{
-						Port: ptr.To(DefaultWebhookPort),
+						Port:    ptr.To(DefaultWebhookPort),
+						CertDir: DefaultWebhookCertDir,
 					},
 					Metrics: ControllerMetrics{
 						BindAddress: DefaultMetricsBindAddress,
 					},
 					Health: ControllerHealth{
 						HealthProbeBindAddress: DefaultHealthProbeBindAddress,
+						ReadinessEndpointName:  DefaultReadinessEndpoint,
+						LivenessEndpointName:   DefaultLivenessEndpoint,
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(false),
