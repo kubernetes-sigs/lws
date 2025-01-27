@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +126,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if err != nil {
 		log.Error(err, "Getting lws revisions")
 		return ctrl.Result{}, err
+	}
+	if revision == nil {
+		log.V(2).Info("Revision has not been created yet, requeing reconciler for pod %s", pod.Name)
+		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
 	}
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
