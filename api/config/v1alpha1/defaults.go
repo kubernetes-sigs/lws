@@ -24,10 +24,13 @@ import (
 )
 
 const (
+	DefaultWebhookCertDir                      = "/tmp/k8s-webhook-server/serving-certs"
 	DefaultWebhookServiceName                  = "lws-webhook-service"
 	DefaultWebhookSecretName                   = "lws-webhook-server-cert"
 	DefaultWebhookPort                         = 9443
 	DefaultHealthProbeBindAddress              = ":8081"
+	DefaultReadinessEndpoint                   = "/readyz"
+	DefaultLivenessEndpoint                    = "/healthz"
 	DefaultMetricsBindAddress                  = ":8443"
 	DefaultLeaderElectionID                    = "b8b2488c.x-k8s.io"
 	DefaultLeaderElectionLeaseDuration         = 15 * time.Second
@@ -45,11 +48,20 @@ func SetDefaults_Configuration(cfg *Configuration) {
 	if cfg.Webhook.Port == nil {
 		cfg.Webhook.Port = ptr.To(DefaultWebhookPort)
 	}
+	if cfg.Webhook.CertDir == "" {
+		cfg.Webhook.CertDir = DefaultWebhookCertDir
+	}
 	if len(cfg.Metrics.BindAddress) == 0 {
 		cfg.Metrics.BindAddress = DefaultMetricsBindAddress
 	}
 	if len(cfg.Health.HealthProbeBindAddress) == 0 {
 		cfg.Health.HealthProbeBindAddress = DefaultHealthProbeBindAddress
+	}
+	if cfg.Health.LivenessEndpointName == "" {
+		cfg.Health.LivenessEndpointName = DefaultLivenessEndpoint
+	}
+	if cfg.Health.ReadinessEndpointName == "" {
+		cfg.Health.ReadinessEndpointName = DefaultReadinessEndpoint
 	}
 
 	if cfg.LeaderElection == nil {

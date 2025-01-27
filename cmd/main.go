@@ -169,7 +169,7 @@ func main() {
 
 	certsReady := make(chan struct{})
 	if cfg.InternalCertManagement != nil && *cfg.InternalCertManagement.Enable {
-		if err = cert.CertsManager(mgr, namespace, *cfg.InternalCertManagement.WebhookServiceName, *cfg.InternalCertManagement.WebhookSecretName, certsReady); err != nil {
+		if err = cert.CertsManager(mgr, namespace, *cfg.InternalCertManagement.WebhookServiceName, *cfg.InternalCertManagement.WebhookSecretName, cfg.Webhook.CertDir, certsReady); err != nil {
 			setupLog.Error(err, "unable to setup cert rotation")
 			os.Exit(1)
 		}
