@@ -77,7 +77,7 @@ func (p *PodWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (ad
 	return nil, nil
 }
 
-//+kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create;update,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
 
 func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	log := logf.FromContext(ctx)
