@@ -90,7 +90,6 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 	if leaderDeleted {
-		log.V(2).Info("restarting the group")
 		return ctrl.Result{}, nil
 	}
 
