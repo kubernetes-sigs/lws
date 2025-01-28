@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,15 +31,19 @@ const (
 	overwriteMetricBindAddress      = ":38081"
 	overwriteHealthProbeBindAddress = ":38080"
 	overwriteLeaderElectionID       = "foo.lws.x-k8s.io"
+
+	defaultLeaderElectionLeaseDuration = 15 * time.Second
+	defaultLeaderElectionRenewDeadline = 10 * time.Second
+	defaultLeaderElectionRetryPeriod   = 2 * time.Second
 )
 
 func TestSetDefaults_Configuration(t *testing.T) {
 	defaultCtrlManagerConfigurationSpec := ControllerManager{
 		LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 			LeaderElect:   ptr.To(true),
-			LeaseDuration: metav1.Duration{Duration: DefaultLeaderElectionLeaseDuration},
-			RenewDeadline: metav1.Duration{Duration: DefaultLeaderElectionRenewDeadline},
-			RetryPeriod:   metav1.Duration{Duration: DefaultLeaderElectionRetryPeriod},
+			LeaseDuration: metav1.Duration{Duration: defaultLeaderElectionLeaseDuration},
+			RenewDeadline: metav1.Duration{Duration: defaultLeaderElectionRenewDeadline},
+			RetryPeriod:   metav1.Duration{Duration: defaultLeaderElectionRetryPeriod},
 			ResourceLock:  DefaultResourceLock,
 			ResourceName:  DefaultLeaderElectionID,
 		},
@@ -105,9 +110,9 @@ func TestSetDefaults_Configuration(t *testing.T) {
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(true),
-						LeaseDuration: metav1.Duration{Duration: DefaultLeaderElectionLeaseDuration},
-						RenewDeadline: metav1.Duration{Duration: DefaultLeaderElectionRenewDeadline},
-						RetryPeriod:   metav1.Duration{Duration: DefaultLeaderElectionRetryPeriod},
+						LeaseDuration: metav1.Duration{Duration: defaultLeaderElectionLeaseDuration},
+						RenewDeadline: metav1.Duration{Duration: defaultLeaderElectionRenewDeadline},
+						RetryPeriod:   metav1.Duration{Duration: defaultLeaderElectionRetryPeriod},
 						ResourceLock:  DefaultResourceLock,
 						ResourceName:  DefaultLeaderElectionID,
 					},
@@ -132,9 +137,9 @@ func TestSetDefaults_Configuration(t *testing.T) {
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(true),
-						LeaseDuration: metav1.Duration{Duration: DefaultLeaderElectionLeaseDuration},
-						RenewDeadline: metav1.Duration{Duration: DefaultLeaderElectionRenewDeadline},
-						RetryPeriod:   metav1.Duration{Duration: DefaultLeaderElectionRetryPeriod},
+						LeaseDuration: metav1.Duration{Duration: defaultLeaderElectionLeaseDuration},
+						RenewDeadline: metav1.Duration{Duration: defaultLeaderElectionRenewDeadline},
+						RetryPeriod:   metav1.Duration{Duration: defaultLeaderElectionRetryPeriod},
 						ResourceLock:  DefaultResourceLock,
 						ResourceName:  overwriteLeaderElectionID,
 					},
@@ -159,9 +164,9 @@ func TestSetDefaults_Configuration(t *testing.T) {
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(true),
-						LeaseDuration: metav1.Duration{Duration: DefaultLeaderElectionLeaseDuration},
-						RenewDeadline: metav1.Duration{Duration: DefaultLeaderElectionRenewDeadline},
-						RetryPeriod:   metav1.Duration{Duration: DefaultLeaderElectionRetryPeriod},
+						LeaseDuration: metav1.Duration{Duration: defaultLeaderElectionLeaseDuration},
+						RenewDeadline: metav1.Duration{Duration: defaultLeaderElectionRenewDeadline},
+						RetryPeriod:   metav1.Duration{Duration: defaultLeaderElectionRetryPeriod},
 						ResourceLock:  DefaultResourceLock,
 						ResourceName:  overwriteLeaderElectionID,
 					},
@@ -199,9 +204,9 @@ func TestSetDefaults_Configuration(t *testing.T) {
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
 						LeaderElect:   ptr.To(false),
-						LeaseDuration: metav1.Duration{Duration: DefaultLeaderElectionLeaseDuration},
-						RenewDeadline: metav1.Duration{Duration: DefaultLeaderElectionRenewDeadline},
-						RetryPeriod:   metav1.Duration{Duration: DefaultLeaderElectionRetryPeriod},
+						LeaseDuration: metav1.Duration{Duration: defaultLeaderElectionLeaseDuration},
+						RenewDeadline: metav1.Duration{Duration: defaultLeaderElectionRenewDeadline},
+						RetryPeriod:   metav1.Duration{Duration: defaultLeaderElectionRetryPeriod},
 						ResourceLock:  DefaultResourceLock,
 						ResourceName:  DefaultLeaderElectionID,
 					},

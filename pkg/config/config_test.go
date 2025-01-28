@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -37,6 +38,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+)
+
+const (
+	defaultLeaderElectionLeaseDuration = 15 * time.Second
+	defaultLeaderElectionRenewDeadline = 10 * time.Second
+	defaultLeaderElectionRetryPeriod   = 2 * time.Second
 )
 
 func TestLoad(t *testing.T) {
@@ -170,9 +177,9 @@ webhook:
 		LeaderElection:             true,
 		LeaderElectionID:           configapi.DefaultLeaderElectionID,
 		LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
-		LeaseDuration:              ptr.To(configapi.DefaultLeaderElectionLeaseDuration),
-		RenewDeadline:              ptr.To(configapi.DefaultLeaderElectionRenewDeadline),
-		RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
+		LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
+		RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
+		RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 		WebhookServer: &webhook.DefaultServer{
 			Options: webhook.Options{
 				Port:    configapi.DefaultWebhookPort,
@@ -230,9 +237,9 @@ webhook:
 				LeaderElection:             true,
 				LeaderElectionID:           configapi.DefaultLeaderElectionID,
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
-				LeaseDuration:              ptr.To(configapi.DefaultLeaderElectionLeaseDuration),
-				RenewDeadline:              ptr.To(configapi.DefaultLeaderElectionRenewDeadline),
-				RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
+				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
+				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
+				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
 						Port:    configapi.DefaultWebhookPort,
@@ -271,9 +278,9 @@ webhook:
 				LeaderElection:             true,
 				LeaderElectionID:           "test-id",
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
-				LeaseDuration:              ptr.To(configapi.DefaultLeaderElectionLeaseDuration),
-				RenewDeadline:              ptr.To(configapi.DefaultLeaderElectionRenewDeadline),
-				RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
+				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
+				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
+				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
 						Port:    9444,
@@ -334,9 +341,9 @@ webhook:
 				},
 				LeaderElectionID:           configapi.DefaultLeaderElectionID,
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
-				LeaseDuration:              ptr.To(configapi.DefaultLeaderElectionLeaseDuration),
-				RenewDeadline:              ptr.To(configapi.DefaultLeaderElectionRenewDeadline),
-				RetryPeriod:                ptr.To(configapi.DefaultLeaderElectionRetryPeriod),
+				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
+				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
+				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 				LeaderElection:             false,
 				WebhookServer: &webhook.DefaultServer{
 					Options: webhook.Options{
@@ -443,9 +450,9 @@ func TestEncode(t *testing.T) {
 				},
 				"leaderElection": map[string]any{
 					"leaderElect":       true,
-					"leaseDuration":     configapi.DefaultLeaderElectionLeaseDuration.String(),
-					"renewDeadline":     configapi.DefaultLeaderElectionRenewDeadline.String(),
-					"retryPeriod":       configapi.DefaultLeaderElectionRetryPeriod.String(),
+					"leaseDuration":     defaultLeaderElectionLeaseDuration.String(),
+					"renewDeadline":     defaultLeaderElectionRenewDeadline.String(),
+					"retryPeriod":       defaultLeaderElectionRetryPeriod.String(),
 					"resourceLock":      resourcelock.LeasesResourceLock,
 					"resourceName":      configapi.DefaultLeaderElectionID,
 					"resourceNamespace": "",

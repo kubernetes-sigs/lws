@@ -17,28 +17,23 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
-
 	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
 	"k8s.io/utils/ptr"
 )
 
 const (
-	DefaultWebhookCertDir                      = "/tmp/k8s-webhook-server/serving-certs"
-	DefaultWebhookServiceName                  = "lws-webhook-service"
-	DefaultWebhookSecretName                   = "lws-webhook-server-cert"
-	DefaultWebhookPort                         = 9443
-	DefaultHealthProbeBindAddress              = ":8081"
-	DefaultReadinessEndpoint                   = "/readyz"
-	DefaultLivenessEndpoint                    = "/healthz"
-	DefaultMetricsBindAddress                  = ":8443"
-	DefaultLeaderElectionID                    = "b8b2488c.x-k8s.io"
-	DefaultLeaderElectionLeaseDuration         = 15 * time.Second
-	DefaultLeaderElectionRenewDeadline         = 10 * time.Second
-	DefaultLeaderElectionRetryPeriod           = 2 * time.Second
-	DefaultResourceLock                        = "leases"
-	DefaultClientConnectionQPS         float32 = 500
-	DefaultClientConnectionBurst       int32   = 500
+	DefaultWebhookCertDir                 = "/tmp/k8s-webhook-server/serving-certs"
+	DefaultWebhookServiceName             = "lws-webhook-service"
+	DefaultWebhookSecretName              = "lws-webhook-server-cert"
+	DefaultWebhookPort                    = 9443
+	DefaultHealthProbeBindAddress         = ":8081"
+	DefaultReadinessEndpoint              = "/readyz"
+	DefaultLivenessEndpoint               = "/healthz"
+	DefaultMetricsBindAddress             = ":8443"
+	DefaultLeaderElectionID               = "b8b2488c.x-k8s.io"
+	DefaultResourceLock                   = "leases"
+	DefaultClientConnectionQPS    float32 = 500
+	DefaultClientConnectionBurst  int32   = 500
 )
 
 // SetDefaults_Configuration sets default values for ComponentConfig.
