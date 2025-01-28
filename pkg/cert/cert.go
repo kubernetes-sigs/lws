@@ -22,9 +22,6 @@ import (
 )
 
 const (
-	serviceName             = "lws-webhook-service"
-	secretName              = "lws-webhook-server-cert"
-	certDir                 = "/tmp/k8s-webhook-server/serving-certs"
 	validateWebhookConfName = "lws-validating-webhook-configuration"
 	mutatingWebhookConfName = "lws-mutating-webhook-configuration"
 	caName                  = "lws-ca"
@@ -36,16 +33,16 @@ const (
 //+kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=validatingwebhookconfigurations,verbs=get;list;watch;update
 
 // CertsManager creates certs for webhooks.
-func CertsManager(mgr ctrl.Manager, namespace string, setupFinish chan struct{}) error {
+func CertsManager(mgr ctrl.Manager, namespace string, configServiceName string, configSecretName string, webhookCertDir string, setupFinish chan struct{}) error {
 	// dnsName is the format of <service name>.<namespace>.svc
-	var dnsName = fmt.Sprintf("%s.%s.svc", serviceName, namespace)
+	var dnsName = fmt.Sprintf("%s.%s.svc", configServiceName, namespace)
 
 	return cert.AddRotator(mgr, &cert.CertRotator{
 		SecretKey: types.NamespacedName{
 			Namespace: namespace,
-			Name:      secretName,
+			Name:      configSecretName,
 		},
-		CertDir:        certDir,
+		CertDir:        webhookCertDir,
 		CAName:         caName,
 		CAOrganization: caOrg,
 		DNSName:        dnsName,
