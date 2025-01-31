@@ -6,6 +6,8 @@ metadata:
   labels:
     control-plane: controller-manager
     {{- include "lws.labels" . | nindent 4 }}
+    {{- include "lws.instanceLabel" . | nindent 4 }}
+
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
