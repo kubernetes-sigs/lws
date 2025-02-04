@@ -18,7 +18,7 @@ spec:
             command:
             - sh 
             - -c
-            - "./install_model.sh; python3 ./server.py leader --stateful_set_group_key=${GROUP_KEY} --pp=8 --tp=2 --gpu_per_node=8 --triton_model_repo_dir=/data/tensorrtllm_backend/all_models/inflight_batcher_llm/ --verbose"
+            - "./install_model.sh; python3 ./server.py leader --stateful_set_group_key=${GROUP_KEY} --pp=8 --tp=2 --gpu_per_node=8 --triton_model_repo_dir=/data/tensorrtllm_backend/all_models/inflight_batcher_llm/"
             env:
             - name: GROUP_KEY
               valueFrom:
@@ -47,7 +47,7 @@ spec:
             command:
             - sh 
             - -c
-            - "./install_model.sh; python3 ./server.py worker --triton_model_repo_dir=/data/tensorrtllm_backend/all_models/inflight_batcher_llm/ --verbose"
+            - "./install_model.sh; python3 ./server.py worker --triton_model_repo_dir=/data/tensorrtllm_backend/all_models/inflight_batcher_llm/"
             resources:
               limits:
                 nvidia.com/gpu: "8"
