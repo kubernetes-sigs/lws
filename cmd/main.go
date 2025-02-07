@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
@@ -115,7 +114,8 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID)
+	namespace := utils.GetOperatorNamespace()
+	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID, metricsAddr, namespace)
 	if err != nil {
 		setupLog.Error(err, "unable to load the configuration")
 		os.Exit(1)
@@ -131,35 +131,6 @@ func main() {
 	if flagsSet["kube-api-burst"] {
 		kubeConfig.Burst = burst
 	}
-
-	namespace := utils.GetOperatorNamespace()
-
-	// Disabling http/2 to prevent being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
-	disableHTTP2 := func(c *tls.Config) {
-		setupLog.Info("disabling http/2")
-		c.NextProtos = []string{"http/1.1"}
-	}
-
-	if !flagsSet["metrics-bind-address"] {
-		metricsAddr = cfg.Metrics.BindAddress
-	}
-
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:    metricsAddr,
-		SecureServing:  true,
-		FilterProvider: filters.WithAuthenticationAndAuthorization,
-		TLSOpts:        []func(*tls.Config){disableHTTP2},
-	}
-
-	options.Metrics = metricsServerOptions
-	options.LeaderElectionNamespace = namespace
 
 	mgr, err := ctrl.NewManager(kubeConfig, options)
 	if err != nil {
@@ -247,7 +218,10 @@ func apply(configFile string,
 	leaderElectLeaseDuration time.Duration,
 	leaderElectRenewDeadline time.Duration,
 	leaderElectRetryPeriod time.Duration,
-	leaderElectResourceLock, leaderElectionID string) (ctrl.Options, configapi.Configuration, error) {
+	leaderElectResourceLock,
+	leaderElectionID string,
+	metricsAddr string,
+	namespace string) (ctrl.Options, configapi.Configuration, error) {
 	options, cfg, err := config.Load(scheme, configFile)
 	if err != nil {
 		return options, cfg, err
@@ -278,6 +252,33 @@ func apply(configFile string,
 	if flagsSet["leader-elect-resource-name"] {
 		options.LeaderElectionID = leaderElectionID
 	}
+
+	// Disabling http/2 to prevent being vulnerable to the HTTP/2 Stream Cancellation and
+	// Rapid Reset CVEs. For more information see:
+	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
+	// - https://github.com/advisories/GHSA-4374-p667-p6c8
+	disableHTTP2 := func(c *tls.Config) {
+		setupLog.Info("disabling http/2")
+		c.NextProtos = []string{"http/1.1"}
+	}
+
+	if !flagsSet["metrics-bind-address"] {
+		metricsAddr = cfg.Metrics.BindAddress
+	}
+
+	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
+	// More info:
+	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/metrics/server
+	// - https://book.kubebuilder.io/reference/metrics.html
+	metricsServerOptions := metricsserver.Options{
+		BindAddress:    metricsAddr,
+		SecureServing:  true,
+		FilterProvider: filters.WithAuthenticationAndAuthorization,
+		TLSOpts:        []func(*tls.Config){disableHTTP2},
+	}
+
+	options.Metrics = metricsServerOptions
+	options.LeaderElectionNamespace = namespace
 
 	setupLog.Info("Successfully loaded configuration", "config", cfgStr)
 	return options, cfg, nil
