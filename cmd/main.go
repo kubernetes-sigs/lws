@@ -76,28 +76,28 @@ func main() {
 		configFile               string
 	)
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.Float64Var(&qps, "kube-api-qps", 500, "Maximum QPS to use while talking with Kubernetes API")
-	flag.IntVar(&burst, "kube-api-burst", 500, "Maximum burst for throttle while talking with Kubernetes API")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "DEPRECATED(please pass configuration file via --config flag): The address the metric endpoint binds to.")
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "DEPRECATED(please pass configuration file via --config flag): The address the probe endpoint binds to.")
+	flag.Float64Var(&qps, "kube-api-qps", 500, "DEPRECATED(please pass configuration file via --config flag): Maximum QPS to use while talking with Kubernetes API")
+	flag.IntVar(&burst, "kube-api-burst", 500, "DEPRECATED(please pass configuration file via --config flag): Maximum burst for throttle while talking with Kubernetes API")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
-		"Enable leader election for controller manager. "+
+		"DEPRECATED(please pass configuration file via --config flag): Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.DurationVar(&leaderElectLeaseDuration, "leader-elect-lease-duration", 15*time.Second,
-		"The duration that non-leader candidates will wait after observing a leadership renewal until attempting to acquire "+
+		"DEPRECATED(please pass configuration file via --config flag): The duration that non-leader candidates will wait after observing a leadership renewal until attempting to acquire "+
 			"leadership of a led but unrenewed leader slot. This is effectively the maximum duration that a leader can be stopped"+
 			" before it is replaced by another candidate. This is only applicable if leader election is enabled.")
 	flag.DurationVar(&leaderElectRenewDeadline, "leader-elect-renew-deadline", 10*time.Second,
-		"The interval between attempts by the acting master to renew a leadership slot before it stops leading. This"+
+		"DEPRECATED(please pass configuration file via --config flag): The interval between attempts by the acting master to renew a leadership slot before it stops leading. This"+
 			"must be less than or equal to the lease duration. This is only applicable if leader election is enabled.")
 	flag.DurationVar(&leaderElectRetryPeriod, "leader-elect-retry-period", 2*time.Second,
-		"The duration the clients should wait between attempting acquisition and renewal of a leadership. This is only"+
+		"DEPRECATED(please pass configuration file via --config flag): The duration the clients should wait between attempting acquisition and renewal of a leadership. This is only"+
 			"applicable if leader election is enabled.")
 	flag.StringVar(&leaderElectResourceLock, "leader-elect-resource-lock", "leases",
-		"The type of resource object that is used for locking during leader election. Supported options are "+
+		"DEPRECATED(please pass configuration file via --config flag): The type of resource object that is used for locking during leader election. Supported options are "+
 			"'endpoints', 'configmaps', 'leases', 'endpointsleases' and 'configmapsleases'")
 	flag.StringVar(&leaderElectionID, "leader-elect-resource-name", "b8b2488c.x-k8s.io",
-		"The name of resource object that is used for locking during leader election. ")
+		"DEPRECATED(please pass configuration file via --config flag): The name of resource object that is used for locking during leader election. ")
 	flag.StringVar(&configFile, "config", "",
 		"The controller will load its initial configuration from this file. "+
 			"Command-line flags will override any configurations set in this file. "+
