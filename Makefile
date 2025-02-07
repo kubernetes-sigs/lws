@@ -52,6 +52,17 @@ endif
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+# Setting SED allows macos users to install GNU sed and use the latter
+# instead of the default BSD sed.
+ifeq ($(shell command -v gsed 2>/dev/null),)
+    SED ?= $(shell command -v sed)
+else
+    SED ?= $(shell command -v gsed)
+endif
+ifeq ($(shell ${SED} --version 2>&1 | grep -q GNU; echo $$?),1)
+    $(error !!! GNU sed is required. If on OS X, use 'brew install gnu-sed'.)
+endif
+
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 ARTIFACTS ?= $(PROJECT_DIR)/bin
 
@@ -95,6 +106,10 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
 		webhook output:webhook:artifacts:config=config/webhook \
 		paths="./..."
+
+.PHONY: update-helm
+update-helm: manifests
+	SED=$(SED) ./hack/update-helm.sh
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
@@ -141,8 +156,12 @@ lint: golangci-lint ## Run golangci-lint linter & yamllint
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
 
+PATHS_TO_VERIFY := charts/lws/templates
 .PHONY: verify
-verify: lint toc-verify
+verify: lint toc-verify update-helm
+	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
+	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
+
 ##@ Build
 
 .PHONY: build
