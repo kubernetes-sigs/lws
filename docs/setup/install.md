@@ -4,12 +4,12 @@
 
 Make sure the following conditions are met:
 
-- A Kubernetes cluster with version 1.26 or newer is running. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/). For any clusters with version lower than 1.27, we need to enable the [feature gate][feature_gate] for `Start Ordinal`, see https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
+- A Kubernetes cluster with version 1.26 or newer is running. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
+    - For any cluster with version lower than 1.27, you need to enable the [feature gate][feature_gate] for [Start Ordinal][start_ordinal]
+    - Rolling update with max unavailable Pods, you must enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate, which is still in alpha since Kubernetes v1.24, see discussion [here][max_unavailable_enhancement]. Or lws will roll out the pods one by one.
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
-
-[feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 
 # Install a released version
 
@@ -98,3 +98,8 @@ and apply these configurations to your cluster with ``kubectl apply --server-sid
 
 # Install with helm chart
 See [lws/charts](../../charts/lws/README.md)
+
+[feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
+[start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
+[max_unavailable]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods
+[max_unavailable_enhancement]: https://github.com/kubernetes/enhancements/issues/961
