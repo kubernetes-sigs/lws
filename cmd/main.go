@@ -77,10 +77,10 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "DEPRECATED(please pass configuration file via --config flag): The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "DEPRECATED(please pass configuration file via --config flag): The address the probe endpoint binds to.")
-	flag.Float64Var(&qps, "kube-api-qps", 500, "DEPRECATED(please pass configuration file via --config flag): Maximum QPS to use while talking with Kubernetes API")
-	flag.IntVar(&burst, "kube-api-burst", 500, "DEPRECATED(please pass configuration file via --config flag): Maximum burst for throttle while talking with Kubernetes API")
+	flag.Float64Var(&qps, "kube-api-qps", 500, "Maximum QPS to use while talking with Kubernetes API")
+	flag.IntVar(&burst, "kube-api-burst", 500, "Maximum burst for throttle while talking with Kubernetes API")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
-		"DEPRECATED(please pass configuration file via --config flag): Enable leader election for controller manager. "+
+		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.DurationVar(&leaderElectLeaseDuration, "leader-elect-lease-duration", 15*time.Second,
 		"DEPRECATED(please pass configuration file via --config flag): The duration that non-leader candidates will wait after observing a leadership renewal until attempting to acquire "+
@@ -114,8 +114,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	namespace := utils.GetOperatorNamespace()
-	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID, metricsAddr, namespace)
+	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID, metricsAddr)
 	if err != nil {
 		setupLog.Error(err, "unable to load the configuration")
 		os.Exit(1)
@@ -140,7 +139,7 @@ func main() {
 
 	certsReady := make(chan struct{})
 	if cfg.InternalCertManagement != nil && *cfg.InternalCertManagement.Enable {
-		if err = cert.CertsManager(mgr, namespace, *cfg.InternalCertManagement.WebhookServiceName, *cfg.InternalCertManagement.WebhookSecretName, cfg.Webhook.CertDir, certsReady); err != nil {
+		if err = cert.CertsManager(mgr, options.LeaderElectionNamespace, *cfg.InternalCertManagement.WebhookServiceName, *cfg.InternalCertManagement.WebhookSecretName, cfg.Webhook.CertDir, certsReady); err != nil {
 			setupLog.Error(err, "unable to setup cert rotation")
 			os.Exit(1)
 		}
@@ -220,8 +219,9 @@ func apply(configFile string,
 	leaderElectRetryPeriod time.Duration,
 	leaderElectResourceLock,
 	leaderElectionID string,
-	metricsAddr string,
-	namespace string) (ctrl.Options, configapi.Configuration, error) {
+	metricsAddr string) (ctrl.Options, configapi.Configuration, error) {
+	namespace := utils.GetOperatorNamespace()
+
 	options, cfg, err := config.Load(scheme, configFile)
 	if err != nil {
 		return options, cfg, err
