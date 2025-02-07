@@ -157,11 +157,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, validatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
 	}
-	maxUnavailableValue, err := intstr.GetValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
+	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
 	}
-	maxSurgeValue, err := intstr.GetValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true)
+	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
 	}
