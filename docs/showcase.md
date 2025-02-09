@@ -4,7 +4,9 @@
 
 *This is based on public documentations, please open an issue if you would like to be added or removed the list.*
 
-**AWS**: Amazon EKS supports to run *superpod* with LeaderWorkerSet (LWS) to server large LLMs, see blog [here](https://aws.amazon.com/blogs/hpc/scaling-your-llm-inference-workloads-multi-node-deployment-with-tensorrt-llm-and-triton-on-amazon-eks/).
+**AWS**: 
+   * Amazon EKS supports to run *superpod* with LeaderWorkerSet (LWS) to server large LLMs, see blog [here](https://aws.amazon.com/blogs/hpc/scaling-your-llm-inference-workloads-multi-node-deployment-with-tensorrt-llm-and-triton-on-amazon-eks/).
+   * A Terraform based EKS Blueprints pattern can be found [here](https://aws-ia.github.io/terraform-aws-eks-blueprints/patterns/machine-learning/multi-node-vllm/). This pattern demonstrates an Amazon EKS Cluster with an EFA-enabled nodegroup that support multi-node inference using vLLM and lws (LeaderWorkerSet).
 
 **DaoCloud**: LeaderWorkerSet (LWS) is the default deployment method to run large models crossing multiple nodes on Kubernetes.
 
