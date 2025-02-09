@@ -33,6 +33,8 @@ Read the [installation guide](/docs/setup/install.md) to learn more.
 
 Read the [examples](/docs/examples/sample/README.md) to learn more.
 
+Also discover adopters, integrations, and talks [here](/docs/showcase.md).
+
 ## Community, discussion, contribution, and support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
