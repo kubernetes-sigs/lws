@@ -11,6 +11,7 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+GO_CMD ?= go
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -51,6 +52,10 @@ endif
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
+
+version_pkg = sigs.k8s.io/lws/pkg/version
+LD_FLAGS += -X '$(version_pkg).GitVersion=$(GIT_TAG)'
+LD_FLAGS += -X '$(version_pkg).GitCommit=$(shell git rev-parse HEAD)'
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 ARTIFACTS ?= $(PROJECT_DIR)/bin
@@ -147,7 +152,7 @@ verify: lint toc-verify
 
 .PHONY: build
 build: manifests fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	$(GO_BUILD_ENV) $(GO_CMD) build -ldflags="$(LD_FLAGS)" -o bin/manager cmd/main.go
 
 .PHONY: run
 run: manifests fmt vet ## Run a controller from your host.
