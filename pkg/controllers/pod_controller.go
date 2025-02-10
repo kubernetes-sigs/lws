@@ -128,7 +128,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 	if revision == nil {
-		log.V(2).Info("Revision has not been created yet, requeing reconciler for pod %s", pod.Name)
+		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
 		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
 	}
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)

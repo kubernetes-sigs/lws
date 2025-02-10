@@ -35,7 +35,7 @@ Common labels
 */}}
 {{- define "lws.labels" -}}
 helm.sh/chart: {{ include "lws.chart" . }}
-{{ include "lws.selectorLabels" . }}
+{{ include "lws.nameLabel" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -46,7 +46,21 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 Selector labels
 */}}
 {{- define "lws.selectorLabels" -}}
+{{ include "lws.nameLabel" . }}
+{{ include "lws.instanceLabel" . }}
+{{- end }}
+
+{{/*
+Name label
+*/}}
+{{- define "lws.nameLabel" -}}
 app.kubernetes.io/name: {{ include "lws.name" . }}
+{{- end }}
+
+{{/*
+Instance label
+*/}}
+{{- define "lws.instanceLabel" -}}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 

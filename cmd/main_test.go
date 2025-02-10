@@ -101,10 +101,13 @@ internalCertManagement:
 				LeaderElection:             false,
 				LeaderElectionResourceLock: "changed",
 				LeaderElectionID:           "changed",
+				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(1 * time.Minute),
 				RenewDeadline:              ptr.To(1 * time.Minute),
 				RetryPeriod:                ptr.To(1 * time.Minute),
 				HealthProbeBindAddress:     ":9443",
+				LivenessEndpointName:       "/healthz",
+				ReadinessEndpointName:      "/readyz",
 			},
 		},
 		{
@@ -122,10 +125,13 @@ internalCertManagement:
 				LeaderElection:             true,
 				LeaderElectionResourceLock: "test",
 				LeaderElectionID:           "test",
+				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(5 * time.Minute),
 				RenewDeadline:              ptr.To(5 * time.Minute),
 				RetryPeriod:                ptr.To(5 * time.Minute),
 				HealthProbeBindAddress:     ":8081",
+				LivenessEndpointName:       "/healthz",
+				ReadinessEndpointName:      "/readyz",
 			},
 		},
 		{
@@ -146,10 +152,13 @@ internalCertManagement:
 				LeaderElection:             false,
 				LeaderElectionResourceLock: "test",
 				LeaderElectionID:           "test",
+				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(5 * time.Minute),
 				RenewDeadline:              ptr.To(5 * time.Minute),
 				RetryPeriod:                ptr.To(5 * time.Minute),
 				HealthProbeBindAddress:     ":9443",
+				LivenessEndpointName:       "/healthz",
+				ReadinessEndpointName:      "/readyz",
 			},
 		},
 	}
@@ -164,7 +173,8 @@ internalCertManagement:
 				tc.leaderElectRenewDeadline,
 				tc.leaderElectRetryPeriod,
 				tc.leaderElectResourceLock,
-				tc.leaderElectionID)
+				tc.leaderElectionID,
+				"metrics-addr")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
