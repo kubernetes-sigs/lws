@@ -23,7 +23,7 @@ GO_CMD ?= go
 
 GOLANGCI_LINT = $(PROJECT_DIR)/bin/golangci-lint
 golangci-lint:
-	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.60.3
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.4
 
 GENREF = $(PROJECT_DIR)/bin/genref
 .PHONY: genref
