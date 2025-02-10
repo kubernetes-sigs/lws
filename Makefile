@@ -53,7 +53,7 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 version_pkg = sigs.k8s.io/lws/pkg/version
-LD_FLAGS += +X '$(version_pkg).GitVersion=$(GIT_TAG)'
+LD_FLAGS += -X '$(version_pkg).GitVersion=$(GIT_TAG)'
 LD_FLAGS += -X '$(version_pkg).GitCommit=$(shell git rev-parse HEAD)'
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -151,7 +151,7 @@ verify: lint toc-verify
 
 .PHONY: build
 build: manifests fmt vet ## Build manager binary.
-	go build -ldflags="$(LD_FLAGS) "-o bin/manager cmd/main.go
+	$(GO_BUILD_ENV) $(GO_CMD) build -ldflags="$(LD_FLAGS)" -o bin/manager cmd/main.go
 
 .PHONY: run
 run: manifests fmt vet ## Run a controller from your host.
