@@ -18,18 +18,18 @@ limitations under the License.
 package v1
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // LeaderWorkerTemplateApplyConfiguration represents a declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
 type LeaderWorkerTemplateApplyConfiguration struct {
-	LeaderTemplate *corev1.PodTemplateSpec              `json:"leaderTemplate,omitempty"`
-	WorkerTemplate *corev1.PodTemplateSpec              `json:"workerTemplate,omitempty"`
-	Size           *int32                               `json:"size,omitempty"`
-	RestartPolicy  *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
-	SubGroupPolicy *SubGroupPolicyApplyConfiguration    `json:"subGroupPolicy,omitempty"`
+	LeaderTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"leaderTemplate,omitempty"`
+	WorkerTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"workerTemplate,omitempty"`
+	Size           *int32                                    `json:"size,omitempty"`
+	RestartPolicy  *leaderworkersetv1.RestartPolicyType      `json:"restartPolicy,omitempty"`
+	SubGroupPolicy *SubGroupPolicyApplyConfiguration         `json:"subGroupPolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs a declarative configuration of the LeaderWorkerTemplate type for use with
@@ -41,16 +41,16 @@ func LeaderWorkerTemplate() *LeaderWorkerTemplateApplyConfiguration {
 // WithLeaderTemplate sets the LeaderTemplate field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the LeaderTemplate field is set to the value of the last call.
-func (b *LeaderWorkerTemplateApplyConfiguration) WithLeaderTemplate(value corev1.PodTemplateSpec) *LeaderWorkerTemplateApplyConfiguration {
-	b.LeaderTemplate = &value
+func (b *LeaderWorkerTemplateApplyConfiguration) WithLeaderTemplate(value *corev1.PodTemplateSpecApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.LeaderTemplate = value
 	return b
 }
 
 // WithWorkerTemplate sets the WorkerTemplate field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the WorkerTemplate field is set to the value of the last call.
-func (b *LeaderWorkerTemplateApplyConfiguration) WithWorkerTemplate(value corev1.PodTemplateSpec) *LeaderWorkerTemplateApplyConfiguration {
-	b.WorkerTemplate = &value
+func (b *LeaderWorkerTemplateApplyConfiguration) WithWorkerTemplate(value *corev1.PodTemplateSpecApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.WorkerTemplate = value
 	return b
 }
 
