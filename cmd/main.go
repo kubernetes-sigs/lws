@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
+	"sigs.k8s.io/lws/pkg/version"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	//+kubebuilder:scaffold:imports
 )
@@ -131,10 +132,10 @@ func main() {
 	if flagsSet["kube-api-burst"] {
 		kubeConfig.Burst = burst
 	}
-
 	if kubeConfig.UserAgent == "" {
 		kubeConfig.UserAgent = useragent.Default()
 	}
+	setupLog.Info("Initializing", "gitVersion", version.GitVersion, "gitCommit", version.GitCommit, "userAgent", kubeConfig.UserAgent)
 
 	mgr, err := ctrl.NewManager(kubeConfig, options)
 	if err != nil {
