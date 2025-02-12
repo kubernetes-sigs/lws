@@ -39,6 +39,7 @@ kube::codegen::gen_helpers sigs.k8s.io/lws/api \
 kube::codegen::gen_client sigs.k8s.io/lws/api \
     --with-watch \
     --with-applyconfig \
+    --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1" \
     --output-dir "$REPO_ROOT"/client-go \
     --output-pkg sigs.k8s.io/lws/client-go \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
