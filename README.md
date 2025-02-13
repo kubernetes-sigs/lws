@@ -33,7 +33,7 @@ Read the [installation guide](/docs/setup/install.md) to learn more.
 
 Read the [examples](/docs/examples/sample/README.md) to learn more.
 
-Also discover adopters, integrations, and talks [here](/docs/showcase.md).
+Also discover adopters, integrations, and talks [here](/docs/adoption/README.md).
 
 ## Community, discussion, contribution, and support
 
