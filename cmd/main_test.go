@@ -62,7 +62,7 @@ internalCertManagement:
 		cmpopts.IgnoreUnexported(webhook.DefaultServer{}),
 		cmpopts.IgnoreUnexported(ctrlcache.Options{}),
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
-		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger", "Metrics", "WebhookServer"),
+		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger", "Metrics", "WebhookServer", "LeaderElectionNamespace"),
 	}
 
 	testCases := []struct {
@@ -101,7 +101,6 @@ internalCertManagement:
 				LeaderElection:             false,
 				LeaderElectionResourceLock: "changed",
 				LeaderElectionID:           "changed",
-				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(1 * time.Minute),
 				RenewDeadline:              ptr.To(1 * time.Minute),
 				RetryPeriod:                ptr.To(1 * time.Minute),
@@ -125,7 +124,6 @@ internalCertManagement:
 				LeaderElection:             true,
 				LeaderElectionResourceLock: "test",
 				LeaderElectionID:           "test",
-				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(5 * time.Minute),
 				RenewDeadline:              ptr.To(5 * time.Minute),
 				RetryPeriod:                ptr.To(5 * time.Minute),
@@ -152,7 +150,6 @@ internalCertManagement:
 				LeaderElection:             false,
 				LeaderElectionResourceLock: "test",
 				LeaderElectionID:           "test",
-				LeaderElectionNamespace:    "lws-system",
 				LeaseDuration:              ptr.To(5 * time.Minute),
 				RenewDeadline:              ptr.To(5 * time.Minute),
 				RetryPeriod:                ptr.To(5 * time.Minute),
