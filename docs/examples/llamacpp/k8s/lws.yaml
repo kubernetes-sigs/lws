@@ -24,3 +24,15 @@ spec:
           image: llamacpp-worker:latest
           imagePullPolicy: IfNotPresent
           args: ["--host", "0.0.0.0", "--mem", "4192"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llamacpp
+spec:
+  selector:
+    app: llamacpp-llama3-8b-instruct-bartowski-q5km
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
