@@ -9,7 +9,7 @@ Follow the step-by-step guide on how to install LWS. [View installation guide](h
 
 ## Deploy LeaderWorkerSet of vLLM
 In this example, we use LeaderWorkerSet to deploy two vLLM server replicas to serve the llama3-70b model on two v5e-16 TPU slices. You can view how to create a cluster with multiple TPU slices [here](https://cloud.google.com/kubernetes-engine/docs/how-to/tpus). Since the v5e-16 TPU slice has four hosts, so each vLLM replica will have 4 workers, and each worker will consume 4 TPUs (with tensor_parallel_size=16). 
-The leader pod runs the Ray head and the vLLM server, while the workers run the Ray workers.
+The leader pod runs the Ray head and the vLLM server, with a ClusterIP Service exposing the port, while the workers run the Ray workers.
 
 ```shell
 kubectl apply -f lws.yaml
@@ -60,13 +60,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```
 
-## Deploy ClusterIP Service
-
-Apply the `service.yaml` manifest
-
-```shell
-kubectl apply -f service.yaml
-```
+## Access ClusterIP Service
 
 Use `kubectl port-forward` to forward local port 8080 to a pod.
 ```shell

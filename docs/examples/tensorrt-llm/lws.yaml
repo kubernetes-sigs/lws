@@ -61,3 +61,16 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tensorrt-service
+spec:
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  selector:
+    leaderworkerset.sigs.k8s.io/name: tensorrt
+    role: leader
