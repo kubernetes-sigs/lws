@@ -24,6 +24,7 @@ kubectl apply -f configmap.yaml
 
 We use LeaderWorkerSet to deploy two Saxml model replicas on two TPU multi-host pod slices. 
 On the leader pod, the leader pod runs the Sax admin and the http servers, while the workers run the Sax model servers.
+Additionally, there is a LoadBalancer Service that exposes the leader's HTTPS services.
 
 Replace the GCS_BUCKET with the name of your GCS bucket and apply the `lws.yaml` manifest:
 ```shell
@@ -59,13 +60,7 @@ saxml-multi-host-1-7              1/1     Running   0          3m12s
 
 # Use SaxML
 
-## Deploy LoadBalancer
-
-Apply the `service.yaml` manifest
-
-```shell
-kubectl apply -f service.yaml
-```
+## Access LoadBalancer
 
 Wait for the service to have an external IP address assigned
 

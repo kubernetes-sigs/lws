@@ -9,7 +9,7 @@ Follow the step-by-step guide on how to install LWS. [View installation guide](h
 
 ## Deploy LeaderWorkerSet of vLLM
 We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs per pod (tensor_parallel_size=8). 
-The leader pod runs the Ray head and the http server, while the workers run the Ray workers.
+The leader pod runs the Ray head and the http server, with a ClusterIP Service exposing the port, while the workers run the Ray workers.
 
 ```shell
 kubectl apply -f lws.yaml
@@ -40,13 +40,7 @@ INFO 05-08 03:20:24 model_runner.py:173] Loading model weights took 0.1189 GB
 ```
 
 
-## Deploy ClusterIP Service
-
-Apply the `service.yaml` manifest
-
-```shell
-kubectl apply -f service.yaml
-```
+## Access ClusterIP Service
 
 Use `kubectl port-forward` to forward local port 8080 to a pod.
 ```shell

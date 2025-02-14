@@ -38,7 +38,7 @@ Service to give a basic LLM chat experience:
 
 ```
 ...
-+ kubectl apply --server-side -f k8s/
++ kubectl apply --server-side -f k8s/lws.yaml
 leaderworkerset.leaderworkerset.x-k8s.io/llamacpp-llama3-8b-instruct-bartowski-q5km serverside-applied
 service/llamacpp serverside-applied
 + kubectl run clichat --image=clichat:latest --rm=true -it --image-pull-policy=IfNotPresent --env=LLM_ENDPOINT=http://llamacpp:80
