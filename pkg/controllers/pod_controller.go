@@ -98,6 +98,18 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	// validate leader's annotations to prevent infinite StatefulSet creation loops
+	// see issue: https://github.com/kubernetes-sigs/lws/issues/391
+	if pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey] != "" {
+		errMsg := fmt.Sprintf("leader pod %s/%s contains mistake annotation '%s': requires Kubernetes ≥v1.27 or v1.26 with StatefulSetStartOrdinal feature",
+			pod.Namespace,
+			pod.Name,
+			leaderworkerset.LeaderPodNameAnnotationKey)
+		log.Error(errors.New(errMsg), "validate leader's annotations")
+		r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeWarning, FailedCreate, errMsg)
+		return ctrl.Result{}, nil
+	}
+
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
