@@ -49,7 +49,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `enablePrometheus`                          | enable Prometheus                              | `false`                              |
 | `enableCertManager`                         | enable CertManager                             | `false`                              |
 | `imagePullSecrets`                          | Image pull secrets                             | `[]`                                 |
-| `image.manager.repository`                  | Repository for manager image                   | `gcr.io/k8s-staging-lws/lws`         |
+| `image.manager.repository`                  | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws`         |
 | `image.manager.tag`                         | Tag for manager image                          | `main`                               |
 | `image.manager.pullPolicy`                  | Pull policy for manager image                  | `IfNotPresent`                       |
 | `podAnnotations`                            | Annotations for pods                           | `{}`                                 |
