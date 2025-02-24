@@ -24,7 +24,7 @@ function cleanup {
     then
         $KIND delete cluster --name $KIND_CLUSTER_NAME
     fi
-    (cd $CWD/config/manager && $KUSTOMIZE edit set image controller=gcr.io/k8s-staging-lws/lws:main)
+    (cd $CWD/config/manager && $KUSTOMIZE edit set image controller=us-central1-docker.pkg.dev/k8s-staging-images/lws:main)
 }
 function startup {
     if [ $USE_EXISTING_CLUSTER == 'false' ]

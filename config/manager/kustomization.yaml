@@ -13,5 +13,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: gcr.io/k8s-staging-lws/lws
+  newName: us-central1-docker.pkg.dev/k8s-staging-images/lws/lws
   newTag: main

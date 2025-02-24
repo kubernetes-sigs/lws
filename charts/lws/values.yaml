@@ -14,7 +14,7 @@ imagePullSecrets: []
 # Customize controlerManager
 image:
   manager:
-    repository: gcr.io/k8s-staging-lws/lws
+    repository: us-central1-docker.pkg.dev/k8s-staging-images/lws/lws
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
     pullPolicy: IfNotPresent
