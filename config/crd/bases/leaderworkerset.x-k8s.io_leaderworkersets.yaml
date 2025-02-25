@@ -8201,6 +8201,12 @@ spec:
                       SubGroupPolicy describes the policy that will be applied when creating subgroups
                       in each replica.
                     properties:
+                      subGroupPolicyType:
+                        default: LeaderWorker
+                        enum:
+                        - LeaderWorker
+                        - LeaderOnly
+                        type: string
                       subGroupSize:
                         description: |-
                           The number of pods per subgroup. This value is immutable,

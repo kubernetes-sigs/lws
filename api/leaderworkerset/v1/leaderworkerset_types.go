@@ -84,6 +84,8 @@ const (
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 
+	SubGroupPolicyTypeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-policy-type"
+
 	// Leader pods will have an annotation that determines what type of domain
 	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
 	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
@@ -183,6 +185,11 @@ type RolloutStrategy struct {
 
 // SubGroupPolicy describes the policy that will be applied when creating subgroups.
 type SubGroupPolicy struct {
+
+	// +kubebuilder:validation:Enum={LeaderWorker,LeaderOnly}
+	// +kubebuilder:default=LeaderWorker
+	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
+
 	// The number of pods per subgroup. This value is immutable,
 	// and must not be greater than LeaderWorkerSet.Spec.Size.
 	// Size must be divisible by subGroupSize in which case the
@@ -191,6 +198,14 @@ type SubGroupPolicy struct {
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
+
+type SubGroupPolicyType string
+
+const (
+	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
+
+	SubGroupPolicyLeaderOnly SubGroupPolicyType = "LeaderOnly"
+)
 
 type NetworkConfig struct {
 	// SubdomainPolicy determines the policy that will be used when creating
