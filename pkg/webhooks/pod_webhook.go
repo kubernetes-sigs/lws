@@ -149,7 +149,9 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 				return err
 			}
 			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
-			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+			// Will only be set if type is LeaderOnly
+			_, foundSubGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
+			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex, foundSubGroupPolicyType)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
@@ -242,7 +244,12 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 	return hasAffinity && hasAntiAffinity
 }
 
-func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int, leaderOnly bool) string {
+
+	if leaderOnly {
+		return fmt.Sprint(((workerIndex - 1) / subGroupSize) + 1)
+	}
+
 	if (podCount-1)%subGroupSize == 0 {
 		// Leader is considered as extra pod, it is part of the first group
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)
