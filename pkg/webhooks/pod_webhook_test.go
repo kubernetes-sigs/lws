@@ -268,3 +268,48 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 		})
 	}
 }
+
+func TestGetSubGroupIndex(t *testing.T) {
+	tests := []struct {
+		name          string
+		podCount      int
+		subGroupSize  int
+		workerIndex   int
+		leaderOnly    bool
+		expectedIndex string
+	}{
+		{
+			name:          "Even number of pods",
+			podCount:      4,
+			subGroupSize:  2,
+			workerIndex:   2,
+			leaderOnly:    false,
+			expectedIndex: "1",
+		},
+		{
+			name:          "Odd number of pods, first subgroup has an extra pod",
+			podCount:      5,
+			subGroupSize:  2,
+			workerIndex:   2,
+			leaderOnly:    false,
+			expectedIndex: "0",
+		},
+		{
+			name:          "Odd number of pods, leaderOnly, workerIndex=1 is part of second subGroup",
+			podCount:      5,
+			subGroupSize:  2,
+			workerIndex:   1,
+			leaderOnly:    true,
+			expectedIndex: "1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex, tc.leaderOnly)
+			if tc.expectedIndex != subGroupIndex {
+				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedIndex, subGroupIndex)
+			}
+		})
+	}
+}

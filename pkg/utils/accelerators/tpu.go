@@ -105,6 +105,13 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
+	_, leaderOnlyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
+	if leaderOnlyType && subGroupIndex != 0 {
+		// In the case where there is a subGroup exclusively for the leader, the subGroupIndex for the workers are shifted by one to the right.
+		// (0) index = 0, (1,2) index = 1, (3,4) index = 2. In order for the correct environment variable to be injected without any major changes
+		// to the for loop, we shift it to the left for the purposes of calculation
+		subGroupIndex -= 1
+	}
 
 	workerIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
 	if err != nil {
