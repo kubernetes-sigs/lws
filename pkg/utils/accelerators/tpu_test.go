@@ -177,6 +177,27 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			expectedTpuWorkerHostNames: "test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default",
 			expectedTpuName:            "test-sample-1",
 		},
+		{
+			name: "Leader does not request TPU resources, worker with subgroup index > 0, LeaderOnly Subgroup",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-0-2",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "2",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey:       "2",
+						leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyLeaderOnly),
+					},
+				},
+			},
+			expectedTpuWorkerId:        "1",
+			expectedTpuWorkerHostNames: "test-sample-0-1.default,test-sample-0-2.default",
+			expectedTpuName:            "test-sample-0",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
