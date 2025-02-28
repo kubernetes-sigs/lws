@@ -34,13 +34,15 @@ import (
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
-type PodWebhook struct{}
+type PodWebhook struct {
+	enableStartOrdinal bool
+}
 
-func SetupPodWebhook(mgr ctrl.Manager) error {
+func SetupPodWebhook(mgr ctrl.Manager, enableStartOrdinal bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&corev1.Pod{}).
-		WithDefaulter(&PodWebhook{}).
-		WithValidator(&PodWebhook{}).
+		WithDefaulter(&PodWebhook{enableStartOrdinal}).
+		WithValidator(&PodWebhook{enableStartOrdinal}).
 		Complete()
 }
 
@@ -141,6 +143,9 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 		if workerIndex == -1 {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
+		if !p.enableStartOrdinal {
+			workerIndex += 1
+		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
 		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
@@ -161,7 +166,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 
 	// injecting env vars if needed
 	if acceleratorutils.PodRequestsTPUs(pod.Spec) {
-		if err := acceleratorutils.AddTPUVariables(pod, podCount); err != nil {
+		if err := acceleratorutils.AddTPUVariables(pod, podCount, p.enableStartOrdinal); err != nil {
 			return err
 		}
 	}

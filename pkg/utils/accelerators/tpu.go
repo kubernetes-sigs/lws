@@ -165,7 +165,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 }
 
 // AddTPUVariables adds TPU related environment variables to containers
-func AddTPUVariables(pod *corev1.Pod, size int) error {
+func AddTPUVariables(pod *corev1.Pod, size int, enableStartOrdinal bool) error {
 	_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 	if foundSubGroupSize {
 		return addTPUVariablesSubGroup(pod)
@@ -192,10 +192,11 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		if leaderName == "" {
 			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
 		}
+
 		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
 			// The leader requests TPUs, and so it will be added to the hostnames and will get TPU_WORKER_ID=0
 			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		} else {
+		} else if enableStartOrdinal {
 			// The leader doesn't request TPUs, and so it is only the workers that will be assigned
 			// TPU_WORKER_ID, and so we have to shift the IDs by 1 since the leader is not a TPU worker.
 			tpuWorkerId = tpuWorkerId - 1

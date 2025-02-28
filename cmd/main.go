@@ -20,10 +20,12 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -67,6 +69,8 @@ func main() {
 		qps         float64
 		burst       int
 
+		enableStartOrdinal bool
+
 		// leader election
 		enableLeaderElection     bool
 		leaderElectLeaseDuration time.Duration
@@ -81,6 +85,8 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "DEPRECATED(please pass configuration file via --config flag): The address the probe endpoint binds to.")
 	flag.Float64Var(&qps, "kube-api-qps", 500, "Maximum QPS to use while talking with Kubernetes API")
 	flag.IntVar(&burst, "kube-api-burst", 500, "Maximum burst for throttle while talking with Kubernetes API")
+	flag.BoolVar(&enableStartOrdinal, "enable-start-ordinal", true, "For kubernetes < 1.26, this will be false. For kubernetes "+
+		"> 1.26, this will be true. For kubernetes 1.26, this decided by feature gate of apiserver.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -153,6 +159,23 @@ func main() {
 		close(certsReady)
 	}
 
+	restClient := kubernetes.NewForConfigOrDie(kubeConfig)
+	serverVersion, err := restClient.DiscoveryClient.ServerVersion()
+	if err != nil {
+		setupLog.Error(err, "unable to get server version")
+		os.Exit(1)
+	}
+
+	if serverVersion.Major == "1" {
+		switch strings.Compare(serverVersion.Minor[0:2], "26") {
+		case -1:
+			enableStartOrdinal = false
+		case 1:
+			enableStartOrdinal = true
+		}
+	}
+	setupLog.Info("start with start ordinal enabled: ", enableStartOrdinal)
+
 	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
 	}
@@ -160,7 +183,7 @@ func main() {
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
-	go setupControllers(mgr, certsReady)
+	go setupControllers(mgr, certsReady, enableStartOrdinal)
 
 	setupHealthzAndReadyzCheck(mgr)
 	setupLog.Info("starting manager")
@@ -171,7 +194,7 @@ func main() {
 	}
 
 }
-func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
+func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, enableStartOrdinal bool) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
 	setupLog.Info("waiting for the cert generation to complete")
@@ -197,7 +220,7 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
 			setupLog.Error(err, "unable to create leaderworkerset webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}
-		if err := webhooks.SetupPodWebhook(mgr); err != nil {
+		if err := webhooks.SetupPodWebhook(mgr, enableStartOrdinal); err != nil {
 			setupLog.Error(err, "unable to create pod webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}
