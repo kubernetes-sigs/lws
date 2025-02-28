@@ -81,7 +81,7 @@ func TestAddTPUVariables(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := AddTPUVariables(tc.pod, tc.size)
+			err := AddTPUVariables(tc.pod, tc.size, true)
 			if err != nil {
 				t.Errorf("Error parsing parent: %s", err.Error())
 			}
