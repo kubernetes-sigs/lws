@@ -136,7 +136,7 @@ var _ = BeforeSuite(func() {
 	err = webhooks.SetupLeaderWorkerSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = webhooks.SetupPodWebhook(mgr)
+	err = webhooks.SetupPodWebhook(mgr, true)
 	Expect(err).NotTo(HaveOccurred())
 	//+kubebuilder:scaffold:webhook
 
