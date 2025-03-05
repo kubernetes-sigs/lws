@@ -106,42 +106,49 @@ func TestAddLWSVariables(t *testing.T) {
 		pod                      *corev1.Pod
 		expectedLwsLeaderAddress string
 		expectedGroupSize        int
+		expectedWorkerIndex      string
 	}{
 		{
 			name:                     "Leader pod",
-			pod:                      wrappers.MakePodWithLabels("test-sample", "0", "", "default", 3),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "0", "0", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
 			expectedGroupSize:        3,
+			expectedWorkerIndex:      "0",
 		},
 		{
 			name:                     "Worker pod",
 			pod:                      wrappers.MakePodWithLabels("test-sample", "0", "1", "default", 3),
 			expectedLwsLeaderAddress: "test-sample-0.test-sample.default",
 			expectedGroupSize:        3,
+			expectedWorkerIndex:      "1",
 		},
 		{
 			name:                     "Leader pod, group 1",
-			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "", "default", 2),
+			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "0", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
 			expectedGroupSize:        2,
+			expectedWorkerIndex:      "0",
 		},
 		{
 			name:                     "Worker pod, group 1",
 			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "default", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.default",
 			expectedGroupSize:        2,
+			expectedWorkerIndex:      "3",
 		},
 		{
 			name:                     "Leader pod, group 1, non-default namespace",
 			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
 			expectedGroupSize:        2,
+			expectedWorkerIndex:      "3",
 		},
 		{
 			name:                     "Worker pod, group 1, non-default namespace",
 			pod:                      wrappers.MakePodWithLabels("test-sample", "1", "3", "lws", 2),
 			expectedLwsLeaderAddress: "test-sample-1.test-sample.lws",
 			expectedGroupSize:        2,
+			expectedWorkerIndex:      "3",
 		},
 	}
 
@@ -168,6 +175,10 @@ func TestAddLWSVariables(t *testing.T) {
 				envVar = container.Env[1]
 				if diff := cmp.Diff(envVar.Value, strconv.Itoa(tc.expectedGroupSize)); diff != "" {
 					t.Errorf("Unexpected lws group size %s", diff)
+				}
+				envVar = container.Env[2]
+				if diff := cmp.Diff(envVar.Value, tc.expectedWorkerIndex); diff != "" {
+					t.Errorf("Unexpected lws worker index %s", diff)
 				}
 			}
 		})

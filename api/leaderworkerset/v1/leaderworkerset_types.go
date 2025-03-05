@@ -69,6 +69,10 @@ const (
 	// track the size of the LWS group.
 	LwsGroupSize string = "LWS_GROUP_SIZE"
 
+	// Environment variable added to all containers in the LeaderWorkerSet to
+	// the index/identity of the pod in the group.
+	LwsWorkerIndex string = "LWS_WORKER_INDEX"
+
 	// Subgroup index tracks which subgroup the pod is part of. It will be added
 	// as a label to the pod only if LeaderWorkerSet.Spec.SubGroupSize is set.
 	SubGroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-index"
