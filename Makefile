@@ -35,6 +35,7 @@ IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
+HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/charts
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 BASE_IMAGE ?= gcr.io/distroless/static:nonroot
@@ -92,7 +93,6 @@ help: ## Display this help.
 include Makefile-deps.mk
 
 ##@ Development
-
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) \
@@ -201,6 +201,10 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: helm-chart-push
+helm-chart-push:
+	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ./hack/push-chart.sh
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to
@@ -217,6 +221,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.2.1
 CONTROLLER_TOOLS_VERSION ?= v0.16.2
+HELM_VERSION ?= v3.17.1
 # Use go.mod go version as a single source of truth of Ginkgo version.
 GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
 
@@ -265,12 +270,20 @@ code-generator:
 
 ##@ Release
 .PHONY: artifacts
-artifacts: kustomize
+artifacts: kustomize helm
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	if [ -d artifacts ]; then rm -rf artifacts; fi
 	mkdir -p artifacts
 	$(KUSTOMIZE) build config/default -o artifacts/manifests.yaml
 	@$(call clean-manifests)
+	# Update the image tag and policy
+	$(YQ)  e  '.image.repository = "$(IMAGE_REPO)" | .image.tag = "$(GIT_TAG)" | .image.pullPolicy = "IfNotPresent"' -i charts/lws/values.yaml
+	# create the package. TODO: consider signing it
+	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
+	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
+	# Revert the image changes
+	$(YQ)  e  '.image.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | del(.image.tag) | .image.pullPolicy = "Always"' -i charts/lws/values.yaml
+
 
 .PHONY: prometheus
 prometheus:
@@ -287,3 +300,13 @@ toc-verify:
 .PHONY: generate-apiref
 generate-apiref: genref
 	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/docs/reference
+
+HELM = $(PROJECT_DIR)/bin/helm
+.PHONY: helm
+helm: ## Download helm locally if necessary.
+	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install helm.sh/helm/v3/cmd/helm@$(HELM_VERSION)
+
+YQ = $(PROJECT_DIR)/bin/yq
+.PHONY: yq
+yq: ## Download yq locally if necessary.
+	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/mikefarah/yq/v4@v4.45.1
