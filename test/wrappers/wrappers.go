@@ -176,8 +176,9 @@ func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string, size 
 			Name:      podName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				leaderworkerset.GroupIndexLabelKey: groupIndex,
-				leaderworkerset.SetNameLabelKey:    setName,
+				leaderworkerset.GroupIndexLabelKey:  groupIndex,
+				leaderworkerset.SetNameLabelKey:     setName,
+				leaderworkerset.WorkerIndexLabelKey: workerIndex,
 			},
 			Annotations: map[string]string{
 				leaderworkerset.SizeAnnotationKey: strconv.Itoa(size),
