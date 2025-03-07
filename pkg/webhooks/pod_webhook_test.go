@@ -283,7 +283,6 @@ func TestGetSubGroupIndex(t *testing.T) {
 			podCount:      4,
 			subGroupSize:  2,
 			workerIndex:   2,
-			leaderOnly:    false,
 			expectedIndex: "1",
 		},
 		{
@@ -291,22 +290,13 @@ func TestGetSubGroupIndex(t *testing.T) {
 			podCount:      5,
 			subGroupSize:  2,
 			workerIndex:   2,
-			leaderOnly:    false,
 			expectedIndex: "0",
-		},
-		{
-			name:          "Odd number of pods, leaderOnly, workerIndex=1 is part of second subGroup",
-			podCount:      5,
-			subGroupSize:  2,
-			workerIndex:   1,
-			leaderOnly:    true,
-			expectedIndex: "1",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex, tc.leaderOnly)
+			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex)
 			if tc.expectedIndex != subGroupIndex {
 				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedIndex, subGroupIndex)
 			}

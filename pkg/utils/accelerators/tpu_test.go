@@ -186,7 +186,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					Namespace: "default",
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey:   "2",
-						leaderworkerset.SubGroupIndexLabelKey: "1",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SubGroupSizeAnnotationKey:       "2",
