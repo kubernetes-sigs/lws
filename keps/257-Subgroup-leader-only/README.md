@@ -123,7 +123,7 @@ As a user, I should be able to create a subGroup that only includes the leader i
 still keeping exclusive topology on the workers.
 
 ### Notes/Constraints/Caveats (Optional)
-As mentioned in Non-Goals, this KEP assumes that the leader does not request TPU resources.
+As mentioned in Non-Goals, this KEP assumes that the leader does not request accelerator resources.
 
 <!--
 What are the caveats to the proposal?
@@ -162,7 +162,7 @@ will continue to be a required field, while `Type` will be optional.
 ```golang
 type SubGroupPolicy struct {
 
-	// +kubebuilder:validation:Enum={LeaderWorker,LeaderOnly}
+	// +kubebuilder:validation:Enum={LeaderWorker,LeaderAlone}
 	// +kubebuilder:default=LeaderWorker
 	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
@@ -174,57 +174,39 @@ type SubGroupPolicyType string
 const (
 	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
-	SubGroupPolicyLeaderOnly SubGroupPolicyType = "LeaderOnly"
+	SubGroupPolicyLeaderAlone SubGroupPolicyType = "LeaderAlone"
 )
 ```
 
-A new annotation will be created to determine whether or not the subgroup type is LeaderOnly
+A new annotation will be created to determine whether or not the subgroup type is LeaderAlone
 
 * `leaderworkerset.sigs.k8s.io/subgroup-policy-type`
 
-In order to keep backwards compatability, it will only be added if the type is `LeaderOnly`.
+This annotation will only be injected in the leader pod.
 
-### SubGroupIndex and TPU Environment Injection
-SubGroupIndex is a label that we use to generate the hash that is used for exclusive affinity
+In order to keep backwards compatability, it will only be added if the type is `LeaderAlone`.
 
-```golang
-subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
-pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-    SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
-}
-```
-and what we use to determine what pod names to include when injecting the TPU Host names 
+### Subgroup Creation 
+Implementation wise, the only change needed is to not add the SubGroup labels on the leader if the SubGroupType is LeaderAlone. Effectively, this means 
+that the leader is not part of a subgroup at all. The only point of a pod being in a subgroup is to guarantee exclusive placement with the other pods 
+in the subgroup. However, since this is a one pod subgroup, there is no use case for injecting the subgroup labels on the leader. 
+
 
 ```golang
-start := subGroupSize*subGroupIndex + 1
-end := subGroupSize * (subGroupIndex + 1)
-for i := start; i <= end; i++ {
-    hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
-}
-```
-
-Because the leader now occupies a subgroup, and `SubGroupSize` will not always be one, the way we calculate the SubGroupIndex needs to be modified. When generating 
-the hash, we will shift one to the right.
-
-```golang
-if leaderOnly {
-    return fmt.Sprint(((workerIndex - 1) / subGroupSize) + 1)
+func (p *PodWebhook) Default() {
+  if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && !leaderOnlySubGroup {
+    pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
+    subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
+    pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+    if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+      SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+    }
+  }
 }
 ```
 
-When injecting TPU environment variables, we will keep the same logic that exists for when the leader doesn't request TPU resources. However, all the workers will have their
-subGroupIndex shift back, so that the start and end calculation is still accurate
-
-```golang
-// Take worker 1 as an example with subGroupSize set to 2. It will now have subGroupIndex set to 1, which means that the start will be 3, and end will be 4. 
-// Need to shift it down by 1 for the calculation to still work out. 
-if leaderOnlyType && subGroupIndex != 0 {
-    subGroupIndex -= 1
-}
-start := subGroupSize*subGroupIndex + 1 
-end := subGroupSize * (subGroupIndex + 1)
-```
+### TPU Environment Injection
+When injecting TPU environment variables, we will keep the same logic that exists for when the leader doesn't request TPU resources.
 
 ### Test Plan
 
@@ -251,8 +233,6 @@ implementing this enhancement to ensure the enhancements have also solid foundat
 -->
 
 ##### Unit tests
-- Add unit tests to validate that the right subGroupIndex is injected
-- Add unit tests to validate that the correct env TPU variables are injected
 
 
 <!--
@@ -345,6 +325,28 @@ Why should this KEP _not_ be implemented?
 -->
 
 ## Alternatives
+Original implementation was to have the leader have the subGroupIndex be 0, and shift all other subGroup indices are moved one to the right.
+
+```golang
+if leaderOnly {
+    return fmt.Sprint(((workerIndex - 1) / subGroupSize) + 1)
+}
+```
+
+This implementation also requires to shift the subGroupIndex back to the left when injecting TPU environment variables 
+
+```golang
+// Take worker 1 as an example with subGroupSize set to 2. It will now have subGroupIndex set to 1, which means that the start will be 3, and end will be 4. 
+// Need to shift it down by 1 for the calculation to still work out. 
+if leaderOnlyType && subGroupIndex != 0 {
+    subGroupIndex -= 1
+}
+start := subGroupSize*subGroupIndex + 1 
+end := subGroupSize * (subGroupIndex + 1)
+```
+
+Since there is no use case for having the leaderPod on its own subgroup, this implementation was scratched as it adds unnecessary complexity
+
 
 <!--
 What other approaches did you consider, and why did you rule them out? These do
