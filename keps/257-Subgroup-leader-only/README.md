@@ -91,8 +91,7 @@ Add an option to create a LeaderOnly subgroup, while still being able to create 
 to the number of workers (so size - 1). 
 
 ### Non-Goals
-This KEP assumes that the leader will not request TPU resources, and thus, subGroupSize will always be assumed to be an odd number. Moreover, no TPU environment variables will be 
-injected on the leader.
+This KEP assumes that the leader will not request accelerator resources, and thus, subGroupSize will always be assumed to be an odd number.
 
 <!--
 What is out of scope for this KEP? Listing non-goals helps to focus discussion
@@ -163,11 +162,11 @@ will continue to be a required field, while `Type` will be optional.
 ```golang
 type SubGroupPolicy struct {
 
-	// +kubebuilder:validation:Enum={LeaderWorker,LeaderAlone}
-	// +kubebuilder:default=LeaderWorker
-	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
+  // +kubebuilder:validation:Enum={LeaderWorker,LeaderAlone}
+  // +kubebuilder:default=LeaderWorker
+  Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
-    SubGroupSize *int32 `json:"subGroupSize,omitempty"`
+  SubGroupSize *int32 `json:"subGroupSize,omitempty"`
 }
 
 type SubGroupPolicyType string
