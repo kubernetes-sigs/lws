@@ -120,7 +120,7 @@ bogged down.
 -->
 
 #### Story 1
-As a user, I should be able to create a subGroup that only includes the leader in order to be able to schedule the leader on a different topology while 
+As a user, I should be able to create a subGroup that only includes the leader in order to be able to schedule the leader with different resource requirements
 still keeping exclusive topology on the workers.
 
 ### Notes/Constraints/Caveats (Optional)
