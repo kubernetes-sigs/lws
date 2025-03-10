@@ -162,7 +162,7 @@ will continue to be a required field, while `Type` will be optional.
 ```golang
 type SubGroupPolicy struct {
 
-  // +kubebuilder:validation:Enum={LeaderWorker,LeaderAlone}
+  // +kubebuilder:validation:Enum={LeaderWorker,LeaderExcluded}
   // +kubebuilder:default=LeaderWorker
   Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
@@ -174,20 +174,20 @@ type SubGroupPolicyType string
 const (
 	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
-	SubGroupPolicyLeaderAlone SubGroupPolicyType = "LeaderAlone"
+	SubGroupPolicyLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
 )
 ```
 
-A new annotation will be created to determine whether or not the subgroup type is LeaderAlone
+A new annotation will be created to determine whether or not the subgroup type is LeaderExcluded
 
 * `leaderworkerset.sigs.k8s.io/subgroup-policy-type`
 
 This annotation will only be injected in the leader pod.
 
-In order to keep backwards compatability, it will only be added if the type is `LeaderAlone`.
+In order to keep backwards compatability, it will only be added if the type is `LeaderExcluded`.
 
 ### Subgroup Creation 
-Implementation wise, the only change needed is to not add the SubGroup labels on the leader if the SubGroupType is LeaderAlone. Effectively, this means 
+Implementation wise, the only change needed is to not add the SubGroup labels on the leader if the SubGroupType is LeaderExcluded. Effectively, this means 
 that the leader is not part of a subgroup at all. The only point of a pod being in a subgroup is to guarantee exclusive placement with the other pods 
 in the subgroup. However, since this is a one pod subgroup, there is no use case for injecting the subgroup labels on the leader. 
 
