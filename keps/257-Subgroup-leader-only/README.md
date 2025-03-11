@@ -61,7 +61,7 @@ updates.
 [documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
 -->
 This KEP aims to extend the SubGroup feature by adding an API field that defines the type of Subgroup that will be created. The existing version
-will become "LeaderWorker", and a new type will be added to create a SubGroup that only includes the leader.
+will become "LeaderWorker", and a new type which will exclude the leader from any subgroup.
 
 
 ## Motivation
@@ -76,7 +76,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 -->
 
 There are cases where the resource requirements for the leader are different from the ones by the worker, while still being able to guarantee exclusive placement
-on the workers. Having a leaderOnly subgroup means that the placement of the leader will be independent of the workers, and by adding the `subgroup-exclusive-topology`, the 
+on the workers. Having a `LeaderExcluded` subgroup means that the placement of the leader will be independent of the workers, and by adding the `subgroup-exclusive-topology`, the 
 workers can be guaranteed to be scheduled on the same topology.
 
 ### Goals
@@ -86,8 +86,8 @@ List the specific goals of the KEP. What is it trying to achieve? How will we
 know that this has succeeded?
 -->
 
-Add an option to create a LeaderOnly subgroup, while still being able to create subgroups on the other workers. Therefore, it should be possible to do the following split:
-(leader), (worker-1, worker-2), (worker-3, worker-4). If the desired effect is to have one subgroup for the leader, and one subgroup for the worker, subgroupSize should be set 
+Add an option exclude the leader from any subgroup, while still being able to create subgroups on the other workers. Therefore, it should be possible to do the following split:
+leader, (worker-1, worker-2), (worker-3, worker-4). If the desired effect is to have just one subgroup for the workers, subgroupSize should be set 
 to the number of workers (so size - 1). 
 
 ### Non-Goals
@@ -178,7 +178,7 @@ const (
 )
 ```
 
-A new annotation will be created to determine whether or not the subgroup type is LeaderExcluded
+A new annotation will be created to determine whether or not the subgroup type is `LeaderExcluded`
 
 * `leaderworkerset.sigs.k8s.io/subgroup-policy-type`
 
@@ -187,7 +187,7 @@ This annotation will only be injected in the leader pod.
 In order to keep backwards compatability, it will only be added if the type is `LeaderExcluded`.
 
 ### Subgroup Creation 
-Implementation wise, the only change needed is to not add the SubGroup labels on the leader if the SubGroupType is LeaderExcluded. Effectively, this means 
+Implementation wise, the only change needed is to not add the SubGroup labels on the leader if the SubGroupType is `LeaderExcluded`. Effectively, this means 
 that the leader is not part of a subgroup at all. The only point of a pod being in a subgroup is to guarantee exclusive placement with the other pods 
 in the subgroup. However, since this is a one pod subgroup, there is no use case for injecting the subgroup labels on the leader. 
 
