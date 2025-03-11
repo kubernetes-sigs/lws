@@ -99,11 +99,11 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 		rbac:roleName=manager-role output:rbac:artifacts:config=config/rbac \
 		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
 		webhook output:webhook:artifacts:config=config/webhook \
-		paths="./..."
+		paths="{./api/..., ./pkg/...}"
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	./hack/update-codegen.sh go $(PROJECT_DIR)/bin
 
 .PHONY: fmt
@@ -243,7 +243,7 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
-	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@bbc9711d9b2db31ce828714e7d3c875c00b4c1f1
+	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
 
 GINKGO = $(shell pwd)/bin/ginkgo
 .PHONY: ginkgo
