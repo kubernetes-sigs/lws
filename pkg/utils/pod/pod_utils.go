@@ -147,13 +147,23 @@ func AddLWSVariables(pod *corev1.Pod) error {
 		Value: size,
 	}
 
+	workerIndex, found := pod.Labels[leaderworkerset.WorkerIndexLabelKey]
+	if !found {
+		return fmt.Errorf("Failure constructing environment variables, no worker index label found for pod %v", klog.KObj(pod))
+	}
+
+	workerIndexEnvVar := corev1.EnvVar{
+		Name:  leaderworkerset.LwsWorkerIndex,
+		Value: workerIndex,
+	}
+
 	// The order of injection needs attention, see
 	// https://github.com/kubernetes-sigs/lws/pull/152
 	for i := range pod.Spec.Containers {
-		addEnvVarsIfNotExists(&pod.Spec.Containers[i], leaderAddressEnvVar, sizeEnvVar)
+		addEnvVarsIfNotExists(&pod.Spec.Containers[i], leaderAddressEnvVar, sizeEnvVar, workerIndexEnvVar)
 	}
 	for i := range pod.Spec.InitContainers {
-		addEnvVarsIfNotExists(&pod.Spec.InitContainers[i], leaderAddressEnvVar, sizeEnvVar)
+		addEnvVarsIfNotExists(&pod.Spec.InitContainers[i], leaderAddressEnvVar, sizeEnvVar, workerIndexEnvVar)
 	}
 
 	return nil
