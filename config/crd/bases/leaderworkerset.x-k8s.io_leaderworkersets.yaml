@@ -8202,10 +8202,10 @@ spec:
                       in each replica.
                     properties:
                       subGroupPolicyType:
-                        default: LeaderWorker
+                        default: LeaderExcluded
                         enum:
                         - LeaderWorker
-                        - LeaderOnly
+                        - LeaderExcluded
                         type: string
                       subGroupSize:
                         description: |-
