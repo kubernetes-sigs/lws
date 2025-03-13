@@ -186,8 +186,8 @@ type RolloutStrategy struct {
 // SubGroupPolicy describes the policy that will be applied when creating subgroups.
 type SubGroupPolicy struct {
 
-	// +kubebuilder:validation:Enum={LeaderWorker,LeaderOnly}
-	// +kubebuilder:default=LeaderWorker
+	// +kubebuilder:validation:Enum={LeaderWorker,LeaderExcluded}
+	// +kubebuilder:default=LeaderExcluded
 	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
 	// The number of pods per subgroup. This value is immutable,
@@ -204,7 +204,7 @@ type SubGroupPolicyType string
 const (
 	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
-	SubGroupPolicyLeaderOnly SubGroupPolicyType = "LeaderOnly"
+	SubGroupPolicyLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
 )
 
 type NetworkConfig struct {
