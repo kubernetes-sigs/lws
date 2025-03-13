@@ -12,7 +12,7 @@ Rolling update is vital to online services with zero downtime. For LLM inference
 
 Note that maxSurge and maxUnavailable can not both be zero at the same time.
 
-Here's a leaderWorkerSet configured with rollout strategy, you can find the example [here](lws-rollout-strategy.yaml):
+Here's a leaderWorkerSet configured with rollout strategy, you can find the example [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/sample/lws-rollout-strategy.yaml):
 
 ```yaml
 spec:

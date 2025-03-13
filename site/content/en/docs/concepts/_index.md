@@ -22,22 +22,10 @@ Here is an example LeaderWorkerSet
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: leaderworkerset-multi-template
+  name: leaderworkerset-sample
 spec:
   replicas: 3
   leaderWorkerTemplate:
-    leaderTemplate:
-      spec:
-        containers:
-        - name: nginx2
-          image: nginx:1.14.2
-          resources:
-            limits:
-              cpu: "100m"
-            requests:
-              cpu: "50m"
-          ports:
-          - containerPort: 8080
     size: 4
     workerTemplate:
       spec:
@@ -56,25 +44,25 @@ spec:
 To list all the pods that belong to a LWS, you can use a command like this:
 
 ```
-kubectl get pods --selector=leaderworkerset.sigs.k8s.io/name=leaderworkerset-multi-template
+kubectl get pods --selector=leaderworkerset.sigs.k8s.io/name=leaderworkerset-sample
 ```
 
 The output should be similar to
 
 ```
-NAME                                 READY   STATUS    RESTARTS   AGE
-leaderworkerset-multi-template-0     1/1     Running   0          107s
-leaderworkerset-multi-template-0-1   1/1     Running   0          107s
-leaderworkerset-multi-template-0-2   1/1     Running   0          107s
-leaderworkerset-multi-template-0-3   1/1     Running   0          107s
-leaderworkerset-multi-template-1     1/1     Running   0          107s
-leaderworkerset-multi-template-1-1   1/1     Running   0          107s
-leaderworkerset-multi-template-1-2   1/1     Running   0          106s
-leaderworkerset-multi-template-1-3   1/1     Running   0          106s
-leaderworkerset-multi-template-2     1/1     Running   0          107s
-leaderworkerset-multi-template-2-1   1/1     Running   0          107s
-leaderworkerset-multi-template-2-2   1/1     Running   0          106s
-leaderworkerset-multi-template-2-3   1/1     Running   0          106s
+NAME                         READY   STATUS    RESTARTS   AGE
+leaderworkerset-sample-0     1/1     Running   0          6m10s
+leaderworkerset-sample-0-1   1/1     Running   0          6m10s
+leaderworkerset-sample-0-2   1/1     Running   0          6m10s
+leaderworkerset-sample-0-3   1/1     Running   0          6m10s
+leaderworkerset-sample-1     1/1     Running   0          6m10s
+leaderworkerset-sample-1-1   1/1     Running   0          6m10s
+leaderworkerset-sample-1-2   1/1     Running   0          6m10s
+leaderworkerset-sample-1-3   1/1     Running   0          6m10s
+leaderworkerset-sample-2     1/1     Running   0          6m10s
+leaderworkerset-sample-2-1   1/1     Running   0          6m10s
+leaderworkerset-sample-2-2   1/1     Running   0          6m10s
+leaderworkerset-sample-2-3   1/1     Running   0          6m10s
 ```
 
 ## Multi-Template for Pods
@@ -85,7 +73,7 @@ LWS support using different templates for leader and worker pods, if a `leaderTe
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: leaderworkerset-multi-template
+  name: leaderworkerset-sample
 spec:
   replicas: 3
   leaderWorkerTemplate:
@@ -105,7 +93,7 @@ can be done as follows:
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: leaderworkerset-multi-template
+  name: leaderworkerset-sample
   annotations:
     leaderworkerset.sigs.k8s.io/exclusive-topology: rack
 spec:
@@ -121,7 +109,7 @@ same hardware requirements.
 
 ```
 metadata:
-  name: leaderworkerset-multi-template
+  name: leaderworkerset-sample
   annotations:
     leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: rack
 spec:
