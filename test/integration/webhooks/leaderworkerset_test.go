@@ -147,7 +147,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupSize(1)
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupType(leaderworkerset.SubGroupPolicyLeaderWorker).SubGroupSize(2)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupType(leaderworkerset.SubGroupPolicyLeaderWorker).SubGroupSize(1)
 			},
 		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
