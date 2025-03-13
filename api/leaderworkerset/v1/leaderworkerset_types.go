@@ -84,6 +84,8 @@ const (
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 
+	// SubGroupPolicyType will be added to leader pods as an annotation which
+	// corresponds to LeaderWorkerSet.Spec.SubGroupPolicy.Type
 	SubGroupPolicyTypeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-policy-type"
 
 	// Leader pods will have an annotation that determines what type of domain
@@ -186,8 +188,11 @@ type RolloutStrategy struct {
 // SubGroupPolicy describes the policy that will be applied when creating subgroups.
 type SubGroupPolicy struct {
 
+	// Defines what type of Subgroups to create. Defaults to
+	// the first subgroup including the leader
+	//
 	// +kubebuilder:validation:Enum={LeaderWorker,LeaderExcluded}
-	// +kubebuilder:default=LeaderExcluded
+	// +kubebuilder:default=LeaderWorker
 	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
 	// The number of pods per subgroup. This value is immutable,
@@ -202,8 +207,18 @@ type SubGroupPolicy struct {
 type SubGroupPolicyType string
 
 const (
+	// LeaderWorker will include the leader in the first subgroup.
+	// If LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size is odd,
+	// the groups will look like:
+	// (0, 1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
+	// If it is even, the groups will look like:
+	// (0, 1, ... subGroupSize-1), (subGroupSize, ... 2*subGroupSize - 1), ...
 	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
+	// LeaderExcluded excludes the leader from any subgroup. Only
+	// supported if LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size is odd.
+	// Groups will look like:
+	// (1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
 	SubGroupPolicyLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
 )
 
