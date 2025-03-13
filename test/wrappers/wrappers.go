@@ -104,8 +104,18 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Conditions(conditions []metav1.Conditi
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupSize(subGroupSize int32) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+	}
 	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize = &subGroupSize
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupType(subGroupType leaderworkerset.SubGroupPolicyType) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+	}
+	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type = subGroupType
 	return lwsWrapper
 }
 

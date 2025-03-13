@@ -8202,7 +8202,10 @@ spec:
                       in each replica.
                     properties:
                       subGroupPolicyType:
-                        default: LeaderExcluded
+                        default: LeaderWorker
+                        description: |-
+                          Defines what type of Subgroups to create. Defaults to
+                          the first subgroup including the leader
                         enum:
                         - LeaderWorker
                         - LeaderExcluded
