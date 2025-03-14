@@ -193,7 +193,8 @@ type SubGroupPolicy struct {
 	//
 	// +kubebuilder:validation:Enum={LeaderWorker,LeaderExcluded}
 	// +kubebuilder:default=LeaderWorker
-	Type SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
+	// +optional
+	Type *SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 
 	// The number of pods per subgroup. This value is immutable,
 	// and must not be greater than LeaderWorkerSet.Spec.Size.
