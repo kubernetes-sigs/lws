@@ -79,7 +79,7 @@ const (
 
 	// SubGroupSize will be added to pods as an annotation which corresponds to
 	// LeaderWorkerSet.Spec.SubGroupPolicy.SubGroupSize
-	SubGroupSizeAnnotationKey string = "leaderworkerset.gke.io/subgroup-size"
+	SubGroupSizeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-size"
 
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
