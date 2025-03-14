@@ -41,6 +41,7 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      serviceName,
 				Namespace: lws.Namespace,
+				Labels:    map[string]string{leaderworkerset.SetNameLabelKey: lws.Name},
 			},
 			Spec: corev1.ServiceSpec{
 				ClusterIP:                "None", // defines service as headless
