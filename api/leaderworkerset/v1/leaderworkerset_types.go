@@ -39,11 +39,11 @@ const (
 	// statefulset/pod belong to.
 	GroupIndexLabelKey string = "leaderworkerset.sigs.k8s.io/group-index"
 
-	// Worker index will be added to pods as a label and annotation which is
+	// Worker index will be added to pods as a label which is
 	// the index/identity of the pod in the group.
 	WorkerIndexLabelKey string = "leaderworkerset.sigs.k8s.io/worker-index"
 
-	// Size will be added to leader pods as an annotation which corresponds to
+	// Size will be added to pods as an annotation which corresponds to
 	// LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size.
 	SizeAnnotationKey string = "leaderworkerset.sigs.k8s.io/size"
 
@@ -62,7 +62,7 @@ const (
 	RevisionKey string = "leaderworkerset.sigs.k8s.io/template-revision-hash"
 
 	// Environment variable added to all containers in the LeaderWorkerSet to
-	// address the leader via the headless service.
+	// address the leader via the leader pod address.
 	LwsLeaderAddress string = "LWS_LEADER_ADDRESS"
 
 	// Environment variable added to all containers in the LeaderWorkerSet to
