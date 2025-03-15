@@ -337,7 +337,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			revisionKey: revisionKey1,
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
-			}).SubGroupSize(2).Replica(1).
+			}).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{

@@ -17,16 +17,29 @@ limitations under the License.
 
 package v1
 
+import (
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+)
+
 // SubGroupPolicyApplyConfiguration represents a declarative configuration of the SubGroupPolicy type for use
 // with apply.
 type SubGroupPolicyApplyConfiguration struct {
-	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
+	Type         *leaderworkersetv1.SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
+	SubGroupSize *int32                                `json:"subGroupSize,omitempty"`
 }
 
 // SubGroupPolicyApplyConfiguration constructs a declarative configuration of the SubGroupPolicy type for use with
 // apply.
 func SubGroupPolicy() *SubGroupPolicyApplyConfiguration {
 	return &SubGroupPolicyApplyConfiguration{}
+}
+
+// WithType sets the Type field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Type field is set to the value of the last call.
+func (b *SubGroupPolicyApplyConfiguration) WithType(value leaderworkersetv1.SubGroupPolicyType) *SubGroupPolicyApplyConfiguration {
+	b.Type = &value
+	return b
 }
 
 // WithSubGroupSize sets the SubGroupSize field in the declarative configuration to the given value
