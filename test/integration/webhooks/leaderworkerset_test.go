@@ -147,7 +147,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupSize(1)
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupType(leaderworkerset.SubGroupPolicyLeaderWorker).SubGroupSize(1)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).SubGroupSize(1)
 			},
 		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
@@ -263,9 +263,9 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("creation with subGroupSize even when using LeaderExcluded should fail", &testValidationCase{
+		ginkgo.Entry("creation where (subGroupSize-1) is not divisible by 1 and SubGroupPolicyTypeLeaderExcluded should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(4).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyLeaderExcluded)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(4).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)
 			},
 			lwsCreationShouldFail: true,
 		}),

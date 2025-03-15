@@ -115,7 +115,7 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupType(subGroupType leaderworker
 	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 		lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
 	}
-	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type = subGroupType
+	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type = &subGroupType
 	return lwsWrapper
 }
 

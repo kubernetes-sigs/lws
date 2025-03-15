@@ -190,7 +190,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					},
 					Annotations: map[string]string{
 						leaderworkerset.SubGroupSizeAnnotationKey:       "2",
-						leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyLeaderExcluded),
+						leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
 					},
 				},
 			},

@@ -189,7 +189,7 @@ type RolloutStrategy struct {
 type SubGroupPolicy struct {
 
 	// Defines what type of Subgroups to create. Defaults to
-	// the first subgroup including the leader
+	// LeaderWorker
 	//
 	// +kubebuilder:validation:Enum={LeaderWorker,LeaderExcluded}
 	// +kubebuilder:default=LeaderWorker
@@ -209,18 +209,19 @@ type SubGroupPolicyType string
 
 const (
 	// LeaderWorker will include the leader in the first subgroup.
-	// If LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size is odd,
-	// the groups will look like:
+	// If (LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size-1) is divisible
+	// by LeaderWorkerSet.Spec.SubGroupPolicy.Size the groups will look like:
 	// (0, 1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
 	// If it is even, the groups will look like:
 	// (0, 1, ... subGroupSize-1), (subGroupSize, ... 2*subGroupSize - 1), ...
-	SubGroupPolicyLeaderWorker SubGroupPolicyType = "LeaderWorker"
+	SubGroupPolicyTypeLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
 	// LeaderExcluded excludes the leader from any subgroup. Only
-	// supported if LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size is odd.
+	// supported if If (LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size-1) is divisible
+	// by LeaderWorkerSet.Spec.SubGroupPolicy.Size.
 	// Groups will look like:
 	// (1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
-	SubGroupPolicyLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
+	SubGroupPolicyTypeLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
 )
 
 type NetworkConfig struct {
