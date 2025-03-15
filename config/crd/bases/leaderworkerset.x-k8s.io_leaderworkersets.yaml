@@ -8205,7 +8205,7 @@ spec:
                         default: LeaderWorker
                         description: |-
                           Defines what type of Subgroups to create. Defaults to
-                          the first subgroup including the leader
+                          LeaderWorker
                         enum:
                         - LeaderWorker
                         - LeaderExcluded
