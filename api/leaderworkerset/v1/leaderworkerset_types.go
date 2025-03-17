@@ -216,8 +216,8 @@ const (
 	// (0, 1, ... subGroupSize-1), (subGroupSize, ... 2*subGroupSize - 1), ...
 	SubGroupPolicyTypeLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
-	// LeaderExcluded excludes the leader from any subgroup. Only
-	// supported if If (LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size-1) is divisible
+	// LeaderExcluded excludes the leader from any subgroup. 
+	// Only supported when (LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size-1) is divisible
 	// by LeaderWorkerSet.Spec.SubGroupPolicy.Size.
 	// Groups will look like:
 	// (1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
