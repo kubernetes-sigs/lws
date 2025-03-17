@@ -212,7 +212,7 @@ const (
 	// If (LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size-1) is divisible
 	// by LeaderWorkerSet.Spec.SubGroupPolicy.Size, the groups will look like:
 	// (0, 1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
-	// If it is even, the groups will look like:
+	// If not divisible, the groups will look like:
 	// (0, 1, ... subGroupSize-1), (subGroupSize, ... 2*subGroupSize - 1), ...
 	SubGroupPolicyTypeLeaderWorker SubGroupPolicyType = "LeaderWorker"
 
