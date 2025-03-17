@@ -21,7 +21,7 @@ Create a kind cluster:
 kind create cluster
 ```
 
-Install LeaderWorkerSet; full details are in the [installation guide](https://github.com/kubernetes-sigs/lws/blob/main/docs/setup/install.md) but running the e2e test suite is an easy way to get started in development:
+Install LeaderWorkerSet; full details are in the [installation guide](https://lws.sigs.k8s.io/docs/installation/) but running the e2e test suite is an easy way to get started in development:
 
 ```shell
 USE_EXISTING_CLUSTER=true KIND_CLUSTER_NAME=kind make test-e2e

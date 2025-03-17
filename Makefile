@@ -299,7 +299,7 @@ toc-verify:
 
 .PHONY: generate-apiref
 generate-apiref: genref
-	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/docs/reference
+	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference
 
 HELM = $(PROJECT_DIR)/bin/helm
 .PHONY: helm
