@@ -137,7 +137,13 @@ Consider including folks who also work outside the SIG or subproject.
 We propose adding two new API fields to LWS:
 
 ```golang
-type LeaderWorkerSetSpec {
+
+type type LeaderWorkerTemplate struct {
+  // Defines additional scheduling constraints for the group
+  SchedulingPolicy *SchedulingPolicy `json:"schedulingPolicy,omitempty"`
+}
+
+type SchedulingPolicy struct {
     // Defines the label that will be targeted by the node selector
     // The key will be the name of the leader pod
 	ReplicaUniqueNodeSelector string `json:"replicaUniqueNodeSelector,omitempty"`
