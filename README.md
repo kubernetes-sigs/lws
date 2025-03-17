@@ -11,7 +11,7 @@ The initial design and proposal can be found at: <http://bit.ly/k8s-LWS>.
 
 ## Conceptual view
 
-![image](https://github.com/kubernetes-sigs/lws/assets/9022859/afe68191-609c-4b34-b992-107838002e0a)
+![image](https://github.com/user-attachments/assets/5c413f5d-8c34-488f-b92e-339273555a7d)
 
 ## Feature overview
 

@@ -12,7 +12,7 @@ An LWS creates a group of pods based on two different templates (the leader temp
 
 ## Conceptual Diagram
 
-![LWS diagram](https://github.com/kubernetes-sigs/lws/assets/9022859/afe68191-609c-4b34-b992-107838002e0a)
+![LWS diagram](https://github.com/user-attachments/assets/5c413f5d-8c34-488f-b92e-339273555a7d)
 
 ## Running an Example LeaderWorkerSet
 
