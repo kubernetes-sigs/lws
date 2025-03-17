@@ -20,8 +20,13 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -180,6 +185,103 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 			output := isNotMoreThan100Percent(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
+			}
+		})
+	}
+}
+
+func TestGeneralValidate(t *testing.T) {
+	type args struct {
+		obj runtime.Object
+	}
+	tests := []struct {
+		name    string
+		r       *LeaderWorkerSetWebhook
+		args    args
+		wantErr bool
+	}{
+		// TODO: Add test cases.
+		{
+			name: "rolling update with non zero replica",
+			args: args{
+				obj: &v1.LeaderWorkerSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test",
+						Namespace: "test",
+					},
+					Spec: v1.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+							Size: ptr.To(int32(1)),
+						},
+						Replicas: ptr.To(int32(10)),
+						RolloutStrategy: v1.RolloutStrategy{
+							RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+								MaxSurge:       intstr.FromString("25%"),
+								MaxUnavailable: intstr.FromString("25%"),
+							},
+						},
+					},
+				},
+			},
+			r:       &LeaderWorkerSetWebhook{},
+			wantErr: false,
+		},
+		{
+			name: "rolling update with zero replica",
+			args: args{
+				obj: &v1.LeaderWorkerSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test",
+						Namespace: "test",
+					},
+					Spec: v1.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+							Size: ptr.To(int32(1)),
+						},
+						Replicas: ptr.To(int32(0)),
+						RolloutStrategy: v1.RolloutStrategy{
+							RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+								MaxSurge:       intstr.FromString("25%"),
+								MaxUnavailable: intstr.FromString("25%"),
+							},
+						},
+					},
+				},
+			},
+			r:       &LeaderWorkerSetWebhook{},
+			wantErr: false,
+		},
+		{
+			name: "rolling update failed",
+			args: args{
+				obj: &v1.LeaderWorkerSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test",
+						Namespace: "test",
+					},
+					Spec: v1.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+							Size: ptr.To(int32(1)),
+						},
+						Replicas: ptr.To(int32(1)),
+						RolloutStrategy: v1.RolloutStrategy{
+							RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+								MaxSurge:       intstr.FromString("0%"),
+								MaxUnavailable: intstr.FromString("25%"),
+							},
+						},
+					},
+				},
+			},
+			r:       &LeaderWorkerSetWebhook{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &LeaderWorkerSetWebhook{}
+			if got := r.generalValidate(tt.args.obj); (got.ToAggregate() != nil) != tt.wantErr {
+				t.Errorf("LeaderWorkerSetWebhook.generalValidate() = %v, want error %v", got.ToAggregate(), tt.wantErr)
 			}
 		})
 	}
