@@ -27,13 +27,13 @@ The initial design and proposal can be found at: <http://bit.ly/k8s-LWS>.
 
 ## Installation
 
-Read the [installation guide](/docs/setup/install.md) to learn more.
+Read the [installation guide](/site/content/en/docs/installation/_index.md) to learn more.
 
 ## Examples
 
 Read the [examples](/docs/examples/sample/README.md) to learn more.
 
-Also discover adopters, integrations, and talks [here](/docs/adoption/README.md).
+Also discover adopters, integrations, and talks [here](/site/content/en/docs/adoption/_index.md).
 
 ## Community, discussion, contribution, and support
 

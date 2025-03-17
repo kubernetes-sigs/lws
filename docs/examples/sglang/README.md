@@ -8,7 +8,7 @@ Since SGLang employs tensor parallelism for multi-node inference, which requires
 
 ## Install LeaderWorkerSet
 
-Follow the step-by-step guide on how to install LWS. [View installation guide](https://github.com/kubernetes-sigs/lws/blob/main/docs/setup/install.md)
+Follow the step-by-step guide on how to install LWS. [View installation guide](https://lws.sigs.k8s.io/docs/installation/)
 
 ## Deploy LeaderWorkerSet of SGLang
 We use LeaderWorkerSet to deploy 2 SGLang replicas, and each replica has 2 Pods, 1 GPU per Pod. Set the `--tp` to 2 to enable inference across two pods.

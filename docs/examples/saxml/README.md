@@ -4,7 +4,7 @@ In this example, we will use LeaderWorkerSet to deploy a multi-host inference in
 
 ## Install LeaderWorkerSet
 
-Follow the step-by-step guide on how to install LWS. [View installation guide](https://github.com/kubernetes-sigs/lws/blob/main/docs/setup/install.md)
+Follow the step-by-step guide on how to install LWS. [View installation guide](https://lws.sigs.k8s.io/docs/installation/)
 
 ## Conceptual View
 
