@@ -83,12 +83,6 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 		lws.Spec.NetworkConfig.SubdomainPolicy = &subdomainPolicy
 	}
 
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == nil {
-			subGroupPolicyType := v1.SubGroupPolicyTypeLeaderWorker
-			lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type = &subGroupPolicyType
-		}
-	}
 	return nil
 }
 
