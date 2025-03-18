@@ -142,14 +142,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return wrappers.BuildLeaderWorkerSet(ns.Name).SubdomainPolicy(leaderworkerset.SubdomainShared)
 			},
 		}),
-		ginkgo.Entry("defaulting logic applies when spec.LeaderWorkerTemplate.SubGroupPolicy is set, but Type is not", &testDefaultingCase{
-			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupSize(1)
-			},
-			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).SubGroupSize(1)
-			},
-		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RolloutStrategy(leaderworkerset.RolloutStrategy{}) // unset rollout strategy

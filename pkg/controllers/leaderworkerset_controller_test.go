@@ -381,6 +381,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/size":                "2",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
