@@ -6,8 +6,12 @@
 [GoReport Widget]: https://goreportcard.com/badge/github.com/kubernetes-sigs/lws
 [GoReport Status]: https://goreportcard.com/report/github.com/kubernetes-sigs/lws
 
+<img src="https://github.com/kubernetes-sigs/lws/blob/main/site/static/images/logo.svg" width="100" alt="lws logo">
+
 LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
 The initial design and proposal can be found at: <http://bit.ly/k8s-LWS>.
+
+Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related [talks & presentations](https://lws.sigs.k8s.io/docs/adoption/#talks-and-presentations) to learn more.
 
 ## Conceptual view
 
