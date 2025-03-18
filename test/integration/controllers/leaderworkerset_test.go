@@ -897,7 +897,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
 								return err
 							}
-							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.16.1"
+							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginxinc/nginx-unprivileged:1.26"
 							return k8sClient.Update(ctx, &leaderworkerset)
 						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 					},
