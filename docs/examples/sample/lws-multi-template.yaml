@@ -9,7 +9,7 @@ spec:
       spec:
         containers:
         - name: nginx2
-          image: nginx:1.14.2
+          image: nginxinc/nginx-unprivileged:1.27
           resources:
             limits:
               cpu: "100m"
@@ -22,7 +22,7 @@ spec:
       spec:
         containers:
         - name: nginx
-          image: nginx:1.14.2
+          image: nginxinc/nginx-unprivileged:1.27
           resources:
             limits:
               cpu: "100m"
