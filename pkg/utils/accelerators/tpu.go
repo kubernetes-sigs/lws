@@ -105,7 +105,6 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
-
 	workerIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
 	if err != nil {
 		return err

@@ -337,7 +337,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			revisionKey: revisionKey1,
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Annotation(map[string]string{
 				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
-			}).SubGroupSize(2).Replica(1).
+			}).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).Replica(1).
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
@@ -381,6 +381,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/size":                "2",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
 								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
