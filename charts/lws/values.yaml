@@ -23,6 +23,7 @@ podSecurityContext:
   # fsGroup: 2000
 securityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
