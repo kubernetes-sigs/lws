@@ -1,2 +1,0 @@
-FROM docker.io/vllm/vllm-openai:latest
-COPY ray_init.sh /vllm-workspace/ray_init.sh

@@ -1,2 +1,0 @@
-FROM docker.io/vllm/vllm-tpu:2e33fe419186c65a18da6668972d61d7bbc31564
-COPY ray_init.sh /vllm-workspace/ray_init.sh
