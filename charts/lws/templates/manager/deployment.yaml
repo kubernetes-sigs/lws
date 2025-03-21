@@ -48,6 +48,11 @@ spec:
             - name: webhook-server
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.enablePrometheus }}
+            - containerPort: 8443
+              name: metrics
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
