@@ -166,7 +166,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
 	}
-	if maxUnavailableValue == 0 && maxSurgeValue == 0 {
+	if maxUnavailableValue == 0 && maxSurgeValue == 0 && *lws.Spec.Replicas != 0 {
 		// Both MaxSurge and MaxUnavailable cannot be zero.
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
 	}
