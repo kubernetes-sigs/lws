@@ -386,7 +386,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		ginkgo.By("getting the metrics by checking curl-metrics logs")
 		metricsOutput := getMetricsOutput(namespace)
 		gomega.Expect(metricsOutput).To(gomega.ContainSubstring(
-			"controller_runtime_reconcile_total",
+			"controller_runtime_webhook_requests_total",
 		))
 
 		ginkgo.By("cleaning up the curl-metrics job")
