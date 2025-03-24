@@ -169,8 +169,9 @@ Suppose we have an LWS replica of size 2, and a nodeGroup of size 3. Then LWS sc
 The leader will be scheduled on the existing nodeGroup, however, the workers won't be able to be scheduled on it because of the unique node selector.
 Therefore, to ensure compatability with the exclusive placement feature, both the leader and worker pods will have the unique node selector and toleration.
 
-We can only add the node selector and toleration after the leader pod has been created, so injecting them will be handled by the pod webhook. The pod webhook does
-not have access to the LWS object, so three new annotations, corresponding to the new configurable fields, will be added:
+We can only add the node selector and toleration after the leader pod has been created, so injecting them will be handled by the pod webhook for the leader,
+while they will be added by the pod controller for the worker pods when creating the worker statefulset. The pod webhook does
+not have access to the LWS object, so three new annotations, corresponding to the new configurable fields, will be added only on the leader pods:
 
 * `leaderworkerset.sigs.k8s.io/replicaUniqueNodeSelector` 
 * `leaderworkerset.sigs.k8s.io/replicaUniqueTolerationKey`
