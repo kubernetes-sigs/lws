@@ -4,14 +4,14 @@
   command = "npm install && hugo --gc --minify"
 
 [context.deploy-preview.environment]
-  HUGO_VERSION = "0.92.0"
-  NODE_VERSION = "16"
+  HUGO_VERSION = "0.145.0"
+  NODE_VERSION = "22"
 
 [context.production.environment]
-  HUGO_VERSION = "0.92.0"
+  HUGO_VERSION = "0.145.0"
   HUGO_ENV = "production"
-  NODE_VERSION = "16"
+  NODE_VERSION = "22"
 
 [context.branch-deploy.environment]
-  HUGO_VERSION = "0.92.0"
-  NODE_VERSION = "16"
+  HUGO_VERSION = "0.145.0"
+  NODE_VERSION = "22"

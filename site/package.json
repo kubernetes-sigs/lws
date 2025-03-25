@@ -1,8 +1,8 @@
 {
-    "devDependencies": {
-      "autoprefixer": "^10.4.13",
-      "docsy": "github:google/docsy",
-      "postcss": "^8.4.21",
-      "postcss-cli": "^11.0.1"
-    }
+  "devDependencies": {
+    "autoprefixer": "^10.4.13",
+    "docsy": "github:google/docsy#v0.11.0",
+    "postcss": "^8.4.21",
+    "postcss-cli": "^11.0.1"
+  }
   }
