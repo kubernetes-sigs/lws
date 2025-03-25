@@ -460,5 +460,24 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
+		ginkgo.Entry("set replica to 0 no matter maxUnavailable or maxSurge is should be allowed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.Replicas = ptr.To(int32(0))
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromString("25%")
+				return lws
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to non-zero should be failed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
 	)
 })
