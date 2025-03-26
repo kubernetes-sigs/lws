@@ -7,7 +7,6 @@ description: >
 ---
 
 <!-- toc -->
-- [Before you begin](##before-you-begin)
 - [Install a released version](#install-a-released-version)
   - [Uninstall](#uninstall)
 - [Install the latest development version](#install-the-latest-development-version)
@@ -15,7 +14,8 @@ description: >
 - [Build and install from source](#build-and-install-from-source)
   - [Uninstall](#uninstall-2)
 - [Install in a different namespace](#install-in-a-different-namespace)
-- [Use Cert Manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
+- [Optional: Use cert manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
+- [Install with helm chart](#install-with-helm-chart)
 
 <!-- /toc -->
 
@@ -31,7 +31,7 @@ Make sure the following conditions are met:
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
 
-# Install a released version
+## Install a released version
 
 To install a released version of LeaderWorkerSet in your cluster, run the following command:
 
@@ -40,7 +40,7 @@ VERSION=v0.5.1
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
-## Uninstall
+### Uninstall
 
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
@@ -49,7 +49,7 @@ VERSION=v0.5.1
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
-# Install the latest development version
+## Install the latest development version
 
 To install the latest development version of LeaderWorkerSet in your cluster, run the
 following command:
@@ -60,7 +60,7 @@ kubectl apply --server-side -k github.com/kubernetes-sigs/lws/config/default?ref
 
 The controller runs in the `lws-system` namespace.
 
-## Uninstall
+### Uninstall
 
 To uninstall LeaderWorkerSet, run the following command:
 
@@ -68,7 +68,7 @@ To uninstall LeaderWorkerSet, run the following command:
 kubectl delete -k github.com/kubernetes-sigs/lws/config/default
 ```
 
-# Build and install from source
+## Build and install from source
 
 To build LeaderWorkerSet from source and install LeaderWorkerSet in your cluster, run the following
 commands:
@@ -79,7 +79,7 @@ cd lws
 IMAGE_REGISTRY=<registry>/<project> make image-push deploy
 ```
 
-## Uninstall
+### Uninstall
 
 To uninstall LeaderWorkerSet, run the following command:
 
@@ -87,19 +87,19 @@ To uninstall LeaderWorkerSet, run the following command:
 make undeploy
 ```
 
-# Install in a different namespace
+## Install in a different namespace
 
 To install the leaderWorkerSet controller in a different namespace rather than `lws-system`, you should first:
 ```sh
 git clone https://github.com/kubernetes-sigs/lws.git
 cd lws
 ```
-Then change the [kustomization.yaml](../../config/default/kustomization.yaml) _namespace_ field as:
+Then change the [kustomization.yaml](https://github.com/kubernetes-sigs/lws/blob/main/config/default/kustomization.yaml) _namespace_ field as:
 ```yaml
 namespace: <your-namespace>
 ```
 
-# Optional: Use cert manager instead of internal cert
+## Optional: Use cert manager instead of internal cert
 The webhooks use an internal certificate by default. However, if you wish to use cert-manager (which
 supports cert rotation), instead of internal cert, you can by performing the following steps.
 
