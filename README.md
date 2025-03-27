@@ -15,7 +15,7 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related
 
 ## Conceptual view
 
-![image](https://github.com/user-attachments/assets/5c413f5d-8c34-488f-b92e-339273555a7d)
+![image](site/static/images/concepts.png)
 
 ## Feature overview
 
@@ -31,13 +31,13 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related
 
 ## Installation
 
-Read the [installation guide](/site/content/en/docs/installation/_index.md) to learn more.
+Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
 
 ## Examples
 
 Read the [examples](/docs/examples/sample/README.md) to learn more.
 
-Also discover adopters, integrations, and talks [here](/site/content/en/docs/adoption/_index.md).
+Also discover adopters, integrations, and talks [here](https://lws.sigs.k8s.io/docs/adoption/#talks-and-presentations).
 
 ## Community, discussion, contribution, and support
 
