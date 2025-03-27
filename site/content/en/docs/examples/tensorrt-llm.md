@@ -1,6 +1,7 @@
 ---
 title: "TensorRT-LLM"
 linkTitle: "TensorRT-LLM"
+weight: 2
 description: >
   An example of using TensorRT-LLM with LWS
 ---

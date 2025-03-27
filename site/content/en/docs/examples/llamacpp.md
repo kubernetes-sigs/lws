@@ -1,6 +1,7 @@
 ---
 title: "llama.cpp"
 linkTitle: "llama.cpp"
+weight: 3
 description: >
   An example of using llama.cpp with LWS
 ---

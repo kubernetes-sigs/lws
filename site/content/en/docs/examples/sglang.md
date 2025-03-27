@@ -1,6 +1,7 @@
 ---
 title: "SGLang"
 linkTitle: "SGLang"
+weight: 4
 description: >
   An example of using SGLang with LWS
 ---

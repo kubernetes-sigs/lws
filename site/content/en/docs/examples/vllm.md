@@ -1,6 +1,7 @@
 ---
 title: "vLLM"
 linkTitle: "vLLM"
+weight: 1
 description: >
   An example of using vLLM with LWS
 ---

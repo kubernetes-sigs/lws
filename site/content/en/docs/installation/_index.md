@@ -7,6 +7,7 @@ description: >
 ---
 
 <!-- toc -->
+- [Before you begin](#before-you-begin)
 - [Install a released version](#install-a-released-version)
   - [Uninstall](#uninstall)
 - [Install the latest development version](#install-the-latest-development-version)
@@ -15,7 +16,7 @@ description: >
   - [Uninstall](#uninstall-2)
 - [Install in a different namespace](#install-in-a-different-namespace)
 - [Optional: Use cert manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
-- [Install with helm chart](#install-with-helm-chart)
+- [Install with Helm chart](#install-with-helm-chart)
 
 <!-- /toc -->
 
@@ -116,7 +117,7 @@ Next, in the file ``lws/config/default/kustomization.yaml`` replace ``../interna
 Finally, install the cert manager follwing the link: https://cert-manager.io/docs/installation/#default-static-install
 and apply these configurations to your cluster with ``kubectl apply --server-side -k config/default``.
 
-# Install with helm chart
+## Install with Helm chart
 See [lws/charts](https://github.com/kubernetes-sigs/lws/tree/main/charts/lws)
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/

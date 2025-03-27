@@ -1,6 +1,7 @@
 ---
 title: "Saxml"
 linkTitle: "Saxml"
+weight: 5
 description: >
   An example of using Saxml with LWS
 ---
@@ -9,7 +10,7 @@ In this example, we will use LeaderWorkerSet to deploy a multi-host inference in
 
 ## Conceptual View
 
-![image](https://github.com/kubernetes-sigs/lws/assets/86417275/2c4a9abd-f988-4f2e-ad3f-c7b03f0b6485)
+![image](/images/saxml.png)
 
 ## Deploy ConfigMap with model configuration
 The ConfigMap contains what model it is, and the checkpoint that will be used. If the model information on the ConfigMap is updated, the HTTP Server will unpublish the model that was loaded, and publish a model that reflects the new model information.
