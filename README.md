@@ -15,7 +15,7 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related
 
 ## Conceptual view
 
-![image](site/static/images/concepts.png)
+![image](site/static/images/concept.png)
 
 ## Feature overview
 
