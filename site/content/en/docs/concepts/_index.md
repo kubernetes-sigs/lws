@@ -8,11 +8,11 @@ no_list: true
 ---
 
 # LeaderWorkerSet (LWS)
-An LWS creates a group of pods based on two different templates (the leader template and the worker template), and controls their lifecycle. 
+An LWS creates a group of pods based on two different templates (the leader template and the worker template), and controls their lifecycle.
 
 ## Conceptual Diagram
 
-![LWS diagram](https://github.com/user-attachments/assets/5c413f5d-8c34-488f-b92e-339273555a7d)
+![LWS diagram](../../images/concept.png)
 
 ## Running an Example LeaderWorkerSet
 
@@ -66,7 +66,7 @@ leaderworkerset-sample-2-3   1/1     Running   0          6m10s
 ```
 
 ## Multi-Template for Pods
-LWS support using different templates for leader and worker pods, if a `leaderTemplate` field is specified. If it isn't, the template used for 
+LWS support using different templates for leader and worker pods, if a `leaderTemplate` field is specified. If it isn't, the template used for
 `workerTemplate` will apply to both leader and worker pods.
 
 ```
@@ -85,9 +85,9 @@ spec:
 ```
 
 ## Exclusive LWS to Topology Placement
-The LWS annotation `leaderworkerset.sigs.k8s.io/exclusive-topology` defines a 1:1 LWS replica to topology placement. For example, 
-you want an LWS replica to be scheduled on the same rack in order to maximize cross-node communcation for distributed inference. This 
-can be done as follows: 
+The LWS annotation `leaderworkerset.sigs.k8s.io/exclusive-topology` defines a 1:1 LWS replica to topology placement. For example,
+you want an LWS replica to be scheduled on the same rack in order to maximize cross-node communcation for distributed inference. This
+can be done as follows:
 
 ```
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -103,9 +103,9 @@ spec:
 ```
 
 ### Subgroup and Exclusive Placement
-The LWS annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` defines a 1:1 between an LWS subgroup to topology placement. This can 
-be useful for dissagregated serving in order to place the prefill pod group in the same rack, but on a seperate rack from the decode pod group, assuming 
-same hardware requirements. 
+The LWS annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` defines a 1:1 between an LWS subgroup to topology placement. This can
+be useful for dissagregated serving in order to place the prefill pod group in the same rack, but on a seperate rack from the decode pod group, assuming
+same hardware requirements.
 
 ```
 metadata:

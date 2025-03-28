@@ -1,23 +1,24 @@
-# The LeaderWorkerSet API (LWS)
+---
+title: "LeaderWorkerSet"
+linkTitle: "Overview"
+weight: 1
+menu:
+  main:
+    weight: 20
+description: >
+  An overview of the LeaderWorkerSet (LWS)
+---
 
-[![GoReport Widget]][GoReport Status]
-[![Latest Release](https://img.shields.io/github/v/release/kubernetes-sigs/lws?include_prereleases)](https://github.com/kubernetes-sigs/lws/releases/latest)
-
-[GoReport Widget]: https://goreportcard.com/badge/github.com/kubernetes-sigs/lws
-[GoReport Status]: https://goreportcard.com/report/github.com/kubernetes-sigs/lws
-
-<img src="https://github.com/kubernetes-sigs/lws/blob/main/site/static/images/logo.svg" width="100" alt="lws logo">
-
-LeaderWorkerSet: An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
+LeaderWorkerSet (LWS) is an API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
 The initial design and proposal can be found at: <http://bit.ly/k8s-LWS>.
 
-Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related [talks & presentations](https://lws.sigs.k8s.io/docs/adoption/#talks-and-presentations) to learn more.
+Get started with [installation](../installation/) or watch the LWS-related [talks & presentations](../adoption/#talks-and-presentations) to learn more.
 
-## Conceptual view
+## Conceptual View
 
-![image](site/static/images/concepts.png)
+![image](../../images/concept.png)
 
-## Feature overview
+## Feature Overview
 
 - **Group of Pods as a unit:** Supports a tightly managed group of pods that represent a “super pod”
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
@@ -29,17 +30,11 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the LWS-related
 - **Topology-aware placement:** Opt-in support for pods in the same group to be co-located in the same topology.
 - **All-or-nothing restart for failure handling:** Opt-in support for all pods in the group to be recreated if one pod in the group failed or one container in the pods is restarted.
 
-## Installation
-
-Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
-
 ## Examples
 
-Read the [examples](/docs/examples/sample/README.md) to learn more.
+Read the [examples](https://github.com/kubernetes-sigs/lws/tree/main/docs/examples) to learn more.
 
-Also discover adopters, integrations, and talks [here](https://lws.sigs.k8s.io/docs/adoption/#talks-and-presentations).
-
-## Community, discussion, contribution, and support
+## Community, Discussion, Contribution, and Support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
 
@@ -48,6 +43,6 @@ You can reach the maintainers of this project at:
 - [Slack](https://kubernetes.slack.com/messages/sig-apps)
 - [Mailing List](https://groups.google.com/g/kubernetes-sig-apps)
 
-### Code of conduct
+## Code of Conduct
 
-Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
+Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](https://github.com/kubernetes/community/blob/master/code-of-conduct.md).
