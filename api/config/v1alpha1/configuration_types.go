@@ -108,6 +108,10 @@ type InternalCertManagement struct {
 	// Enable controls whether to enable internal cert management or not.
 	// Defaults to true. If you want to use a third-party management, e.g. cert-manager,
 	// set it to false. See the user guide for more information.
+	// This secret is mounted to the lws controller manager pod. The mount
+	// path for webhooks is /tmp/k8s-webhook-server/serving-certs, whereas for
+	// metrics endpoint the expected path is `/etc/lws/metrics/certs`.
+	// The keys and certs are named tls.key and tls.crt.
 	Enable *bool `json:"enable,omitempty"`
 
 	// WebhookServiceName is the name of the Service used as part of the DNSName.
