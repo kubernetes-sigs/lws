@@ -23,6 +23,7 @@ resources:
 - ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 - ../internalcert
+#- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
@@ -42,6 +43,13 @@ patches:
 # Uncomment 'CERTMANAGER' sections in crd/kustomization.yaml to enable the CA injection in the admission webhooks.
 # 'CERTMANAGER' needs to be enabled to use ca injection
 #- path: webhookcainjection_patch.yaml
+
+# Uncomment the patches line if you enable Metrics and CertManager
+# [CERTMANAGER] To enable metrics protected with certManager, uncomment the following line.
+# This patch will protect the metrics with certManager self-signed certs.
+# - path: cert_metrics_manager_patch.yaml
+#  target:
+#    kind: Deployment
 
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
 # Uncomment the following replacements to add the cert-manager CA injection annotations
@@ -118,6 +126,7 @@ patches:
 #          kind: Certificate
 #          group: cert-manager.io
 #          version: v1
+#          name: serving-cert
 #        fieldPaths:
 #          - .spec.dnsNames.0
 #          - .spec.dnsNames.1
@@ -135,6 +144,7 @@ patches:
 #          kind: Certificate
 #          group: cert-manager.io
 #          version: v1
+#          name: serving-cert
 #        fieldPaths:
 #          - .spec.dnsNames.0
 #          - .spec.dnsNames.1
@@ -142,3 +152,62 @@ patches:
 #          delimiter: '.'
 #          index: 1
 #          create: true
+#  - source: # Add cert-manager annotation to the webhook Service
+#      kind: Service
+#      version: v1
+#      name: controller-manager-metrics-service
+#      fieldPath: .metadata.name # name of the service
+#    targets:
+#      - select:
+#          kind: Certificate
+#          group: cert-manager.io
+#          version: v1
+#          name: metrics-cert
+#        fieldPaths:
+#          - .spec.dnsNames.0
+#          - .spec.dnsNames.1
+#        options:
+#          delimiter: '.'
+#          index: 0
+#          create: true
+#      - select:
+#         kind: ServiceMonitor
+#         group: monitoring.coreos.com
+#         version: v1
+#         name: controller-manager-metrics-monitor
+#        fieldPaths:
+#         - spec.endpoints.0.tlsConfig.serverName
+#        options:
+#         delimiter: '.'
+#         index: 0
+#         create: true
+#  - source:
+#      kind: Service
+#      version: v1
+#      name: controller-manager-metrics-service
+#      fieldPath: .metadata.namespace # namespace of the service
+#    targets:
+#      - select:
+#          kind: Certificate
+#          group: cert-manager.io
+#          version: v1
+#          name: metrics-cert
+#        fieldPaths:
+#          - .spec.dnsNames.0
+#          - .spec.dnsNames.1
+#        options:
+#          delimiter: '.'
+#          index: 1
+#          create: true
+#      - select:
+#          kind: ServiceMonitor
+#          group: monitoring.coreos.com
+#          version: v1
+#          name: controller-manager-metrics-monitor
+#        fieldPaths:
+#          - spec.endpoints.0.tlsConfig.serverName
+#        options:
+#          delimiter: '.'
+#          index: 1
+#          create: true
+

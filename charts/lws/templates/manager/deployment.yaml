@@ -71,6 +71,11 @@ spec:
             - mountPath: /tmp/k8s-webhook-server/serving-certs
               name: cert
               readOnly: true
+            {{- if .Values.enableCertManager }}
+            - mountPath: /tmp/k8s-metrics-server/serving-certs
+              name: metrics-cert
+              readOnly: true
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -88,3 +93,16 @@ spec:
           secret:
             defaultMode: 420
             secretName: lws-webhook-server-cert
+        {{- if .Values.enableCertManager }}
+        - name: metrics-cert
+          secret:
+            secretName: lws-metrics-server-cert
+            optional: false
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
