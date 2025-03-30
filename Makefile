@@ -277,12 +277,12 @@ artifacts: kustomize helm
 	$(KUSTOMIZE) build config/default -o artifacts/manifests.yaml
 	@$(call clean-manifests)
 	# Update the image tag and policy
-	$(YQ)  e  '.image.repository = "$(IMAGE_REPO)" | .image.tag = "$(GIT_TAG)" | .image.pullPolicy = "IfNotPresent"' -i charts/lws/values.yaml
+	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REPO)" | .image.manager.tag = "$(GIT_TAG)" | .image.manager.pullPolicy = "IfNotPresent"' -i charts/lws/values.yaml
 	# create the package. TODO: consider signing it
 	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
 	# Revert the image changes
-	$(YQ)  e  '.image.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | del(.image.tag) | .image.pullPolicy = "Always"' -i charts/lws/values.yaml
+	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | del(.image.manager.tag) | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
 
 
 .PHONY: prometheus

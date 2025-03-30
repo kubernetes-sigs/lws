@@ -20,7 +20,7 @@ set -o pipefail
 
 DEST_CHART_DIR=${DEST_CHART_DIR:-bin/}
 
-EXTRA_TAG=${EXTRA_TAG:-$(git branch --show-current)} 
+EXTRA_TAG=${EXTRA_TAG:-$(git branch --show-current)}
 GIT_TAG=${GIT_TAG:-$(git describe --tags --dirty --always)}
 
 STAGING_IMAGE_REGISTRY=${STAGING_IMAGE_REGISTRY:-us-central1-docker.pkg.dev/k8s-staging-images}
@@ -46,11 +46,11 @@ default_image_repo=$(${YQ} ".image.repository" charts/lws/values.yaml)
 readonly default_image_repo
 
 # Update the image repo, tag and policy
-${YQ}  e  ".image.repository = \"${image_repository}\" | .image.tag = \"${chart_version}\" | .image.pullPolicy = \"IfNotPresent\"" -i charts/lws/values.yaml
+${YQ}  e  ".image.manager.repository = \"${image_repository}\" | .image.manager.tag = \"${chart_version}\" | .image.manager.pullPolicy = \"IfNotPresent\"" -i charts/lws/values.yaml
 
 ${HELM} package --version "${chart_version}" --app-version "${chart_version}" charts/lws -d "${DEST_CHART_DIR}"
 
 # Revert the image changes
-${YQ}  e  ".image.repository = \"${default_image_repo}\" | .image.tag = \"main\" | .image.pullPolicy = \"Always\"" -i charts/lws/values.yaml
+${YQ}  e  ".image.manager.repository = \"${default_image_repo}\" | .image.manager.tag = \"main\" | .image.manager.pullPolicy = \"Always\"" -i charts/lws/values.yaml
 
 ${HELM} push "bin/lws-${chart_version}.tgz" "oci://${HELM_CHART_REPO}"

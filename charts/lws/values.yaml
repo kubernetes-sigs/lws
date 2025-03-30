@@ -15,8 +15,6 @@ image:
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
     pullPolicy: IfNotPresent
-  repository: us-central1-docker.pkg.dev/k8s-staging-images/lws/lws
-  pullPolicy: Always
 podAnnotations: {}
 podSecurityContext:
   runAsNonRoot: true
