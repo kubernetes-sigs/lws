@@ -42,7 +42,7 @@ then
 	chart_version=${EXTRA_TAG}
 fi
 
-default_image_repo=$(${YQ} ".image.repository" charts/lws/values.yaml)
+default_image_repo=$(${YQ} ".image.manager.repository" charts/lws/values.yaml)
 readonly default_image_repo
 
 # Update the image repo, tag and policy
