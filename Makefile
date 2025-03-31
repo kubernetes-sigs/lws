@@ -35,7 +35,7 @@ IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
-HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/charts
+HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/lws/charts
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 BASE_IMAGE ?= gcr.io/distroless/static:nonroot
