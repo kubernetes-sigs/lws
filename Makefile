@@ -35,7 +35,7 @@ IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
-HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/charts
+HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/lws/charts
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 BASE_IMAGE ?= gcr.io/distroless/static:nonroot
@@ -270,7 +270,7 @@ code-generator:
 
 ##@ Release
 .PHONY: artifacts
-artifacts: kustomize helm
+artifacts: kustomize helm yq
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	if [ -d artifacts ]; then rm -rf artifacts; fi
 	mkdir -p artifacts
@@ -282,7 +282,7 @@ artifacts: kustomize helm
 	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
 	# Revert the image changes
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | del(.image.manager.tag) | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
+	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "main" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
 
 
 .PHONY: prometheus
