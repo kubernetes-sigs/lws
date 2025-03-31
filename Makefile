@@ -270,7 +270,7 @@ code-generator:
 
 ##@ Release
 .PHONY: artifacts
-artifacts: kustomize helm
+artifacts: kustomize helm yq
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	if [ -d artifacts ]; then rm -rf artifacts; fi
 	mkdir -p artifacts
