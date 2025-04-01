@@ -398,6 +398,14 @@ will use to perform replica updates.</p>
 <tbody>
     
   
+<tr><td><code>subGroupPolicyType</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicyType"><code>SubGroupPolicyType</code></a>
+</td>
+<td>
+   <p>Defines what type of Subgroups to create. Defaults to
+LeaderWorker</p>
+</td>
+</tr>
 <tr><td><code>subGroupSize</code> <B>[Required]</B><br/>
 <code>int32</code>
 </td>
@@ -412,6 +420,18 @@ the extra pod, and will be part of the first subgroup.</p>
 </tr>
 </tbody>
 </table>
+
+## `SubGroupPolicyType`     {#leaderworkerset-x-k8s-io-v1-SubGroupPolicyType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [SubGroupPolicy](#leaderworkerset-x-k8s-io-v1-SubGroupPolicy)
+
+
+
+
 
 ## `SubdomainPolicy`     {#leaderworkerset-x-k8s-io-v1-SubdomainPolicy}
     
