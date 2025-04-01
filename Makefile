@@ -12,6 +12,7 @@ GOBIN=$(shell go env GOBIN)
 endif
 
 GO_CMD ?= go
+GO_FMT ?= gofmt
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -102,13 +103,26 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 		paths="{./api/..., ./pkg/...}"
 
 .PHONY: generate
-generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
+generate: controller-gen code-generator generate-apiref ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	./hack/update-codegen.sh $(GO_CMD) $(PROJECT_DIR)/bin
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	$(GO_CMD) fmt ./...
+
+.PHONY: fmt-verify
+fmt-verify:
+	@out=`$(GO_FMT) -w -l -d $$(find . -name '*.go' | grep -v /vendor/)`; \
+	if [ -n "$$out" ]; then \
+	    echo "$$out"; \
+	    exit 1; \
+	fi
+
+.PHONY: gomod-verify
+gomod-verify:
+	$(GO_CMD) mod tidy
+	git --no-pager diff --exit-code go.mod go.sum
 
 .PHONY: vet
 vet: ## Run go vet against code.
@@ -146,10 +160,13 @@ lint: golangci-lint ## Run golangci-lint linter & yamllint
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
 
+PATHS_TO_VERIFY := config/components api client-go site/
 .PHONY: verify
-verify: lint toc-verify
-##@ Build
+verify: gomod-verify lint fmt-verify toc-verify manifests generate
+	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
+	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
 
+##@ Build
 .PHONY: build
 build: manifests fmt vet ## Build manager binary.
 	$(GO_BUILD_ENV) $(GO_CMD) build -ldflags="$(LD_FLAGS)" -o bin/manager cmd/main.go
