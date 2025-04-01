@@ -24,3 +24,5 @@ substitutions:
   _PULL_BASE_REF: 'main'
 options:
   substitution_option: ALLOW_LOOSE
+  machineType: 'E2_HIGHCPU_32'
+
