@@ -1,19 +1,29 @@
-# Deploy Distributed Inference Service with vLLM and LWS on GPUs
+---
+title: "vLLM"
+linkTitle: "vLLM"
+weight: 1
+description: >
+  An example of using vLLM with LWS
+---
 
-In this example, we will use LeaderWorkerSet to deploy a distributed inference service with vLLM on GPUs.    
+In this example, we will use LeaderWorkerSet to deploy a distributed inference service with vLLM on GPUs.
 [vLLM](https://docs.vllm.ai/en/latest/index.html) supports distributed tensor-parallel inference and serving. Currently, it supports Megatron-LM’s tensor parallel algorithm. It manages the distributed runtime with [Ray](https://docs.ray.io/en/latest/index.html). See the doc [vLLM Distributed Inference and Serving](https://docs.vllm.ai/en/latest/serving/distributed_serving.html) for more details.
 
-## Install LeaderWorkerSet
-
-Follow the step-by-step guide on how to install LWS. [View installation guide](https://lws.sigs.k8s.io/docs/installation/)
-
 ## Deploy LeaderWorkerSet of vLLM
-We use LeaderWorkerSet to deploy two vLLM model replicas, and each vLLM replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs per pod (tensor_parallel_size=8). 
-The leader pod runs the Ray head and the http server, with a ClusterIP Service exposing the port, while the workers run the Ray workers.
+We use LeaderWorkerSet to deploy two vLLM model replicas. We have two flavors of the deployment:
+- GPU: Each vLLM replica has 2 pods (`pipeline_parallel_size=2`) and 8 GPUs per pod (`tensor_parallel_size=8`).
+- TPU: The example assumes that you have a GKE cluster with two TPU v5e-16 slices. You can view how to create a cluster with multiple TPU slices [here](https://cloud.google.com/kubernetes-engine/docs/how-to/tpus). Each TPU slice has 4 hosts, and each host has 4 TPUs. The vLLM server is deployed on the TPU slice with `pipeline_parallel_size=2` and `tensor_parallel_size=16`.
 
-```shell
-kubectl apply -f lws.yaml
-```
+In both examples, Ray uses the leader pod as the head node and the worker pods as the worker nodes. The leader pod runs the vLLM server, with a ClusterIP Service exposing the port.
+
+{{< tabpane >}}
+{{< tab header="GPU" lang="shell" >}}
+kubectl apply -f docs/examples/vllm/GPU/lws.yaml
+{{< /tab >}}
+{{< tab header="TPU" lang="shell" >}}
+kubectl apply -f docs/examples/vllm/TPU/lws.yaml
+{{< /tab >}}
+{{< /tabpane >}}
 
 Verify the status of the vLLM pods
 ```shell
@@ -31,7 +41,7 @@ vllm-1-1   1/1     Running   0          2s
 
 Verify that the distributed tensor-parallel inference works
 ```shell
-kubectl logs vllm-0 |grep -i "Loading model weights took" 
+kubectl logs vllm-0 |grep -i "Loading model weights took"
 ```
 Should get an output similar to this
 ```text
