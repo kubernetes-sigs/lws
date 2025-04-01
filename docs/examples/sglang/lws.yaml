@@ -18,10 +18,6 @@ spec:
             env:
               - name: HUGGING_FACE_HUB_TOKEN
                 value: <your-hf-token>
-              - name: LWS_WORKER_INDEX
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
             command:
               - python3
               - -m
@@ -53,7 +49,7 @@ spec:
               periodSeconds: 10
             volumeMounts:
               - mountPath: /dev/shm
-                name: dshm    
+                name: dshm
         volumes:
           - name: dshm
             emptyDir:
@@ -66,10 +62,6 @@ spec:
             env:
             - name: HUGGING_FACE_HUB_TOKEN
               value: <your-hf-token>
-            - name: LWS_WORKER_INDEX
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
             command:
               - python3
               - -m
