@@ -114,13 +114,15 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 Next, in the file ``lws/config/default/kustomization.yaml`` replace ``../internalcert`` with
 ``../certmanager`` then uncomment all the lines beginning with ``[CERTMANAGER]``.
 
-Finally, install the cert manager follwing the link: https://cert-manager.io/docs/installation/#default-static-install
+Finally, install the cert manager following the link: https://cert-manager.io/docs/installation/#default-static-install
 and apply these configurations to your cluster with ``kubectl apply --server-side -k config/default``.
 
 ## Install with Helm chart
-See [lws/charts](https://github.com/kubernetes-sigs/lws/tree/main/charts/lws)
+
+Please refer to the release page for [helm charts][helm_charts].
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 [start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
 [max_unavailable]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods
 [max_unavailable_enhancement]: https://github.com/kubernetes/enhancements/issues/961
+[helm_charts]: https://github.com/kubernetes-sigs/lws/releases
