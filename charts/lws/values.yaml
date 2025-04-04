@@ -49,3 +49,7 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+metrics:
+  serviceMonitor:
+    tlsConfig:
+      insecureSkipVerify: true

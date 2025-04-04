@@ -14,8 +14,7 @@ spec:
       path: /metrics
       port: https
       scheme: https
-      tlsConfig:
-        insecureSkipVerify: true
+      tlsConfig: {{- toYaml .Values.metrics.serviceMonitor.tlsConfig | nindent 6 }}
   selector:
     matchLabels:
       control-plane: controller-manager
