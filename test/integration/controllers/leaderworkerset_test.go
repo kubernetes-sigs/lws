@@ -464,6 +464,26 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Ensure UpdateInProgress condition is not set during LWS initialization", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxSurge(2)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						gomega.Expect(func() error {
+							for _, c := range lws.Status.Conditions {
+								if c.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) && c.Status == metav1.ConditionTrue {
+									return fmt.Errorf("UpdateInProgress condition is not expected")
+								}
+							}
+							return nil
+						}()).To(gomega.Succeed())
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("Test default progressing state", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
