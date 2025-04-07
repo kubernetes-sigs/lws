@@ -297,10 +297,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return 0, lwsReplicas, nil
 	}
 
-	continuousReadyReplicas, lwsUnreadyReplicas, err := r.iterateReplicas(ctx, lws, stsReplicas, revisionKey)
+	states, err := r.getReplicaStates(ctx, lws, stsReplicas, revisionKey)
 	if err != nil {
 		return 0, 0, err
 	}
+	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
+	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
 
 	originalLwsReplicas, err := strconv.Atoi(sts.Annotations[leaderworkerset.ReplicasAnnotationKey])
 	if err != nil {
@@ -326,7 +328,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// When updated replicas become not ready again or scaled up replicas are not ready yet,
 	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
-	return min(partition, utils.NonZeroValue(stsReplicas-int32(rollingStep)-continuousReadyReplicas)), wantReplicas(lwsUnreadyReplicas), nil
+	desiredPartition := utils.NonZeroValue(stsReplicas - int32(rollingStep) - continuousReadyReplicas)
+	partitionAccountingForUnavailable := partitionAccountingForUnavailable(states, desiredPartition)
+	return min(partition, partitionAccountingForUnavailable), wantReplicas(lwsUnreadyReplicas), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
@@ -511,19 +515,21 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	return updateDone, nil
 }
 
-// iterateReplicas will iterate the leader pods together with corresponding worker statefulsets
-// to check the replica state, and return two values and an error in the end:
-//   - The first value represents the number of continuous ready replicas ranging from the last index to 0,
-//     to help us judge whether we can update the Partition or not.
-//   - The second value represents the unready replicas whose index is smaller than leaderWorkerSet Replicas.
-func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, revisionKey string) (int32, int32, error) {
+type replicaState struct {
+	ready   bool
+	updated bool
+}
+
+func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, revisionKey string) ([]replicaState, error) {
+	states := make([]replicaState, stsReplicas)
+
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.WorkerIndexLabelKey: "0",
 	})
 	var leaderPodList corev1.PodList
 	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 
 	// Get a sorted leader pod list matches with the following sorted statefulsets one by one, which means
@@ -537,7 +543,7 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 	})
 	var stsList appsv1.StatefulSetList
 	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
 		return strconv.Atoi(sts.Labels[leaderworkerset.GroupIndexLabelKey])
@@ -545,43 +551,93 @@ func (r *LeaderWorkerSetReconciler) iterateReplicas(ctx context.Context, lws *le
 
 	// Once size==1, no worker statefulSets will be created.
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
-	processReplica := func(index int32) (ready bool) {
-		nominatedName := fmt.Sprintf("%s-%d", lws.Name, index)
+
+	for idx := int32(0); idx < stsReplicas; idx++ {
+		nominatedName := fmt.Sprintf("%s-%d", lws.Name, idx)
 		// It can happen that the leader pod or the worker statefulset hasn't created yet
 		// or under rebuilding, which also indicates not ready.
-		if nominatedName != sortedPods[index].Name || (!noWorkerSts && nominatedName != sortedSts[index].Name) {
-			return false
+		if nominatedName != sortedPods[idx].Name || (!noWorkerSts && nominatedName != sortedSts[idx].Name) {
+			states[idx] = replicaState{
+				ready:   false,
+				updated: false,
+			}
 		}
 
-		podTemplateHash := revisionutils.GetRevisionKey(&sortedPods[index])
-		if !(podTemplateHash == revisionKey && podutils.PodRunningAndReady(sortedPods[index])) {
-			return false
-		}
+		leaderUpdated := revisionutils.GetRevisionKey(&sortedPods[idx]) == revisionKey
+		leaderReady := podutils.PodRunningAndReady(sortedPods[idx])
 
 		if noWorkerSts {
-			return true
+			states[idx] = replicaState{
+				ready:   leaderReady,
+				updated: leaderUpdated,
+			}
+			continue
 		}
 
-		stsTemplateHash := revisionutils.GetRevisionKey(&sortedSts[index])
-		return stsTemplateHash == revisionKey && statefulsetutils.StatefulsetReady(sortedSts[index])
+		stsExists := (int(idx) < len(sortedSts) && nominatedName == sortedSts[idx].Name)
+		if !stsExists {
+			continue
+		}
+
+		workersUpdated := revisionutils.GetRevisionKey(&sortedSts[idx]) == revisionKey
+		workersReady := statefulsetutils.StatefulsetReady(sortedSts[idx])
+
+		states[idx] = replicaState{
+			ready:   leaderReady && workersReady,
+			updated: leaderUpdated && workersUpdated,
+		}
 	}
 
-	var skip bool
-	var continuousReadyReplicas, lwsUnreadyReplicas int32
+	return states, nil
+}
 
-	for index := stsReplicas - 1; index >= 0; index-- {
-		replicaReady := processReplica(index)
-		skip = skip || !replicaReady
-
-		if replicaReady && !skip {
-			continuousReadyReplicas++
+func calculateLWSUnreadyReplicas(states []replicaState, lwsReplicas int32) int32 {
+	var unreadyCount int32
+	for idx := int32(0); idx < min(int32(len(states)), lwsReplicas); idx++ {
+		if !states[idx].ready || !states[idx].updated {
+			unreadyCount++
 		}
-		if !replicaReady && index < *lws.Spec.Replicas {
-			lwsUnreadyReplicas++
+	}
+	return unreadyCount
+}
+
+func calculateContinuousReadyReplicas(states []replicaState) int32 {
+	// Count ready replicas at tail (from last index down)
+	var continuousReadyCount int32
+	for idx := len(states) - 1; idx >= 0; idx-- {
+		if !states[idx].ready || !states[idx].updated {
+			break
+		}
+		continuousReadyCount++
+	}
+	return continuousReadyCount
+}
+
+// Checks state of not updated replicas and adjusts the rolling update parittion to prevent
+// availability drops below "maxUnavailable".
+func partitionAccountingForUnavailable(states []replicaState, desiredPartition int32) int32 {
+	// Desired partition already accounts for readiness of replicas above partition. Code below
+	// only needs to consider replicas below desired partition.
+	var unavailableBelowPartition int32
+	for idx := 0; idx < int(desiredPartition); idx++ {
+		if !states[idx].ready {
+			unavailableBelowPartition++
 		}
 	}
 
-	return continuousReadyReplicas, lwsUnreadyReplicas, nil
+	partitionAccountingForUnavailable := desiredPartition + unavailableBelowPartition
+
+	// Reduce the partitionAccountingForUnavailable as long as replicas are unavailable. This is safe to update these
+	// replicas as it does not impact general availability.
+	// Never reduce below desiredPartition.
+	for idx := partitionAccountingForUnavailable; idx >= desiredPartition; idx-- {
+		if idx < int32(len(states)) && states[idx].ready {
+			break
+		}
+		partitionAccountingForUnavailable = idx
+	}
+
+	return partitionAccountingForUnavailable
 }
 
 func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.StatefulSet, error) {
