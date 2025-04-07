@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strconv"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,6 +193,45 @@ func MakePodWithLabels(setName, groupIndex, workerIndex, namespace string, size 
 			},
 			Annotations: map[string]string{
 				leaderworkerset.SizeAnnotationKey: strconv.Itoa(size),
+			},
+		},
+	}
+}
+
+func MakePodWithLabelsAndStatus(setName, groupIndex, workerIndex, namespace string, size int, status corev1.PodPhase) *corev1.Pod {
+	pod := MakePodWithLabels(setName, groupIndex, workerIndex, namespace, size)
+	pod.Status.Phase = status
+
+	if status == corev1.PodRunning {
+		pod.Status.Conditions = []corev1.PodCondition{
+			{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionTrue,
+			},
+		}
+	}
+	return pod
+}
+
+func MakeLeaderStatefulSetWithLabels(setName, namespace string, replica int) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      setName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: setName,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(replica),
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(replica)),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
 			},
 		},
 	}
