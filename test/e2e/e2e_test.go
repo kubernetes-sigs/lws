@@ -314,6 +314,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	serviceAccountName := "lws-controller-manager"
 	metricsServiceName := "lws-controller-manager-metrics-service"
 	namespace := "lws-system"
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
+		namespace = ns
+	}
 	var controllerPodName string
 
 	ginkgo.It("should ensure the metrics endpoint is serving metrics", func() {
