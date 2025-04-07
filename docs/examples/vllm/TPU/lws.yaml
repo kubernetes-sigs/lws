@@ -29,7 +29,7 @@ spec:
             command:
               - sh
               - -c
-              - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+              - "bash /workspace/vllm/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
                  python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3-70B --tensor-parallel-size=16"
             resources:
               limits:
