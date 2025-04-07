@@ -302,7 +302,6 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return 0, 0, err
 	}
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
-	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
 
 	originalLwsReplicas, err := strconv.Atoi(sts.Annotations[leaderworkerset.ReplicasAnnotationKey])
 	if err != nil {
@@ -326,11 +325,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// we'll violate it when reclaiming bursted replicas.
 	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
 
-	// When updated replicas become not ready again or scaled up replicas are not ready yet,
-	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
-	desiredPartition := utils.NonZeroValue(stsReplicas - int32(rollingStep) - continuousReadyReplicas)
-	partitionAccountingForUnavailable := partitionAccountingForUnavailable(states, desiredPartition)
-	return min(partition, partitionAccountingForUnavailable), wantReplicas(lwsUnreadyReplicas), nil
+	return rollingUpdatePartition(states, stsReplicas, int32(rollingStep), partition), wantReplicas(lwsUnreadyReplicas), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
@@ -516,7 +511,9 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 }
 
 type replicaState struct {
-	ready   bool
+	// ready indicates whether both the leader pod and its worker statefulset (if any) are ready.
+	ready bool
+	// updated indicates whether both the leader pod and its worker statefulset (if any) are updated to the latest revision.
 	updated bool
 }
 
@@ -561,6 +558,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 				ready:   false,
 				updated: false,
 			}
+			continue
 		}
 
 		leaderUpdated := revisionutils.GetRevisionKey(&sortedPods[idx]) == revisionKey
@@ -571,11 +569,6 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 				ready:   leaderReady,
 				updated: leaderUpdated,
 			}
-			continue
-		}
-
-		stsExists := (int(idx) < len(sortedSts) && nominatedName == sortedSts[idx].Name)
-		if !stsExists {
 			continue
 		}
 
@@ -591,10 +584,45 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 	return states, nil
 }
 
+func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingStep int32, currentPartition int32) int32 {
+	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
+
+	// Update up to rollingStep replicas at once.
+	var minAllowedPartition = utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
+
+	// Replicas that are not ready or expected to be updated (since idx >= partition) given current partition.
+	// Used to determine how much the partition can be reduced.
+	var unavailable int32
+	for idx := 0; idx < int(stsReplicas-continuousReadyReplicas); idx++ {
+		if !states[idx].ready || idx >= int(currentPartition) {
+			unavailable++
+		}
+	}
+
+	// Iterate over replicas, determine if moving partition will violate the maxUnavailable (rollingStep).
+	// Note that the returned partition will always be smaller than or equal to currentPartition.
+	// When updated replicas become not ready again or scaled up replicas are not ready yet,
+	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
+	var partition = currentPartition
+	for idx := partition - 1; idx >= minAllowedPartition; idx-- {
+		if states[idx].ready {
+			// This replica was not previously counted as unavailable. If we were to use idx
+			// as partition, we have to count it in.
+			unavailable++
+			if unavailable > rollingStep {
+				// idx violates the maxUnavailable
+				break
+			}
+		}
+		partition = idx
+	}
+	return partition
+}
+
 func calculateLWSUnreadyReplicas(states []replicaState, lwsReplicas int32) int32 {
 	var unreadyCount int32
-	for idx := int32(0); idx < min(int32(len(states)), lwsReplicas); idx++ {
-		if !states[idx].ready || !states[idx].updated {
+	for idx := int32(0); idx < lwsReplicas; idx++ {
+		if idx >= int32(len(states)) || !states[idx].ready || !states[idx].updated {
 			unreadyCount++
 		}
 	}
@@ -611,33 +639,6 @@ func calculateContinuousReadyReplicas(states []replicaState) int32 {
 		continuousReadyCount++
 	}
 	return continuousReadyCount
-}
-
-// Checks state of not updated replicas and adjusts the rolling update parittion to prevent
-// availability drops below "maxUnavailable".
-func partitionAccountingForUnavailable(states []replicaState, desiredPartition int32) int32 {
-	// Desired partition already accounts for readiness of replicas above partition. Code below
-	// only needs to consider replicas below desired partition.
-	var unavailableBelowPartition int32
-	for idx := 0; idx < int(desiredPartition); idx++ {
-		if !states[idx].ready {
-			unavailableBelowPartition++
-		}
-	}
-
-	partitionAccountingForUnavailable := desiredPartition + unavailableBelowPartition
-
-	// Reduce the partitionAccountingForUnavailable as long as replicas are unavailable. This is safe to update these
-	// replicas as it does not impact general availability.
-	// Never reduce below desiredPartition.
-	for idx := partitionAccountingForUnavailable; idx >= desiredPartition; idx-- {
-		if idx < int32(len(states)) && states[idx].ready {
-			break
-		}
-		partitionAccountingForUnavailable = idx
-	}
-
-	return partitionAccountingForUnavailable
 }
 
 func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.StatefulSet, error) {
