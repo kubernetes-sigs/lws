@@ -144,11 +144,23 @@ type type LeaderWorkerTemplate struct {
 }
 
 type SchedulingPolicy struct {
-    // Defines the label that will be targeted by the node selector
-    // The key will be the name of the leader pod
+
+  // Exclusive topology annotation is used to specify the topology which
+	// be used for 1:1 exclusive scheduling. Replaces functionality of
+  // the exclusive-placement annotation
+  ExclusiveTopology string `json:exclusiveTopology,omitempty`
+  
+  // Creates a 1:1 mapping between a nodeGroup an replica.
+  UniqueNodeGroup *UniqueNodeGroup `json:uniqueNodeGroup,omitempty`
+}
+
+
+type UniqueNodeGroup struct {
+  // Defines the label that will be targeted by the node selector
+  // The key will be the name of the leader pod
 	ReplicaUniqueNodeSelector string `json:"replicaUniqueNodeSelector,omitempty"`
 
-    // Defines the toleration configuration that will be unique per replica
+  // Defines the toleration configuration that will be unique per replica
 	ReplicaUniqueToleration *ReplicaUniqueToleration `json:"replicaUniqueToleration,omitempty"`
 }
 
