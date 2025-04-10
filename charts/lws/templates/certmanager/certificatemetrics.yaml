@@ -8,6 +8,7 @@ metadata:
   name: lws-metrics-cert
   namespace: {{ .Release.Namespace }}
 spec:
+  commonName: {{ include "lws.fullname" . }}-metrics
   dnsNames:
     - {{ include "lws.fullname" . }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc
     - {{ include "lws.fullname" . }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc.cluster.local
