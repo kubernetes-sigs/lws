@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -40,9 +42,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/features"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	"sigs.k8s.io/lws/pkg/utils/podgroup"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -50,12 +54,29 @@ import (
 // PodReconciler reconciles a LeaderWorkerSet object
 type PodReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Record record.EventRecorder
+	Scheme           *runtime.Scheme
+	Record           record.EventRecorder
+	podGroupProvider podgroup.Provider
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema, Record: record}
+	pr := &PodReconciler{
+		Client: client,
+		Scheme: schema,
+		Record: record,
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
+		providerType := os.Getenv("LWS_PODGROUP_PROVIDER")
+		podGroupProvider, err := podgroup.NewPodGroupProvider(podgroup.ProviderType(providerType), client)
+		if err != nil {
+			klog.Errorf("failed to init PodReconciler: %v", err)
+			return nil
+		}
+		pr.podGroupProvider = podGroupProvider
+	}
+
+	return pr
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -112,6 +133,13 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
+		err = r.podGroupProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}

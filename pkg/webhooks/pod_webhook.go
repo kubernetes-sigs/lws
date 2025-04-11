@@ -18,25 +18,41 @@ package webhooks
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
+	"sigs.k8s.io/lws/pkg/utils/podgroup"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
-type PodWebhook struct{}
+type PodWebhook struct {
+	podGroupProvider podgroup.Provider
+}
 
 func SetupPodWebhook(mgr ctrl.Manager) error {
+	pw := &PodWebhook{}
+	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
+		providerType := os.Getenv("LWS_PODGROUP_PROVIDER")
+		podGroupProvider, err := podgroup.NewPodGroupProvider(podgroup.ProviderType(providerType), mgr.GetClient())
+		if err != nil {
+			return err
+		}
+		pw.podGroupProvider = podGroupProvider
+	}
+
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&corev1.Pod{}).
 		WithDefaulter(&PodWebhook{}).
@@ -156,6 +172,13 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
+		}
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
+		err = p.podGroupProvider.SetPodMeta(pod)
+		if err != nil {
+			return err
 		}
 	}
 
