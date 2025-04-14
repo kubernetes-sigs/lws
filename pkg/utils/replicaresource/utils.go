@@ -14,12 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
+	"context"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
@@ -31,19 +34,30 @@ func GetPodGroupName(lwsName, groupIndex string) string {
 	return fmt.Sprintf(PodGroupNameFmt, lwsName, groupIndex)
 }
 
-// ProviderType defines the type of PodGroup provider
+// ProviderType defines the type of replica resource provider
 type ProviderType string
 
 const (
 	Volcano ProviderType = "volcano"
 )
 
-// NewPodGroupProvider creates a new PodGroup provider based on the type
-func NewPodGroupProvider(providerType ProviderType, client client.Client) (Provider, error) {
+// NewReplicaResourceProvider creates a new replica resource provider based on the type
+func NewReplicaResourceProvider(providerType ProviderType, client client.Client) (ReplicaResourceProvider, error) {
 	switch providerType {
 	case Volcano:
 		return NewVolcanoProvider(client), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %s", providerType)
+		return &defaultReplicaResourceProvider{}, nil
 	}
+}
+
+type defaultBaseResourceProvider struct {
+}
+
+func (d *defaultBaseResourceProvider) CreateHeadlessService(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	return nil
+}
+
+func (d *defaultBaseResourceProvider) CreateResourceClaim(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	return nil
 }

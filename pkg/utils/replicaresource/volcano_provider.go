@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
 	"context"
@@ -33,6 +33,7 @@ import (
 )
 
 type VolcanoProvider struct {
+	*defaultBaseResourceProvider
 	client client.Client
 }
 

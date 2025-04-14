@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
 	"context"
@@ -24,11 +24,15 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// Provider defines the interface for managing pod group resources
-type Provider interface {
-	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller
-	CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error
+// When users do not want to create replicaresource for each replica, they can use defaultReplicaResourceProvider as the ReplicaResourceProvider
+type defaultReplicaResourceProvider struct {
+	*defaultBaseResourceProvider
+}
 
-	// SetPodMeta sets pod meta for PodGroup association, called by webhook
-	SetPodMeta(pod *corev1.Pod) error
+func (d *defaultReplicaResourceProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
+	return nil
+}
+
+func (d *defaultReplicaResourceProvider) SetPodMeta(pod *corev1.Pod) error {
+	return nil
 }

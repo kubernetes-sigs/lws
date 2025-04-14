@@ -46,7 +46,7 @@ import (
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
-	"sigs.k8s.io/lws/pkg/utils/podgroup"
+	"sigs.k8s.io/lws/pkg/utils/replicaresource"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
@@ -54,9 +54,9 @@ import (
 // PodReconciler reconciles a LeaderWorkerSet object
 type PodReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	Record           record.EventRecorder
-	podGroupProvider podgroup.Provider
+	Scheme                  *runtime.Scheme
+	Record                  record.EventRecorder
+	replicaResourceProvider replicaresource.ReplicaResourceProvider
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder) *PodReconciler {
@@ -68,12 +68,12 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record recor
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
 		providerType := os.Getenv("LWS_PODGROUP_PROVIDER")
-		podGroupProvider, err := podgroup.NewPodGroupProvider(podgroup.ProviderType(providerType), client)
+		replicaResourceProvider, err := replicaresource.NewReplicaResourceProvider(replicaresource.ProviderType(providerType), client)
 		if err != nil {
 			klog.Errorf("failed to init PodReconciler: %v", err)
 			return nil
 		}
-		pr.podGroupProvider = podGroupProvider
+		pr.replicaResourceProvider = replicaResourceProvider
 	}
 
 	return pr
@@ -138,7 +138,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
-		err = r.podGroupProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
+		err = r.replicaResourceProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
