@@ -145,13 +145,21 @@ type type LeaderWorkerTemplate struct {
 
 type SchedulingPolicy struct {
 
-  // Exclusive topology annotation is used to specify the topology which
-	// be used for 1:1 exclusive scheduling. Replaces functionality of
-  // the exclusive-placement annotation
-  ExclusiveTopology string `json:exclusiveTopology,omitempty`
+  // Exclusive topology creates a 1:1 mapping for exclusive scheduling
+  ExclusiveTopology *ExclusiveTopology `json:exclusiveTopology,omitempty`
   
   // Creates a 1:1 mapping between a nodeGroup an replica.
   UniqueNodeGroup *UniqueNodeGroup `json:uniqueNodeGroup,omitempty`
+}
+
+type ExclusiveTopology struct {
+
+  // Specifies the topology which will be used for 1:1 exclusive scheduling
+  PerReplica string `json:perReplica,omitemty`
+
+  // Specifies the topology which will be used for 1:1 exclusive scheduling 
+  // in a given subgroup. Can be used alongside PerReplica configuration
+  PerSubGroup string `json:perSubGroup,omitempty`
 }
 
 
