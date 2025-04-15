@@ -18,8 +18,6 @@ Please do not remove items from the checklist
         `git branch release-$MAJ.$MIN main`
   - [ ] An OWNER pushes the new release branch with
         `git push --set-upstream upstream release-$MAJ.$MIN`
-- [ ] Update things like README, deployment templates, docs, configuration, test/e2e flags.
-      Submit a PR against the release branch: example #309
 - [ ] An OWNER [prepares a draft release](https://github.com/kubernetes-sigs/lws/releases)
   - [ ] Write the change log into the draft release.
   - [ ] Run
@@ -31,14 +29,13 @@ Please do not remove items from the checklist
       and inserts the changelog into the tag description.
       To perform this step, you need [a PGP key registered on github](https://docs.github.com/en/authentication/managing-commit-signature-verification/checking-for-existing-gpg-keys).
 - [ ] An OWNER pushes the tag with
-      `git push $VERSION`
+      `git push upstream $VERSION`
   - Triggers prow to build and publish a staging container image
-      `us-central1-docker.pkg.dev/k8s-staging-images/lws/lws:$VERSION`
-- [ ] Submit a PR against [k8s.io](https://github.com/kubernetes/k8s.io) ([example PR](https://github.com/kubernetes/k8s.io/pull/7664)), 
-      updating `k8s.gcr.io/images/k8s-staging-lws/images.yaml` to
-      [promote the container images](https://github.com/kubernetes/k8s.io/tree/main/k8s.gcr.io#image-promoter)
-      to production: <!-- example kubernetes/k8s.io#3612-->
-- [ ] Wait for the PR to be merged and verify that the image `registry.k8s.io/lws/lws:$VERSION` is available.
+      `us-central1-docker.pkg.dev/k8s-staging-images/lws/lws:$VERSION` and helm chart
+      `us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws:$VERSION`.
+  - Verify that the image and helm chart is available at [console](https://console.cloud.google.com/artifacts/docker/k8s-staging-images/us-central1/lws)
+- [ ] Submit a PR against [k8s.io](https://github.com/kubernetes/k8s.io) ([example PR](https://github.com/kubernetes/k8s.io/pull/7985)) to update image and helm charts: <!-- example kubernetes/k8s.io#3612-->
+- [ ] Wait for the PR to be merged and verify that the image `registry.k8s.io/lws/lws:$VERSION` is available, as well as the helm chart `registry.k8s.io/lws/charts/lws:$VERSION`.
 - [ ] Publish the draft release prepared at the [Github releases page](https://github.com/kubernetes-sigs/lws/releases).
 - [ ] Add a link to the tagged release in this issue: <!-- example https://github.com/kubernetes-sigs/lws/releases/tag/v0.1.0 -->
 - [ ] Send an announcement email to `sig-apps@kubernetes.io`, `sig-scheduling@kubernetes.io`, `wg-serving@kubernetes.io`, and `wg-batch@kubernetes.io` with the subject `[ANNOUNCE] LeaderWorkerSet $VERSION is released`
