@@ -389,9 +389,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if err != nil {
 			return false, false, err
 		}
-		if index < int(*lws.Spec.Replicas) {
-			currentNonBurstWorkerCount++
-		}
 
 		var sts appsv1.StatefulSet
 		if !noWorkerSts {
@@ -402,6 +399,10 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 				}
 				continue
 			}
+		}
+
+		if index < int(*lws.Spec.Replicas) {
+			currentNonBurstWorkerCount++
 		}
 
 		var ready, updated bool
