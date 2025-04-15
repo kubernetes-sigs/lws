@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
 	"context"
@@ -24,11 +24,22 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// Provider defines the interface for managing pod group resources
-type Provider interface {
+// BaseResourceProvider defines the interface for managing base resources, like headless services, resource claims, etc.
+type BaseResourceProvider interface {
+	CreateHeadlessService(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error
+	CreateResourceClaim(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error
+}
+
+// PodGroupProvider defines the interface for managing pod group resources
+type PodGroupProvider interface {
 	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller
 	CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error
 
 	// SetPodMeta sets pod meta for PodGroup association, called by webhook
 	SetPodMeta(pod *corev1.Pod) error
+}
+
+type ReplicaResourceProvider interface {
+	BaseResourceProvider
+	PodGroupProvider
 }

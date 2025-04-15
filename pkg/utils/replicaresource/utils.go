@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
 	"fmt"
@@ -31,19 +31,19 @@ func GetPodGroupName(lwsName, groupIndex string) string {
 	return fmt.Sprintf(PodGroupNameFmt, lwsName, groupIndex)
 }
 
-// ProviderType defines the type of PodGroup provider
+// ProviderType defines the type of replica resource provider
 type ProviderType string
 
 const (
 	Volcano ProviderType = "volcano"
 )
 
-// NewPodGroupProvider creates a new PodGroup provider based on the type
-func NewPodGroupProvider(providerType ProviderType, client client.Client) (Provider, error) {
+// NewReplicaResourceProvider creates a new replica resource provider based on the type
+func NewReplicaResourceProvider(providerType ProviderType, client client.Client) (ReplicaResourceProvider, error) {
 	switch providerType {
 	case Volcano:
 		return NewVolcanoProvider(client), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %s", providerType)
+		return &defaultReplicaResourceProvider{defaultBaseResourceProvider: &defaultBaseResourceProvider{}}, nil
 	}
 }

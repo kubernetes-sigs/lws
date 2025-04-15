@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package podgroup
+package replicaresource
 
 import (
 	"context"
@@ -33,12 +33,14 @@ import (
 )
 
 type VolcanoProvider struct {
+	*defaultBaseResourceProvider
 	client client.Client
 }
 
 func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	return &VolcanoProvider{
-		client: client,
+		defaultBaseResourceProvider: &defaultBaseResourceProvider{},
+		client:                      client,
 	}
 }
 

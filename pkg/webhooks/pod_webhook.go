@@ -34,23 +34,23 @@ import (
 	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
-	"sigs.k8s.io/lws/pkg/utils/podgroup"
+	"sigs.k8s.io/lws/pkg/utils/replicaresource"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
 type PodWebhook struct {
-	podGroupProvider podgroup.Provider
+	replicaResourceProvider replicaresource.ReplicaResourceProvider
 }
 
 func SetupPodWebhook(mgr ctrl.Manager) error {
 	pw := &PodWebhook{}
 	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
 		providerType := os.Getenv("LWS_PODGROUP_PROVIDER")
-		podGroupProvider, err := podgroup.NewPodGroupProvider(podgroup.ProviderType(providerType), mgr.GetClient())
+		replicaResourceProvider, err := replicaresource.NewReplicaResourceProvider(replicaresource.ProviderType(providerType), mgr.GetClient())
 		if err != nil {
 			return err
 		}
-		pw.podGroupProvider = podGroupProvider
+		pw.replicaResourceProvider = replicaResourceProvider
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -176,7 +176,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.PodGroupPerReplica) {
-		err = p.podGroupProvider.SetPodMeta(pod)
+		err = p.replicaResourceProvider.SetPodMeta(pod)
 		if err != nil {
 			return err
 		}
