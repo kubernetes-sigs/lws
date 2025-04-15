@@ -34,11 +34,42 @@ machine type for your nodes.**
 
 ## Install a released version
 
+### Install by kubectl
+
 To install a released version of LeaderWorkerSet in your cluster, run the following command:
 
 ```shell
 VERSION=v0.6.1
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
+```
+
+To wait for LeaderWorkerSet to be fully available, run:
+
+```shell
+kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=available --timeout=5m
+```
+
+### Install by Helm
+
+To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
+
+```shell
+CHART_VERSION=0.6.1
+helm install lws oci://registry.k8s.io/lws/charts/lws \
+  --version=$CHART_VERSION \
+  --namespace lws-system \
+  --create-namespace \
+  --wait --timeout 300s
+```
+
+You can also use the following command:
+
+```shell
+VERSION=v0.6.1
+helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
+  --namespace lws-system \
+  --create-namespace \
+  --wait --timeout 300s
 ```
 
 ### Uninstall
@@ -48,6 +79,12 @@ To uninstall a released version of LeaderWorkerSet from your cluster, run the fo
 ```shell
 VERSION=v0.6.1
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
+```
+
+To uninstall a released version of LeaderWorkerSet from your cluster by Helm, run the following command:
+
+```shell
+helm uninstall lws --namespace lws-system
 ```
 
 ## Install the latest development version
