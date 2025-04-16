@@ -71,6 +71,24 @@ USE_EXISTING_CLUSTER ?= false
 # Default will delete default kind cluster
 KIND_CLUSTER_NAME ?= kind
 
+# Setting SED allows macos users to install GNU sed and use the latter
+# instead of the default BSD sed.
+ifeq ($(shell command -v gsed 2>/dev/null),)
+    SED ?= $(shell command -v sed)
+else
+    SED ?= $(shell command -v gsed)
+endif
+ifeq ($(shell ${SED} --version 2>&1 | grep -q GNU; echo $$?),1)
+    $(error !!! GNU sed is required. If on OS X, use 'brew install gnu-sed'.)
+endif
+
+# Update these variables when preparing a new release or a release branch.
+# Then run `make prepare-release-branch`
+RELEASE_VERSION=v0.6.1
+RELEASE_BRANCH=main
+# Version used form Helm which is not using the leading "v"
+CHART_VERSION := $(shell echo $(RELEASE_VERSION) | cut -c2-)
+
 .PHONY: all
 all: build
 
@@ -160,9 +178,9 @@ lint: golangci-lint ## Run golangci-lint linter & yamllint
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
 
-PATHS_TO_VERIFY := config/components api client-go site/
+PATHS_TO_VERIFY := config/components api client-go site/ charts/
 .PHONY: verify
-verify: gomod-verify lint fmt-verify toc-verify manifests generate
+verify: gomod-verify lint fmt-verify toc-verify manifests generate prepare-release-branch
 	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
 	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
 
@@ -200,6 +218,8 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 ifndef ignore-not-found
   ignore-not-found = false
 endif
+
+clean-manifests = (cd config/manager && $(KUSTOMIZE) edit set image controller=us-central1-docker.pkg.dev/k8s-staging-images/lws/lws:$(RELEASE_BRANCH))
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
@@ -301,6 +321,15 @@ artifacts: kustomize helm yq
 	# Revert the image changes
 	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "main" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
 
+
+.PHONY: prepare-release-branch
+prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
+	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md -i site/config.toml
+	$(SED) -r 's/--version="v?[0-9]+\.[0-9]+\.[0-9]+/--version="$(CHART_VERSION)/g' -i charts/lws/README.md
+	$(SED) -r 's/\bVERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/VERSION=\1$(RELEASE_VERSION)/g' -i site/content/en/docs/installation/_index.md
+	$(SED) -r 's/\bCHART_VERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/CHART_VERSION=\1$(CHART_VERSION)/g' -i site/content/en/docs/installation/_index.md
+	$(YQ) e '.appVersion = "$(RELEASE_VERSION)"' -i charts/lws/Chart.yaml
+	@$(call clean-manifests)
 
 .PHONY: prometheus
 prometheus:
