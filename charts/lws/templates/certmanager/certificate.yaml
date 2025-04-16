@@ -12,6 +12,7 @@ spec:
     - lws-webhook-service.{{ .Release.Namespace }}.svc
     - lws-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
+    group: cert-manager.io
     kind: Issuer
     name: lws-selfsigned-issuer
   secretName: lws-webhook-server-cert

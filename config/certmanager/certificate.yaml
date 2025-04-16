@@ -34,6 +34,7 @@ spec:
   - SERVICE_NAME.SERVICE_NAMESPACE.svc
   - SERVICE_NAME.SERVICE_NAMESPACE.svc.cluster.local
   issuerRef:
+    group: cert-manager.io
     kind: Issuer
     name: selfsigned-issuer
   secretName: webhook-server-cert # this secret will not be prefixed, since it's not managed by kustomize
