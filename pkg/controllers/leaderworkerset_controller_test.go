@@ -24,15 +24,17 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
-
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -532,6 +534,166 @@ func TestSetCondition(t *testing.T) {
 			shouldUpdate := setCondition(tc.lws, tc.condition)
 			if shouldUpdate != tc.expectedShouldUpdate {
 				t.Errorf("Expected value %t, got %t", tc.expectedShouldUpdate, shouldUpdate)
+			}
+		})
+	}
+}
+
+func TestRollingUpdateParameters(t *testing.T) {
+	type fields struct {
+		Client client.Client
+		Scheme *runtime.Scheme
+		Record record.EventRecorder
+	}
+	type args struct {
+		ctx                    context.Context
+		lws                    *leaderworkerset.LeaderWorkerSet
+		sts                    *appsv1.StatefulSet
+		revisionKey            string
+		leaderWorkerSetUpdated bool
+	}
+	tests := []struct {
+		name           string
+		fields         fields
+		args           args
+		wantPartitions int32
+		wantReplicas   int32
+		wantErr        bool
+	}{
+		{
+			name: "lws is update without replicas, increase replica",
+			fields: fields{
+				Client: fake.NewClientBuilder().Build(),
+				Scheme: scheme.Scheme,
+				Record: record.NewFakeRecorder(100),
+			},
+			args: func() args {
+				return args{
+					ctx:                    context.Background(),
+					lws:                    wrappers.BuildLeaderWorkerSet("default").Replica(1).MaxSurge(1).Size(1).MaxUnavailable(0).Obj(),
+					sts:                    wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 1),
+					revisionKey:            "new",
+					leaderWorkerSetUpdated: true,
+				}
+			}(),
+			wantPartitions: 1,
+			wantReplicas:   2,
+			wantErr:        false,
+		},
+		{
+			name: "lws is updated without replicas, new pod running, decrease the partition",
+			fields: func() fields {
+				pod1 := wrappers.MakePodWithLabelsAndStatus("test-sample", "0", "0", "default", 1, corev1.PodRunning)
+				pod1.Labels[leaderworkerset.RevisionKey] = "old"
+				pod2 := wrappers.MakePodWithLabelsAndStatus("test-sample", "1", "0", "default", 1, corev1.PodRunning)
+				pod2.Labels[leaderworkerset.RevisionKey] = "new"
+				return fields{
+					Client: fake.NewClientBuilder().WithObjects(
+						pod1,
+						pod2,
+						wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 2),
+					).Build(),
+					Scheme: scheme.Scheme,
+					Record: record.NewFakeRecorder(100),
+				}
+			}(),
+			args: func() args {
+				leaderSts := wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 2)
+				leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(int32(1))
+				leaderSts.Annotations[leaderworkerset.ReplicasAnnotationKey] = "1"
+				return args{
+					ctx:                    context.Background(),
+					lws:                    wrappers.BuildLeaderWorkerSet("default").Replica(1).MaxSurge(1).Size(1).MaxUnavailable(0).Obj(),
+					sts:                    leaderSts,
+					revisionKey:            "new",
+					leaderWorkerSetUpdated: false,
+				}
+			}(),
+			wantPartitions: 0,
+			wantReplicas:   2,
+			wantErr:        false,
+		},
+		{
+			name: "lws is updated without replicas, old pod updated, decrease the replica",
+			fields: func() fields {
+				pod1 := wrappers.MakePodWithLabelsAndStatus("test-sample", "0", "0", "default", 1, corev1.PodRunning)
+				pod1.Labels[leaderworkerset.RevisionKey] = "new"
+				pod2 := wrappers.MakePodWithLabelsAndStatus("test-sample", "1", "0", "default", 1, corev1.PodRunning)
+				pod2.Labels[leaderworkerset.RevisionKey] = "new"
+				return fields{
+					Client: fake.NewClientBuilder().WithObjects(
+						pod1,
+						pod2,
+						wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 2),
+					).Build(),
+					Scheme: scheme.Scheme,
+					Record: record.NewFakeRecorder(100),
+				}
+			}(),
+			args: func() args {
+				leaderSts := wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 2)
+				leaderSts.Annotations[leaderworkerset.ReplicasAnnotationKey] = "1"
+				return args{
+					ctx:                    context.Background(),
+					lws:                    wrappers.BuildLeaderWorkerSet("default").Replica(1).MaxSurge(1).Size(1).MaxUnavailable(0).Obj(),
+					sts:                    leaderSts,
+					revisionKey:            "new",
+					leaderWorkerSetUpdated: false,
+				}
+			}(),
+			wantPartitions: 0,
+			wantReplicas:   1,
+			wantErr:        false,
+		},
+
+		{
+			name: "lws is updated with replicas from 1 to 2, increase replicas",
+			fields: func() fields {
+				pod1 := wrappers.MakePodWithLabelsAndStatus("test-sample", "0", "0", "default", 1, corev1.PodRunning)
+				pod1.Labels[leaderworkerset.RevisionKey] = "not-updated"
+				return fields{
+					Client: fake.NewClientBuilder().WithObjects(
+						pod1,
+						wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 1),
+					).Build(),
+					Scheme: scheme.Scheme,
+					Record: record.NewFakeRecorder(100),
+				}
+			}(),
+			args: func() args {
+				leaderSts := wrappers.MakeLeaderStatefulSetWithLabels("test-sample", "default", 1)
+				leaderSts.Annotations[leaderworkerset.ReplicasAnnotationKey] = "1"
+				return args{
+					ctx:                    context.Background(),
+					lws:                    wrappers.BuildLeaderWorkerSet("default").Replica(2).MaxSurge(1).Size(1).MaxUnavailable(0).Obj(),
+					sts:                    leaderSts,
+					revisionKey:            "not-updated",
+					leaderWorkerSetUpdated: false,
+				}
+			}(),
+			wantPartitions: 0,
+			wantReplicas:   2,
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &LeaderWorkerSetReconciler{
+				Client: tt.fields.Client,
+				Scheme: tt.fields.Scheme,
+				Record: tt.fields.Record,
+			}
+			partitions, replicas, err := r.rollingUpdateParameters(tt.args.ctx, tt.args.lws, tt.args.sts, tt.args.revisionKey, tt.args.leaderWorkerSetUpdated)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LeaderWorkerSetReconciler.rollingUpdateParameters() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if partitions != tt.wantPartitions {
+				t.Errorf("LeaderWorkerSetReconciler.rollingUpdateParameters() partitions = %v, want %v", partitions, tt.wantPartitions)
+			}
+			if replicas != tt.wantReplicas {
+				t.Errorf("LeaderWorkerSetReconciler.rollingUpdateParameters() replicas = %v, want %v", replicas, tt.wantReplicas)
 			}
 		})
 	}
