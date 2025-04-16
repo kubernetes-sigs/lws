@@ -144,8 +144,8 @@ supports cert rotation), instead of internal cert, you can by performing the fol
 First, install cert-manager on your cluster by running the following command:
 
 ```shell
-VERSION=v1.11.0
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/$VERSION/cert-manager.yaml
+CERT_MANAGER_VERSION=v1.17.1
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/$CERT_MANAGER_VERSION/cert-manager.yaml
 ```
 
 Next, in the file ``lws/config/default/kustomization.yaml`` replace ``../internalcert`` with

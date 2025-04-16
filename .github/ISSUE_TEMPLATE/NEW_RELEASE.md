@@ -18,6 +18,9 @@ Please do not remove items from the checklist
         `git branch release-$MAJ.$MIN main`
   - [ ] An OWNER pushes the new release branch with
         `git push --set-upstream upstream release-$MAJ.$MIN`
+- [ ] Update the release branch:
+  - [ ] Update `RELEASE_BRANCH` and `RELEASE_VERSION` in `Makefile` and run `make prepare-release-branch`
+  - [ ] Submit a pull request with the changes: <!-- example kubernetes-sigs/kueue#4698 -->
 - [ ] An OWNER [prepares a draft release](https://github.com/kubernetes-sigs/lws/releases)
   - [ ] Write the change log into the draft release.
   - [ ] Run
@@ -32,12 +35,15 @@ Please do not remove items from the checklist
       `git push upstream $VERSION`
   - Triggers prow to build and publish a staging container image
       `us-central1-docker.pkg.dev/k8s-staging-images/lws/lws:$VERSION` and helm chart
-      `us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws:$VERSION`.
+      `us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws:$CHART_VERSION`.
   - Verify that the image and helm chart is available at [console](https://console.cloud.google.com/artifacts/docker/k8s-staging-images/us-central1/lws)
 - [ ] Submit a PR against [k8s.io](https://github.com/kubernetes/k8s.io) ([example PR](https://github.com/kubernetes/k8s.io/pull/7985)) to update image and helm charts: <!-- example kubernetes/k8s.io#3612-->
-- [ ] Wait for the PR to be merged and verify that the image `registry.k8s.io/lws/lws:$VERSION` is available, as well as the helm chart `registry.k8s.io/lws/charts/lws:$VERSION`.
+- [ ] Wait for the PR to be merged and verify that the image `registry.k8s.io/lws/lws:$VERSION` is available, as well as the helm chart `registry.k8s.io/lws/charts/lws:$CHART_VERSION`.
 - [ ] Publish the draft release prepared at the [Github releases page](https://github.com/kubernetes-sigs/lws/releases).
 - [ ] Add a link to the tagged release in this issue: <!-- example https://github.com/kubernetes-sigs/lws/releases/tag/v0.1.0 -->
+- [ ] Update the `main` branch :
+  - [ ] Update `RELEASE_VERSION` in `Makefile` and run `make prepare-release-branch`
+  - [ ] Submit a pull request with the changes: <!-- example kubernetes-sigs/kueue#4891 -->
 - [ ] Send an announcement email to `sig-apps@kubernetes.io`, `sig-scheduling@kubernetes.io`, `wg-serving@kubernetes.io`, and `wg-batch@kubernetes.io` with the subject `[ANNOUNCE] LeaderWorkerSet $VERSION is released`
 - [ ] Add a link to the release announcement in this issue: <!-- example https://groups.google.com/a/kubernetes.io/g/wg-batch/c/-gZOrSnwDV4 -->
 - [ ] For a major or minor release, update `README.md`, `site/content/en/docs/installation/_index.md`, `charts/lws/Chart.yaml` (`version`,`appVersion`) and `charts/lws/values.yaml`(`image.manager.tag`)
