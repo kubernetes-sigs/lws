@@ -15,7 +15,6 @@ image:
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
     pullPolicy: Always
-    tag: main
 podAnnotations: {}
 podSecurityContext:
   runAsNonRoot: true
