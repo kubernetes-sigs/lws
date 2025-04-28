@@ -1,0 +1,20 @@
+{{- if .Values.enableCertManager }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/instance: serving-cert
+    {{- include "lws.labels" . | nindent 4 }}
+  name: lws-metrics-cert
+  namespace: {{ .Release.Namespace }}
+spec:
+  commonName: {{ include "lws.fullname" . }}-metrics
+  dnsNames:
+    - {{ include "lws.fullname" . }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc
+    - {{ include "lws.fullname" . }}-controller-manager-metrics-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: lws-selfsigned-issuer
+  secretName: lws-metrics-server-cert
+{{- end }}
