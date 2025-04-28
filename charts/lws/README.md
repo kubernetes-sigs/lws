@@ -46,6 +46,21 @@ NAME                          READY   UP-TO-DATE   AVAILABLE   AGE
 lws-system-controller-manager   1/1     1            1           14s
 ```
 
+##### Cert Manager
+
+LWS has support for third-party certificates.
+One can enable this by setting `enableCertManager` to true.
+This will use certManager to generate a secret, inject the CABundles and set up the tls.
+
+Check out the [site](https://lws.sigs.k8s.io/docs/manage/cert_manager/)
+for more information on installing cert manager with our Helm chart.
+
+##### Prometheus
+
+LWS supports prometheus metrics.
+Check out the [site](https://lws.sigs.k8s.io/docs/manage/prometheus/)
+for more information on installing LWS with metrics using our Helm chart.
+
 ### Configuration
 
 The following table lists the configurable parameters of the LWS chart and their default values.
