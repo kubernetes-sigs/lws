@@ -71,13 +71,8 @@ func SetDefaults_Configuration(cfg *Configuration) {
 	// Use the default LeaderElectionConfiguration options
 	configv1alpha1.RecommendedDefaultLeaderElectionConfiguration(cfg.LeaderElection)
 
-	if cfg.InternalCertManagement == nil {
-		cfg.InternalCertManagement = &InternalCertManagement{}
-	}
-	if cfg.InternalCertManagement.Enable == nil {
-		cfg.InternalCertManagement.Enable = ptr.To(true)
-	}
-	if *cfg.InternalCertManagement.Enable {
+
+	if cfg.InternalCertManagement != nil && *cfg.InternalCertManagement.Enable {
 		if cfg.InternalCertManagement.WebhookServiceName == nil {
 			cfg.InternalCertManagement.WebhookServiceName = ptr.To(DefaultWebhookServiceName)
 		}
