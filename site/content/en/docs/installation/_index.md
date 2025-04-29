@@ -139,20 +139,7 @@ namespace: <your-namespace>
 
 ## Optional: Use cert manager instead of internal cert
 The webhooks use an internal certificate by default. However, if you wish to use cert-manager (which
-supports cert rotation), instead of internal cert, you can by performing the following steps.
-
-First, install cert-manager on your cluster by running the following command:
-
-```shell
-CERT_MANAGER_VERSION=v1.17.1
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/$CERT_MANAGER_VERSION/cert-manager.yaml
-```
-
-Next, in the file ``lws/config/default/kustomization.yaml`` replace ``../internalcert`` with
-``../certmanager`` then uncomment all the lines beginning with ``[CERTMANAGER]``.
-
-Finally, install the cert manager following the link: https://cert-manager.io/docs/installation/#default-static-install
-and apply these configurations to your cluster with ``kubectl apply --server-side -k config/default``.
+supports cert rotation), instead of internal cert, follow the [cert manage guide](/docs/manage/cert_manager).
 
 ## Install with Helm chart
 
