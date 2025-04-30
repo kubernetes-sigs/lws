@@ -43,15 +43,44 @@ function startup {
         $KUBECTL describe pods -n kube-system > $ARTIFACTS/kube-system-pods.log || true
     fi
 }
+function deploy_cert_manager() {
+    if [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
+      $KUBECTL apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
+      $KUBECTL -n cert-manager wait --for condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=5m
+    fi
+}
 function kind_load {
     $KIND load docker-image $IMAGE_TAG --name $KIND_CLUSTER_NAME
 }
 function lws_deploy {
-    cd $CWD/config/manager && $KUSTOMIZE edit set image controller=$IMAGE_TAG
-    $KUSTOMIZE build $CWD/test/e2e/config | $KUBECTL apply --server-side -f -
+    if [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
+      pushd "$CWD/config/manager"
+        $KUSTOMIZE edit set image controller=$IMAGE_TAG
+        echo "apiVersion: config.lws.x-k8s.io/v1alpha1
+kind: Configuration
+internalCertManagement:
+  enable: false
+leaderElection:
+  leaderElect: true" > controller_manager_config.yaml
+      popd
+      pushd "$CWD/config/crd"
+        $KUSTOMIZE edit add patch --path "patches/cainjection_in_leaderworkersets.yaml"
+      popd
+      pushd "$CWD/config/default"
+        $KUSTOMIZE edit add patch --path "webhookcainjection_patch.yaml"
+        $KUSTOMIZE edit add patch --path "cert_metrics_manager_patch.yaml" --kind Deployment
+        $KUSTOMIZE edit add resource "../certmanager"
+        $KUSTOMIZE edit remove resource "../internalcert"
+        $KUSTOMIZE build $CWD/test/e2e/config/certmanager | $KUBECTL apply --server-side -f -
+      popd
+    else
+      cd $CWD/config/manager && $KUSTOMIZE edit set image controller=$IMAGE_TAG
+      $KUSTOMIZE build $CWD/test/e2e/config | $KUBECTL apply --server-side -f -
+    fi
 }
 trap cleanup EXIT
 startup
 kind_load
+deploy_cert_manager
 lws_deploy
 $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v $CWD/test/e2e/...
