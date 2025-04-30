@@ -13,4 +13,4 @@ data:
     leaderElection:
       leaderElect: true
     internalCertManagement:
-      enable: {{ not .Values.certManager.enable }}
+      enable: {{ not .Values.enableCertManager }}
