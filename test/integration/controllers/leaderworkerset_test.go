@@ -1818,6 +1818,151 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("rolling update with unhealthy pods below partition", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+				{
+					// Make pod-1 not ready
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var sts appsv1.StatefulSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-1", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+						testing.SetStatefulsetToUnReady(ctx, k8sClient, &sts)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 4)
+					},
+				},
+				{
+					// Update the worker template to trigger rolling update
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+
+						// With MaxUnavailable=1 and one pod already not ready (pod-1),
+						// the partition should be adjusted to 3 instead of 2. If partition was moved to 2 that would bring
+						// the number of unavailable pods to 3 (while MaxUnavailable=2).
+						// This is the key test for the bugfix.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+					},
+				},
+				{
+					// Complete the rolling update
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("rolling update with no ready replicas", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).MaxUnavailable(1)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupsToReady(ctx, k8sClient, lws, 2)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+					},
+				},
+				{
+					// Set replica 0 to not ready
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var sts appsv1.StatefulSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+						testing.SetStatefulsetToUnReady(ctx, k8sClient, &sts)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Set replica 1 to not ready
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var sts appsv1.StatefulSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-1", Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+						testing.SetStatefulsetToUnReady(ctx, k8sClient, &sts)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Trigger rolling update
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 0, 0)
+					},
+				},
+				{
+					// Make replica 1 ready
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// Verify partition moves to 0 since replica 1 is now ready
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Make replica 0 ready
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-0", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// Verify both replicas are ready and updated
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+					},
+				},
+			},
+		}),
 	) // end of DescribeTable
 }) // end of Describe
 
