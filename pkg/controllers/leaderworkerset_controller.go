@@ -271,11 +271,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// wantReplicas calculates the final replicas if needed.
 	wantReplicas := func(unreadyReplicas int32) int32 {
-		if unreadyReplicas <= int32(maxSurge) {
-			// When we have n unready replicas and n bursted replicas, we should
-			// start to release the burst replica gradually for the accommodation of
-			// the unready ones.
-			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+		if unreadyReplicas < int32(maxSurge) {
+			// When the unready replicas less than maxSurge, we should start to release
+			// the burst replica gradually for the accommodation of the unready ones.
+			// Actually we should keep the burst replicas when the unready replicas is
+			// equal to maxSurge, because the rolling update is not completed yet.
+			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas))
 			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
 		}
@@ -286,7 +287,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Indicates a new rolling update here.
 	if leaderWorkerSetUpdated {
 		// Processing scaling up/down first prior to rolling update.
-		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
+		return min(lwsReplicas, stsReplicas), lwsReplicas, nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
