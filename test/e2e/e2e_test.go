@@ -116,6 +116,19 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
+	ginkgo.It("Can delete a lws with foreground", func() {
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		// delete lws with foreground
+		testing.DeleteLWSWithForground(ctx, k8sClient, lws)
+
+		// Check that the leaderWorkerSet is deleted
+		testing.ExpectLeaderWorkerSetNotExist(ctx, lws, k8sClient)
+	})
+
 	ginkgo.It("Can perform a rolling update", func() {
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)

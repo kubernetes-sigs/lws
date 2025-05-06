@@ -109,6 +109,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// lws is in deleting and leader sts is also in deleting, return directly.
+	if lws.DeletionTimestamp != nil && (leaderSts == nil || leaderSts.DeletionTimestamp != nil) {
+		return ctrl.Result{}, nil
+	}
+
 	// Handles two cases:
 	// Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
 	// Case 2: Creating the controller revision for a newly created LWS object
