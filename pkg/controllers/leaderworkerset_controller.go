@@ -100,6 +100,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, lws); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	if lws.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 

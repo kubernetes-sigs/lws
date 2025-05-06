@@ -394,6 +394,16 @@ func ExpectLeaderWorkerSetNoUpgradeInProgress(ctx context.Context, k8sClient cli
 	gomega.Eventually(CheckLeaderWorkerSetHasCondition, Timeout, Interval).WithArguments(ctx, k8sClient, lws, condition).Should(gomega.Equal(true))
 }
 
+func ExpectLeaderWorkerSetNotExist(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
+	gomega.Eventually(func() bool {
+		var leaderSet leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSet); err != nil {
+			return apierrors.IsNotFound(err)
+		}
+		return false
+	}, Timeout, Interval).Should(gomega.Equal(true))
+}
+
 func ExpectLeaderWorkerSetStatusReplicas(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, readyReplicas, updatedReplicas int) {
 	ginkgo.By("checking leaderworkerset status replicas")
 	gomega.Eventually(func() error {
