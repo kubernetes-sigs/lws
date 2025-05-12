@@ -11,7 +11,7 @@ Cert Manager.
 
 ## Before you begin
 
-Make sure you the following conditions are set:
+Make sure the following conditions are set:
 
 - A Kubernetes cluster is running.
 - The kubectl command-line tool has communication with your cluster.
