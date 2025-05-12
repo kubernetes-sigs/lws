@@ -588,35 +588,32 @@ func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingSte
 	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
 
 	// Update up to rollingStep replicas at once.
-	var minAllowedPartition = utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
+	var rolliingStepPartition = utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
 
-	// Replicas that are not ready or expected to be updated (since idx >= partition) given current partition.
-	// Used to determine how much the partition can be reduced.
+	// rollingStepPartition calculation above disregards the state of replicas with idx<rollingStepPartition.
+	// To prevent violating the maxUnavailable, we have to account for these replicas and increase the partition if some are not ready.
 	var unavailable int32
-	for idx := 0; idx < int(stsReplicas-continuousReadyReplicas); idx++ {
-		if !states[idx].ready || idx >= int(currentPartition) {
+	for idx := 0; idx < int(rolliingStepPartition); idx++ {
+		if !states[idx].ready {
 			unavailable++
+		}
+	}
+	var partition = rolliingStepPartition + unavailable
+
+	// Reduce the partition if replicas are continously not ready. It is safe since updating these replicas does not impact
+	// the availability of the LWS. This is important to prevent update from getting stuck in case maxUnavailable is already violated
+	// (for example, all replicas are not ready when rolling update is started).
+	// Note that we never drop the partition below rolliingStepPartition.
+	for idx := min(partition, stsReplicas-1); idx >= rolliingStepPartition; idx-- {
+		if !states[idx].ready {
+			partition = idx
+		} else {
+			break
 		}
 	}
 
-	// Iterate over replicas, determine if moving partition will violate the maxUnavailable (rollingStep).
-	// Note that the returned partition will always be smaller than or equal to currentPartition.
-	// When updated replicas become not ready again or scaled up replicas are not ready yet,
-	// we'll not modify the Partition field. That means Partition moves in one direction to make it simple.
-	var partition = currentPartition
-	for idx := partition - 1; idx >= minAllowedPartition; idx-- {
-		if states[idx].ready {
-			// This replica was not previously counted as unavailable. If we were to use idx
-			// as partition, we have to count it in.
-			unavailable++
-			if unavailable > rollingStep {
-				// idx violates the maxUnavailable
-				break
-			}
-		}
-		partition = idx
-	}
-	return partition
+	// That means Partition moves in one direction to make it simple.
+	return min(partition, currentPartition)
 }
 
 func calculateLWSUnreadyReplicas(states []replicaState, lwsReplicas int32) int32 {
