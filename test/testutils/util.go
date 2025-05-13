@@ -600,6 +600,12 @@ func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Clien
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+func DeleteLWSWithForground(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		return k8sClient.Delete(ctx, lws, client.PropagationPolicy(metav1.DeletePropagationForeground))
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 // GetProjectDir will return the directory where the project is
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
