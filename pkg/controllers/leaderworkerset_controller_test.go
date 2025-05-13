@@ -29,10 +29,8 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
-
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
