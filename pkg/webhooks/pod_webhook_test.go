@@ -278,25 +278,67 @@ func TestGetSubGroupIndex(t *testing.T) {
 		leaderOnly            bool
 		expectedSubGroupIndex string
 	}{
+		// | workerId |  subGroup |
+		// | -------- | --------- |
+		// | 0        | 0         |
+		// | 1        | 1         |
+		// | 2        | 0        |
+		// | 3        | 1         |
 		{
-			name:                  "Even number of pods",
+			name:                  "Even number of pods, worker 1 belongs to subGroup 1",
 			podCount:              4,
 			subGroupSize:          2,
-			workerIndex:           2,
+			workerIndex:           1,
 			expectedSubGroupIndex: "1",
 		},
 		{
-			name:                  "Odd number of pods, first subgroup has an extra pod",
+			name:                  "Even number of pods, worker 2 belongs to subGroup 0",
+			podCount:              4,
+			subGroupSize:          2,
+			workerIndex:           2,
+			expectedSubGroupIndex: "0",
+		},
+		// | workerId |  subGroup |
+		// | -------- | --------- |
+		// | 0        | 0         |
+		// | 1        | 1         |
+		// | 2        | 0         |
+		// | 3        | 1         |
+		// | 4        | 0         |
+		// ID 0 is the leader, per KEP 115 , the TPU request by pods in subGroup 0 is actually 2, so reach the balance
+		{
+			name:                  "Odd number of pods, first subgroup has an extra pod, worker 2 belongs to subGroup 0",
 			podCount:              5,
 			subGroupSize:          2,
 			workerIndex:           2,
 			expectedSubGroupIndex: "0",
 		},
+		{
+			name:                  "Odd number of pods, first subgroup has an extra pod, worker 4 belongs to subGroup 0",
+			podCount:              5,
+			subGroupSize:          2,
+			workerIndex:           4,
+			expectedSubGroupIndex: "0",
+		},
+		{
+			name:                  "Odd number of pods, worker 1 belongs to subGroup 1 ",
+			podCount:              5,
+			subGroupSize:          2,
+			workerIndex:           1,
+			expectedSubGroupIndex: "1",
+		},
+		{
+			name:                  "Odd number of pods, worker 3 belongs to subGroup 1 ",
+			podCount:              5,
+			subGroupSize:          2,
+			workerIndex:           3,
+			expectedSubGroupIndex: "1",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex)
+			subGroupIndex := getSubGroupIndex(tc.subGroupSize, tc.workerIndex)
 			if tc.expectedSubGroupIndex != subGroupIndex {
 				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedSubGroupIndex, subGroupIndex)
 			}

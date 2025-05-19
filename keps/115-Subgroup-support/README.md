@@ -166,6 +166,8 @@ In order to mitigate the problem described above, if the leader does not request
 With the new values, this is how the placement will look like
 ![Leader doesn't request TPU resources](https://github.com/kubernetes-sigs/lws/assets/86417275/2d22fb99-2e41-463f-a7f6-40e4925ede7f)
 
+NOTE: Since LWS v0.6.2, the subgroup-index formula will be changed to `leaderworkerset.sigs.k8s.io/subgroup-index = workerIndex % subGroupSize` , the same way as `TPU_WORKER_ID` above.
+
 ### Test Plan
 
 <!--
