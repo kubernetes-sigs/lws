@@ -108,7 +108,7 @@ We extend the LeaderWorkerSet API to introduce a new field: subGroupSize to opt 
 type LeaderWorkerTemplate struct {
 
   // SubGroupPolicy describes the policy that will be applied when creating subgroups.
-	SubGroupPolicy *SubGroupPolicy 'json:"subGroupSize,omitempty'
+	SubGroupPolicy *SubGroupPolicy `json:"subGroupPolicy,omitempty"`
 } 
 
 type SubGroupPolicy struct {
@@ -142,9 +142,9 @@ Afterward, it will be scheduled into topology-2 that has other pods with the sam
 - Two new annotations will be added
   - `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology`
   - `leaderworkerset.sigs.k8s.io/subgroup-size` 
-- Three new labels will be added,
-  - `leaderworkerset.sigs.k8s.io/subgroup-index = worker-index/subGroupSize`
-    - Tracks which subgroup the pod is part of 
+- Two new labels will be added,
+  - `leaderworkerset.sigs.k8s.io/subgroup-index`
+    - Tracks which subgroup the pod is part of, the value will be auto-generated as worker-index/subGroupSize.
   - `leaderworkerset.sigs.k8s.io/subgroup-key` 
     - Pods that are part of the same subgroup will have an annotation that is a unique hash value will be generated from the name of the leader, and the subgroup-index
 
