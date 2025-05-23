@@ -77,6 +77,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
 				},
 			},
 			groupUniqueKey: "test-key",
@@ -85,6 +86,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
 				},
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -104,6 +106,11 @@ func TestSetExclusiveAffinities(t *testing.T) {
 							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
 								TopologyKey: "topologyKey",
 								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/name",
+										Operator: "In",
+										Values:   []string{"test-lws"},
+									},
 									{
 										Key:      "leaderworkerset.sigs.k8s.io/group-key",
 										Operator: "Exists",
@@ -125,6 +132,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
 				},
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -143,6 +151,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
 				},
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
