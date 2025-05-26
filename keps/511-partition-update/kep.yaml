@@ -1,0 +1,17 @@
+title: Partition Update
+kep-number: 511
+authors:
+  - lixin010
+status: provisional
+creation-date: 2025-05-26
+reviewers:
+  - kerthcet
+  - Edwinhr716
+approvers:
+  - kerthcet
+  - Edwinhr716
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v0.6.1"
