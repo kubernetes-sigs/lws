@@ -1,4 +1,4 @@
-# KEP-258 Subgroup Service Auto-Creation 
+# KEP-532 Subgroup Service Auto-Creation 
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
 title can help communicate what the KEP is and should be considered as part of
@@ -29,7 +29,6 @@ tags, and then generate with `hack/update-toc.sh`.
     - [Integration tests](#integration-tests)
     - [End to End Tests](#end-to-end-tests)
 - [Alternatives](#alternatives)
-  - [Only Set Pod-Affinity on workers with <code>(workerIndex) % subGroupSize == 0</code>](#only-set-pod-affinity-on-workers-with-)
 <!-- /toc -->
 
 ## Motivation

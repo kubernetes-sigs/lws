@@ -8201,6 +8201,15 @@ spec:
                       SubGroupPolicy describes the policy that will be applied when creating subgroups
                       in each replica.
                     properties:
+                      autoCreateService:
+                        description: |-
+                          The flag to ideintify if the subgroup service should be auto-created.
+                          Defaults to false.
+                          If set to true, the service will be created for each subgroup.
+                          The service name will be ${LwsInstanceName}-${GroupID}-${subGroupID}
+                          The service will be a headless service with selector:
+                           leaderworkerset.sigs.k8s.io/subgroup-key: <subgroup-key> and leaderworkerset.sigs.k8s.io/leaderworkerset-name: <lws-name>
+                        type: boolean
                       subGroupPolicyType:
                         default: LeaderWorker
                         description: |-

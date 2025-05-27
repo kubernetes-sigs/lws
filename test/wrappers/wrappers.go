@@ -110,6 +110,13 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupSize(subGroupSize int32) *Lead
 	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize = &subGroupSize
 	return lwsWrapper
 }
+func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupAutoCreateService(autoCreateService bool) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+	}
+	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.AutoCreateService = autoCreateService
+	return lwsWrapper
+}
 
 func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupType(subGroupType leaderworkerset.SubGroupPolicyType) *LeaderWorkerSetWrapper {
 	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
