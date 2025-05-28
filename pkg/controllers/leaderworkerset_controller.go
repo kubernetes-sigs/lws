@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"math"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -161,6 +163,13 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
 		return ctrl.Result{}, err
 	}
+	// Create subGroup services if desired
+	if err := r.reconcileSubGroupServices(ctx, lws); err != nil {
+		log.Error(err, "Creating subgroup services.")
+		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
+			fmt.Sprintf("Failed to create subgroup services, due to error: %v", err))
+		return ctrl.Result{}, err
+	}
 
 	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
@@ -186,6 +195,50 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		}
 		return nil
 	}
+	return nil
+}
+
+func (r *LeaderWorkerSetReconciler) reconcileSubGroupServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil || !lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.AutoCreateService {
+		return nil
+	}
+
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Size()
+	subGroupSize := int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
+	size := int(*lws.Spec.LeaderWorkerTemplate.Size)
+	subGroupPolicyType := leaderworkerset.SubGroupPolicyTypeLeaderWorker
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
+		subGroupPolicyType = *lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type
+	}
+
+	// caculate the subGroup count in each group
+	var subGroupCount int
+	if subGroupPolicyType == leaderworkerset.SubGroupPolicyTypeLeaderExcluded {
+		// only taken worker pods, since leader has been excluded from any subGroup
+		subGroupCount = int(math.Ceil(float64((size - 1)) / float64(subGroupSize)))
+	} else {
+		// leader in first subGroup
+		subGroupCount = int(math.Ceil(float64(size) / float64(subGroupSize)))
+	}
+
+	if subGroupCount < 2 {
+		return nil // no need to create subGroup services
+	}
+
+	for groupID := 0; groupID < int(*lws.Spec.Replicas); groupID++ {
+		for subGroupID := 0; subGroupID < subGroupCount; subGroupID++ {
+			serviceName := fmt.Sprintf("%s-group-%d-subgroup-%d", lws.Name, groupID, subGroupID)
+			// Create or update K8S service
+			if err := controllerutils.CreateServiceIfNotExists(ctx, r.Client, r.Scheme, lws, serviceName, map[string]string{
+				"leaderworkerset.sigs.k8s.io/name":           lws.Name,
+				"leaderworkerset.sigs.k8s.io/group-index":    fmt.Sprintf("%d", groupID),
+				"leaderworkerset.sigs.k8s.io/subgroup-index": fmt.Sprintf("%d", subGroupID),
+			}, false, lws); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

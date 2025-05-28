@@ -18,21 +18,25 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -532,6 +536,182 @@ func TestSetCondition(t *testing.T) {
 			shouldUpdate := setCondition(tc.lws, tc.condition)
 			if shouldUpdate != tc.expectedShouldUpdate {
 				t.Errorf("Expected value %t, got %t", tc.expectedShouldUpdate, shouldUpdate)
+			}
+		})
+	}
+}
+
+func TestReconcileHeadlessServices(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add corev1 scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add lws scheme: %v", err)
+	}
+
+	ctx := context.TODO()
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{}))
+	ctx = ctrl.LoggerInto(ctx, logger)
+	// Construct LWS object
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(1).Obj()
+
+	// Use fake client
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+
+	// Construct Reconciler
+	r := &LeaderWorkerSetReconciler{
+		Client: c,
+		Scheme: scheme,
+	}
+
+	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
+		t.Fatalf("reconcileHeadlessServices failed: %v", err)
+	}
+
+	// Verify that the Service is created and is Headless
+	svc := &corev1.Service{}
+	err := c.Get(ctx, client.ObjectKey{Name: lws.Name, Namespace: lws.Namespace}, svc)
+	if err != nil {
+		t.Fatalf("service not found: %v", err)
+	}
+	if svc.Spec.ClusterIP != "None" {
+		t.Errorf("expected headless service (ClusterIP=None), got %q", svc.Spec.ClusterIP)
+	}
+	if svc.Spec.Selector == nil || svc.Spec.Selector["leaderworkerset.sigs.k8s.io/name"] != lws.Name {
+		t.Errorf("service selector not set as expected: %+v", svc.Spec.Selector)
+	}
+}
+func TestReconcileSubGroupServices(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add corev1 scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add lws scheme: %v", err)
+	}
+
+	ctx := context.TODO()
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{}))
+	ctx = ctrl.LoggerInto(ctx, logger)
+
+	tests := []struct {
+		name                       string
+		lws                        *leaderworkerset.LeaderWorkerSet
+		SubGroupCountInEachReplica int
+		expectedSubGroupSvcCount   int
+		expectedEndpoints          int
+	}{
+		{
+			name: "LeaderWorker type with SubGroupSize 1",
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).
+				SubGroupAutoCreateService(true).
+				Replica(2).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(3).SubGroupSize(1).Obj(),
+			SubGroupCountInEachReplica: 2, // tell test case how many subGroups it will be
+			expectedSubGroupSvcCount:   4,
+			expectedEndpoints:          1,
+		},
+		{
+			name: "LeaderWorker type with SubGroupSize 2",
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample-2", "default").
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).
+				SubGroupAutoCreateService(true).
+				Replica(1).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(5).SubGroupSize(2).Obj(),
+			SubGroupCountInEachReplica: 3, // tell test case how many subGroups it will be
+			expectedSubGroupSvcCount:   3,
+			expectedEndpoints:          2, // SubGroupSize = 2
+		},
+		{
+			name: "LeaderExcluded type with SubGroupSize 1",
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample-3", "default").
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupAutoCreateService(true).
+				Replica(1).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(4).SubGroupSize(1).Obj(),
+			SubGroupCountInEachReplica: 3,
+			expectedSubGroupSvcCount:   3,
+			expectedEndpoints:          1,
+		},
+		{
+			name: "LeaderExcluded type with SubGroupSize 2",
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample-4", "default").
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupAutoCreateService(true).
+				Replica(2).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(6).SubGroupSize(2).Obj(),
+			SubGroupCountInEachReplica: 3,
+			expectedSubGroupSvcCount:   6,
+			expectedEndpoints:          2, // SubGroupSize = 2
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Use fake client
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws).Build()
+
+			// Construct Reconciler
+			r := &LeaderWorkerSetReconciler{
+				Client: c,
+				Scheme: scheme,
+			}
+
+			// Call the method under test
+			if err := r.reconcileSubGroupServices(ctx, tc.lws); err != nil {
+				t.Fatalf("reconcileSubGroupServices failed: %v", err)
+			}
+
+			// Verify the number and properties of created services
+			actualServiceCount := 0
+			for groupID := 0; groupID < int(*tc.lws.Spec.Replicas); groupID++ {
+				for subGroupID := 0; subGroupID < tc.SubGroupCountInEachReplica; subGroupID++ {
+					svc := &corev1.Service{}
+					serviceName := fmt.Sprintf("%s-group-%d-subgroup-%d", tc.lws.Name, groupID, subGroupID)
+					err := c.Get(ctx, client.ObjectKey{Name: serviceName, Namespace: tc.lws.Namespace}, svc)
+					if err != nil {
+						t.Errorf("service %s not found: %v", serviceName, err)
+						continue
+					}
+					actualServiceCount++
+					if svc.Spec.Selector == nil || svc.Spec.Selector["leaderworkerset.sigs.k8s.io/name"] != tc.lws.Name {
+						t.Errorf("service %s selector not set as expected: %+v", serviceName, svc.Spec.Selector)
+					}
+					if svc.Spec.Selector == nil || svc.Spec.Selector["leaderworkerset.sigs.k8s.io/subgroup-index"] != fmt.Sprintf("%d", subGroupID) {
+						t.Errorf("service %s selector not set as expected: %+v", serviceName, svc.Spec.Selector)
+					}
+					/* Verify endpoints
+					endpoints := &corev1.Endpoints{}
+					err = c.Get(ctx, client.ObjectKey{Name: serviceName, Namespace: tc.lws.Namespace}, endpoints)
+					if err != nil {
+						t.Errorf("endpoints %s not found: %v", serviceName, err)
+						continue
+					}
+					// Calculate the actual number of endpoint addresses
+					actualEndpointCount := 0
+					for _, subset := range endpoints.Subsets {
+						actualEndpointCount += len(subset.Addresses)
+					}
+
+					if actualEndpointCount != tc.expectedEndpoints {
+						t.Errorf("service %s expected %d endpoints, got %d", serviceName, tc.expectedEndpoints, actualEndpointCount)
+					}
+					*/
+
+				}
+			}
+
+			if actualServiceCount != tc.expectedSubGroupSvcCount {
+				t.Errorf("Expected service count %d, got %d", tc.expectedSubGroupSvcCount, actualServiceCount)
 			}
 		})
 	}

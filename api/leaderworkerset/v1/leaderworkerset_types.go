@@ -203,6 +203,14 @@ type SubGroupPolicy struct {
 	// by subGroupSize, in which case the leader is considered as
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
+
+	// The flag to ideintify if the subgroup service should be auto-created.
+	// Defaults to false.
+	// If set to true, the service will be created for each subgroup.
+	// The service name will be ${LwsInstanceName}-${GroupID}-${subGroupID}
+	// The service will be a headless service with selector:
+	//  leaderworkerset.sigs.k8s.io/subgroup-key: <subgroup-key> and leaderworkerset.sigs.k8s.io/leaderworkerset-name: <lws-name>
+	AutoCreateService bool `json:"autoCreateService,omitempty"`
 }
 
 type SubGroupPolicyType string
