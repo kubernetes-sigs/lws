@@ -1,12 +1,31 @@
 apiVersion: lws.x-k8s.io/v1alpha1
 kind: Configuration
 metadata:
-  labels:
-    app.kubernetes.io/name: configuration
-    app.kubernetes.io/instance: configuration-sample
-    app.kubernetes.io/part-of: lws
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/created-by: lws
   name: configuration-sample
 spec:
-  # TODO(user): Add fields here
+  ## Examples as below (with their default values):
+  ## refer to `Configuration` struct definition for more details.
+  #
+  # webhook:
+  #   port: 9443
+  #   certDir: "/tmp/k8s-webhook-server/serving-certs"
+  #
+  # leaderElection:
+  #   leaderElect: true
+  #
+  # metrics:
+  #   bindAddress: ":8443"
+  #
+  # controllerHealth:
+  #   healthProbeBindAddress: ":8081"
+  #   readinessEndpointName: "/readyz"
+  #   livenessEndpointName: "/healthz"
+  #
+  # internalCertManagement:
+  #   enable: true
+  #   webhookServiceName: "lws-webhook-service"
+  #   webhookSecretName: "lws-webhook-server-cert"
+  #
+  # clientConnection:
+  #   qps: 500
+  #   burst: 500
