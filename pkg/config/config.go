@@ -86,7 +86,7 @@ func addLeaderElectionTo(o *ctrl.Options, cfg *configapi.Configuration) {
 		return
 	}
 
-	if !o.LeaderElection && cfg.LeaderElection.LeaderElect != nil {
+	if cfg.LeaderElection.LeaderElect != nil {
 		o.LeaderElection = *cfg.LeaderElection.LeaderElect
 	}
 
