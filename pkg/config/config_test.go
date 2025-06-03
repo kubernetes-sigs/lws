@@ -200,6 +200,7 @@ webhook:
 		cmpopts.IgnoreUnexported(ctrlcache.Options{}),
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger"),
+		cmpopts.IgnoreFields(ctrl.Options{}, "Controller", "Logger"),
 	}
 
 	// Ignore the controller manager section since it's side effect is checked against

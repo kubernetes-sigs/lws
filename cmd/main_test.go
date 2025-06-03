@@ -63,6 +63,7 @@ internalCertManagement:
 		cmpopts.IgnoreUnexported(ctrlcache.Options{}),
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger", "Metrics", "WebhookServer", "LeaderElectionNamespace"),
+		cmpopts.IgnoreFields(ctrl.Options{}, "Controller", "Logger"),
 	}
 
 	testCases := []struct {
