@@ -24,13 +24,13 @@ tags, and then generate with `hack/update-toc.sh`.
 - [Proposal](#proposal)
   - [User Stories (Optional)](#user-stories-optional)
     - [Story 1](#story-1)
+    - [Story 2](#story-2)
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [LeaderWorkerSet API](#leaderworkerset-api)
   - [Implementation](#implementation)
     - [lws controller](#lws-controller)
-    - [lws webhook](#lws-webhook)
   - [Test Plan](#test-plan)
       - [Prerequisite testing updates](#prerequisite-testing-updates)
       - [Unit tests](#unit-tests)
@@ -80,7 +80,7 @@ This KEP is to enable lws to have the ability to perform partitioned updates, fa
 
 ### Goals
 
-- Add partitionfield to ebable partitioned updates for LWS, similar to the [StatefuleSet partition](https://kubernetes.io/zh-cn/docs/concepts/workloads/controllers/statefulset/#partitions).
+- Add partitionfield to ebable partitioned updates for LWS, similar to the [StatefuleSet partition](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#partitions).
 <!--
 List the specific goals of the KEP. What is it trying to achieve? How will we
 know that this has succeeded?
@@ -116,6 +116,9 @@ bogged down.
 
 #### Story 1
 In the disaggregated prefilling case, the prefill role and decode role are deployed using two separate lws. The prefill role `Replicas` is 4 and decode is 2. When there is a new release, we can set prefill role `Partition` to 2 and set decode to 1. Half of the prefill and decoder groups will update to the new version.
+
+#### Story 2
+For the canary deployment, through the partitioned update and custom routing strategy, only some user requests can be served by the new version endpoints to observe whether the feature release meets expectations.
 
 ### Notes/Constraints/Caveats (Optional)
 
@@ -164,6 +167,15 @@ type RollingUpdateConfiguration struct {
 }
 ```
 
+In partition updates, there will be two versions replicas. the `ReadyReplicas` and `UpdatedReplicas` filed are insufficient to represent the current status of the lws. So adding the `UpdatedReadyReplicas` field can better indicate the state of the new version replicas.
+```go
+// leaderworkerset_types.go
+type LeaderWorkerSetStatus struct {
+    // UpdatedReadyReplicas track the number of groups that have been updated and are in ready state.
+    UpdatedReadyReplicas int32 `json:"updatedReadyReplicas,omitempty"`
+}
+```
+
 ### Implementation
 #### lws controller
 In the `rollingUpdatePartition`function, an intermediate variable "partition" is calculated, which means the groups from `partition`to `replicas-1` will be updated. The function returns `min(partition, currentPartition)` that means Partition moves in one direction to make it simple. 
@@ -178,17 +190,14 @@ func rollingUpdatePartition(...) int32 {
 
     // new code, to implement lws partition update
     lwsPartition = getLwsPartition(lws)
-    partition = max(partition, lwsPartition)
-    
-    // That means Partition moves in one direction to make it simple.
-    return min(partition, currentPartition)
+
+    return max(lwsPartition, partition)
 }
 ```
 
-During a rolling update, the `partition` field updated to the leader sts will not be smaller than `lwsPartition`, which keeps the groups smaller than `lwsPartition`will not be updated.
+During a rolling update, the `partition` field updated to the leader sts will not be smaller than `lwsPartition`, which keeps the groups smaller than `lwsPartition` will not be updated.
 
-#### lws webhook
-We need to set default value of `Spec.RolloutStrategy.RollingUpdateConfiguration.Partition` to `0` in the lws webhook.
+Next, The conditions which indicates whether the rolling update is completed need to be updated. The previous logic was that before all replicas were modified, `UpdateInProgress` is true. Now update to before all replicas whose index no less than `lwsPartition` are modified. The `Available` Condition is set to `True` when all replicas whose index no less than `lwsPartition` are updated and at least the minimum available replicas are up and running.
 
 ### Test Plan
 
@@ -255,7 +264,7 @@ For Beta and GA, add links to added tests together with links to k8s-triage for 
 https://storage.googleapis.com/k8s-triage/index.html
 -->
 
-- <test>: <link to test coverage>
+- Test the partitioned rolling update is working as expected with maxUnavailable step by step.
 
 ##### e2e tests
 
@@ -270,7 +279,7 @@ We expect no non-infra related flakes in the last month as a GA graduation crite
 -->
 
 <!-- - <test>: <link to test coverage> -->
-- Test whether the updated group during the rolling conforms to the partition.
+- Test whether the updated group during the rolling conforms to the partition and verify that replicas whose index less than `lwsPartition` are always populated with the old version.
 
 ### Graduation Criteria
 
@@ -302,6 +311,8 @@ Major milestones might include:
 - the version of Kubernetes where the KEP graduated to general availability
 - when the KEP was retired or superseded
 -->
+- 2025-05-29: KEP initialized and submitted for review
+- 2025-06-04: Update the logic that determines when a rolling update is done
 
 ## Drawbacks
 
