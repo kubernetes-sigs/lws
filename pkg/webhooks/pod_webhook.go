@@ -192,6 +192,9 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
 
+	// Get the LWS name from pod labels
+	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+
 	// Pod affinity ensures the pods of this set land on the same topology domain.
 	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
@@ -204,10 +207,17 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			}},
 			TopologyKey: topologyKey,
 		})
-	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
+
+	// Pod anti-affinity ensures exclusively one replica/group of this set lands on the topology, preventing multiple replicas per topology domain.
+	// and only apply mutual exclusion within the same LWS instance
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
 			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      leaderworkerset.SetNameLabelKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{lwsName},
+				},
 				{
 					Key:      podAffinityKey,
 					Operator: metav1.LabelSelectorOpExists,
