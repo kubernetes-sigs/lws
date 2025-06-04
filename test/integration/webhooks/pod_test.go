@@ -705,7 +705,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 					},
 					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				}
-				webhooks.SetExclusiveAffinities(pod, "uniquehash", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey)
+				webhooks.SetExclusiveAffinities(pod, "uniquehash", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey, leaderworkerset.GroupIndexLabelKey, "4")
 				return *pod
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
