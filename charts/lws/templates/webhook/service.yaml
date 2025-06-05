@@ -12,4 +12,5 @@ spec:
       protocol: TCP
       targetPort: 9443
   selector:
+    {{- include "lws.selectorLabels" . | nindent 4 }}
     control-plane: controller-manager
