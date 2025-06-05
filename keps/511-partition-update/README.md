@@ -167,7 +167,7 @@ type RollingUpdateConfiguration struct {
 }
 ```
 
-In partition updates, there will be two versions replicas. the `ReadyReplicas` and `UpdatedReplicas` filed are insufficient to represent the current status of the lws. So adding the `UpdatedReadyReplicas` field can better indicate the state of the new version replicas.
+In partition updates, there will be two versioned replicas. The `ReadyReplicas` and `UpdatedReplicas` filed are insufficient to represent the current status of the lws. So adding the `UpdatedReadyReplicas` field can better indicate the state of the new version replicas.
 ```go
 // leaderworkerset_types.go
 type LeaderWorkerSetStatus struct {
