@@ -37,7 +37,7 @@ USE_EXISTING_CLUSTER=true KIND_CLUSTER_NAME=kind make test-e2e
 
 Finally, deploy the llama.cpp example to kind with [this script](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/llamacpp/dev/tasks/run-in-kind):
 ```shell
-./docs/examples/dev/tasks/run-in-kind
+./docs/examples/llamacpp/dev/tasks/run-in-kind
 ```
 
 After a lot of downloading and building (we build llama.cpp from source, and we download

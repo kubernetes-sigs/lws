@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM debian:bullseye AS builder
 
-RUN apt-get update && apt-get install --yes git cmake g++
+RUN apt-get update && apt-get install --yes git cmake g++ libcurl4-openssl-dev
 
 RUN mkdir /workspace
 WORKDIR /workspace
