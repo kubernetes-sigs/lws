@@ -123,7 +123,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
-			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey, leaderworkerset.GroupIndexLabelKey, pod.Labels[leaderworkerset.GroupIndexLabelKey])
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
@@ -133,7 +133,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey, "", "")
 			}
 		}
 	} else {
@@ -154,7 +154,7 @@ func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
 			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey, "", "")
 			}
 		}
 	}
@@ -178,7 +178,7 @@ func genGroupUniqueKey(ns string, podName string) string {
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
-func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, groupIndexKey string, groupIndex string) {
 	if exclusiveAffinityApplied(*pod, topologyKey) {
 		return
 	}
@@ -192,6 +192,9 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
 
+	// Get the LWS name from pod labels
+	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+
 	// Pod affinity ensures the pods of this set land on the same topology domain.
 	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
@@ -204,20 +207,34 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			}},
 			TopologyKey: topologyKey,
 		})
-	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
+
+	// Pod anti-affinity ensures exclusively one replica/group of this set lands on the topology, preventing multiple replicas per topology domain.
+	// and only apply mutual exclusion within the same LWS instance
+	antiAffinityNotInKey := groupIndexKey
+	antiAffinityNotInValue := groupIndex
+	if groupIndexKey == "" || groupIndex == "" {
+		antiAffinityNotInKey = podAffinityKey
+		antiAffinityNotInValue = groupUniqueKey
+	}
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
 			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      leaderworkerset.SetNameLabelKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{lwsName},
+				},
 				{
 					Key:      podAffinityKey,
 					Operator: metav1.LabelSelectorOpExists,
 				},
 				{
-					Key:      podAffinityKey,
+					Key:      antiAffinityNotInKey,
 					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{groupUniqueKey},
+					Values:   []string{antiAffinityNotInValue},
 				},
 			}},
+			Namespaces:  []string{pod.Namespace},
 			TopologyKey: topologyKey,
 		})
 }
