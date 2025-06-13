@@ -167,15 +167,6 @@ type RollingUpdateConfiguration struct {
 }
 ```
 
-In partition updates, there will be two versioned replicas. The `ReadyReplicas` and `UpdatedReplicas` filed are insufficient to represent the current status of the lws. So adding the `UpdatedReadyReplicas` field can better indicate the state of the new version replicas.
-```go
-// leaderworkerset_types.go
-type LeaderWorkerSetStatus struct {
-    // UpdatedReadyReplicas track the number of groups that have been updated and are in ready state.
-    UpdatedReadyReplicas int32 `json:"updatedReadyReplicas,omitempty"`
-}
-```
-
 ### Implementation
 #### lws controller
 In the `rollingUpdatePartition`function, an intermediate variable "partition" is calculated, which means the groups from `partition`to `replicas-1` will be updated. The function returns `min(partition, currentPartition)` that means Partition moves in one direction to make it simple. 
