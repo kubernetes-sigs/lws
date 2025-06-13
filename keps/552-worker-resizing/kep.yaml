@@ -1,0 +1,10 @@
+title: Resizable workers
+kep-number: 552
+authors:
+  - synthe102
+status: implementable
+creation-date: 2025-06-09
+reviewers:
+  - kerthcet
+approvers:
+  - kerthcet
