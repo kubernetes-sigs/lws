@@ -311,6 +311,21 @@ the headless service, defaults to shared</p>
 <tbody>
     
   
+<tr><td><code>partition</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Partition indicates the ordinal at which the lws should be partitioned for updates.
+During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
+The groups from 0 to Partition-1 will not be updated.
+This is helpful in incremental rollout strategies like canary deployments
+or interactive rollout strategies for multiple replicas like xPyD deployments.
+Once partition field and maxSurge field both set, the bursted replicas will keep remaining
+until the rolling update is completely done and the partition field is reset to 0.
+This is as expected to reduce the reconciling complexity.
+The default value is 0.</p>
+</td>
+</tr>
 <tr><td><code>maxUnavailable</code> <B>[Required]</B><br/>
 <code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code>
 </td>
