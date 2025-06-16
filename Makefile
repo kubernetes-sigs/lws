@@ -284,6 +284,9 @@ artifacts: kustomize helm yq
 	# Revert the image changes
 	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "main" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
 
+.PHONY: test-e2e-cert-manager
+test-e2e-cert-manager:
+	@echo "skip the test e2e cert manager"
 
 .PHONY: prometheus
 prometheus:
