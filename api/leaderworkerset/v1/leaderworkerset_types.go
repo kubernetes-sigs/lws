@@ -248,6 +248,16 @@ const (
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
+	// Partition indicates the ordinal at which the lws should be partitioned for updates.
+	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
+	// The groups from 0 to Partition-1 will not be updated. 
+	// This is helpful in being able to do a canary based deployment. 
+	// The default value is 0.
+	//
+	// +optional
+	// +kubebuilder:default=0
+	Partition *int32 `json:"partition,omitempty"`
+
 	// The maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
