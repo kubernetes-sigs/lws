@@ -611,7 +611,7 @@ func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingSte
 	// (for example, all replicas are not ready when rolling update is started).
 	// Note that we never drop the partition below rolliingStepPartition.
 	for idx := min(partition, stsReplicas-1); idx >= rolliingStepPartition; idx-- {
-		if !states[idx].ready {
+		if !states[idx].ready || states[idx].updated {
 			partition = idx
 		} else {
 			break

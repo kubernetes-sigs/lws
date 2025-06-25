@@ -59,6 +59,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Size(count int) *LeaderWorkerSetWrappe
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) LeaderTemplate(template *corev1.PodTemplateSpec) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.LeaderTemplate = template
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) WorkerTemplateSpec(spec corev1.PodSpec) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec = spec
 	return lwsWrapper
