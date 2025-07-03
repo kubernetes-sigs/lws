@@ -530,6 +530,18 @@ func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWo
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+func UpdateWorkerTemplateImage(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		var lws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: leaderWorkerSet.Namespace}, &lws); err != nil {
+			return err
+		}
+
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginxinc/nginx-unprivileged:1.27"
+		return k8sClient.Update(ctx, &lws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 func UpdateWorkerTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
 		var lws leaderworkerset.LeaderWorkerSet
