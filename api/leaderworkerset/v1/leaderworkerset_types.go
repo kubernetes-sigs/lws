@@ -250,8 +250,8 @@ const (
 type RollingUpdateConfiguration struct {
 	// Partition indicates the ordinal at which the lws should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
-	// The groups from 0 to Partition-1 will not be updated. 
-	// This is helpful in being able to do a canary based deployment. 
+	// The groups from 0 to Partition-1 will not be updated.
+	// This is helpful in being able to do a canary based deployment.
 	// The default value is 0.
 	//
 	// +optional

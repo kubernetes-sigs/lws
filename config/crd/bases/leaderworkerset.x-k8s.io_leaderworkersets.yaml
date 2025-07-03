@@ -16432,6 +16432,16 @@ spec:
                           that at least 70% of original number of replicas are available at all times
                           during the update.
                         x-kubernetes-int-or-string: true
+                      partition:
+                        default: 0
+                        description: |-
+                          Partition indicates the ordinal at which the lws should be partitioned for updates.
+                          During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
+                          The groups from 0 to Partition-1 will not be updated.
+                          This is helpful in being able to do a canary based deployment.
+                          The default value is 0.
+                        format: int32
+                        type: integer
                     type: object
                   type:
                     default: RollingUpdate
