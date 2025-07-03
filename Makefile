@@ -112,14 +112,22 @@ help: ## Display this help.
 
 include Makefile-deps.mk
 
+CRD_SRC_DIR := config/crd/bases
+
 ##@ Development
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) \
 		rbac:roleName=manager-role output:rbac:artifacts:config=config/rbac \
-		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
+		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=$(CRD_SRC_DIR) \
 		webhook output:webhook:artifacts:config=config/webhook \
 		paths="{./api/..., ./pkg/...}"
+
+CRD_DST_DIR := charts/lws/templates/crds
+
+.PHONY: sync-crds-helm
+sync-crds-helm: yq
+	./hack/sync-crds-helm.sh
 
 .PHONY: generate
 generate: controller-gen code-generator generate-apiref ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
@@ -148,7 +156,7 @@ vet: ## Run go vet against code.
 	$(GO_CMD) vet ./...
 
 .PHONY: test
-test: manifests fmt vet envtest gotestsum ## Run tests.
+test: manifests sync-crds-helm fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- ./api/... ./pkg/... ./cmd/... -coverprofile  $(ARTIFACTS)/cover.out
 
@@ -163,16 +171,16 @@ kind-image-build: IMAGE_BUILD_EXTRA_OPTS=--load
 kind-image-build: kind image-build
 
 .PHONY: test-integration
-test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
+test-integration: manifests sync-crds-helm fmt vet envtest ginkgo ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 .PHONY: test-e2e
-test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
+test-e2e: kustomize manifests sync-crds-helm fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-cert-manager
-test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
+test-e2e-cert-manager: kustomize manifests sync-crds-helm fmt vet envtest ginkgo kind-image-build
 	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: lint
@@ -185,7 +193,7 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 
 PATHS_TO_VERIFY := config/components api client-go site/ charts/
 .PHONY: verify
-verify: gomod-verify lint fmt-verify toc-verify manifests generate prepare-release-branch
+verify: gomod-verify lint fmt-verify toc-verify manifests sync-crds-helm generate prepare-release-branch
 	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
 	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
 
@@ -244,7 +252,7 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: helm-chart-push
-helm-chart-push: yq helm
+helm-chart-push: yq helm sync-crds-helm
 	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ./hack/push-chart.sh
 
 ##@ Build Dependencies
