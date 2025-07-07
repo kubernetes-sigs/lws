@@ -112,22 +112,18 @@ help: ## Display this help.
 
 include Makefile-deps.mk
 
-CRD_SRC_DIR := config/crd/bases
-
 ##@ Development
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) \
 		rbac:roleName=manager-role output:rbac:artifacts:config=config/rbac \
-		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=$(CRD_SRC_DIR) \
+		crd:generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
 		webhook output:webhook:artifacts:config=config/webhook \
 		paths="{./api/..., ./pkg/...}"
 
-CRD_DST_DIR := charts/lws/templates/crds
-
 .PHONY: sync-crds-helm
 sync-crds-helm: yq
-	./hack/sync-crds-helm.sh
+	CRD_SRC_DIR=config/crd/bases CRD_DST_DIR=charts/lws/templates/crds ./hack/sync-crds-helm.sh
 
 .PHONY: generate
 generate: controller-gen code-generator generate-apiref ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
@@ -171,16 +167,16 @@ kind-image-build: IMAGE_BUILD_EXTRA_OPTS=--load
 kind-image-build: kind image-build
 
 .PHONY: test-integration
-test-integration: manifests sync-crds-helm fmt vet envtest ginkgo ## Run integration tests.
+test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 .PHONY: test-e2e
-test-e2e: kustomize manifests sync-crds-helm fmt vet envtest ginkgo kind-image-build
+test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-cert-manager
-test-e2e-cert-manager: kustomize manifests sync-crds-helm fmt vet envtest ginkgo kind-image-build
+test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: lint

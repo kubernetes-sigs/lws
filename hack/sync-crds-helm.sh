@@ -39,7 +39,7 @@ echo "2. Format all CRD files"
 ${YQ} eval . -I2 -P -i "${TMP_CRD_DIR}"/*.yaml
 
 # Prepare the conversion configuration content
-conversion_file="${TMP_CRD_DIR}/conversion.yaml"
+conversion_file="${TMP_CRD_DIR}/conversion.tmp"
 cat <<EOF > "${conversion_file}"
 strategy: Webhook
 webhook:
@@ -56,11 +56,8 @@ echo "3. Inject the conversion webhook"
 ${YQ} -i 'with(.spec; . = {"conversion": load("'"${conversion_file}"'")} + .)' \
   "${TMP_CRD_DIR}/leaderworkerset.x-k8s.io_leaderworkersets.yaml"
 
-# Clean up temporary conversion file
-rm -f "${conversion_file}"
-
 echo "4. Replace old CRDs with updated ones"
-rm -rf "${CRD_DST_DIR}"/*
+rm -rf "${CRD_DST_DIR}"/*.yaml
 mv "${TMP_CRD_DIR}"/*.yaml "${CRD_DST_DIR}/"
 
 echo "✅ CRDs synced safely and conversion field injected successfully."
