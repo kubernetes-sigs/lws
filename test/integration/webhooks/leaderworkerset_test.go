@@ -150,6 +150,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						Partition:      ptr.To[int32](0),
 						MaxUnavailable: intstr.FromInt32(1),
 						MaxSurge:       intstr.FromInt32(0),
 					}})
@@ -161,6 +162,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							Partition:      ptr.To[int32](2),
 							MaxUnavailable: intstr.FromInt32(2),
 							MaxSurge:       intstr.FromInt32(1),
 						}})
@@ -171,6 +173,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							Partition:      ptr.To[int32](2),
 							MaxUnavailable: intstr.FromInt32(2),
 							MaxSurge:       intstr.FromInt32(1),
 						}})

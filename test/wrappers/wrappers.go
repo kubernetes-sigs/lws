@@ -165,6 +165,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
 		Type: leaderworkerset.RollingUpdateStrategyType,
 		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			Partition:      ptr.To[int32](0),
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt(0),
 		},

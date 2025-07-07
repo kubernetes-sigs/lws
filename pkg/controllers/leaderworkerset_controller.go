@@ -387,7 +387,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount := 0, 0
+	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -428,9 +428,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			}
 		}
 
-		if ready && updated {
-			// Bursted replicas should not be counted here.
-			if index < int(*lws.Spec.Replicas) && index >= int(lwsPartition) {
+		if index < int(*lws.Spec.Replicas) {
+			if ready {
+				readyNonBurstWorkerCount++
+			}
+			if index >= int(lwsPartition) && ready && updated {
 				partitionedUpdatedAndReadyCount++
 			}
 		}
@@ -452,7 +454,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
-	} else if readyCount == int(*lws.Spec.Replicas) {
+	} else if readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
