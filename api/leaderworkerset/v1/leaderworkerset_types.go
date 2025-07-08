@@ -235,14 +235,12 @@ type SubdomainPolicy string
 
 const (
 	// SubdomainShared will create a single headless service that all replicas
-	// will share. The host names look like:
-	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
-	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	// will share. The host names look like: my-lws.lws-ns
 	SubdomainShared SubdomainPolicy = "Shared"
 	// UniquePerReplica will create a headless service per replica
 	// The pod host names look like:
-	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
-	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	// Replica 0: my-lws-0.lws-ns, my-lws-0-1.lws-ns
+	// Replica 1: my-lws-1.lws-ns, my-lws-1-1.lws-ns
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 
