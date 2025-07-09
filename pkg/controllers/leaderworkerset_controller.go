@@ -130,7 +130,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	lwsUpdated := updatedRevision != nil
 	if lwsUpdated {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision, lws)
+		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
 		if err != nil {
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
@@ -670,7 +670,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision, lws)
+	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision)
 	if err == nil {
 		message := fmt.Sprintf("Creating revision with key %s for a newly created LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
 		if revisionKey != "" {
