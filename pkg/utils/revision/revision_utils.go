@@ -90,7 +90,7 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 	return cr, nil
 }
 
-func CreateRevision(ctx context.Context, k8sClient client.Client, revision *appsv1.ControllerRevision, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
+func CreateRevision(ctx context.Context, k8sClient client.Client, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	if err := k8sClient.Create(ctx, revision); err != nil {
 		return nil, err
 	}
