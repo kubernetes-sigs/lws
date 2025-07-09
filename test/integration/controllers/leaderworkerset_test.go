@@ -217,6 +217,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			},
 			updates: []*update{
 				{
+					// First, wait for the worker StatefulSet to be created
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+					},
+				},
+				{
+					// Delete one worker StatefulSet and verify it is recreated
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						var statefulsetToDelete appsv1.StatefulSet
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &statefulsetToDelete)).To(gomega.Succeed())
