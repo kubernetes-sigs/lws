@@ -121,6 +121,10 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 		webhook output:webhook:artifacts:config=config/webhook \
 		paths="{./api/..., ./pkg/...}"
 
+.PHONY: sync-crds-helm
+sync-crds-helm: yq
+	CRD_SRC_DIR=config/crd/bases CRD_DST_DIR=charts/lws/templates/crds ./hack/sync-crds-helm.sh
+
 .PHONY: generate
 generate: controller-gen code-generator generate-apiref ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and client-go libraries.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
@@ -148,7 +152,7 @@ vet: ## Run go vet against code.
 	$(GO_CMD) vet ./...
 
 .PHONY: test
-test: manifests fmt vet envtest gotestsum ## Run tests.
+test: manifests sync-crds-helm fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- ./api/... ./pkg/... ./cmd/... -coverprofile  $(ARTIFACTS)/cover.out
 
@@ -185,7 +189,7 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 
 PATHS_TO_VERIFY := config/components api client-go site/ charts/
 .PHONY: verify
-verify: gomod-verify lint fmt-verify toc-verify manifests generate prepare-release-branch
+verify: gomod-verify lint fmt-verify toc-verify manifests sync-crds-helm generate prepare-release-branch
 	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
 	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
 
@@ -244,7 +248,7 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: helm-chart-push
-helm-chart-push: yq helm
+helm-chart-push: yq helm sync-crds-helm
 	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ./hack/push-chart.sh
 
 ##@ Build Dependencies
