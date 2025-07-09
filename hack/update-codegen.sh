@@ -26,17 +26,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
-# TODO: remove the workaround when the issue is solved in the code-generator
-# (https://github.com/kubernetes/code-generator/issues/165).
-# Here, we create the soft link named "x-k8s.io" to the parent directory of
-# LeaderWorkerSet to ensure the layout required by the kube_codegen.sh script.
-ln -s .. sigs.k8s.io
-trap "rm sigs.k8s.io" EXIT
-
-kube::codegen::gen_helpers sigs.k8s.io/lws/api \
+kube::codegen::gen_helpers ${REPO_ROOT}/api \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
-kube::codegen::gen_client sigs.k8s.io/lws/api \
+kube::codegen::gen_client ${REPO_ROOT}/api \
     --with-watch \
     --with-applyconfig \
     --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1" \
