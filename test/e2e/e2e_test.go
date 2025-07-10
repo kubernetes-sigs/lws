@@ -240,6 +240,28 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
+	ginkgo.It("When changing size, recreates the Pods with correct count and size annotation", func() {
+		replicas := 2
+		size := 2
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(replicas).Size(size).ResizePolicy(leaderworkerset.ResizePolicyRecreate).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, int32(replicas))
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		newSize := 3
+		testing.UpdateSize(ctx, k8sClient, lws, int32(newSize))
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		lwsPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+
+		for _, p := range lwsPods.Items {
+			gomega.Expect(testing.CheckSizeAnnotation(p, newSize)).To(gomega.Succeed())
+		}
+		gomega.Expect(len(lwsPods.Items) == newSize*replicas).To(gomega.BeTrue())
+	})
+
 	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
 		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
 		workerPodSpec := wrappers.MakeWorkerPodSpecWithTPUResource()

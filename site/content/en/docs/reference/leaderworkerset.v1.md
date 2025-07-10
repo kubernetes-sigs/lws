@@ -232,6 +232,15 @@ replace with None policy for the same behavior.</p>
 in each replica.</p>
 </td>
 </tr>
+<tr><td><code>resizePolicy</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-ResizePolicyType"><code>ResizePolicyType</code></a>
+</td>
+<td>
+   <p>ResizePolicy defines how to handle worker size updates.
+None doesn't allow to update spec.leaderWorkerTemplate.size.
+Recreate updates the size and restarts existing pods.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -259,6 +268,18 @@ the headless service, defaults to shared</p>
 </tr>
 </tbody>
 </table>
+
+## `ResizePolicyType`     {#leaderworkerset-x-k8s-io-v1-ResizePolicyType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerTemplate](#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate)
+
+
+
+
 
 ## `RestartPolicyType`     {#leaderworkerset-x-k8s-io-v1-RestartPolicyType}
     

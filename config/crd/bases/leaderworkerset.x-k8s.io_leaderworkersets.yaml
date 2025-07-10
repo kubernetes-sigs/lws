@@ -8184,6 +8184,16 @@ spec:
                         - containers
                         type: object
                     type: object
+                  resizePolicy:
+                    default: None
+                    description: |-
+                      ResizePolicy defines how to handle worker size updates.
+                      None doesn't allow to update spec.leaderWorkerTemplate.size.
+                      Recreate updates the size and restarts existing pods.
+                    enum:
+                    - None
+                    - Recreate
+                    type: string
                   restartPolicy:
                     default: RecreateGroupOnPodRestart
                     description: |-
