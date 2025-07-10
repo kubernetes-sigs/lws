@@ -155,7 +155,7 @@ test: manifests fmt vet envtest gotestsum ## Run tests.
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
 kind:
-	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.26.0
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.27.0
 
 .PHONY: kind-image-build
 kind-image-build: PLATFORMS=linux/amd64
