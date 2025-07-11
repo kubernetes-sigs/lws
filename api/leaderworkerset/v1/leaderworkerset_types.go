@@ -93,6 +93,13 @@ const (
 	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
 )
 
+type ResizePolicyType string
+
+const (
+	ResizePolicyNone     ResizePolicyType = "None"
+	ResizePolicyRecreate ResizePolicyType = "Recreate"
+)
+
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 // LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).
 //
@@ -169,6 +176,14 @@ type LeaderWorkerTemplate struct {
 	// in each replica.
 	// +optional
 	SubGroupPolicy *SubGroupPolicy `json:"subGroupPolicy,omitempty"`
+
+	// ResizePolicy defines how to handle worker size updates.
+	// None doesn't allow to update spec.leaderWorkerTemplate.size.
+	// Recreate updates the size and restarts existing pods.
+	// +kubebuilder:default=None
+	// +kubebuilder:validation:Enum={None,Recreate}
+	// +optional
+	ResizePolicy ResizePolicyType `json:"resizePolicy,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller
