@@ -541,11 +541,9 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 		return strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 	}, leaderPodList.Items, int(stsReplicas))
 
-	stsSelector := client.MatchingLabels(map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	})
+	matchingFields := client.MatchingFields{lwsOwnerKey: lws.Name}
 	var stsList appsv1.StatefulSetList
-	if err := r.List(ctx, &stsList, stsSelector, client.InNamespace(lws.Namespace)); err != nil {
+	if err := r.List(ctx, &stsList, matchingFields, client.InNamespace(lws.Namespace)); err != nil {
 		return nil, err
 	}
 	sortedSts := utils.SortByIndex(func(sts appsv1.StatefulSet) (int, error) {
