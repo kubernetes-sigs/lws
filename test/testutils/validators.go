@@ -38,8 +38,9 @@ import (
 )
 
 const (
-	Timeout  = 30 * time.Second
-	Interval = time.Millisecond * 250
+	Timeout     = 30 * time.Second
+	Interval    = time.Millisecond * 250
+	lwsOwnerKey = ".metadata.controller"
 )
 
 func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
@@ -211,7 +212,8 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			return err
 		}
 		var statefulSetList appsv1.StatefulSetList
-		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+		matchingFields := client.MatchingFields{lwsOwnerKey: lws.Name}
+		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), matchingFields); err != nil {
 			return err
 		}
 		stsNumber := *leaderSts.Spec.Replicas
@@ -479,7 +481,8 @@ func ExpectWorkerStatefulSetsNotCreated(ctx context.Context, k8sClient client.Cl
 	ginkgo.By("checking no worker statefulset created")
 	gomega.Consistently(func() bool {
 		var statefulSetList appsv1.StatefulSetList
-		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+		matchingFields := client.MatchingFields{lwsOwnerKey: lws.Name}
+		if err := k8sClient.List(ctx, &statefulSetList, client.InNamespace(lws.Namespace), matchingFields); err != nil {
 			return false
 		}
 		return len(statefulSetList.Items) == 1 && statefulSetList.Items[0].Name == lws.Name

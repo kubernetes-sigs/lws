@@ -25,10 +25,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/lws/client-go/clientset/versioned/scheme"
+	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/test/wrappers"
 
 	admissionv1 "k8s.io/api/admission/v1"
@@ -77,6 +80,46 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:         scheme.Scheme,
+		LeaderElection: false,
+		Metrics:        metricsserver.Options{BindAddress: "0"}, // Disable metrics
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	err = controllers.SetupIndexes(mgr.GetFieldIndexer())
+	Expect(err).NotTo(HaveOccurred())
+
+	lwsController := controllers.NewLeaderWorkerSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("leaderworkerset"),
+	)
+	err = lwsController.SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	podController := controllers.NewPodReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("pod"),
+	)
+	err = podController.SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Start the manager
+	go func() {
+		defer GinkgoRecover()
+		err := mgr.Start(ctx)
+		Expect(err).NotTo(HaveOccurred())
+	}()
+
+	Eventually(func() error {
+		// Test if field indexer is available
+		var testList appsv1.StatefulSetList
+		matchingFields := client.MatchingFields{".metadata.controller": "nonexistent"}
+		return mgr.GetClient().List(ctx, &testList, matchingFields)
+	}, 30*time.Second, 1*time.Second).Should(Succeed())
 
 	LwsReadyForTesting(k8sClient)
 })

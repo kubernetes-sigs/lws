@@ -45,6 +45,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
@@ -131,8 +132,8 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	/*err = controller.SetupIndexes(mgr.GetFieldIndexer())
-	Expect(err).NotTo(HaveOccurred())*/
+	err = controllers.SetupIndexes(mgr.GetFieldIndexer())
+	Expect(err).NotTo(HaveOccurred())
 	err = webhooks.SetupLeaderWorkerSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
