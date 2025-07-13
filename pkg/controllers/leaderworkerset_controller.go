@@ -594,23 +594,23 @@ func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingSte
 	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
 
 	// Update up to rollingStep replicas at once.
-	var rolliingStepPartition = utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
+	var rollingStepPartition = utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
 
 	// rollingStepPartition calculation above disregards the state of replicas with idx<rollingStepPartition.
 	// To prevent violating the maxUnavailable, we have to account for these replicas and increase the partition if some are not ready.
 	var unavailable int32
-	for idx := 0; idx < int(rolliingStepPartition); idx++ {
+	for idx := 0; idx < int(rollingStepPartition); idx++ {
 		if !states[idx].ready {
 			unavailable++
 		}
 	}
-	var partition = rolliingStepPartition + unavailable
+	var partition = rollingStepPartition + unavailable
 
 	// Reduce the partition if replicas are continously not ready. It is safe since updating these replicas does not impact
 	// the availability of the LWS. This is important to prevent update from getting stuck in case maxUnavailable is already violated
 	// (for example, all replicas are not ready when rolling update is started).
 	// Note that we never drop the partition below rolliingStepPartition.
-	for idx := min(partition, stsReplicas-1); idx >= rolliingStepPartition; idx-- {
+	for idx := min(partition, stsReplicas-1); idx >= rollingStepPartition; idx-- {
 		if !states[idx].ready || states[idx].updated {
 			partition = idx
 		} else {
