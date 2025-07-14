@@ -18,10 +18,10 @@ In both examples, Ray uses the leader pod as the head node and the worker pods a
 
 {{< tabpane >}}
 {{< tab header="GPU" lang="shell" >}}
-kubectl apply -f docs/examples/vllm/GPU/lws.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/vllm/GPU/lws.yaml
 {{< /tab >}}
 {{< tab header="TPU" lang="shell" >}}
-kubectl apply -f docs/examples/vllm/TPU/lws.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/vllm/TPU/lws.yaml
 {{< /tab >}}
 {{< /tabpane >}}
 
