@@ -17,9 +17,10 @@ Since SGLang employs tensor parallelism for multi-node inference, which requires
 ### Deploy LeaderWorkerSet of SGLang
 We use LeaderWorkerSet to deploy 2 SGLang replicas, and each replica has 2 Pods, 1 GPU per Pod. Set the `--tp` to 2 to enable inference across two pods.
 The leader pod runs the HTTP server, with a ClusterIP Service exposing the port.
-Replace the `HUGGING_FACE_HUB_TOKEN` in `lws.yaml` with your own Hugging Face token. Then, deploy the [`lws.yaml`](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/sglang/lws.yaml).
+
 ```shell
-kubectl apply -f docs/examples/sglang/lws.yaml
+export HUGGING_FACE_HUB_TOKEN=<your-hf-token>
+curl https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/sglang/lws.yaml | envsubst | kubectl apply -f -
 ```
 
 Verify the status of the SGLang pods

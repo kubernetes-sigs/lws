@@ -17,12 +17,12 @@ spec:
             image: vllm/vllm-openai:latest
             env:
               - name: HUGGING_FACE_HUB_TOKEN
-                value: <your-hf-token>
+                value: $HUGGING_FACE_HUB_TOKEN
             command:
               - sh
               - -c
               - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
-                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3.1-405B-Instruct --tensor-parallel-size 8 --pipeline_parallel_size 2"
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Llama-3.1-405B-Instruct --tensor-parallel-size 8 --pipeline_parallel_size 2"
             resources:
               limits:
                 nvidia.com/gpu: "8"
@@ -65,7 +65,7 @@ spec:
                 cpu: 125
             env:
               - name: HUGGING_FACE_HUB_TOKEN
-                value: <your-hf-token>
+                value: $HUGGING_FACE_HUB_TOKEN
             volumeMounts:
               - mountPath: /dev/shm
                 name: dshm   

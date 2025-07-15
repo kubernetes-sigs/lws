@@ -25,12 +25,12 @@ spec:
             image: vllm/vllm-tpu:437f9162d0eacf5b3f179c864c9664dfc8a020ff
             env:
               - name: HUGGING_FACE_HUB_TOKEN
-                value: <your-hf-token>
+                value: $HUGGING_FACE_HUB_TOKEN
             command:
               - sh
               - -c
               - "bash /workspace/vllm/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
-                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Meta-Llama-3-70B --tensor-parallel-size=16"
+                 python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Llama-3.3-70B-Instruct --tensor-parallel-size=16"
             resources:
               limits:
                 google.com/tpu: "4"
@@ -66,7 +66,7 @@ spec:
                 google.com/tpu: "4"
             env:
               - name: HUGGING_FACE_HUB_TOKEN
-                value: <your-hf-token>
+                value: $HUGGING_FACE_HUB_TOKEN
             volumeMounts:
               - mountPath: /dev/shm
                 name: dshm

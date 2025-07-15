@@ -18,7 +18,7 @@ We provide a [Dockerfile](https://github.com/kubernetes-sigs/lws/blob/main/docs/
 The script requires access to kubectl to determine when the workers are in a ready state, so a service account with access to it is needed to run the server.
 
 ```shell
-kubectl apply -f docs/examples/tensorrt-llm/rbac.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/tensorrt-llm/rbac.yaml
 ```
 
 ## Deploy LeaderWorkerSet of TensorRT-LLM
@@ -26,7 +26,8 @@ kubectl apply -f docs/examples/tensorrt-llm/rbac.yaml
 We use LeaderWorkerSet to deploy the TensorRT-LLM server, each replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs (tensor_parallel_size=8) per pod. The leader pod runs the http server, with a ClusterIP Service exposing the port.
 
 ```shell
-kubectl apply -f docs/examples/tensorrt-llm/lws.yaml
+export HUGGING_FACE_HUB_TOKEN=<your-hf-token>
+curl https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/tensorrt-llm/lws.yaml -s | envsubst | kubectl apply -f -
 ```
 
 Verify the status of the pods:
