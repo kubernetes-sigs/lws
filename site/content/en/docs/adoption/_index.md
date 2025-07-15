@@ -46,3 +46,6 @@ distributed model serving, see documentation [here](https://docs.sglang.ai/refer
 
 - KubeCon NA 2024: [Distributed Multi-Node Model Inference Using the LeaderWorkerSet API](https://www.youtube.com/watch?v=Al51wafTrRE) by @ahg-g @liurupeng
 - KubeCon EU 2025: [Project Lighting Talk: Sailing Multi-Host Inference with LWS](https://www.youtube.com/watch?v=PJ8qgKEwDyM) by @kerthcet
+- KubeCon HK 2025: [More Than Model Sharding: LWS & Distributed Inference](https://www.youtube.com/watch?v=Yzk30z_exIs)(In Chinese) by @panpan0000 @nicole-lihui
+- KubeCon HK 2025: [New Pattern for Sailing Multi-host LLM Inference](https://youtu.be/Jou7j-X_VJA) by @kerthcet
+- KubeCon JP 2025: [Sailing Multi-host Inference for LLM on Kubernetes](https://youtu.be/PBJk2UqF_-k) by @yankay
