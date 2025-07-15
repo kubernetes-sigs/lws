@@ -42,6 +42,8 @@ aliases:
 [**sglang**](https://github.com/sgl-project/sglang): sglang, a fast serving framework for large language models and vision language models. It can be deployed with LWS on Kubernetes for
 distributed model serving, see documentation [here](https://docs.sglang.ai/references/deploy_on_k8s.html#deploy-on-kubernetes)
 
+[**sglang/ome**](https://github.com/sgl-project/ome): OME is a Kubernetes operator for enterprise-grade management and serving of Large Language Models (LLMs). It uses LeaderWorkerSet for resilient [multi-node deployment](https://docs.sglang.ai/ome/docs/installation/#6-install-leaderworkerset-optional---multinode-mode-only).
+
 ## Talks and Presentations
 
 - KubeCon NA 2024: [Distributed Multi-Node Model Inference Using the LeaderWorkerSet API](https://www.youtube.com/watch?v=Al51wafTrRE) by @ahg-g @liurupeng
