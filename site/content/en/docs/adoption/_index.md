@@ -33,14 +33,18 @@ aliases:
 
 *Feel free to submit a PR if you use LeaderWorkerSet in your project and want to be added here.*
 
+[**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
+
 [**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo): NVIDIA Dynamo is a high-throughput low-latency inference framework designed for serving generative AI and reasoning models in multi-node distributed environments especially the disaggregated prefill & decode inference. It uses LeaderWorkerSet to support multi-node deployment on Kubernetes.
 
-[**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
+[**OME**](https://github.com/sgl-project/ome): OME is a Kubernetes operator for enterprise-grade management and serving of LLMs.
+it leverages LWS for multi-node inference, see documentation [here](https://docs.sglang.ai/ome/docs/concepts/inference_service/#multi-node-mode)
+
+[**SGLang**](https://github.com/sgl-project/sglang): SGLang, a fast serving framework for large language models and vision language models. It can be deployed with LWS on Kubernetes for
+distributed model serving, see documentation [here](https://docs.sglang.ai/references/deploy_on_k8s.html#deploy-on-kubernetes)
 
 [**vLLM**](https://github.com/vllm-project/vllm): vLLM is a fast and easy-to-use library for LLM inference, it can be deployed with LWS on Kubernetes for distributed model serving, see documentation [here](https://docs.vllm.ai/en/stable/deployment/frameworks/lws.html).
 
-[**sglang**](https://github.com/sgl-project/sglang): sglang, a fast serving framework for large language models and vision language models. It can be deployed with LWS on Kubernetes for
-distributed model serving, see documentation [here](https://docs.sglang.ai/references/deploy_on_k8s.html#deploy-on-kubernetes)
 
 ## Talks and Presentations
 
