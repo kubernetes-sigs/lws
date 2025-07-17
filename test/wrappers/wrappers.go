@@ -136,6 +136,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) Partition(partition int32) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = &partition
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
@@ -165,6 +170,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
 		Type: leaderworkerset.RollingUpdateStrategyType,
 		RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			Partition:      ptr.To[int32](0),
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt(0),
 		},
