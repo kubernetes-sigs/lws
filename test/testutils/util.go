@@ -392,6 +392,17 @@ func HasLWSEnvVarsPopulated(pod corev1.Pod) bool {
 	return hasAllEnvVarPopulated(pod, []string{leaderworkerset.LwsLeaderAddress, leaderworkerset.LwsGroupSize, leaderworkerset.LwsWorkerIndex})
 }
 
+func CheckAnnotation(pod corev1.Pod, key, val string) error {
+	podVal, exists := pod.ObjectMeta.Annotations[leaderworkerset.SizeAnnotationKey]
+	if !exists {
+		return errors.New("Pod annotation not set")
+	}
+	if podVal != val {
+		return fmt.Errorf("Pod annotation value is not correct, want: %v, got: %v", val, podVal)
+	}
+	return nil
+}
+
 func CheckContainerHasCorrectEnvVar(pod corev1.Pod, expect corev1.EnvVar) error {
 	for _, container := range pod.Spec.Containers {
 		for _, env := range container.Env {
@@ -497,6 +508,18 @@ func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leade
 		}
 
 		leaderworkerset.Spec.Replicas = ptr.To[int32](count)
+		return k8sClient.Update(ctx, &leaderworkerset)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func UpdateSize(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, size int32) {
+	gomega.Eventually(func() error {
+		var leaderworkerset leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+			return err
+		}
+
+		leaderworkerset.Spec.LeaderWorkerTemplate.Size = ptr.To(size)
 		return k8sClient.Update(ctx, &leaderworkerset)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

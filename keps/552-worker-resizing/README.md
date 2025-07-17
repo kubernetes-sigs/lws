@@ -303,6 +303,7 @@ Major milestones might include:
 -->
 
 2025-06-09: KEP initialized and submitted for review
+2025-07-10: KEP implementation submitted for review
 
 ## Drawbacks
 

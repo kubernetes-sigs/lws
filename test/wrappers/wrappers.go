@@ -55,7 +55,7 @@ func (lwsWrapper *LeaderWorkerSetWrapper) MaxSurge(value int) *LeaderWorkerSetWr
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) Size(count int) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](int32(count))
+	lwsWrapper.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(count))
 	return lwsWrapper
 }
 
@@ -85,6 +85,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacement() *LeaderWorkerSetW
 
 func (lwsWrapper *LeaderWorkerSetWrapper) RestartPolicy(policy leaderworkerset.RestartPolicyType) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.RestartPolicy = policy
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) ResizePolicy(policy leaderworkerset.ResizePolicyType) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.ResizePolicy = policy
 	return lwsWrapper
 }
 
@@ -174,6 +179,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
+	lws.Spec.LeaderWorkerTemplate.ResizePolicy = leaderworkerset.ResizePolicyNone
 
 	return &LeaderWorkerSetWrapper{
 		lws,
