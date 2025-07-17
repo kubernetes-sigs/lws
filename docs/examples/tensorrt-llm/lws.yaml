@@ -25,7 +25,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/group-key']
             - name: HUGGING_FACE_HUB_TOKEN
-              value: <your-hf-token>
+              value: $HUGGING_FACE_HUB_TOKEN
             resources:
               limits:
                 nvidia.com/gpu: "8"
@@ -56,7 +56,7 @@ spec:
                 name: dshm
             env:
             - name: HUGGING_FACE_HUB_TOKEN
-              value: <your-hf-token>
+              value: $HUGGING_FACE_HUB_TOKEN
         volumes:
         - name: dshm
           emptyDir:
