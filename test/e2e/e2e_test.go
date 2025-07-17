@@ -153,7 +153,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 
 		// Happen during rolling update.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 8)
 
 		// Rolling update completes.
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
@@ -216,7 +216,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 
 		// Happen during rolling update.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 8)
 
 		// Rolling update completes.
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
@@ -275,8 +275,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
 
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
-		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 8)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 8)
 		// Rolling update completes.
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
