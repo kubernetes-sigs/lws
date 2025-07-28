@@ -89,7 +89,7 @@ func (lwsWrapper *LeaderWorkerSetWrapper) RestartPolicy(policy leaderworkerset.R
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) ResizePolicy(policy leaderworkerset.ResizePolicyType) *LeaderWorkerSetWrapper {
-	lwsWrapper.Spec.LeaderWorkerTemplate.ResizePolicy = policy
+	lwsWrapper.Spec.LeaderWorkerTemplate.ResizePolicy = &policy
 	return lwsWrapper
 }
 
@@ -179,7 +179,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,
 	}
-	lws.Spec.LeaderWorkerTemplate.ResizePolicy = leaderworkerset.ResizePolicyNone
+	lws.Spec.LeaderWorkerTemplate.ResizePolicy = ptr.To(leaderworkerset.ResizePolicyNone)
 
 	return &LeaderWorkerSetWrapper{
 		lws,

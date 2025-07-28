@@ -183,7 +183,7 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:default=None
 	// +kubebuilder:validation:Enum={None,Recreate}
 	// +optional
-	ResizePolicy ResizePolicyType `json:"resizePolicy,omitempty"`
+	ResizePolicy *ResizePolicyType `json:"resizePolicy,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

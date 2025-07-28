@@ -103,7 +103,7 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 
 	oldLws := oldObj.(*v1.LeaderWorkerSet)
 	newLws := newObj.(*v1.LeaderWorkerSet)
-	if newLws.Spec.LeaderWorkerTemplate.ResizePolicy == v1.ResizePolicyNone {
+	if newLws.Spec.LeaderWorkerTemplate.ResizePolicy == nil || *newLws.Spec.LeaderWorkerTemplate.ResizePolicy == v1.ResizePolicyNone {
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.Size, *oldLws.Spec.LeaderWorkerTemplate.Size, field.NewPath("spec", "leaderWorkerTemplate", "size"))...)
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
