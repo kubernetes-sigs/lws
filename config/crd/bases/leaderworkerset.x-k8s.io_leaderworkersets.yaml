@@ -8200,6 +8200,16 @@ spec:
                         - containers
                         type: object
                     type: object
+                  resizePolicy:
+                    default: None
+                    description: |-
+                      ResizePolicy defines how to handle group size updates:
+                      - None: indicates the `spec.leaderWorkerTemplate.size` is immutable.
+                      - Recreate: indicates recreating the group Pods to reshape the size.
+                    enum:
+                    - None
+                    - Recreate
+                    type: string
                   restartPolicy:
                     default: RecreateGroupOnPodRestart
                     description: |-
