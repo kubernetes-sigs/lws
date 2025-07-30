@@ -684,3 +684,15 @@ func GetNonEmptyLines(output string) []string {
 
 	return res
 }
+
+func SetLwsPartition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, partition int32) {
+	gomega.Eventually(func() error {
+		var newLws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
+			return err
+		}
+
+		newLws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = &partition
+		return k8sClient.Update(ctx, &newLws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}

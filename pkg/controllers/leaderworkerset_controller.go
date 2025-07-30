@@ -251,10 +251,15 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 //   - Otherwise, Replicas is equal to spec.Replicas
 //   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revisionKey string, leaderWorkerSetUpdated bool) (int32, int32, error) {
+func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revisionKey string, leaderWorkerSetUpdated bool) (stsPartition int32, replicas int32, err error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 	lwsReplicas := *lws.Spec.Replicas
+
+	defer func() {
+		// Limit the replicas with less than lwsPartition will not be updated.
+		stsPartition = max(stsPartition, *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition)
+	}()
 
 	// Case 1:
 	// If sts not created yet, all partitions should be updated,
@@ -384,8 +389,10 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, updatedNonBurstWorkerCount, currentNonBurstWorkerCount, updatedAndReadyCount := 0, 0, 0, 0, 0
+	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
+	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
+	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 
 	// Iterate through all leaderPods.
 	for _, pod := range leaderPodList.Items {
@@ -405,8 +412,8 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			}
 		}
 
-		if index < int(*lws.Spec.Replicas) {
-			currentNonBurstWorkerCount++
+		if index < int(*lws.Spec.Replicas) && index >= int(lwsPartition) {
+			partitionedCurrentNonBurstCount++
 		}
 
 		var ready, updated bool
@@ -417,16 +424,18 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if (noWorkerSts || revisionutils.GetRevisionKey(&sts) == revisionKey) && revisionutils.GetRevisionKey(&pod) == revisionKey {
 			updated = true
 			updatedCount++
-			if index < int(*lws.Spec.Replicas) {
+			if index < int(*lws.Spec.Replicas) && index >= int(lwsPartition) {
 				// Bursted replicas do not count when determining if rollingUpdate has been completed.
-				updatedNonBurstWorkerCount++
+				partitionedUpdatedNonBurstCount++
 			}
 		}
 
-		if ready && updated {
-			// Bursted replicas should not be counted here.
-			if index < int(*lws.Spec.Replicas) {
-				updatedAndReadyCount++
+		if index < int(*lws.Spec.Replicas) {
+			if ready {
+				readyNonBurstWorkerCount++
+			}
+			if index >= int(lwsPartition) && ready && updated {
+				partitionedUpdatedAndReadyCount++
 			}
 		}
 	}
@@ -442,18 +451,19 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
-	updateDone := false
-	if updatedNonBurstWorkerCount < currentNonBurstWorkerCount {
+	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
-	} else if updatedAndReadyCount == int(*lws.Spec.Replicas) {
+	} else if readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
-		updateDone = true
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
 	}
+
+	// updateDone is true when all replicas are updated and ready
+	updateDone := (lwsPartition == 0) && partitionedUpdatedAndReadyCount == int(*lws.Spec.Replicas)
 
 	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
