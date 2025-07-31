@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -69,6 +70,7 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt32(0),
+			Partition:      ptr.To[int32](0),
 		}
 	}
 
