@@ -26,8 +26,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	testutils "sigs.k8s.io/lws/test/testutils"
@@ -855,4 +857,55 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 			podCreationShouldFail: false,
 		}),
 	)
+
+	ginkgo.Context("with gang scheduling webhook configuration", ginkgo.Ordered, func() {
+		ginkgo.Context("with volcano scheduler provider", ginkgo.Ordered, func() {
+			ginkgo.BeforeAll(func() {
+				sp, err := schedulerprovider.NewSchedulerProvider("volcano", k8sClient)
+				gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+				gomega.Expect(sp).ShouldNot(gomega.BeNil())
+				pw.SchedulerProvider = sp
+			})
+
+			ginkgo.AfterAll(func() {
+				pw.SchedulerProvider = nil
+			})
+
+			type gangSchedulingTestcase struct {
+				makePod  func(ns *corev1.Namespace) *corev1.Pod
+				checkPod func(ctx context.Context, pod *corev1.Pod)
+			}
+
+			ginkgo.DescribeTable("gang scheduling webhook tests", func(tc gangSchedulingTestcase) {
+				pod := tc.makePod(ns)
+				gomega.Expect(k8sClient.Create(ctx, pod)).Should(gomega.Succeed())
+				var fetchedPod corev1.Pod
+				gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &fetchedPod)).Should(gomega.Succeed())
+				tc.checkPod(ctx, &fetchedPod)
+			},
+				ginkgo.Entry("should add pod group annotation when creating a lws pod", gangSchedulingTestcase{
+					makePod: func(ns *corev1.Namespace) *corev1.Pod {
+						return &corev1.Pod{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      "test-pod-0",
+								Namespace: ns.Name,
+								Labels: map[string]string{
+									leaderworkerset.SetNameLabelKey:    "test",
+									leaderworkerset.GroupIndexLabelKey: "0",
+									leaderworkerset.RevisionKey:        "1",
+								},
+								Annotations: map[string]string{
+									leaderworkerset.SizeAnnotationKey: "2",
+								},
+							},
+							Spec: wrappers.MakeLeaderPodSpec(),
+						}
+					},
+					checkPod: func(ctx context.Context, pod *corev1.Pod) {
+						gomega.Expect(pod.Annotations).To(gomega.HaveKeyWithValue(volcanov1beta1.KubeGroupNameAnnotationKey, "test-0-1"))
+					},
+				}),
+			)
+		})
+	})
 })
