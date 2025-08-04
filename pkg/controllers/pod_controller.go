@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -50,12 +51,13 @@ import (
 // PodReconciler reconciles a LeaderWorkerSet object
 type PodReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Record record.EventRecorder
+	Scheme            *runtime.Scheme
+	Record            record.EventRecorder
+	SchedulerProvider schedulerprovider.SchedulerProvider
 }
 
-func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema, Record: record}
+func NewPodReconciler(client client.Client, schema *runtime.Scheme, record record.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
+	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -122,6 +124,13 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if pod.DeletionTimestamp != nil {
 		log.V(2).Info("skip creating the worker sts since the leader pod is being deleted")
 		return ctrl.Result{}, nil
+	}
+
+	if r.SchedulerProvider != nil {
+		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Once size = 1, no need to create worker statefulSets.

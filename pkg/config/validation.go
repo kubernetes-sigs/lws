@@ -24,15 +24,33 @@ import (
 	"k8s.io/utils/ptr"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 )
 
 var (
 	internalCertManagementPath = field.NewPath("internalCertManagement")
+	schedulerProviderPath      = field.NewPath("schedulerProvider")
 )
 
 func validate(c *configapi.Configuration) field.ErrorList {
 	var allErrs field.ErrorList
+	allErrs = append(allErrs, validateSchedulerProvider(c)...)
 	allErrs = append(allErrs, validateInternalCertManagement(c)...)
+	return allErrs
+}
+
+func validateSchedulerProvider(c *configapi.Configuration) field.ErrorList {
+	var allErrs field.ErrorList
+	if c.GangSchedulingManagement != nil {
+		if c.GangSchedulingManagement.SchedulerProvider == nil || *c.GangSchedulingManagement.SchedulerProvider == "" {
+			allErrs = append(allErrs, field.Required(schedulerProviderPath, "must be set when gang scheduling is enabled"))
+			return allErrs
+		}
+		// Validate that the scheduler provider is in the supported list
+		if !schedulerprovider.SupportedSchedulerProviders.Has(*c.GangSchedulingManagement.SchedulerProvider) {
+			allErrs = append(allErrs, field.NotSupported(schedulerProviderPath, c.GangSchedulingManagement.SchedulerProvider, schedulerprovider.SupportedSchedulerProviders.UnsortedList()))
+		}
+	}
 	return allErrs
 }
 

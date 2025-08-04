@@ -65,24 +65,25 @@ for more information on installing LWS with metrics using our Helm chart.
 
 The following table lists the configurable parameters of the LWS chart and their default values.
 
-| Parameter                                   | Description                                    | Default                              |
-|---------------------------------------------|------------------------------------------------|--------------------------------------|
-| `nameOverride`                              | nameOverride                                   | ``                                   |
-| `fullnameOverride`                          | fullnameOverride                               | ``                                   |
-| `enablePrometheus`                          | enable Prometheus                              | `false`                              |
-| `enableCertManager`                         | enable CertManager                             | `false`                              |
-| `imagePullSecrets`                          | Image pull secrets                             | `[]`                                 |
-| `image.manager.repository`                  | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws`         |
-| `image.manager.tag`                         | Tag for manager image                          | `main`                               |
-| `image.manager.pullPolicy`                  | Pull policy for manager image                  | `IfNotPresent`                       |
-| `podAnnotations`                            | Annotations for pods                           | `{}`                                 |
-| `podSecurityContext.runAsNonRoot`           | Run pod as non-root user                       | `true`                               |
-| `securityContext.allowPrivilegeEscalation`  | Allow privilege escalation in security context | `false`                              |
-| `securityContext.capabilities.drop`         | Drop all capabilities in security context      | `["ALL"]`                            |
-| `service.type`                              | Type of lws controller service                 | `ClusterIP`                          |
-| `service.port`                              | Lws controller service port                    | `9443`                               |
-| `resources.requests.cpu`                    | CPU request for resources                      | `1`                                  |
-| `resources.requests.memory`                 | Memory request for resources                   | `1Gi`                                |
-| `nodeSelector`                              | Node selector                                  | `{}`                                 |
-| `tolerations`                               | Tolerations                                    | `{}`                                 |
-| `affinity`                                  | Affinity                                       | `{}`                                 |
+| Parameter                                  | Description                                    | Default                                             |
+|--------------------------------------------|------------------------------------------------|-----------------------------------------------------|
+| `nameOverride`                             | nameOverride                                   | ``                                                  |
+| `fullnameOverride`                         | fullnameOverride                               | ``                                                  |
+| `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
+| `enableCertManager`                        | enable CertManager                             | `false`                                             |
+| `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
+| `image.manager.repository`                 | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws` |
+| `image.manager.tag`                        | Tag for manager image                          | `main`                                              |
+| `image.manager.pullPolicy`                 | Pull policy for manager image                  | `IfNotPresent`                                      |
+| `podAnnotations`                           | Annotations for pods                           | `{}`                                                |
+| `podSecurityContext.runAsNonRoot`          | Run pod as non-root user                       | `true`                                              |
+| `securityContext.allowPrivilegeEscalation` | Allow privilege escalation in security context | `false`                                             |
+| `securityContext.capabilities.drop`        | Drop all capabilities in security context      | `["ALL"]`                                           |
+| `service.type`                             | Type of lws controller service                 | `ClusterIP`                                         |
+| `service.port`                             | Lws controller service port                    | `9443`                                              |
+| `resources.requests.cpu`                   | CPU request for resources                      | `1`                                                 |
+| `resources.requests.memory`                | Memory request for resources                   | `1Gi`                                               |
+| `nodeSelector`                             | Node selector                                  | `{}`                                                |
+| `tolerations`                              | Tolerations                                    | `{}`                                                |
+| `affinity`                                 | Affinity                                       | `{}`                                                |
+| `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |

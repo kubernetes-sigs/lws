@@ -34,6 +34,9 @@ type Configuration struct {
 	// InternalCertManagerment is configuration for internalCertManagerment
 	InternalCertManagement *InternalCertManagement `json:"internalCertManagement,omitempty"`
 
+	// GangSchedulingManagement is configuration for gang scheduling management.
+	GangSchedulingManagement *GangSchedulingManagement `json:"gangSchedulingManagement,omitempty"`
+
 	// ClientConnection is configuration of the client while connecting to API Server
 	ClientConnection *ClientConnection `json:"clientConnection,omitempty"`
 }
@@ -127,4 +130,10 @@ type ClientConnection struct {
 
 	// Burst allows extra queries to accumulate when a client is exceeding its rate.
 	Burst *int32 `json:"burst,omitempty"`
+}
+
+// GangSchedulingManagement defines the gang scheduling management configuration.
+type GangSchedulingManagement struct {
+	// SchedulerProvider is the name of the scheduler that provides gang-scheduling capabilities.
+	SchedulerProvider *string `json:"schedulerProvider,omitempty"`
 }
