@@ -18,6 +18,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+SCHEDULER_PROVIDER=${SCHEDULER_PROVIDER:-""}
 export CWD=$(pwd)
 function cleanup {
     if [ $USE_EXISTING_CLUSTER == 'false' ]
@@ -27,6 +28,12 @@ function cleanup {
         fi
         $KUBECTL logs -n lws-system deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
         $KUBECTL describe pods -n lws-system > "$ARTIFACTS"/lws-system-pods.log || true
+        
+        if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
+            $KUBECTL logs -n volcano-system deployment/volcano-scheduler > "$ARTIFACTS"/volcano-scheduler.log || true
+            $KUBECTL logs -n volcano-system deployment/volcano-controllers > "$ARTIFACTS"/volcano-controller-manager.log || true
+            $KUBECTL describe pods -n volcano-system > "$ARTIFACTS"/volcano-system-pods.log || true
+        fi
         $KIND export logs "$ARTIFACTS" || true
         $KIND delete cluster --name $KIND_CLUSTER_NAME
     fi
@@ -49,20 +56,58 @@ function deploy_cert_manager() {
       $KUBECTL -n cert-manager wait --for condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=5m
     fi
 }
+function deploy_gang_scheduler() {
+    if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
+        echo "Deploying Volcano ${VOLCANO_VERSION}..."
+        $KUBECTL apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${VOLCANO_VERSION}/installer/volcano-development.yaml
+        $KUBECTL -n volcano-system wait --for condition=ready pod -l app=volcano-scheduler --timeout=5m
+        $KUBECTL -n volcano-system wait --for condition=ready pod -l app=volcano-controller --timeout=5m
+        $KUBECTL -n volcano-system wait --for condition=ready pod -l app=volcano-admission --timeout=5m
+        echo "Volcano deployed successfully"
+    fi
+}
 function kind_load {
     $KIND load docker-image $IMAGE_TAG --name $KIND_CLUSTER_NAME
 }
 function lws_deploy {
-    if [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
-      pushd "$CWD/config/manager"
-        $KUSTOMIZE edit set image controller=$IMAGE_TAG
-        echo "apiVersion: config.lws.x-k8s.io/v1alpha1
+    pushd "$CWD/config/manager"
+    $KUSTOMIZE edit set image controller=$IMAGE_TAG
+    # Base configuration
+    config_content="apiVersion: config.lws.x-k8s.io/v1alpha1
 kind: Configuration
-internalCertManagement:
-  enable: false
 leaderElection:
-  leaderElect: true" > controller_manager_config.yaml
-      popd
+  leaderElect: true"
+    # Add cert manager configuration if enabled
+    if [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
+        config_content="$config_content
+internalCertManagement:
+  enable: false"
+    fi
+    # Add gang scheduling configuration if scheduler provider is specified
+    if [ -n "$SCHEDULER_PROVIDER" ]; then
+        config_content="$config_content
+gangSchedulingManagement:
+  schedulerProvider: $SCHEDULER_PROVIDER"
+    fi
+    echo "$config_content" > controller_manager_config.yaml
+    popd
+    # Add Volcano clusterrole permissions
+    if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
+        if ! grep -q "scheduling.volcano.sh" "$CWD/config/rbac/role.yaml"; then
+            cat >> "$CWD/config/rbac/role.yaml" << 'EOF'
+- apiGroups:
+  - scheduling.volcano.sh
+  resources:
+  - podgroups
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+EOF
+        fi
+    fi
+    if [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
       pushd "$CWD/config/crd"
         $KUSTOMIZE edit add patch --path "patches/cainjection_in_leaderworkersets.yaml"
       popd
@@ -74,13 +119,24 @@ leaderElection:
         $KUSTOMIZE build $CWD/test/e2e/config/certmanager | $KUBECTL apply --server-side -f -
       popd
     else
-      cd $CWD/config/manager && $KUSTOMIZE edit set image controller=$IMAGE_TAG
       $KUSTOMIZE build $CWD/test/e2e/config | $KUBECTL apply --server-side -f -
     fi
 }
+
+function run_tests() {
+    if [ -n "$SCHEDULER_PROVIDER" ]; then
+        # Run gang scheduling tests
+        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --focus="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
+    else
+        # Run normal tests, skip gang scheduling tests
+        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
+    fi
+}
+
 trap cleanup EXIT
 startup
 kind_load
 deploy_cert_manager
+deploy_gang_scheduler
 lws_deploy
-$GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v $CWD/test/e2e/...
+run_tests

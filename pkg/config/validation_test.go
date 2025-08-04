@@ -77,6 +77,37 @@ func TestValidate(t *testing.T) {
 				},
 			},
 		},
+		"schedulerProvider is empty": {
+			cfg: &configapi.Configuration{
+				GangSchedulingManagement: &configapi.GangSchedulingManagement{},
+			},
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeRequired,
+					Field: "schedulerProvider",
+				},
+			},
+		},
+		"unsupported schedulerProvider": {
+			cfg: &configapi.Configuration{
+				GangSchedulingManagement: &configapi.GangSchedulingManagement{
+					SchedulerProvider: ptr.To("unsupported-scheduler"),
+				},
+			},
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeNotSupported,
+					Field: "schedulerProvider",
+				},
+			},
+		},
+		"supported schedulerProvider": {
+			cfg: &configapi.Configuration{
+				GangSchedulingManagement: &configapi.GangSchedulingManagement{
+					SchedulerProvider: ptr.To("volcano"),
+				},
+			},
+		},
 	}
 
 	for name, tc := range testCases {

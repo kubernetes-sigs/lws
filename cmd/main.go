@@ -34,11 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
 	"sigs.k8s.io/lws/pkg/version"
@@ -57,6 +60,7 @@ func init() {
 
 	utilruntime.Must(leaderworkersetv1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
+	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -160,7 +164,7 @@ func main() {
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
-	go setupControllers(mgr, certsReady)
+	go setupControllers(mgr, certsReady, cfg)
 
 	setupHealthzAndReadyzCheck(mgr)
 	setupLog.Info("starting manager")
@@ -171,7 +175,7 @@ func main() {
 	}
 
 }
-func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
+func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.Configuration) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
 	setupLog.Info("waiting for the cert generation to complete")
@@ -186,18 +190,31 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)
 	}
+	// Set up scheduler provider
+	var sp schedulerprovider.SchedulerProvider
+	if cfg.GangSchedulingManagement != nil {
+		var err error
+		sp, err = schedulerprovider.NewSchedulerProvider(schedulerprovider.ProviderType(*cfg.GangSchedulingManagement.SchedulerProvider), mgr.GetClient())
+		if err != nil {
+			setupLog.Error(err, "unable to create scheduler provider", "provider", *cfg.GangSchedulingManagement.SchedulerProvider)
+			os.Exit(1)
+		}
+		setupLog.Info("Gang scheduling enabled", "provider", *cfg.GangSchedulingManagement.SchedulerProvider)
+	}
 	// Set up pod reconciler.
-	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("leaderworkerset"))
+	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("leaderworkerset"), sp)
 	if err := podController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pod")
 		os.Exit(1)
 	}
+	// Set up webhooks
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr); err != nil {
 			setupLog.Error(err, "unable to create leaderworkerset webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}
-		if err := webhooks.SetupPodWebhook(mgr); err != nil {
+		pw := webhooks.NewPodWebhook(sp)
+		if err := pw.Setup(mgr); err != nil {
 			setupLog.Error(err, "unable to create pod webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}

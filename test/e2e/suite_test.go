@@ -17,6 +17,7 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -37,6 +38,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 const (
@@ -48,6 +51,7 @@ var cfg *rest.Config
 var k8sClient client.Client
 var ctx context.Context
 var cancel context.CancelFunc
+var schedulerProvider schedulerprovider.ProviderType
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -57,6 +61,9 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 	ctx, cancel = context.WithCancel(context.Background())
+
+	// Check which scheduler provider is being used
+	schedulerProvider = schedulerprovider.ProviderType(os.Getenv("SCHEDULER_PROVIDER"))
 
 	// cfg is defined in this file globally.
 	cfg = config.GetConfigOrDie()
@@ -73,6 +80,12 @@ var _ = BeforeSuite(func() {
 
 	err = corev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+
+	// Add scheduler-specific schemes
+	if schedulerProvider == schedulerprovider.Volcano {
+		err = volcanov1beta1.AddToScheme(scheme.Scheme)
+		Expect(err).NotTo(HaveOccurred())
+	}
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())

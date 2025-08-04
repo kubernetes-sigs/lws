@@ -48,3 +48,9 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# gangSchedulingManagement is configuration for gang scheduling management.
+# For example:
+# gangSchedulingManagement:
+#   schedulerProvider: volcano
+gangSchedulingManagement: {}

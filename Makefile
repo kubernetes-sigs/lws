@@ -175,6 +175,16 @@ test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
+# Gang scheduling E2E tests with different schedulers
+VOLCANO_VERSION ?= v1.12.1
+
+.PHONY: test-e2e-gang-scheduling
+test-e2e-gang-scheduling: test-e2e-gang-scheduling-volcano ## Run all gang scheduling E2E tests
+
+.PHONY: test-e2e-gang-scheduling-volcano
+test-e2e-gang-scheduling-volcano: kustomize manifests fmt vet envtest ginkgo kind-image-build ## Run gang scheduling E2E tests with Volcano
+	SCHEDULER_PROVIDER=volcano VOLCANO_VERSION=$(VOLCANO_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run --timeout 15m0s

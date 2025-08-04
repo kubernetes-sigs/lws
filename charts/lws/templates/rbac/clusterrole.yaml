@@ -128,6 +128,17 @@ rules:
       - get
       - patch
       - update
+  {{- if and .Values.gangSchedulingManagement (hasKey .Values.gangSchedulingManagement "schedulerProvider") (eq .Values.gangSchedulingManagement.schedulerProvider "volcano") }}
+  - apiGroups:
+      - scheduling.volcano.sh
+    resources:
+      - podgroups
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
