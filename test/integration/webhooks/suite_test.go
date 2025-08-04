@@ -56,6 +56,7 @@ var k8sClient client.Client
 var testEnv *envtest.Environment
 var ctx context.Context
 var cancel context.CancelFunc
+var pw *webhooks.PodWebhook
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -136,7 +137,8 @@ var _ = BeforeSuite(func() {
 	err = webhooks.SetupLeaderWorkerSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = webhooks.SetupPodWebhook(mgr)
+	pw = webhooks.NewPodWebhook(nil)
+	err = pw.Setup(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	//+kubebuilder:scaffold:webhook
 

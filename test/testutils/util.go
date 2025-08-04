@@ -28,7 +28,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -36,6 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
@@ -141,6 +146,15 @@ func CreateLeaderPods(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClie
 	return createLeaderPods(ctx, k8sClient, leaderSts, lws, revisionutils.GetRevisionKey(cr), start, end)
 }
 
+func CreateLeaderPodsWithInjectFn(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start int, end int, injectFn func(*corev1.Pod)) error {
+	cr, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+	if err != nil {
+		return err
+	}
+
+	return createLeaderPodsWithInjectFn(ctx, k8sClient, leaderSts, lws, revisionutils.GetRevisionKey(cr), start, end, injectFn)
+}
+
 func CreateLeaderPodsFromRevisionNumber(ctx context.Context, leaderSts appsv1.StatefulSet, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end, revisionNumber int) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
@@ -159,39 +173,67 @@ func CreateLeaderPodsFromRevisionNumber(ctx context.Context, leaderSts appsv1.St
 	gomega.Expect(createLeaderPods(ctx, k8sClient, leaderSts, targetLws, revisionutils.GetRevisionKey(targetRevision), start, end)).To(gomega.Succeed())
 }
 
-func createLeaderPods(ctx context.Context, k8sClient client.Client, leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, start, end int) error {
+func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, groupIndex int) (*corev1.Pod, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	}
-	for i := start; i < end; i++ {
-		pod := corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      lws.Name + "-" + strconv.Itoa(i),
-				Namespace: lws.Namespace,
-				Labels: map[string]string{
-					leaderworkerset.SetNameLabelKey:         lws.Name,
-					leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
-					leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(i),
-					leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
-					leaderworkerset.RevisionKey:             revisionKey,
-				},
-				Annotations: map[string]string{
-					leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
-				},
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name + "-" + strconv.Itoa(groupIndex),
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:         lws.Name,
+				leaderworkerset.WorkerIndexLabelKey:     strconv.Itoa(0),
+				leaderworkerset.GroupIndexLabelKey:      strconv.Itoa(groupIndex),
+				leaderworkerset.GroupUniqueHashLabelKey: "randomValue",
+				leaderworkerset.RevisionKey:             revisionKey,
 			},
-			Spec: podTemplateSpec.Spec,
-		}
-		if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-			pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-		}
-		// Set the controller owner reference for garbage collection and reconciliation.
-		if err := ctrl.SetControllerReference(&leaderSts, &pod, scheme.Scheme); err != nil {
+			Annotations: map[string]string{
+				leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
+			},
+		},
+		Spec: podTemplateSpec.Spec,
+	}
+	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
+		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	// Set the controller owner reference for garbage collection and reconciliation.
+	if err := ctrl.SetControllerReference(&leaderSts, pod, scheme.Scheme); err != nil {
+		return nil, err
+	}
+
+	return pod, nil
+}
+
+// createLeaderPodsWithInjectFn creates leader pods with injected metadata using the provided inject function.
+func createLeaderPodsWithInjectFn(ctx context.Context, k8sClient client.Client, leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, start, end int, injectFn func(*corev1.Pod)) error {
+	for i := start; i < end; i++ {
+		pod, err := makeLeaderPod(leaderSts, lws, revisionKey, i)
+		if err != nil {
 			return err
 		}
-		if err := k8sClient.Create(ctx, &pod); err != nil {
+		if injectFn != nil {
+			injectFn(pod)
+		}
+		if err = k8sClient.Create(ctx, pod); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createLeaderPods(ctx context.Context, k8sClient client.Client, leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, start, end int) error {
+	for i := start; i < end; i++ {
+		pod, err := makeLeaderPod(leaderSts, lws, revisionKey, i)
+		if err != nil {
+			return err
+		}
+		if err = k8sClient.Create(ctx, pod); err != nil {
 			return err
 		}
 	}
@@ -263,8 +305,8 @@ func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, 
 	}, Timeout, Interval).Should(gomega.Equal(int(*lws.Spec.Replicas) + 1))
 }
 
-// SetPodGroupsToReady set all podGroups of the leaderWorkerSet to ready state.
-func SetPodGroupsToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podGroupNumber int32) {
+// SetSuperPodToReady set all podGroups of the leaderWorkerSet to ready state.
+func SetSuperPodToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podGroupNumber int32) {
 	stsSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	})
@@ -695,4 +737,195 @@ func SetLwsPartition(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		newLws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = &partition
 		return k8sClient.Update(ctx, &newLws)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// getPodGroupGVK returns the GroupVersionKind for PodGroup based on the scheduler provider type
+func getPodGroupGVK(provider schedulerprovider.ProviderType) schema.GroupVersionKind {
+	switch provider {
+	case schedulerprovider.Volcano:
+		return schema.GroupVersionKind{
+			Group:   "scheduling.volcano.sh",
+			Version: "v1beta1",
+			Kind:    "PodGroup",
+		}
+	default:
+		// Return empty GVK for unsupported provider types
+		return schema.GroupVersionKind{}
+	}
+}
+
+// validateOwnerReference validates the owner reference in a PodGroup using unstructured access
+func validateOwnerReference(podGroup *unstructured.Unstructured, leaderPod *corev1.Pod) {
+	ownerRefs, found, err := unstructured.NestedSlice(podGroup.Object, "metadata", "ownerReferences")
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(found).To(gomega.BeTrue())
+	gomega.Expect(ownerRefs).To(gomega.HaveLen(1))
+
+	ownerRefMap := ownerRefs[0].(map[string]interface{})
+	gomega.Expect(ownerRefMap["apiVersion"]).To(gomega.Equal("v1"))
+	gomega.Expect(ownerRefMap["kind"]).To(gomega.Equal("Pod"))
+	gomega.Expect(ownerRefMap["name"]).To(gomega.Equal(leaderPod.Name))
+	gomega.Expect(ownerRefMap["uid"]).To(gomega.Equal(string(leaderPod.UID)))
+
+	controller, found, err := unstructured.NestedBool(ownerRefMap, "controller")
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(found).To(gomega.BeTrue())
+	gomega.Expect(controller).To(gomega.BeTrue())
+}
+
+// validatePodGroupSpec validates the PodGroup spec using unstructured access
+func validatePodGroupSpec(podGroup *unstructured.Unstructured, lws *leaderworkerset.LeaderWorkerSet) {
+	minMember, found, err := unstructured.NestedInt64(podGroup.Object, "spec", "minMember")
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(found).To(gomega.BeTrue())
+
+	// For LeaderReady startup policy, minMember should be 1 (leader only)
+	// For LeaderCreated startup policy, minMember should be size (leader + workers)
+	expectedMinMember := int64(*lws.Spec.LeaderWorkerTemplate.Size)
+	if lws.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy {
+		expectedMinMember = 1
+	}
+
+	gomega.Expect(minMember).To(gomega.Equal(expectedMinMember))
+
+	// Validate minResources - should be the same for both LeaderCreated and LeaderReady
+	// as it represents total resources needed for the entire PodGroup [1 Leader + (size-1) Worker pods]
+	expectedMinResources := utils.CalculatePGMinResources(lws)
+
+	minResourcesMap, found, err := unstructured.NestedMap(podGroup.Object, "spec", "minResources")
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(found).To(gomega.BeTrue())
+
+	// Validate each resource type in minResources
+	for resourceName, expectedQuantity := range expectedMinResources {
+		actualQuantityStr, exists := minResourcesMap[string(resourceName)]
+		gomega.Expect(exists).To(gomega.BeTrue(), "Resource %s should exist in minResources", resourceName)
+
+		actualQuantity, err := resource.ParseQuantity(actualQuantityStr.(string))
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(actualQuantity.Equal(expectedQuantity)).To(gomega.BeTrue(),
+			"Resource %s: expected %s, got %s", resourceName, expectedQuantity.String(), actualQuantity.String())
+	}
+}
+
+// ExpectValidPodGroups validates that PodGroups are correctly created for a LeaderWorkerSet with proper owner references and spec configuration.
+// When expectedCount is 0, it validates that no PodGroups exist for the LWS, checking cleanup.
+// When expectedCount > 0, it validates both count and detailed configuration of each PodGroup.
+func ExpectValidPodGroups(ctx context.Context, k8sClient client.Client, provider schedulerprovider.ProviderType, lws *leaderworkerset.LeaderWorkerSet, expectedCount int) {
+	gvk := getPodGroupGVK(provider)
+	if gvk.Empty() {
+		ginkgo.Fail("Unsupported scheduler provider for PodGroup validation")
+		return
+	}
+
+	// Get the current revision from StatefulSet to construct PodGroup names
+	var leaderSts appsv1.StatefulSet
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+	revision := revisionutils.GetRevisionKey(&leaderSts)
+
+	// Use unstructured list to count PodGroups
+	podGroupList := &unstructured.UnstructuredList{}
+	podGroupList.SetGroupVersionKind(gvk)
+	gomega.Eventually(func() (int, error) {
+		err := k8sClient.List(ctx, podGroupList, client.InNamespace(lws.Namespace))
+		if err != nil {
+			return 0, err
+		}
+
+		lwsPodGroups := 0
+		for _, pg := range podGroupList.Items {
+			labels := pg.GetLabels()
+			if labels[leaderworkerset.SetNameLabelKey] == lws.Name &&
+				labels[leaderworkerset.RevisionKey] == revision {
+				lwsPodGroups++
+			}
+		}
+
+		return lwsPodGroups, nil
+	}, Timeout, Interval).Should(gomega.Equal(expectedCount))
+
+	// Verify each PodGroup has correct owner reference and spec
+	for i := 0; i < expectedCount; i++ {
+		groupIndex := fmt.Sprintf("%d", i)
+		expectedPgName := schedulerprovider.GetPodGroupName(lws.Name, groupIndex, revision)
+		leaderPodName := fmt.Sprintf("%s-%d", lws.Name, i)
+
+		leaderPod := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: lws.Namespace}, leaderPod)).To(gomega.Succeed())
+
+		// Get the PodGroup using unstructured object
+		podGroup := &unstructured.Unstructured{}
+		podGroup.SetGroupVersionKind(gvk)
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: expectedPgName, Namespace: lws.Namespace}, podGroup)).To(gomega.Succeed())
+
+		// Validate podgroup owner reference and spec
+		validateOwnerReference(podGroup, leaderPod)
+		validatePodGroupSpec(podGroup, lws)
+	}
+}
+
+// UpdatePodGroupAtIndex manually updates the PodGroup for a specific group index
+func UpdatePodGroupAtIndex(ctx context.Context, k8sClient client.Client, providerType schedulerprovider.ProviderType, schedulerProvider schedulerprovider.SchedulerProvider, lws *leaderworkerset.LeaderWorkerSet, groupIndex string) {
+	gvk := getPodGroupGVK(providerType)
+	if gvk.Empty() {
+		ginkgo.Fail("Unsupported scheduler provider for PodGroup update")
+		return
+	}
+
+	// Get revisions for PodGroup naming
+	var leaderSts appsv1.StatefulSet
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+	revision := revisionutils.GetRevisionKey(&leaderSts)
+
+	// Manually simulate replica update: delete old leader Pod and PodGroup, create new ones
+	// Delete old leader pod
+	oldPod := &corev1.Pod{}
+	podName := fmt.Sprintf("%s-%s", lws.Name, groupIndex)
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: podName, Namespace: lws.Namespace}, oldPod); err == nil {
+		gomega.Expect(k8sClient.Delete(ctx, oldPod)).To(gomega.Succeed())
+	}
+
+	// Delete old PodGroup (simulating garbage collection) using unstructured object
+	oldPgName := schedulerprovider.GetPodGroupName(lws.Name, groupIndex, revision)
+	oldPodGroup := &unstructured.Unstructured{}
+	oldPodGroup.SetGroupVersionKind(gvk)
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: oldPgName, Namespace: lws.Namespace}, oldPodGroup); err == nil {
+		gomega.Expect(k8sClient.Delete(ctx, oldPodGroup)).To(gomega.Succeed())
+	}
+
+	// Create new pod (this will trigger new PodGroup creation)
+	startIndex, err := strconv.Atoi(groupIndex)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	injectFn := func(pod *corev1.Pod) {
+		gomega.Expect(schedulerProvider).NotTo(gomega.BeNil())
+		err = schedulerProvider.InjectPodGroupMetadata(pod)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+	gomega.Expect(CreateLeaderPodsWithInjectFn(ctx, leaderSts, k8sClient, lws, startIndex, startIndex+1, injectFn)).To(gomega.Succeed())
+}
+
+// ExpectValidPodGroupAtIndex checks that a PodGroup exists for the specified group index and has the correct owner reference
+func ExpectValidPodGroupAtIndex(ctx context.Context, k8sClient client.Client, provider schedulerprovider.ProviderType, lws *leaderworkerset.LeaderWorkerSet, groupIndex string) {
+	gvk := getPodGroupGVK(provider)
+	if gvk.Empty() {
+		ginkgo.Fail("Unsupported scheduler provider for PodGroup validation")
+		return
+	}
+
+	// Get revisions for PodGroup naming
+	var leaderSts appsv1.StatefulSet
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+	revision := revisionutils.GetRevisionKey(&leaderSts)
+
+	expectedPgName := schedulerprovider.GetPodGroupName(lws.Name, groupIndex, revision)
+	leaderPodName := fmt.Sprintf("%s-%s", lws.Name, groupIndex)
+
+	leaderPod := &corev1.Pod{}
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: lws.Namespace}, leaderPod)).To(gomega.Succeed())
+
+	// Verify podgroup owner reference
+	podGroup := &unstructured.Unstructured{}
+	podGroup.SetGroupVersionKind(gvk)
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: expectedPgName, Namespace: lws.Namespace}, podGroup)).To(gomega.Succeed())
+	validateOwnerReference(podGroup, leaderPod)
 }

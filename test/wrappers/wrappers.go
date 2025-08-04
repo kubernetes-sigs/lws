@@ -146,6 +146,14 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Partition(partition int32) *LeaderWork
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) SchedulerName(schedulerName string) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		lwsWrapper.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.SchedulerName = schedulerName
+	}
+	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName = schedulerName
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
