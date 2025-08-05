@@ -1974,7 +1974,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("resize shoud update the size of the replicas", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2).ResizePolicy(leaderworkerset.ResizePolicyRecreate)
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2)
 			},
 			updates: []*update{
 				{
