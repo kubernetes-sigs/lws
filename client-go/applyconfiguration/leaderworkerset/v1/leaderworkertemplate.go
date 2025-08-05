@@ -30,7 +30,6 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	Size           *int32                                    `json:"size,omitempty"`
 	RestartPolicy  *leaderworkersetv1.RestartPolicyType      `json:"restartPolicy,omitempty"`
 	SubGroupPolicy *SubGroupPolicyApplyConfiguration         `json:"subGroupPolicy,omitempty"`
-	ResizePolicy   *leaderworkersetv1.ResizePolicyType       `json:"resizePolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs a declarative configuration of the LeaderWorkerTemplate type for use with
@@ -76,13 +75,5 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderw
 // If called multiple times, the SubGroupPolicy field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupPolicy(value *SubGroupPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
 	b.SubGroupPolicy = value
-	return b
-}
-
-// WithResizePolicy sets the ResizePolicy field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the ResizePolicy field is set to the value of the last call.
-func (b *LeaderWorkerTemplateApplyConfiguration) WithResizePolicy(value leaderworkersetv1.ResizePolicyType) *LeaderWorkerTemplateApplyConfiguration {
-	b.ResizePolicy = &value
 	return b
 }

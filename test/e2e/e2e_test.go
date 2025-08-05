@@ -244,7 +244,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	ginkgo.It("When changing size, recreates the Pods with correct count and size annotation", func() {
 		replicas := 2
 		size := 2
-		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(replicas).Size(size).ResizePolicy(leaderworkerset.ResizePolicyRecreate).Obj()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(replicas).Size(size).Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
 
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, int32(replicas))

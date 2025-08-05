@@ -264,18 +264,9 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("update to size when resizePolicy is None should fail", &testValidationCase{
+		ginkgo.Entry("update to size should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2)
-			},
-			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](3)
-			},
-			updateShouldFail: true,
-		}),
-		ginkgo.Entry("update to size when resizePolicy is None should succeed", &testValidationCase{
-			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).ResizePolicy(leaderworkerset.ResizePolicyRecreate)
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](3)
@@ -306,15 +297,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.StartupPolicy = "invalidValue"
-			},
-			updateShouldFail: true,
-		}),
-		ginkgo.Entry("number of size can not be updated", &testValidationCase{
-			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
-			},
-			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
 			},
 			updateShouldFail: true,
 		}),

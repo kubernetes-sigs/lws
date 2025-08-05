@@ -113,7 +113,6 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e gang scheduling tests", func() {
 			lws = wrappers.BuildLeaderWorkerSet(ns.Name).
 				Replica(2).
 				Size(2).
-				ResizePolicy(leaderworkerset.ResizePolicyRecreate).
 				SchedulerName("volcano").
 				Obj()
 			testing.MustCreateLws(ctx, k8sClient, lws)
