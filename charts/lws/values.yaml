@@ -11,7 +11,7 @@ imagePullSecrets: []
 # Customize controlerManager
 image:
   manager:
-    repository: us-central1-docker.pkg.dev/k8s-staging-images/lws/lws
+    repository: registry.k8s.io/lws/lws
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
     pullPolicy: Always
@@ -48,7 +48,6 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
 # gangSchedulingManagement is configuration for gang scheduling management.
 # For example:
 # gangSchedulingManagement:
