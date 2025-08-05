@@ -1,0 +1,15 @@
+title: SubGroup auto create services
+kep-number: 532
+authors:
+  - panpan0000
+status: 
+creation-date: 2025-05-27
+reviewers:
+  - 
+approvers:
+  - 
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v0.7.0"
