@@ -39,7 +39,7 @@ machine type for your nodes.**
 To install a released version of LeaderWorkerSet in your cluster, run the following command:
 
 ```shell
-VERSION=v0.6.2
+VERSION=v0.7.0
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -54,7 +54,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.6.2
+CHART_VERSION=0.7.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -65,7 +65,7 @@ helm install lws oci://registry.k8s.io/lws/charts/lws \
 You can also use the following command:
 
 ```shell
-VERSION=v0.6.2
+VERSION=v0.7.0
 helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
   --namespace lws-system \
   --create-namespace \
@@ -77,7 +77,7 @@ helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSI
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.6.2
+VERSION=v0.7.0
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
