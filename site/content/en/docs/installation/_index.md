@@ -36,7 +36,7 @@ machine type for your nodes.**
 To install a released version of LeaderWorkerSet in your cluster, run the following command:
 
 ```shell
-VERSION=v0.5.1
+VERSION=v0.6.3
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -45,7 +45,7 @@ kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/d
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.5.1
+VERSION=v0.6.3
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 

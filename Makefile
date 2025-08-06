@@ -313,3 +313,7 @@ YQ = $(PROJECT_DIR)/bin/yq
 .PHONY: yq
 yq: ## Download yq locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/mikefarah/yq/v4@v4.45.1
+
+.PHONY: test-e2e-gang-scheduling
+test-e2e-gang-scheduling:
+	@echo "skip the test e2e gang scheduling"
