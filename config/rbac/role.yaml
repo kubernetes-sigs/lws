@@ -118,3 +118,13 @@ rules:
   - get
   - patch
   - update
+# If you want to enable gang scheduling with volcano, you need to uncomment the following section
+# - apiGroups:
+#   - scheduling.volcano.sh
+#   resources:
+#   - podgroups
+#   verbs:
+#   - create
+#   - get
+#   - list
+#   - watch
