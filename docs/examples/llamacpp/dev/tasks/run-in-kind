@@ -17,4 +17,4 @@ kind load docker-image clichat:latest
 
 kubectl apply --server-side -f k8s/
 
-kubectl run clichat --image=clichat:latest --rm=true -it --image-pull-policy=IfNotPresent --env=LLM_ENDPOINT=http://llamacpp:80
+kubectl run clichat --image=clichat:latest --rm=true -it --image-pull-policy=IfNotPresent --env=LLM_ENDPOINT=http://llamacpp:8080
