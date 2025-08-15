@@ -21,10 +21,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -248,7 +248,7 @@ func TestPartitionValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "Invalid partition greater than replicas - now allowed with warning",
+			name: "Invalid partition greater than replicas - now allowed with error",
 			lws: wrappers.BuildBasicLeaderWorkerSet("test", "default").
 				Replica(6).
 				Size(2).
@@ -262,8 +262,8 @@ func TestPartitionValidation(t *testing.T) {
 				}).
 				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Obj(),
-			expectError: false, // Changed: now allowed with warning
-			errorMsg:    "",
+			expectError: true, // Changed: now allowed with error
+			errorMsg:    "partition must be less than or equal to replicas 6",
 		},
 		{
 			name: "Invalid negative partition",
@@ -285,14 +285,11 @@ func TestPartitionValidation(t *testing.T) {
 		},
 	}
 
-
 	webhook := &LeaderWorkerSetWebhook{}
-
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := webhook.ValidateCreate(context.TODO(), tc.lws)
-
 
 			if tc.expectError {
 				if err == nil {
@@ -308,7 +305,6 @@ func TestPartitionValidation(t *testing.T) {
 		})
 	}
 }
-
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[0:len(substr)] == substr || contains(s[1:], substr)))

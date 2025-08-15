@@ -97,23 +97,16 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime
 	lws := obj.(*v1.LeaderWorkerSet)
 	warnings := admission.Warnings{}
 
-	// Warn if partition or maxSurge is set during initial creation
-	// The controller will ignore these values during initial deployment
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
 		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 		maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
 		replicas := *lws.Spec.Replicas
 
+		// Warn users that partition/maxSurge will be ignored during initial deployment
 		if partition != nil && *partition > 0 {
-			if *partition > replicas {
-				warnings = append(warnings, 
-					fmt.Sprintf("partition value %d is greater than replicas %d and will be ignored during initial deployment. All %d replicas will be created with partition=0.",
-						*partition, replicas, replicas))
-			} else {
-				warnings = append(warnings, 
-					fmt.Sprintf("partition value %d will be ignored during initial deployment. All %d replicas will be created with partition=0. Partition only takes effect during rolling updates.",
-						*partition, replicas))
-			}
+			warnings = append(warnings,
+				fmt.Sprintf("partition value %d will be ignored during initial deployment. All %d replicas will be created with partition=0. Partition only takes effect during rolling updates.",
+					*partition, replicas))
 		}
 
 		maxSurgeVal, _ := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
@@ -189,8 +182,10 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 			if *partition < 0 {
 				allErrs = append(allErrs, field.Invalid(partitionPath, *partition, "partition must be greater than or equal to 0"))
 			}
-			// Note: partition > replicas is handled as a warning in ValidateCreate, not an error here
-			// This allows users to create the resource, though partition will be ignored during initial deployment
+			if *partition > *lws.Spec.Replicas {
+				allErrs = append(allErrs, field.Invalid(partitionPath, *partition,
+					fmt.Sprintf("partition must be less than or equal to replicas %d", *lws.Spec.Replicas)))
+			}
 		}
 	}
 
