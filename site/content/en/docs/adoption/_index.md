@@ -36,6 +36,8 @@ aliases:
 [**Axlearn**](https://github.com/apple/axlearn): Axlearn is a library built on top of JAX and XLA to support the development of large-scale deep learning models. It uses LeaderWorkerSet to deploy multi-host
 inference workloads to use during training workflows.
 
+[**llm-d**](https://github.com/llm-d/llm-d): llm-d is a Kubernetes-native, high-performance distributed LLM inference framework. It integrates open technologies such as vLLM for model serving and [Gateway API Inference extension (GIE)](https://github.com/kubernetes-sigs/gateway-api-inference-extension) for request scheduling and load balancing, and uses LeaderWorkerSet for scalable multi-node deployments. Key features include P/D Disaggregated serving and prefix caching.
+
 [**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
 
 [**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo): NVIDIA Dynamo is a high-throughput low-latency inference framework designed for serving generative AI and reasoning models in multi-node distributed environments especially the disaggregated prefill & decode inference. It uses LeaderWorkerSet to support multi-node deployment on Kubernetes.
