@@ -33,6 +33,9 @@ aliases:
 
 *Feel free to submit a PR if you use LeaderWorkerSet in your project and want to be added here.*
 
+[**Axlearn**](https://github.com/apple/axlearn): Axlearn is a library built on top of JAX and XLA to support the development of large-scale deep learning models. It uses LeaderWorkerSet to deploy multi-host
+inference workloads to use during training workflows.
+
 [**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
 
 [**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo): NVIDIA Dynamo is a high-throughput low-latency inference framework designed for serving generative AI and reasoning models in multi-node distributed environments especially the disaggregated prefill & decode inference. It uses LeaderWorkerSet to support multi-node deployment on Kubernetes.
