@@ -94,8 +94,31 @@ var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	lws := obj.(*v1.LeaderWorkerSet)
+	warnings := admission.Warnings{}
+
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+		maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
+		replicas := *lws.Spec.Replicas
+
+		// Warn users that partition/maxSurge will be ignored during initial deployment
+		if partition != nil && *partition > 0 {
+			warnings = append(warnings,
+				fmt.Sprintf("partition value %d will be ignored during initial deployment. All %d replicas will be created with partition=0. Partition only takes effect during rolling updates.",
+					*partition, replicas))
+		}
+
+		maxSurgeVal, _ := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
+		if maxSurgeVal > 0 {
+			warnings = append(warnings,
+				fmt.Sprintf("maxSurge value %v will be ignored during initial deployment. Only %d replicas will be created. MaxSurge only takes effect during rolling updates.",
+					maxSurge.String(), replicas))
+		}
+	}
 	allErrs := r.generalValidate(obj)
-	return nil, allErrs.ToAggregate()
+
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
@@ -151,6 +174,19 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, validatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
 		// This is aligned with Statefulset.
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
+
+		// Validate partition value
+		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
+		if partition != nil {
+			if *partition < 0 {
+				allErrs = append(allErrs, field.Invalid(partitionPath, *partition, "partition must be greater than or equal to 0"))
+			}
+			if *partition > *lws.Spec.Replicas {
+				allErrs = append(allErrs, field.Invalid(partitionPath, *partition,
+					fmt.Sprintf("partition must be less than or equal to replicas %d", *lws.Spec.Replicas)))
+			}
+		}
 	}
 
 	maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
