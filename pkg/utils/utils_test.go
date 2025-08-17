@@ -20,6 +20,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
+
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func Test_SortByIndex(t *testing.T) {
@@ -59,6 +64,136 @@ func Test_SortByIndex(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
+			}
+		})
+	}
+}
+
+func TestCalculatePGMinResources(t *testing.T) {
+	testCases := []struct {
+		name string
+		lws  *leaderworkerset.LeaderWorkerSet
+		want corev1.ResourceList
+	}{
+		{
+			name: "leader and worker with different resources",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To[int32](3),
+						LeaderTemplate: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU:    resource.MustParse("1"),
+												corev1.ResourceMemory: resource.MustParse("1Gi"),
+											},
+										},
+									},
+								},
+							},
+						},
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU:    resource.MustParse("2"),
+												corev1.ResourceMemory: resource.MustParse("2Gi"),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5"),   // 1 (leader) + 2 * 2 (workers)
+				corev1.ResourceMemory: resource.MustParse("5Gi"), // 1 (leader) + 2 * 2 (workers)
+			},
+		},
+		{
+			name: "only worker template specified",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To[int32](3),
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU:    resource.MustParse("2"),
+												corev1.ResourceMemory: resource.MustParse("2Gi"),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("6"),   // 2 (leader) + 2 * 2 (workers)
+				corev1.ResourceMemory: resource.MustParse("6Gi"), // 2 (leader) + 2 * 2 (workers)
+			},
+		},
+		{
+			name: "size is 1",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To[int32](1),
+						LeaderTemplate: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU: resource.MustParse("1"),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("1"),
+			},
+		},
+		{
+			name: "no resource requests",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To[int32](3),
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{}},
+							},
+						},
+					},
+				},
+			},
+			want: corev1.ResourceList{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CalculatePGMinResources(tc.lws)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("CalculatePGMinResources() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

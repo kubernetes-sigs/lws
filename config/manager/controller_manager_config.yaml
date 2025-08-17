@@ -4,3 +4,6 @@ leaderElection:
   leaderElect: true
 internalCertManagement:
   enable: true
+# If you want to enable gang scheduling, you need to uncomment the following section(take volcano as an example)
+# gangSchedulingManagement:
+#   schedulerProvider: volcano

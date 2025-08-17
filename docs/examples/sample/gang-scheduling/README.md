@@ -32,7 +32,22 @@ To enable gang scheduling, you must enable the feature flag and specify `volcano
 
   Refer to the [install-by-kubectl](https://lws.sigs.k8s.io/docs/installation/#install-by-kubectl). Gang scheduling is **disabled by default**. To enable gang scheduling capabilities, you need to:
 
-  1. **Update the configuration ConfigMap** to enable gang scheduling settings:
+  1. **Update RBAC permissions for the lws-controller-manager**
+     Run `kubectl edit clusterrole lws-manager-role` and add the following rule to the `rules` list. This grants the LWS controller manager the necessary permissions to manage Volcano PodGroups.
+     ```yaml
+     # Add this block to the 'rules' section
+     - apiGroups:
+       - scheduling.volcano.sh
+       resources:
+       - podgroups
+       verbs:
+       - create
+       - get
+       - list
+       - watch
+     ```
+
+  2. **Update the configuration ConfigMap** to enable gang scheduling settings:
      ```yaml
      apiVersion: v1
      kind: ConfigMap
@@ -52,7 +67,7 @@ To enable gang scheduling, you must enable the feature flag and specify `volcano
            schedulerProvider: volcano
      ```
 
-  2. **Restart the lws-controller-manager** to apply the new configuration:
+  3. **Restart the lws-controller-manager** to apply the new configuration:
      ```sh
      kubectl rollout restart deployment/lws-controller-manager -n lws-system
      ```
