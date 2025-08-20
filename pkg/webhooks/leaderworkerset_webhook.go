@@ -109,8 +109,10 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime
 					*partition, replicas))
 		}
 
-		maxSurgeVal, _ := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
-		if maxSurgeVal > 0 {
+		maxSurgeVal, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("invalid maxSurge value %v: %v", maxSurge.String(), err))
+		} else if maxSurgeVal > 0 {
 			warnings = append(warnings,
 				fmt.Sprintf("maxSurge value %v will be ignored during initial deployment. Only %d replicas will be created. MaxSurge only takes effect during rolling updates.",
 					maxSurge.String(), replicas))
@@ -174,19 +176,6 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, validatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
 		// This is aligned with Statefulset.
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
-
-		// Validate partition value
-		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
-		if partition != nil {
-			if *partition < 0 {
-				allErrs = append(allErrs, field.Invalid(partitionPath, *partition, "partition must be greater than or equal to 0"))
-			}
-			if *partition > *lws.Spec.Replicas {
-				allErrs = append(allErrs, field.Invalid(partitionPath, *partition,
-					fmt.Sprintf("partition must be less than or equal to replicas %d", *lws.Spec.Replicas)))
-			}
-		}
 	}
 
 	maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
@@ -195,6 +184,14 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, validatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
 	}
+
+	// Validate partition value
+	partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+	partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
+	}
+
 	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
@@ -264,7 +261,7 @@ func getPercentValue(intOrStringValue intstr.IntOrString) (int, bool) {
 func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if value < 0 {
-		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than or equal to 0"))
+		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be greater than or equal to 0"))
 	}
 	return allErrs
 }
