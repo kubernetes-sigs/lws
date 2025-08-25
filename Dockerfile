@@ -5,6 +5,7 @@ ARG BASE_IMAGE=gcr.io/distroless/static:nonroot
 FROM --platform=${BUILDPLATFORM} ${BUILDER_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG CGO_ENABLED
 
 WORKDIR /workspace
 # cache deps before building so that we don't need to re-download as much
