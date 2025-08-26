@@ -185,10 +185,10 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
 	}
 
-	// Validate partition value
-	partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-	partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		// Validate partition value
+		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
 		allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
 	}
 
