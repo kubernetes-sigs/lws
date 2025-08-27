@@ -112,7 +112,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
-									Name:      ptr.To[string]("leader"),
+									Name:      ptr.To[string]("worker"),
 									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
@@ -181,7 +181,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
-									Name:      ptr.To[string]("leader"),
+									Name:      ptr.To[string]("worker"),
 									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
@@ -250,7 +250,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
-									Name:      ptr.To[string]("worker"),
+									Name:      ptr.To[string]("leader"),
 									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
@@ -316,7 +316,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
-									Name:      ptr.To[string]("leader"),
+									Name:      ptr.To[string]("worker"),
 									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
@@ -387,7 +387,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
-									Name:      ptr.To[string]("worker"),
+									Name:      ptr.To[string]("leader"),
 									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},

@@ -220,7 +220,7 @@ func MakeWorkerPodSpec() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{
 			{
-				Name:  "leader",
+				Name:  "worker",
 				Image: "nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
@@ -301,7 +301,7 @@ func MakeLeaderPodSpec() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{
 			{
-				Name:  "worker",
+				Name:  "leader",
 				Image: "nginxinc/nginx-unprivileged:1.27",
 			},
 		},
