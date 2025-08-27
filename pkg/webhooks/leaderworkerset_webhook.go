@@ -94,33 +94,8 @@ var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	lws := obj.(*v1.LeaderWorkerSet)
-	warnings := admission.Warnings{}
-
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-		maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
-		replicas := *lws.Spec.Replicas
-
-		// Warn users that partition/maxSurge will be ignored during initial deployment
-		if partition != nil && *partition > 0 {
-			warnings = append(warnings,
-				fmt.Sprintf("partition value %d will be ignored during initial deployment. All %d replicas will be created with partition=0. Partition only takes effect during rolling updates.",
-					*partition, replicas))
-		}
-
-		maxSurgeVal, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("invalid maxSurge value %v: %v", maxSurge.String(), err))
-		} else if maxSurgeVal > 0 {
-			warnings = append(warnings,
-				fmt.Sprintf("maxSurge value %v will be ignored during initial deployment. Only %d replicas will be created. MaxSurge only takes effect during rolling updates.",
-					maxSurge.String(), replicas))
-		}
-	}
 	allErrs := r.generalValidate(obj)
-
-	return warnings, allErrs.ToAggregate()
+	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
