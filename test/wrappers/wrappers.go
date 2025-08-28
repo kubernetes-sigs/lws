@@ -149,6 +149,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SchedulerName(schedulerName string) *L
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) VolumeClaimTemplates(volumeClaimTemplates []corev1.PersistentVolumeClaim) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.VolumeClaimTemplates = volumeClaimTemplates
+	return lwsWrapper
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{

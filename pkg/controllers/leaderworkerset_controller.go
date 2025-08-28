@@ -773,6 +773,19 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		WithAnnotations(map[string]string{
 			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 		})
+
+	pvcApplyConfiguration := getPVCApplyConfiguration(lws)
+	if len(pvcApplyConfiguration) > 0 {
+		statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
+	}
+
+	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+		pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+		}
+		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
+	}
 	return statefulSetConfig, nil
 }
 
@@ -859,4 +872,35 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	}
 
 	return false
+}
+
+func getPVCApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet) []*coreapplyv1.PersistentVolumeClaimApplyConfiguration {
+	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
+	if lws == nil {
+		return pvcApplyConfiguration
+	}
+
+	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
+		pvcSpecApplyConfig := coreapplyv1.PersistentVolumeClaimSpec().WithAccessModes(pvc.Spec.AccessModes...)
+		if pvc.Spec.StorageClassName != nil {
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithStorageClassName(*pvc.Spec.StorageClassName)
+		}
+		if pvc.Spec.VolumeMode != nil {
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithVolumeMode(*pvc.Spec.VolumeMode)
+		}
+		if pvc.Spec.Resources.Requests != nil || pvc.Spec.Resources.Limits != nil {
+			vrrApplyConfig := coreapplyv1.VolumeResourceRequirementsApplyConfiguration{}
+			if pvc.Spec.Resources.Requests != nil {
+				vrrApplyConfig.Requests = &pvc.Spec.Resources.Requests
+			}
+			if pvc.Spec.Resources.Limits != nil {
+				vrrApplyConfig.Limits = &pvc.Spec.Resources.Limits
+			}
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithResources(&vrrApplyConfig)
+		}
+		config := coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace).
+			WithSpec(pvcSpecApplyConfig)
+		pvcApplyConfiguration = append(pvcApplyConfiguration, config)
+	}
+	return pvcApplyConfiguration
 }
