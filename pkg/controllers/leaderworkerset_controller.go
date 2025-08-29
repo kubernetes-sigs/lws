@@ -750,10 +750,12 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
-	var pvcRetentionPolicy appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration
+	var pvcRetentionPolicy *appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration
 	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
-		pvcRetentionPolicy.WhenDeleted = &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted
-		pvcRetentionPolicy.WhenScaled = &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled
+		pvcRetentionPolicy = &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+		}
 	}
 	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
 	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
@@ -768,7 +770,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithVolumeClaimTemplates(pvcApplyConfiguration...).
-			WithPersistentVolumeClaimRetentionPolicy(&pvcRetentionPolicy).
+			WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
 				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).WithPartition(partition),
 			)).
