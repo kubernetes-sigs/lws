@@ -45,7 +45,8 @@ resources:
     # requests:
     #   cpu: 100m
     #   memory: 128Mi
-nodeSelector: {}
+nodeSelector:
+  kubernetes.io/os: linux
 tolerations: []
 affinity: {}
 # gangSchedulingManagement is configuration for gang scheduling management.
