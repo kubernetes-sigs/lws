@@ -750,9 +750,10 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
-	pvcRetentionPolicy := appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
-		WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
-		WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+	var pvcRetentionPolicy appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration
+	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+		pvcRetentionPolicy.WhenDeleted = &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted
+		pvcRetentionPolicy.WhenScaled = &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled
 	}
 	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
 	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
