@@ -144,7 +144,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision), lwsUpdated); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
 		}
@@ -338,11 +338,11 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	return rollingUpdatePartition(states, stsReplicas, int32(rollingStep), partition), wantReplicas(lwsUnreadyReplicas), nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, lwsUpdated bool) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	// construct the statefulset apply configuration
-	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas, revisionKey)
+	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas, revisionKey, lwsUpdated)
 	if err != nil {
 		log.Error(err, "Constructing StatefulSet apply configuration.")
 		return err
@@ -709,7 +709,7 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts 
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, lwsUpdated bool) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
@@ -750,17 +750,6 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
-	var pvcRetentionPolicy *appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration
-	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
-		pvcRetentionPolicy = &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
-			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
-			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
-		}
-	}
-	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
-	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
-		pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
-	}
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
@@ -769,8 +758,6 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithReplicas(replicas).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
-			WithVolumeClaimTemplates(pvcApplyConfiguration...).
-			WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
 				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).WithPartition(partition),
 			)).
@@ -786,6 +773,24 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		WithAnnotations(map[string]string{
 			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 		})
+
+	if !lwsUpdated {
+		klog.V(4).Info("LeaderWorkerSet is being created, creating StatefulSet with VolumeClaimTemplates")
+		var pvcRetentionPolicy *appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration
+		if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+			pvcRetentionPolicy = &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+				WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+				WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+			}
+		}
+		pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
+		for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
+			pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
+		}
+		return statefulSetConfig.WithSpec(appsapplyv1.StatefulSetSpec().
+			WithVolumeClaimTemplates(pvcApplyConfiguration...).
+			WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)), nil
+	}
 	return statefulSetConfig, nil
 }
 
