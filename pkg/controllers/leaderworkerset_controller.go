@@ -342,7 +342,7 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 	log := ctrl.LoggerFrom(ctx)
 
 	// construct the statefulset apply configuration
-	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, partition, replicas, revisionKey, isUpdate)
+	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(ctx, lws, partition, replicas, revisionKey, isUpdate)
 	if err != nil {
 		log.Error(err, "Constructing StatefulSet apply configuration.")
 		return err
@@ -709,7 +709,7 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts 
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, isUpdate bool) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructLeaderStatefulSetApplyConfiguration(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, isUpdate bool) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
@@ -775,7 +775,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		})
 
 	if !isUpdate && len(lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
-		klog.V(4).Info("LeaderWorkerSet is being created, creating StatefulSet with VolumeClaimTemplates")
+		log := ctrl.LoggerFrom(ctx)
+		log.V(2).Info("LeaderWorkerSet is being created, creating StatefulSet with VolumeClaimTemplates")
 		pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
 		for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
 			pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
