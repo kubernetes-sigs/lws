@@ -149,7 +149,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	log.V(2).Info("Reconciling LeaderWorkerSet", "partition", partition, "replicas", replicas, "revision", revisionutils.GetRevisionKey(revision))
-	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision), leaderSts != nil); err != nil {
+	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
 		}
@@ -343,12 +343,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	return rollingUpdatePartition(states, stsReplicas, int32(rollingStep), partition), wantReplicas(lwsUnreadyReplicas), nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, isUpdate bool) error {
+func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	log.V(2).Info("SSAWithStatefulset", "partition", partition, "replicas", replicas, "revision", revisionKey)
 	// construct the statefulset apply configuration
-	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(ctx, lws, partition, replicas, revisionKey, isUpdate)
+	leaderStatefulSetApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(ctx, lws, partition, replicas, revisionKey)
 	if err != nil {
 		log.Error(err, "Constructing StatefulSet apply configuration.")
 		return err
@@ -715,7 +715,7 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts 
 }
 
 // constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string, isUpdate bool) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+func constructLeaderStatefulSetApplyConfiguration(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
