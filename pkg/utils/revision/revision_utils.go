@@ -26,7 +26,6 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -231,10 +230,6 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 			SubdomainPolicy: &subdomainPolicy,
 		}
-	}
-
-	if clone.Spec.LeaderWorkerTemplate.VolumeClaimTemplates == nil {
-		clone.Spec.LeaderWorkerTemplate.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{}
 	}
 
 	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {

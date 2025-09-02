@@ -22,7 +22,6 @@ import (
 	"math"
 	"strconv"
 
-	corev1 "k8s.io/api/core/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
@@ -84,10 +83,6 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 	} else if lws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		subdomainPolicy := v1.SubdomainShared
 		lws.Spec.NetworkConfig.SubdomainPolicy = &subdomainPolicy
-	}
-
-	if lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates == nil {
-		lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{}
 	}
 
 	return nil
