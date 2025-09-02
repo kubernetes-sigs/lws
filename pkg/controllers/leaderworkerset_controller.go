@@ -782,21 +782,19 @@ func constructLeaderStatefulSetApplyConfiguration(ctx context.Context, lws *lead
 			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 		})
 
-	if !isUpdate && len(lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
-		log.V(2).Info("LeaderWorkerSet is being created, creating StatefulSet with VolumeClaimTemplates")
-		pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
-		for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
-			pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
-		}
-		statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
+	log.V(2).Info("LeaderWorkerSet is being created, creating StatefulSet with VolumeClaimTemplates")
+	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
+	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
+		pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
+	}
+	statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
 
-		if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
-			pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
-				WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
-				WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
-			}
-			statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
+	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+		pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
 		}
+		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
 	}
 	return statefulSetConfig, nil
 }
