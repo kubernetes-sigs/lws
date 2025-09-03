@@ -82,7 +82,7 @@ List the specific goals of the KEP. What is it trying to achieve? How will we
 know that this has succeeded?
 -->
 
-To support persistent volumes, this KEP adds VolumeClaimTemplates in LeaderWorkerSetSpec
+To support persistent volumes, this KEP adds VolumeClaimTemplates and PersistentVolumeClaimRetentionPolicy in LeaderWorkerSetSpec
 
 ### Non-Goals
 n/a
@@ -147,6 +147,12 @@ required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
 Two new optional fields will be added into LeaderWorkerTemplate type. Both leader and worker statefulset would reference these two fields, and in order to keep backwards compatability, these two fields are optional.
+> If the `PersistentVolumeClaimRetentionPolicy` is not set, its default value will be the same as the default values of the statefulset (as shown below).:
+> ```
+>   persistentVolumeClaimRetentionPolicy:
+>     whenDeleted: Retain
+>     whenScaled: Retain
+> ```
 
 ```golang
 type LeaderWorkerTemplate struct {
