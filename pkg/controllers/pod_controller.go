@@ -359,6 +359,20 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(selectorMap))).
 		WithLabels(labelMap)
+
+	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
+	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
+		pvcApplyConfiguration = append(pvcApplyConfiguration, coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace))
+	}
+	statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
+
+	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+		pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+		}
+		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
+	}
 	return statefulSetConfig, nil
 }
 
