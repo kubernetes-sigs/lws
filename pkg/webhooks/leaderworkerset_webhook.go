@@ -159,6 +159,14 @@ func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.Error
 		allErrs = append(allErrs, validatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
 		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
 	}
+
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		// Validate partition value
+		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
+		allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
+	}
+
 	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
@@ -228,7 +236,7 @@ func getPercentValue(intOrStringValue intstr.IntOrString) (int, bool) {
 func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if value < 0 {
-		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be grater than or equal to 0"))
+		allErrs = append(allErrs, field.Invalid(fldPath, value, "must be greater than or equal to 0"))
 	}
 	return allErrs
 }
