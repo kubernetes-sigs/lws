@@ -36,6 +36,8 @@ IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
+# Output type of docker buildx build
+OUTPUT_TYPE ?= image
 HELM_CHART_REPO := ${STAGING_IMAGE_REGISTRY}/lws/charts
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -215,6 +217,7 @@ image-build:
 		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg CGO_ENABLED=$(CGO_ENABLED) \
+		--output=type=$(OUTPUT_TYPE) \
 		$(PUSH) \
 		$(IMAGE_BUILD_EXTRA_OPTS) ./
 
