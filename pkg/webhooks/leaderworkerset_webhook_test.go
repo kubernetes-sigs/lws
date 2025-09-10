@@ -96,7 +96,7 @@ func TestValidateNonnegativeOrZeroField(t *testing.T) {
 					Type:     field.ErrorTypeInvalid,
 					Field:    "test",
 					BadValue: int64(-1),
-					Detail:   "must be grater than or equal to 0",
+					Detail:   "must be greater than or equal to 0",
 				},
 			},
 		},
