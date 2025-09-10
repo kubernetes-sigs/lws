@@ -7,7 +7,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.25.3
 	github.com/onsi/gomega v1.38.2
-	github.com/open-policy-agent/cert-controller v0.13.0
+	github.com/open-policy-agent/cert-controller v0.14.0
 	github.com/stretchr/testify v1.11.0
 	k8s.io/api v0.34.0
 	k8s.io/apiextensions-apiserver v0.34.0
