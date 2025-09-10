@@ -247,7 +247,7 @@ any volumes in the template, with the same name.</p>
 </td>
 <td>
    <p>PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
-the StatefulSet VolumeClaimTemplates.</p>
+the VolumeClaimTemplates.</p>
 </td>
 </tr>
 </tbody>
