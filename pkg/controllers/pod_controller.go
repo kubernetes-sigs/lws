@@ -126,7 +126,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if r.SchedulerProvider != nil {
+	if r.SchedulerProvider != nil && strings.Contains(pod.Spec.SchedulerName, string(schedulerprovider.Volcano)) {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
 			return ctrl.Result{}, err
