@@ -19,4 +19,5 @@ package version
 var (
 	GitVersion string = "v0.0.0-main"
 	GitCommit  string = "abcd01234" //sha1 from git, output of $(git rev-parse HEAD)
+	BuildDate  string = "N/A"
 )

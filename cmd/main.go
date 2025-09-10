@@ -139,7 +139,7 @@ func main() {
 	if kubeConfig.UserAgent == "" {
 		kubeConfig.UserAgent = useragent.Default()
 	}
-	setupLog.Info("Initializing", "gitVersion", version.GitVersion, "gitCommit", version.GitCommit, "userAgent", kubeConfig.UserAgent)
+	setupLog.Info("Initializing", "gitVersion", version.GitVersion, "buildDate", version.BuildDate, "gitCommit", version.GitCommit, "userAgent", kubeConfig.UserAgent)
 
 	mgr, err := ctrl.NewManager(kubeConfig, options)
 	if err != nil {
