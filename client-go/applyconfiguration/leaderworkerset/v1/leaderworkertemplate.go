@@ -18,6 +18,8 @@ limitations under the License.
 package v1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
+	apicorev1 "k8s.io/api/core/v1"
 	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -25,11 +27,13 @@ import (
 // LeaderWorkerTemplateApplyConfiguration represents a declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
 type LeaderWorkerTemplateApplyConfiguration struct {
-	LeaderTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"leaderTemplate,omitempty"`
-	WorkerTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"workerTemplate,omitempty"`
-	Size           *int32                                    `json:"size,omitempty"`
-	RestartPolicy  *leaderworkersetv1.RestartPolicyType      `json:"restartPolicy,omitempty"`
-	SubGroupPolicy *SubGroupPolicyApplyConfiguration         `json:"subGroupPolicy,omitempty"`
+	LeaderTemplate                       *corev1.PodTemplateSpecApplyConfiguration               `json:"leaderTemplate,omitempty"`
+	WorkerTemplate                       *corev1.PodTemplateSpecApplyConfiguration               `json:"workerTemplate,omitempty"`
+	Size                                 *int32                                                  `json:"size,omitempty"`
+	RestartPolicy                        *leaderworkersetv1.RestartPolicyType                    `json:"restartPolicy,omitempty"`
+	SubGroupPolicy                       *SubGroupPolicyApplyConfiguration                       `json:"subGroupPolicy,omitempty"`
+	VolumeClaimTemplates                 []apicorev1.PersistentVolumeClaim                       `json:"volumeClaimTemplates,omitempty"`
+	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
 }
 
 // LeaderWorkerTemplateApplyConfiguration constructs a declarative configuration of the LeaderWorkerTemplate type for use with
@@ -75,5 +79,23 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderw
 // If called multiple times, the SubGroupPolicy field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithSubGroupPolicy(value *SubGroupPolicyApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
 	b.SubGroupPolicy = value
+	return b
+}
+
+// WithVolumeClaimTemplates adds the given value to the VolumeClaimTemplates field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the VolumeClaimTemplates field.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithVolumeClaimTemplates(values ...apicorev1.PersistentVolumeClaim) *LeaderWorkerTemplateApplyConfiguration {
+	for i := range values {
+		b.VolumeClaimTemplates = append(b.VolumeClaimTemplates, values[i])
+	}
+	return b
+}
+
+// WithPersistentVolumeClaimRetentionPolicy sets the PersistentVolumeClaimRetentionPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PersistentVolumeClaimRetentionPolicy field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithPersistentVolumeClaimRetentionPolicy(value appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy) *LeaderWorkerTemplateApplyConfiguration {
+	b.PersistentVolumeClaimRetentionPolicy = &value
 	return b
 }

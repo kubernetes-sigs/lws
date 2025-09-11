@@ -232,6 +232,24 @@ replace with None policy for the same behavior.</p>
 in each replica.</p>
 </td>
 </tr>
+<tr><td><code>volumeClaimTemplates</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#persistentvolumeclaim-v1-core"><code>[]k8s.io/api/core/v1.PersistentVolumeClaim</code></a>
+</td>
+<td>
+   <p>VolumeClaimTemplates is a list of claims that pods are allowed to reference.
+Every claim in this list must have at least one matching (by name) volumeMount
+in one container in the template. A claim in this list takes precedence over
+any volumes in the template, with the same name.</p>
+</td>
+</tr>
+<tr><td><code>persistentVolumeClaimRetentionPolicy</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#statefulsetpersistentvolumeclaimretentionpolicy-v1-apps"><code>k8s.io/api/apps/v1.StatefulSetPersistentVolumeClaimRetentionPolicy</code></a>
+</td>
+<td>
+   <p>PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
+the VolumeClaimTemplates.</p>
+</td>
+</tr>
 </tbody>
 </table>
 

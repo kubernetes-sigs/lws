@@ -773,6 +773,19 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		WithAnnotations(map[string]string{
 			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 		})
+
+	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(lws)
+	if len(pvcApplyConfiguration) > 0 {
+		statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
+	}
+
+	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+		pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+		}
+		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
+	}
 	return statefulSetConfig, nil
 }
 
