@@ -360,7 +360,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 				WithMatchLabels(selectorMap))).
 		WithLabels(labelMap)
 
-	pvcApplyConfiguration := getPVCApplyConfiguration(&lws)
+	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(&lws)
 	if len(pvcApplyConfiguration) > 0 {
 		statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
 	}

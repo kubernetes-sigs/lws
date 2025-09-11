@@ -8203,7 +8203,7 @@ spec:
                   persistentVolumeClaimRetentionPolicy:
                     description: |-
                       PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
-                      the StatefulSet VolumeClaimTemplates.
+                      the VolumeClaimTemplates.
                     properties:
                       whenDeleted:
                         description: |-

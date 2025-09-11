@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -61,4 +62,35 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 		}
 	}
 	return nil
+}
+
+func GetPVCApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet) []*coreapplyv1.PersistentVolumeClaimApplyConfiguration {
+	pvcApplyConfiguration := []*coreapplyv1.PersistentVolumeClaimApplyConfiguration{}
+	if lws == nil {
+		return pvcApplyConfiguration
+	}
+
+	for _, pvc := range lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates {
+		pvcSpecApplyConfig := coreapplyv1.PersistentVolumeClaimSpec().WithAccessModes(pvc.Spec.AccessModes...)
+		if pvc.Spec.StorageClassName != nil {
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithStorageClassName(*pvc.Spec.StorageClassName)
+		}
+		if pvc.Spec.VolumeMode != nil {
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithVolumeMode(*pvc.Spec.VolumeMode)
+		}
+		if pvc.Spec.Resources.Requests != nil || pvc.Spec.Resources.Limits != nil {
+			vrrApplyConfig := coreapplyv1.VolumeResourceRequirementsApplyConfiguration{}
+			if pvc.Spec.Resources.Requests != nil {
+				vrrApplyConfig.Requests = &pvc.Spec.Resources.Requests
+			}
+			if pvc.Spec.Resources.Limits != nil {
+				vrrApplyConfig.Limits = &pvc.Spec.Resources.Limits
+			}
+			pvcSpecApplyConfig = pvcSpecApplyConfig.WithResources(&vrrApplyConfig)
+		}
+		config := coreapplyv1.PersistentVolumeClaim(pvc.Name, lws.Namespace).
+			WithSpec(pvcSpecApplyConfig)
+		pvcApplyConfiguration = append(pvcApplyConfiguration, config)
+	}
+	return pvcApplyConfiguration
 }
