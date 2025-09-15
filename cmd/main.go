@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -79,8 +80,10 @@ func main() {
 		leaderElectResourceLock  string
 		leaderElectionID         string
 		configFile               string
+		printVersion             bool
 	)
 
+	flag.BoolVar(&printVersion, "version", false, "Print version information and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "DEPRECATED(please pass configuration file via --config flag): The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "DEPRECATED(please pass configuration file via --config flag): The address the probe endpoint binds to.")
 	flag.Float64Var(&qps, "kube-api-qps", 500, "Maximum QPS to use while talking with Kubernetes API")
@@ -117,6 +120,13 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		flagsSet[f.Name] = true
 	})
+
+	if printVersion {
+		fmt.Printf("Version: %s\n", version.GitVersion)
+		fmt.Printf("Build Date: %s\n", version.BuildDate)
+		fmt.Printf("Git Commit: %s\n", version.GitCommit)
+		os.Exit(0)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
