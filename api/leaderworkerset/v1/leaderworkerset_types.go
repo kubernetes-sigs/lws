@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -169,6 +170,18 @@ type LeaderWorkerTemplate struct {
 	// in each replica.
 	// +optional
 	SubGroupPolicy *SubGroupPolicy `json:"subGroupPolicy,omitempty"`
+
+	// VolumeClaimTemplates is a list of claims that pods are allowed to reference.
+	// Every claim in this list must have at least one matching (by name) volumeMount
+	// in one container in the template. A claim in this list takes precedence over
+	// any volumes in the template, with the same name.
+	// +optional
+	VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
+
+	// PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
+	// the VolumeClaimTemplates.
+	// +optional
+	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

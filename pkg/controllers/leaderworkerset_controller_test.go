@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
@@ -402,7 +403,124 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:        "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
+			revisionKey: revisionKey2,
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+					},
+				}).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(1).
+				PersistentVolumeClaimRetentionPolicy(&appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+					WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+					WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+				}).
+				VolumeClaimTemplates([]corev1.PersistentVolumeClaim{
+					{
+						ObjectMeta: metav1.ObjectMeta{Name: "pvc1"},
+						Spec: corev1.PersistentVolumeClaimSpec{
+							AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+							StorageClassName: ptr.To[string]("standard"),
+							VolumeMode:       ptr.To[corev1.PersistentVolumeMode](corev1.PersistentVolumeFilesystem),
+							Resources: corev1.VolumeResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceStorage: resource.MustParse("1Gi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceStorage: resource.MustParse("2Gi"),
+								},
+							},
+						},
+					},
+				}).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+					},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](1),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size": "1",
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("worker"),
+									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					PersistentVolumeClaimRetentionPolicy: &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
+						WhenDeleted: ptr.To(appsv1.RetainPersistentVolumeClaimRetentionPolicyType),
+						WhenScaled:  ptr.To(appsv1.DeletePersistentVolumeClaimRetentionPolicyType),
+					},
+					VolumeClaimTemplates: []coreapplyv1.PersistentVolumeClaimApplyConfiguration{
+						{
+							TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+								Kind:       ptr.To[string]("PersistentVolumeClaim"),
+								APIVersion: ptr.To[string]("v1"),
+							},
+							ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+								Name:      ptr.To[string]("pvc1"),
+								Namespace: ptr.To[string]("default"),
+							},
+							Spec: &coreapplyv1.PersistentVolumeClaimSpecApplyConfiguration{
+								AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+								StorageClassName: ptr.To[string]("standard"),
+								VolumeMode:       ptr.To[corev1.PersistentVolumeMode](corev1.PersistentVolumeFilesystem),
+								Resources: &coreapplyv1.VolumeResourceRequirementsApplyConfiguration{
+									Requests: &corev1.ResourceList{
+										corev1.ResourceStorage: resource.MustParse("1Gi"),
+									},
+									Limits: &corev1.ResourceList{
+										corev1.ResourceStorage: resource.MustParse("2Gi"),
+									},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
+				},
+			},
+		},
 	}
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0, *tc.lws.Spec.Replicas, tc.revisionKey)

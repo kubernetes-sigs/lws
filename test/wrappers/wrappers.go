@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strconv"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -146,6 +147,16 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SchedulerName(schedulerName string) *L
 		lwsWrapper.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.SchedulerName = schedulerName
 	}
 	lwsWrapper.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName = schedulerName
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) VolumeClaimTemplates(volumeClaimTemplates []corev1.PersistentVolumeClaim) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.VolumeClaimTemplates = volumeClaimTemplates
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) PersistentVolumeClaimRetentionPolicy(policy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy = policy
 	return lwsWrapper
 }
 
