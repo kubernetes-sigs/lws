@@ -29,6 +29,8 @@ aliases:
 
 **Nvidia**: LeaderWorkerSet deployments are the recommended method for deploying Multi-Node models with NIM, see document [here](https://docs.nvidia.com/nim/large-language-models/1.5.0/deploy-helm.html#multi-node-models).
 
+**Red Hat**: LeaderWorkerSet is available in Red Hat OpenShift by installing the Leader Worker Set Operator from OperatorHub, see document [here](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/ai_workloads/index#leader-worker-set-operator).
+
 ## Integrations
 
 *Feel free to submit a PR if you use LeaderWorkerSet in your project and want to be added here.*
