@@ -119,3 +119,19 @@ spec:
       subGroupSize: 2
     size: 4
 ```
+### SubGroups
+
+A **SubGroup** represents a logical subdivision of Pods within a workload. SubGroups are useful when a workload consists of Pods that need to start together or follow a specific execution pattern.
+
+#### SubGroup Size
+The `size` of a SubGroup determines how many Pods it contains. For example, if a distributed training job requires 8 Pods, you can define a SubGroup of size 8. The scheduler ensures that all 8 Pods are considered together when making placement decisions. This prevents partial scheduling that could cause the job to hang or waste resources.
+
+#### LeaderOnly SubGroup Type
+In some workloads, only a single Pod (the *leader*) is critical to start first, while the other Pods (workers) depend on it. The `LeaderOnly` SubGroup type supports this use case:
+
+- The leader Pod is scheduled first and guaranteed placement.
+- Worker Pods in the same SubGroup are scheduled afterwards, following the leader.
+- This is especially useful for distributed machine learning jobs (e.g., PyTorch, TensorFlow) or MPI-based HPC jobs where one Pod coordinates the others.
+
+For more details, see [KEP-257: Subgroup LeaderOnly](https://github.com/kubernetes-sigs/lws/blob/main/keps/257-Subgroup-leader-only/README.md).
+
