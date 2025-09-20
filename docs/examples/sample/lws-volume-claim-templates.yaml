@@ -1,0 +1,60 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: lws
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    volumeClaimTemplates:
+      - metadata:
+          name: persistent-storage
+        spec:
+          storageClassName: default
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        containers:
+          - name: leader
+            image: nginx
+            command:
+              - "/bin/bash"
+              - -c
+              - set -euo pipefail; while true; do echo $(date) >> /mnt/volume/outfile; sleep 1; done
+            volumeMounts:
+              - mountPath: /mnt/volume
+                name: persistent-storage
+    workerTemplate:
+      spec:
+        containers:
+          - name: worker
+            image: nginx
+            command:
+              - "/bin/bash"
+              - -c
+              - set -euo pipefail; while true; do echo $(date) >> /mnt/volume/outfile; sleep 1; done
+            volumeMounts:
+              - mountPath: /mnt/volume
+                name: persistent-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lws-leader
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    leaderworkerset.sigs.k8s.io/name: lws
+    role: leader
+  type: ClusterIP
