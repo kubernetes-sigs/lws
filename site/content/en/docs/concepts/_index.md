@@ -131,8 +131,7 @@ metadata:
 spec:
   replicas: 2
   leaderWorkerTemplate:
-    size: 2
-    restartPolicy: RecreateGroupOnPodRestart
+    ...
     volumeClaimTemplates:
       - metadata:
           name: persistent-storage
@@ -141,19 +140,13 @@ spec:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
-              storage: 10Gi
+              storage: 100Gi
     leaderTemplate:
-      metadata:
-        labels:
-          role: leader
+      ...
       spec:
         containers:
           - name: leader
-            image: nginx
-            command:
-              - "/bin/bash"
-              - -c
-              - set -euo pipefail; while true; do echo $(date) >> /mnt/volume/outfile; sleep 1; done
+            ...
             volumeMounts:
               - mountPath: /mnt/volume
                 name: persistent-storage
@@ -161,11 +154,7 @@ spec:
       spec:
         containers:
           - name: worker
-            image: nginx
-            command:
-              - "/bin/bash"
-              - -c
-              - set -euo pipefail; while true; do echo $(date) >> /mnt/volume/outfile; sleep 1; done
+            ...
             volumeMounts:
               - mountPath: /mnt/volume
                 name: persistent-storage
