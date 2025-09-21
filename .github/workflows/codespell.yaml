@@ -13,4 +13,4 @@ jobs:
         with:
           check_filenames: true
           skip: ./.git,./.github/workflows/codespell.yaml,.git,*.png,*.jpg,*.svg,*.sum,./vendor,go.sum
-          ignore_words_list: "complies,ro,NotIn"
+          ignore_words_list: "complies,ro,NotIn,notin,implementors,AfterAll,afterall"

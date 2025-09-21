@@ -263,7 +263,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &service)).To(gomega.Succeed())
 						gomega.Expect(k8sClient.Delete(ctx, &service)).To(gomega.Succeed())
 					},
-					// Service should be recreated during reconcilation
+					// Service should be recreated during reconciliation
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
 					},
@@ -292,7 +292,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
 						gomega.Expect(k8sClient.Delete(ctx, &leaderSts)).To(gomega.Succeed())
 					},
-					// Service should be recreated during reconcilation
+					// Service should be recreated during reconciliation
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 					},
@@ -1972,7 +1972,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("resize shoud update the size of the replicas", &testCase{
+		ginkgo.Entry("resize should update the size of the replicas", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2)
 			},

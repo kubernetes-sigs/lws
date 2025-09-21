@@ -159,7 +159,7 @@ Consider including folks who also work outside the SIG or subproject.
 There are a few constraints that need to be taken into account in the design:
 - The label `templateHash` is not a reliable way to determine whether or not an LWS object has been updated, as seen in #281
 - The same LWS object can generate two different controllerRevision names
-	- For instance, everytime the LWS is queried, it will have different `lws.ResourceVersion`, causing two revisions to be named differently even if they have the same LWS object
+	- For instance, every time the LWS is queried, it will have different `lws.ResourceVersion`, causing two revisions to be named differently even if they have the same LWS object
 - Adding a new default pod label will trigger rolling update when updating from a different LWS controller version, so no new pod labels can be added.
 
 Taking those into account, we'll combine controller revisions and template hashes. Each controller revision will have a templateHash as a label, essentially creating a map of revisions with template hashes as keys. 
@@ -287,7 +287,7 @@ implementing this enhancement to ensure the enhancements have also solid foundat
 -->
 
 ##### Unit tests
-- Test controller revision implemenation functions
+- Test controller revision implementation functions
 <!--
 In principle every added code should have complete unit test coverage, so providing
 the exact set of tests will not bring additional value.
@@ -382,7 +382,7 @@ Why should this KEP _not_ be implemented?
 ## Alternatives
 An implementation similar to the one done for StatefulSet was considered. In this implementation, we would create
 a label to store what controller revision was used to generate the pods, and replacing the label `leaderworkerset.sigs.k8s.io/template-revision-hash`.
-However, this requires updating the value of those labels (or adding a new label alltogether). Doing this, triggers a rolling update when upgrading 
+However, this requires updating the value of those labels (or adding a new label altogether). Doing this, triggers a rolling update when upgrading 
 from an LWS version that does not have controller revision. 
 
 Moreover, there are features that need to trigger a rolling update (e.g NetworkConfig). In order to replicate this behavior when using 

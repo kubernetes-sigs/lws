@@ -86,7 +86,7 @@ spec:
 
 ## Exclusive LWS to Topology Placement
 The LWS annotation `leaderworkerset.sigs.k8s.io/exclusive-topology` defines a 1:1 LWS replica to topology placement. For example,
-you want an LWS replica to be scheduled on the same rack in order to maximize cross-node communcation for distributed inference. This
+you want an LWS replica to be scheduled on the same rack in order to maximize cross-node communication for distributed inference. This
 can be done as follows:
 
 ```
@@ -104,7 +104,7 @@ spec:
 
 ### Subgroup and Exclusive Placement
 The LWS annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` defines a 1:1 between an LWS subgroup to topology placement. This can
-be useful for dissagregated serving in order to place the prefill pod group in the same rack, but on a seperate rack from the decode pod group, assuming
+be useful for dissagregated serving in order to place the prefill pod group in the same rack, but on a separate rack from the decode pod group, assuming
 same hardware requirements.
 
 ```

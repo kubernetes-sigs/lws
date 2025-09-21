@@ -190,7 +190,7 @@ During a rolling update, the `partition` field updated to the leader sts will no
 
 Next, The conditions which indicates whether the rolling update is completed need to be updated. The previous logic was that before all replicas were modified, `UpdateInProgress` is true. Now update to before all replicas whose index no less than `lwsPartition` are modified. The `Available` Condition is set to `True` when all replicas whose index no less than `lwsPartition` are updated and at least the minimum available replicas are up and running.
 
-We alse need to change `updateConditions` func to return `allUpdateDone` which means all replicas have been updated and completed, not `updateDone`. The adjustment is made to clean up other revisions when all replicas have been updated, rather than immediately upon completion of the partition update.
+We also need to change `updateConditions` func to return `allUpdateDone` which means all replicas have been updated and completed, not `updateDone`. The adjustment is made to clean up other revisions when all replicas have been updated, rather than immediately upon completion of the partition update.
 ```go
 // old code
 if updateDone {

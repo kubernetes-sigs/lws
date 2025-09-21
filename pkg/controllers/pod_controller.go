@@ -202,7 +202,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy != leaderworkerset.RecreateGroupOnPodRestart {
 		return false, nil
 	}
-	// the leader pod will be deleted if the worker pod is deleted or any containes were restarted
+	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
 	if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
 		return false, nil
 	}
