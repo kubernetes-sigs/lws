@@ -119,3 +119,43 @@ spec:
       subGroupSize: 2
     size: 4
 ```
+
+## Volume Claim Templates support
+LWS supports the use of `volumeClaimTemplates` for leader and worker pods, allowing the incorporation of storage class in `volumeClaimTemplates` to create persistent volumes in leader and worker pods. Below is an example demonstrating how to utilize `volumeClaimTemplates` in LWS.
+
+```yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: lws
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    ...
+    volumeClaimTemplates:
+      - metadata:
+          name: persistent-storage
+        spec:
+          storageClassName: default
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+    leaderTemplate:
+      ...
+      spec:
+        containers:
+          - name: leader
+            ...
+            volumeMounts:
+              - mountPath: /mnt/volume
+                name: persistent-storage
+    workerTemplate:
+      spec:
+        containers:
+          - name: worker
+            ...
+            volumeMounts:
+              - mountPath: /mnt/volume
+                name: persistent-storage
+```
