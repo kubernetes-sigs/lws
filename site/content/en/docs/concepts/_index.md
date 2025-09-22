@@ -120,8 +120,8 @@ spec:
     size: 4
 ```
 
-## volumeClaimTemplates support
-LWS allows the utilization of `volumeClaimTemplates` for leader and worker StatefulSet pods. When specifying the `volumeClaimTemplates` field, this setting will be applied to both leader and worker StatefulSets, enabling the use of storage class in `volumeClaimTemplates` to create persistent volumes in leader and worker StatefulSet pods. Below is an example demonstrating how to utilize `volumeClaimTemplates` in LWS.
+## Volume Claim Templates support
+LWS supports the use of `volumeClaimTemplates` for leader and worker pods, allowing the incorporation of storage class in `volumeClaimTemplates` to create persistent volumes in leader and worker pods. Below is an example demonstrating how to utilize `volumeClaimTemplates` in LWS.
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
