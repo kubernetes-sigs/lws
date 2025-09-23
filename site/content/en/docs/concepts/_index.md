@@ -84,6 +84,24 @@ spec:
       spec:
 ```
 
+## Startup Policy
+`.spec.startupPolicy` controls **when the worker StatefulSet is created** relative to its leader Pod. There are two options:
+
+- **`LeaderCreated` (default):** The LWS controller **creates the worker StatefulSet as soon as** the leader Pod object is created. This **does not guarantee** any readiness order between the leader and workers.
+- **`LeaderReady`:** The LWS controller **delays creating the worker StatefulSet until** the leader Pod is `Ready`.
+
+```
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  startupPolicy: LeaderReady
+  replicas: 3
+  leaderWorkerTemplate:
+  ...
+```
+
 ## Exclusive LWS to Topology Placement
 The LWS annotation `leaderworkerset.sigs.k8s.io/exclusive-topology` defines a 1:1 LWS replica to topology placement. For example,
 you want an LWS replica to be scheduled on the same rack in order to maximize cross-node communcation for distributed inference. This
