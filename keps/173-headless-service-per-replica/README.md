@@ -127,7 +127,7 @@ proposal will be implemented, this is the place to discuss them.
 
 We extend the LeaderWorkerSet API to introduce a new field: `NetworkConfig`. This field will have a subfield called `subDomainPolicy`. If set to `Shared`, LWS will create a single headless service for all replicas to share. If set to `UniquePerReplica`, it will create a headless service per replica. `subDomainPolicy` is a mutable field, and will trigger a rolling update when changed. 
 
-In order to ensure backwards compatability, the default value will be `Shared`.
+In order to ensure backwards compatibility, the default value will be `Shared`.
 
 ```golang
 type LeaderWorkerSetSpec struct {

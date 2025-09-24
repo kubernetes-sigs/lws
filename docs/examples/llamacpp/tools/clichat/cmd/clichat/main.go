@@ -269,7 +269,7 @@ type completionRequest struct {
 	// id_slot: Assign the completion task to an specific slot. If is -1 the task will be assigned to a Idle slot. Default: -1
 	IDSlot int64 `json:"id_slot,omitempty"`
 
-	// cache_prompt: Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests. Because (depending on the backend) the logits are not guaranteed to be bit-for-bit identical for different batch sizes (prompt processing vs. token generation) enabling this option can cause nondeterministic results. Default: false
+	// cache_prompt: Reuse KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests. Because (depending on the backend) the logits are not guaranteed to be bit-for-bit identical for different batch sizes (prompt processing vs. token generation) enabling this option can cause nondeterministic results. Default: false
 	CachePrompt bool `json:"cache_prompt"`
 
 	// system_prompt: Change the system prompt (initial prompt of all slots), this is useful for chat applications. See more
@@ -308,7 +308,7 @@ type completionResponse struct {
 	// timings: Hash of timing information about the completion such as the number of tokens predicted_per_second
 	Timings map[string]float64 `json:"timings"`
 
-	// tokens_cached: Number of tokens from the prompt which could be re-used from previous completion (n_past)
+	// tokens_cached: Number of tokens from the prompt which could be reused from previous completion (n_past)
 	TokensCached int64 `json:"tokens_cached"`
 
 	// tokens_evaluated: Number of tokens evaluated in total from the prompt

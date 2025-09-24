@@ -19,7 +19,7 @@ since expanded to support accelerators and distributed inference.
 
 We use LeaderWorkerSet to deploy a llama.cpp leader and two llama.cpp workers.
 The leader pod loads the model and distributes layers to the workers; the workers
-perfom the majority of the computation.
+perform the majority of the computation.
 
 Because the default configuration runs with CPU inference, this can be run on a kind cluster.
 

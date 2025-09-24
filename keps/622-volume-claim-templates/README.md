@@ -146,7 +146,7 @@ change are understandable. This may include API specs (though not always
 required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
-Two new optional fields will be added into LeaderWorkerTemplate type. Both leader and worker statefulset would reference these two fields, and in order to keep backwards compatability, these two fields are optional.
+Two new optional fields will be added into LeaderWorkerTemplate type. Both leader and worker statefulset would reference these two fields, and in order to keep backwards compatibility, these two fields are optional.
 > If the `PersistentVolumeClaimRetentionPolicy` is not set, its default value will be the same as the default values of the statefulset (as shown below).:
 > ```
 >   persistentVolumeClaimRetentionPolicy:

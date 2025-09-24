@@ -309,7 +309,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 	})
 
-	ginkgo.It("Doesnt add env vars to containers when not using TPU", func() {
+	ginkgo.It("Doesn't add env vars to containers when not using TPU", func() {
 		leaderPodSpec := wrappers.MakeLeaderPodSpec()
 		workerPodSpec := wrappers.MakeWorkerPodSpec()
 		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()

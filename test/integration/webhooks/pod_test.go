@@ -819,7 +819,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 		func(tc *testValidationCase) {
 			ctx := context.Background()
 			// create pod
-			ginkgo.By("createing Lws pod")
+			ginkgo.By("creating Lws pod")
 			pod := tc.makePod(ns)
 			// Verify lws created successfully.
 			ginkgo.By("checking that pod creation succeeds")

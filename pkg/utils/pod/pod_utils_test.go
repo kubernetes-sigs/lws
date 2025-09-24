@@ -160,7 +160,7 @@ func TestAddLWSVariables(t *testing.T) {
 			}
 			containers := append(tc.pod.Spec.Containers, tc.pod.Spec.InitContainers...)
 			if len(containers) == 0 {
-				t.Fatalf("No contianers in podSpec %+v", tc.pod.Spec)
+				t.Fatalf("No containers in podSpec %+v", tc.pod.Spec)
 			}
 
 			for _, container := range containers {

@@ -94,7 +94,7 @@ What is out of scope for this KEP? Listing non-goals helps to focus discussion
 and make progress.
 -->
 
-- This KEP doesn't propose a way to target `spec.leaderWorkerTemplate.size` with an autoscaling mecanism.
+- This KEP doesn't propose a way to target `spec.leaderWorkerTemplate.size` with an autoscaling mechanism.
 - InPlace update policy is not part of this KEP since it adds more complexities like dynamically changing the topology envs at runtime. We may visit this in the future if highly required by the community.
 
 ## Proposal
@@ -119,7 +119,7 @@ bogged down.
 
 #### Story 1
 
-As a develope running inference workloads with `LeaderWorkerSet`, I should be able to quickly iterate on my deployments configuration during development. Currently, the only way to update the size of the `LeaderWorkerSet` is to delete and recreate the resource. If `spec.leaderWorkerTemplate.size` is made editable, I will be able to simply edit and apply the `LeaderWorkerSet` instances using kubectl rather than deleting and recreating them. This would improve my developer experience.
+As a develop running inference workloads with `LeaderWorkerSet`, I should be able to quickly iterate on my deployments configuration during development. Currently, the only way to update the size of the `LeaderWorkerSet` is to delete and recreate the resource. If `spec.leaderWorkerTemplate.size` is made editable, I will be able to simply edit and apply the `LeaderWorkerSet` instances using kubectl rather than deleting and recreating them. This would improve my developer experience.
 
 #### Story 2
 
