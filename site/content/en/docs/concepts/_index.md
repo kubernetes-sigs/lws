@@ -130,7 +130,9 @@ The `size` of a SubGroup determines how many Pods it contains. For example, if a
 
 #### SubGroupType: LeaderOnly
 
-The `LeaderOnly` type enforces an ordering constraint within a SubGroup:
+- The LeaderOnly type means that a SubGroup is created exclusively for the leader.
+Workers are placed into separate subgroups according to the configured size, rather than being included with the leader.
+- This ensures that leader pods remain isolated in their own subgroup, while workers are organized independently.
 
 - This enables heterogeneous scheduling — for example, placing the leader Pod on CPU nodes while placing all worker Pods on GPU nodes, with exclusive placement to ensure they land on the same GPU rack.
 
