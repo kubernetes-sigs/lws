@@ -63,6 +63,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 					leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 					leaderworkerset.RevisionKey:        leaderPod.Labels[leaderworkerset.RevisionKey],
 				},
+				Annotations: utils.InheritVolcanoAnnotations(lws),
 			},
 			Spec: volcanov1beta1.PodGroupSpec{
 				// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
