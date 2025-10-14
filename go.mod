@@ -1,6 +1,6 @@
 module sigs.k8s.io/lws
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
@@ -18,8 +18,8 @@ require (
 	k8s.io/component-base v0.34.1
 	k8s.io/component-helpers v0.34.1
 	k8s.io/klog/v2 v2.130.1
-	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
-	sigs.k8s.io/controller-runtime v0.22.1
+	k8s.io/utils v0.0.0-20250820121507-0af2bda4dd1d
+	sigs.k8s.io/controller-runtime v0.22.3
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0
 	volcano.sh/apis v1.12.1
 )
