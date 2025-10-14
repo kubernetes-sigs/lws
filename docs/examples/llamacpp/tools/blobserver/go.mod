@@ -1,6 +1,6 @@
 module sigs.k8s.io/lws/docs/examples/llamacpp/tools/blobserver
 
-go 1.24
+go 1.25
 
 require k8s.io/klog/v2 v2.110.1
 
