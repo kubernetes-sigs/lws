@@ -602,7 +602,7 @@ func UpdateWorkerTemplateImage(ctx context.Context, k8sClient client.Client, lea
 			return err
 		}
 
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginxinc/nginx-unprivileged:1.27"
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "docker.io/nginxinc/nginx-unprivileged:1.27"
 		return k8sClient.Update(ctx, &lws)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }

@@ -232,7 +232,7 @@ func MakeWorkerPodSpec() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "worker",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
 						ContainerPort: 8080,
@@ -287,7 +287,7 @@ func MakeWorkerPodSpecWithTPUResource() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "leader",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
 						ContainerPort: 8080,
@@ -313,7 +313,7 @@ func MakeLeaderPodSpec() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "leader",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 			},
 		},
 	}
@@ -350,7 +350,7 @@ func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
 			},
 			{
 				Name:  "leader",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
 						ContainerPort: 8080,
@@ -368,7 +368,7 @@ func MakeWorkerPodSpecWithVolume() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "leader",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
 						ContainerPort: 8080,
@@ -390,7 +390,7 @@ func MakeWorkerPodSpecWithVolumeAndNilImage() corev1.PodSpec {
 		Containers: []corev1.Container{
 			{
 				Name:  "leader",
-				Image: "nginxinc/nginx-unprivileged:1.27",
+				Image: "docker.io/nginxinc/nginx-unprivileged:1.27",
 				Ports: []corev1.ContainerPort{
 					{
 						ContainerPort: 8080,
