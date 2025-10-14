@@ -114,7 +114,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("worker"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
@@ -183,7 +183,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("worker"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
@@ -252,7 +252,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("leader"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
 							},
@@ -318,7 +318,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("worker"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
@@ -389,7 +389,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("leader"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
 							},
@@ -475,7 +475,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Containers: []coreapplyv1.ContainerApplyConfiguration{
 								{
 									Name:      ptr.To[string]("worker"),
-									Image:     ptr.To[string]("nginxinc/nginx-unprivileged:1.27"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
 									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
 									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
 								},
