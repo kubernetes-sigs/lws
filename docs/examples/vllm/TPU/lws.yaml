@@ -22,7 +22,7 @@ spec:
           cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-leader
-            image: vllm/vllm-tpu:437f9162d0eacf5b3f179c864c9664dfc8a020ff
+            image: vllm/vllm-tpu:latest
             env:
               - name: HUGGING_FACE_HUB_TOKEN
                 value: $HUGGING_FACE_HUB_TOKEN
@@ -56,7 +56,7 @@ spec:
           cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-worker
-            image: vllm/vllm-tpu:437f9162d0eacf5b3f179c864c9664dfc8a020ff
+            image: vllm/vllm-tpulatest
             command:
               - sh
               - -c
