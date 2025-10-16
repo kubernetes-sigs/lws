@@ -15,3 +15,5 @@ resources:
 - auth_proxy_role_binding.yaml
 - auth_proxy_client_clusterrole.yaml
 - auth_proxy_client_binding.yaml
+# If you want to enable gang scheduling with volcano, you need to uncomment the following line
+# - volcano_rbac.yaml
