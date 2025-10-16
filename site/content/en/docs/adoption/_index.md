@@ -38,6 +38,14 @@ aliases:
 [**Axlearn**](https://github.com/apple/axlearn): Axlearn is a library built on top of JAX and XLA to support the development of large-scale deep learning models. It uses LeaderWorkerSet to deploy multi-host
 inference workloads to use during training workflows.
 
+[**Kubeflow Trainer**](https://github.com/kubeflow/trainer): Kubeflow Trainer is a Kubernetes-native
+project designed for scalable LLMs fine-tuning and distributed AI model training. Kubeflow Trainer
+uses the LeaderWorkerSet API to orchestrate an in-memory,
+[distributed data cache](https://github.com/kubeflow/trainer/tree/master/pkg/data_cache) that
+optimizes performance for AI workloads. This capability enables efficient streaming of distributed
+data directly to GPU nodes, allowing seamless loading of large-scale datasets for TrainJobs and
+OptimizationJobs.
+
 [**llm-d**](https://github.com/llm-d/llm-d): llm-d is a Kubernetes-native, high-performance distributed LLM inference framework. It integrates open technologies such as vLLM for model serving and [Gateway API Inference extension (GIE)](https://github.com/kubernetes-sigs/gateway-api-inference-extension) for request scheduling and load balancing, and uses LeaderWorkerSet for scalable multi-node deployments. Key features include P/D Disaggregated serving and prefix caching.
 
 [**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
@@ -56,6 +64,7 @@ distributed model serving, see documentation [here](https://docs.sglang.ai/refer
 ## Talks and Presentations
 
 - KubeCon NA 2024: [Distributed Multi-Node Model Inference Using the LeaderWorkerSet API](https://www.youtube.com/watch?v=Al51wafTrRE) by @ahg-g @liurupeng
+- KubeCon EU 2025: [Speed up Your ML Workloads With Kubernetes Powered In-memory Data Caching](https://youtu.be/s4KAe7AtN7s) by @akshaychitneni @bigsur0
 - KubeCon EU 2025: [Project Lighting Talk: Sailing Multi-Host Inference with LWS](https://www.youtube.com/watch?v=PJ8qgKEwDyM) by @kerthcet
 - KubeCon HK 2025: [More Than Model Sharding: LWS & Distributed Inference](https://www.youtube.com/watch?v=Yzk30z_exIs)(In Chinese) by @panpan0000 @nicole-lihui
 - KubeCon HK 2025: [New Pattern for Sailing Multi-host LLM Inference](https://youtu.be/Jou7j-X_VJA) by @kerthcet
