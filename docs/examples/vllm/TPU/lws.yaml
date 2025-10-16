@@ -22,14 +22,14 @@ spec:
           cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-leader
-            image: vllm/vllm-tpu:437f9162d0eacf5b3f179c864c9664dfc8a020ff
+            image: vllm/vllm-tpu:latest
             env:
               - name: HUGGING_FACE_HUB_TOKEN
                 value: $HUGGING_FACE_HUB_TOKEN
             command:
               - sh
               - -c
-              - "bash /workspace/vllm/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+              - "bash /workspace/vllm/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
                  python3 -m vllm.entrypoints.openai.api_server --port 8080 --model meta-llama/Llama-3.3-70B-Instruct --tensor-parallel-size=16"
             resources:
               limits:
@@ -56,11 +56,11 @@ spec:
           cloud.google.com/gke-tpu-topology: 4x4
         containers:
           - name: vllm-worker
-            image: vllm/vllm-tpu:437f9162d0eacf5b3f179c864c9664dfc8a020ff
+            image: vllm/vllm-tpu:latest
             command:
               - sh
               - -c
-              - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
+              - "bash /workspace/vllm/examples/online_serving/multi-node-serving.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
             resources:
               limits:
                 google.com/tpu: "4"
