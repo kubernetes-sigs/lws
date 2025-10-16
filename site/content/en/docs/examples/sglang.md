@@ -19,7 +19,7 @@ We use LeaderWorkerSet to deploy 2 SGLang replicas, and each replica has 2 Pods,
 The leader pod runs the HTTP server, with a ClusterIP Service exposing the port.
 
 ```shell
-export HUGGING_FACE_HUB_TOKEN=<your-hf-token>
+export HF_TOKEN=<your-hf-token>
 curl https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/sglang/lws.yaml | envsubst | kubectl apply -f -
 ```
 

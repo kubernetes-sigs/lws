@@ -16,8 +16,8 @@ spec:
           - name: sglang-leader
             image: lmsysorg/sglang:latest
             env:
-              - name: HUGGING_FACE_HUB_TOKEN
-                value: $HUGGING_FACE_HUB_TOKEN
+              - name: HF_TOKEN
+                value: $HF_TOKEN
             command:
               - python3
               - -m
@@ -60,8 +60,8 @@ spec:
           - name: sglang-worker
             image: lmsysorg/sglang:latest
             env:
-            - name: HUGGING_FACE_HUB_TOKEN
-              value: $HUGGING_FACE_HUB_TOKEN
+            - name: HF_TOKEN
+              value: $HF_TOKEN
             command:
               - python3
               - -m

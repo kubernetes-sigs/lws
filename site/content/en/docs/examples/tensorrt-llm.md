@@ -26,7 +26,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/head
 We use LeaderWorkerSet to deploy the TensorRT-LLM server, each replica has 2 pods (pipeline_parallel_size=2) and 8 GPUs (tensor_parallel_size=8) per pod. The leader pod runs the http server, with a ClusterIP Service exposing the port.
 
 ```shell
-export HUGGING_FACE_HUB_TOKEN=<your-hf-token>
+export HF_TOKEN=<your-hf-token>
 curl https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/examples/tensorrt-llm/lws.yaml -s | envsubst | kubectl apply -f -
 ```
 
