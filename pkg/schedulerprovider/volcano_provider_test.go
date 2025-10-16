@@ -50,6 +50,7 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 	testLeaderPod1 := createTestLeaderPod("test-lws-0", "default", "test-lws", "0", "abc123")
 	testLeaderPod2 := createTestLeaderPod("test-lws-1", "default", "test-lws", "1", "def456")
 	testLeaderPod3 := createTestLeaderPod("test-lws-0", "default", "test-lws", "0", "xyz789")
+	testLeaderPod4 := createTestLeaderPod("test-lws-2", "default-1", "test-lws-1", "2", "jkl012")
 
 	tests := []struct {
 		name           string
@@ -153,6 +154,52 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 			expectedPG: &volcanov1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-lws-0-xyz789", Namespace: "default"},
 				Spec:       volcanov1beta1.PodGroupSpec{MinMember: 3},
+			},
+		},
+		{
+			name: "create podgroup inherit volcano annotations",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-lws-1",
+					Namespace: "default-1",
+					Annotations: map[string]string{
+						"volcano.sh/sla-waiting-time": "5m",
+					},
+				},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To[int32](3),
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{
+									Name: "worker", Image: "nginx",
+									Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+								}},
+							},
+						},
+					},
+				},
+			},
+			leaderPod:   testLeaderPod4,
+			expectError: false,
+			expectedPG: &volcanov1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-lws-1-2-jkl012",
+					Namespace: "default-1",
+					Labels: map[string]string{
+						leaderworkerset.GroupIndexLabelKey: "2",
+						leaderworkerset.SetNameLabelKey:    "test-lws-1",
+						leaderworkerset.RevisionKey:        "jkl012",
+					},
+					Annotations: map[string]string{
+						"volcano.sh/sla-waiting-time": "5m",
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(testLeaderPod4, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+				Spec: volcanov1beta1.PodGroupSpec{
+					MinMember:    3,
+					MinResources: &corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("300m")},
+				},
 			},
 		},
 		{

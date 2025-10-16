@@ -75,5 +75,10 @@ This ensures that resources for all pods are reserved before the leader starts, 
 
 To assign all groups of a LeaderWorkerSet to a specific Volcano queue, add the `scheduling.volcano.sh/queue-name` annotation to the LeaderWorkerSet metadata.
 
+
+### Volcano Scheduler Configurations
+
+To configure certain annotations in the PodGroup that are used by the Volcano scheduler to control specific scheduling behaviors, the PodGroup created by the LeaderWorkerSet will inherit the annotations starting with `volcano.sh/` from the LeaderWorkerSet's metadata.annotations.
+
 For a complete example, please refer to the [lws-sample-volcano.yaml](./lws-sample-volcano.yaml) file.
 
