@@ -282,6 +282,18 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("add leader service, one more service created", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).AddLeaderService(true)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{

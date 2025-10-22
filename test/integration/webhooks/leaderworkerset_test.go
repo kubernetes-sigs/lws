@@ -376,6 +376,26 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
+		ginkgo.Entry("addLeaderService can be updated from nil to true", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lwsWrapper := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lwsWrapper.Spec.NetworkConfig = nil
+				return lwsWrapper
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.NetworkConfig.AddLeaderService = true
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("addLeaderService can be updated from false to true", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).AddLeaderService(false)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.NetworkConfig.AddLeaderService = true
+			},
+			updateShouldFail: false,
+		}),
 		ginkgo.Entry("subdomainPolicy can be updated to nil", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name)

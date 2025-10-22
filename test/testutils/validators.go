@@ -52,7 +52,7 @@ func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorker
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, numHeadlessServices int) {
+func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet, numServices int) {
 	gomega.Eventually(func() (bool, error) {
 
 		// Always got the latest lws.
@@ -61,28 +61,35 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return false, err
 		}
 
-		var headlessService corev1.Service
-		var headlessServiceList corev1.ServiceList
-		if err := k8sClient.List(ctx, &headlessServiceList, client.InNamespace(lws.Namespace)); err != nil {
+		var service corev1.Service
+		var serviceList corev1.ServiceList
+		if err := k8sClient.List(ctx, &serviceList, client.InNamespace(lws.Namespace)); err != nil {
 			return false, err
 		}
 
-		if len(headlessServiceList.Items) != (numHeadlessServices) {
-			return false, fmt.Errorf("expected %d headless services, got %d", numHeadlessServices, len(headlessServiceList.Items))
+		if len(serviceList.Items) != (numServices) {
+			return false, fmt.Errorf("expected %d headless services, got %d", numServices, len(serviceList.Items))
 		}
 
 		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &service); err != nil {
 				return false, err
 			}
-			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
+			return validateService(service, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
+		}
+
+		if lws.Spec.NetworkConfig.AddLeaderService {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + leaderworkerset.LeaderServicePostfix, Namespace: lws.Namespace}, &service); err != nil {
+				return false, err
+			}
+			return validateService(service, lws.Name+leaderworkerset.LeaderServicePostfix, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.WorkerIndexLabelKey: "0"})
 		}
 
 		for i := 0; i < int(*lws.Spec.Replicas); i++ {
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &service); err != nil {
 				return false, err
 			}
-			if _, err := validateService(headlessService, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
+			if _, err := validateService(service, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
 				return false, err
 			}
 		}
