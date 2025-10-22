@@ -24,7 +24,8 @@ import (
 // NetworkConfigApplyConfiguration represents a declarative configuration of the NetworkConfig type for use
 // with apply.
 type NetworkConfigApplyConfiguration struct {
-	SubdomainPolicy *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	SubdomainPolicy  *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	AddLeaderService *bool                              `json:"addLeaderService,omitempty"`
 }
 
 // NetworkConfigApplyConfiguration constructs a declarative configuration of the NetworkConfig type for use with
@@ -38,5 +39,13 @@ func NetworkConfig() *NetworkConfigApplyConfiguration {
 // If called multiple times, the SubdomainPolicy field is set to the value of the last call.
 func (b *NetworkConfigApplyConfiguration) WithSubdomainPolicy(value leaderworkersetv1.SubdomainPolicy) *NetworkConfigApplyConfiguration {
 	b.SubdomainPolicy = &value
+	return b
+}
+
+// WithAddLeaderService sets the AddLeaderService field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AddLeaderService field is set to the value of the last call.
+func (b *NetworkConfigApplyConfiguration) WithAddLeaderService(value bool) *NetworkConfigApplyConfiguration {
+	b.AddLeaderService = &value
 	return b
 }

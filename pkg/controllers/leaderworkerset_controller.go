@@ -160,7 +160,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Create headless service if it does not exist.
-	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
+	if err := r.reconcileServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
 			fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -184,13 +184,23 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
-			return err
-		}
+func (r *LeaderWorkerSetReconciler) reconcileServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Spec.NetworkConfig == nil {
 		return nil
 	}
+
+	if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if err := controllerutils.CreateServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws, true); err != nil {
+			return err
+		}
+	}
+
+	if lws.Spec.NetworkConfig.AddLeaderService {
+		if err := controllerutils.CreateServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name+"-leader", map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.WorkerIndexLabelKey: "0"}, lws, false); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

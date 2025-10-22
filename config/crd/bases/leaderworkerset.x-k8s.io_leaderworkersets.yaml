@@ -17601,6 +17601,12 @@ spec:
                 description: NetworkConfig defines the network configuration of the
                   group
                 properties:
+                  addLeaderService:
+                    default: false
+                    description: |-
+                      AddLeaderService indicates whether to create a ClusterIP service for
+                      the leader pods
+                    type: boolean
                   subdomainPolicy:
                     description: |-
                       SubdomainPolicy determines the policy that will be used when creating
@@ -17610,6 +17616,7 @@ spec:
                     - UniquePerReplica
                     type: string
                 required:
+                - addLeaderService
                 - subdomainPolicy
                 type: object
               replicas:

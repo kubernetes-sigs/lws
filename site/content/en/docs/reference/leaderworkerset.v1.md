@@ -275,6 +275,14 @@ the VolumeClaimTemplates.</p>
 the headless service, defaults to shared</p>
 </td>
 </tr>
+<tr><td><code>addLeaderService</code> <B>[Required]</B><br/>
+<code>bool</code>
+</td>
+<td>
+   <p>AddLeaderService indicates whether to create a ClusterIP service for
+the leader pods</p>
+</td>
+</tr>
 </tbody>
 </table>
 
