@@ -263,6 +263,8 @@ const (
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 
+const LeaderServicePostfix string = "-leader"
+
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
 	// Partition indicates the ordinal at which the lws should be partitioned for updates.

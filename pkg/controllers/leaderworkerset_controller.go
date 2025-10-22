@@ -196,7 +196,7 @@ func (r *LeaderWorkerSetReconciler) reconcileServices(ctx context.Context, lws *
 	}
 
 	if lws.Spec.NetworkConfig.AddLeaderService {
-		if err := controllerutils.CreateServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name+"-leader", map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.WorkerIndexLabelKey: "0"}, lws, false); err != nil {
+		if err := controllerutils.CreateServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name+leaderworkerset.LeaderServicePostfix, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.WorkerIndexLabelKey: "0"}, lws, false); err != nil {
 			return err
 		}
 	}
