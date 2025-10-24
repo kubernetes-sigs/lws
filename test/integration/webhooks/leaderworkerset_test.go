@@ -376,23 +376,31 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
-		ginkgo.Entry("addLeaderService can be updated from nil to true", &testValidationCase{
+		ginkgo.Entry("leaderServicePort can be updated from empty to nonempty", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lwsWrapper := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lwsWrapper.Spec.NetworkConfig = nil
 				return lwsWrapper
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.NetworkConfig.AddLeaderService = true
+				lws.Spec.NetworkConfig.LeaderServicePort = []corev1.ServicePort{{
+					Name:       "http",
+					Port:       80,
+					TargetPort: intstr.FromInt(8080),
+				}}
 			},
 			updateShouldFail: false,
 		}),
-		ginkgo.Entry("addLeaderService can be updated from false to true", &testValidationCase{
+		ginkgo.Entry("leaderServicePort can be updated from nonempty to empty", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).AddLeaderService(false)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).LeaderServicePort([]corev1.ServicePort{{
+					Name:       "http",
+					Port:       80,
+					TargetPort: intstr.FromInt(8080),
+				}})
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.NetworkConfig.AddLeaderService = true
+				lws.Spec.NetworkConfig.LeaderServicePort = nil
 			},
 			updateShouldFail: false,
 		}),

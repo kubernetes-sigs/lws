@@ -242,10 +242,11 @@ type NetworkConfig struct {
 	// the headless service, defaults to shared
 	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
-	// AddLeaderService indicates whether to create a ClusterIP service for
-	// the leader pods
-	// +kubebuilder:default=false
-	AddLeaderService bool `json:"addLeaderService"`
+	// LeaderServicePort indicates whether to create a ClusterIP service for
+	// the leader pods. If specified, a ClusterIP service will be created for
+	// the leader pods using the given ports.
+	// +optional
+	LeaderServicePort []corev1.ServicePort `json:"leaderServicePort"`
 }
 
 type SubdomainPolicy string

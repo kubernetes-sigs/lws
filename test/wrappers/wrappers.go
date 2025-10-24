@@ -132,11 +132,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	return lwsWrapper
 }
 
-func (lwsWrapper *LeaderWorkerSetWrapper) AddLeaderService(addLeaderService bool) *LeaderWorkerSetWrapper {
+func (lwsWrapper *LeaderWorkerSetWrapper) LeaderServicePort(ports []corev1.ServicePort) *LeaderWorkerSetWrapper {
 	if lwsWrapper.Spec.NetworkConfig == nil {
 		lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
 	}
-	lwsWrapper.Spec.NetworkConfig.AddLeaderService = addLeaderService
+	lwsWrapper.Spec.NetworkConfig.LeaderServicePort = ports
 	return lwsWrapper
 }
 

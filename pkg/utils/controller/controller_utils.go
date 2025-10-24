@@ -52,6 +52,8 @@ func CreateServiceIfNotExists(ctx context.Context, k8sClient client.Client, Sche
 		// defines service as headless
 		if headless {
 			service.Spec.ClusterIP = "None"
+		} else {
+			service.Spec.Ports = lws.Spec.NetworkConfig.LeaderServicePort
 		}
 
 		// Set the controller owner reference for garbage collection and reconciliation.

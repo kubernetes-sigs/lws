@@ -18,14 +18,15 @@ limitations under the License.
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // NetworkConfigApplyConfiguration represents a declarative configuration of the NetworkConfig type for use
 // with apply.
 type NetworkConfigApplyConfiguration struct {
-	SubdomainPolicy  *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
-	AddLeaderService *bool                              `json:"addLeaderService,omitempty"`
+	SubdomainPolicy   *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	LeaderServicePort []corev1.ServicePort               `json:"leaderServicePort,omitempty"`
 }
 
 // NetworkConfigApplyConfiguration constructs a declarative configuration of the NetworkConfig type for use with
@@ -42,10 +43,12 @@ func (b *NetworkConfigApplyConfiguration) WithSubdomainPolicy(value leaderworker
 	return b
 }
 
-// WithAddLeaderService sets the AddLeaderService field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AddLeaderService field is set to the value of the last call.
-func (b *NetworkConfigApplyConfiguration) WithAddLeaderService(value bool) *NetworkConfigApplyConfiguration {
-	b.AddLeaderService = &value
+// WithLeaderServicePort adds the given value to the LeaderServicePort field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the LeaderServicePort field.
+func (b *NetworkConfigApplyConfiguration) WithLeaderServicePort(values ...corev1.ServicePort) *NetworkConfigApplyConfiguration {
+	for i := range values {
+		b.LeaderServicePort = append(b.LeaderServicePort, values[i])
+	}
 	return b
 }

@@ -275,12 +275,13 @@ the VolumeClaimTemplates.</p>
 the headless service, defaults to shared</p>
 </td>
 </tr>
-<tr><td><code>addLeaderService</code> <B>[Required]</B><br/>
-<code>bool</code>
+<tr><td><code>leaderServicePort</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#serviceport-v1-core"><code>[]k8s.io/api/core/v1.ServicePort</code></a>
 </td>
 <td>
-   <p>AddLeaderService indicates whether to create a ClusterIP service for
-the leader pods</p>
+   <p>LeaderServicePort indicates whether to create a ClusterIP service for
+the leader pods. If specified, a ClusterIP service will be created for
+the leader pods using the given ports.</p>
 </td>
 </tr>
 </tbody>

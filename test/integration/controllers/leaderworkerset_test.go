@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -284,7 +285,11 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("add leader service, one more service created", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).AddLeaderService(true)
+				return wrappers.BuildLeaderWorkerSet(nsName).LeaderServicePort([]corev1.ServicePort{{
+					Name:       "leader-port",
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+				}})
 			},
 			updates: []*update{
 				{
