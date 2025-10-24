@@ -10,59 +10,37 @@ running workloads efficiently. The bandwidth between the Pods depends on the pla
 
 This example will cover how to deploy a vLLM multi-host workload using TAS.
 
-## Install the Kueue Controller
+## Define topology levels
+In a yaml file, define the different levels of the topology, the type of resource you will schedule on, and the name of the ClusterQueue that will be created.
+
 
 ```
-kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/v0.14.1/manifests.yaml
+autoKueue:
+  tasLevels:
+  - name: "cloud.provider.com/topology-block"
+  - name: "cloud.provider.com/topology-rack"
+  - name: "kubernetes.io/hostname"
+  nodeLabel:
+    cloud-provider/gpu: "true"
+  clusterQueueName: cq
 ```
 
-## Apply the TAS configuration 
-
+## Install the Kueue Controller 
+Install the Kueue controller using helm, enabling the AutoKueue functionality
 ```
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: Topology
-metadata:
-  name: "default"
-spec:
-  levels:
-  - nodeLabel: "cloud.provider.com/topology-block"
-  - nodeLabel: "cloud.provider.com/topology-rack"
-  - nodeLabel: "kubernetes.io/hostname"
----
-kind: ResourceFlavor
-apiVersion: kueue.x-k8s.io/v1beta1
-metadata:
-  name: "tas-flavor"
-spec:
-  nodeLabels:
-    cloud.provider.com/node-group: "tas-group"
-  topologyName: "default"
-  tolerations:
-  - key: "nvidia.com/gpu"
-    operator: "Exists"
-    effect: "NoSchedule"
----
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ClusterQueue
-metadata:
-  name: "tas-cluster-queue"
-spec:
-  namespaceSelector: {} # match all.
-  resourceGroups:
-  - coveredResources: ["nvidia.com/gpu"]
-    flavors:
-    - name: "tas-flavor"
-      resources:
-      - name: "nvidia.com/gpu"
-        nominalQuota: 16
----
+$ helm install kueue oci://quay.io/edwinhr716/autokueue/kueue --version 0.14.1 --namespace=kueue-system --values <topology-yaml-file> --set "enableAutoKueue=true"
+```
+
+## Apply a LocalQueue
+Create a localQueue, using the clusterQueueName you specified.
+```
 apiVersion: kueue.x-k8s.io/v1beta1
 kind: LocalQueue
 metadata:
   namespace: "default"
   name: "tas-user-queue"
 spec:
-  clusterQueue: "tas-cluster-queue"
+  clusterQueue: "cq"
 ```
 
 ## Apply the following LWS yaml
