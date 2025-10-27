@@ -14,16 +14,19 @@ This example will cover how to deploy a vLLM multi-host workload using TAS.
 In a yaml file, define the different levels of the topology, the type of resource you will schedule on, and the name of the ClusterQueue that will be created.
 
 
-```
+{{< tabpane >}}
+{{< tab header="GKE" lang="shell" >}}
 autoKueue:
   tasLevels:
-  - name: "cloud.provider.com/topology-block"
-  - name: "cloud.provider.com/topology-rack"
-  - name: "kubernetes.io/hostname"
+    - name: "cloud.google.com/gce-topology-block"
+    - name: "cloud.google.com/gce-topology-subblock"
+    - name: "cloud.google.com/gce-topology-host"
+    - name: "kubernetes.io/hostname"
   nodeLabel:
-    cloud-provider/gpu: "true"
+    cloud.google.com/gke-gpu: "true"
   clusterQueueName: cq
-```
+{{< /tab >}}
+{{< /tabpane >}}
 
 ## Install the Kueue Controller 
 Install the Kueue controller using helm, enabling the AutoKueue functionality
