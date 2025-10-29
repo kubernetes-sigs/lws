@@ -246,7 +246,7 @@ type NetworkConfig struct {
 	// the leader pods. If specified, a ClusterIP service will be created for
 	// the leader pods using the given ports.
 	// +optional
-	LeaderServicePort []corev1.ServicePort `json:"leaderServicePort"`
+	LeaderServicePort []corev1.ServicePort `json:"leaderServicePort,omitempty"`
 }
 
 type SubdomainPolicy string
