@@ -580,7 +580,7 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-func UpdateLeaderServicePort(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, port []corev1.ServicePort) {
+func UpdateLeaderServicePorts(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, ports []corev1.ServicePort) {
 	gomega.Eventually(func() error {
 		var newLws leaderworkerset.LeaderWorkerSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
@@ -588,7 +588,7 @@ func UpdateLeaderServicePort(ctx context.Context, k8sClient client.Client, lws *
 		}
 
 		newLws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-			LeaderServicePort: port,
+			LeaderServicePorts: ports,
 		}
 		return k8sClient.Update(ctx, &newLws)
 	}, Timeout, Interval).Should(gomega.Succeed())

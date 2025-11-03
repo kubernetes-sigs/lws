@@ -303,7 +303,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-leader")).ShouldNot(gomega.Succeed())
 		}
 
-		testing.UpdateLeaderServicePort(ctx, k8sClient, lws, []corev1.ServicePort{{
+		testing.UpdateLeaderServicePorts(ctx, k8sClient, lws, []corev1.ServicePort{{
 			Name:       "tpu-port",
 			Port:       8470,
 			TargetPort: intstr.FromInt(8470),

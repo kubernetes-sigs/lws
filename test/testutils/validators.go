@@ -78,7 +78,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return validateService(service, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, true)
 		}
 
-		if len(lws.Spec.NetworkConfig.LeaderServicePort) > 0 {
+		if len(lws.Spec.NetworkConfig.LeaderServicePorts) > 0 {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + leaderworkerset.LeaderServicePostfix, Namespace: lws.Namespace}, &service); err != nil {
 				return false, err
 			}

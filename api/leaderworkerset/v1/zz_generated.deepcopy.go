@@ -186,8 +186,8 @@ func (in *NetworkConfig) DeepCopyInto(out *NetworkConfig) {
 		*out = new(SubdomainPolicy)
 		**out = **in
 	}
-	if in.LeaderServicePort != nil {
-		in, out := &in.LeaderServicePort, &out.LeaderServicePort
+	if in.LeaderServicePorts != nil {
+		in, out := &in.LeaderServicePorts, &out.LeaderServicePorts
 		*out = make([]corev1.ServicePort, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])

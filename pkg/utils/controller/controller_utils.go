@@ -53,7 +53,7 @@ func CreateServiceIfNotExists(ctx context.Context, k8sClient client.Client, Sche
 		if headless {
 			service.Spec.ClusterIP = "None"
 		} else {
-			service.Spec.Ports = lws.Spec.NetworkConfig.LeaderServicePort
+			service.Spec.Ports = lws.Spec.NetworkConfig.LeaderServicePorts
 		}
 
 		// Set the controller owner reference for garbage collection and reconciliation.

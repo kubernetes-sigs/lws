@@ -285,7 +285,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("add leader service, one more service created", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).LeaderServicePort([]corev1.ServicePort{{
+				return wrappers.BuildLeaderWorkerSet(nsName).LeaderServicePorts([]corev1.ServicePort{{
 					Name:       "leader-port",
 					Port:       8080,
 					TargetPort: intstr.FromInt(8080),

@@ -16612,9 +16612,9 @@ spec:
                 networkConfig:
                   description: NetworkConfig defines the network configuration of the group
                   properties:
-                    leaderServicePort:
+                    leaderServicePorts:
                       description: |-
-                        LeaderServicePort indicates whether to create a ClusterIP service for
+                        LeaderServicePorts indicates whether to create a ClusterIP service for
                         the leader pods. If specified, a ClusterIP service will be created for
                         the leader pods using the given ports.
                       items:
