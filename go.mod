@@ -19,7 +19,7 @@ require (
 	k8s.io/component-helpers v0.34.1
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20250820121507-0af2bda4dd1d
-	sigs.k8s.io/controller-runtime v0.22.3
+	sigs.k8s.io/controller-runtime v0.22.4
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0
 	volcano.sh/apis v1.12.1
 )
