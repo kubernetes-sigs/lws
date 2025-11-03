@@ -4,6 +4,12 @@ metadata:
   name: vllm
 spec:
   replicas: 2
+  networkConfig:
+    leaderServicePort:
+      - name: http
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
   leaderWorkerTemplate:
     size: 2
     restartPolicy: RecreateGroupOnPodRestart
@@ -74,18 +80,3 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 15Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm-leader
-spec:
-  ports:
-    - name: http
-      port: 8080
-      protocol: TCP
-      targetPort: 8080
-  selector:
-    leaderworkerset.sigs.k8s.io/name: vllm
-    role: leader
-  type: ClusterIP

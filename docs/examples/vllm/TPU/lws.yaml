@@ -9,6 +9,12 @@ spec:
       maxUnavailable: 1
       maxSurge: 1
   replicas: 2
+  networkConfig:
+    leaderServicePorts:
+      - name: http
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
   leaderWorkerTemplate:
     size: 4
     restartPolicy: RecreateGroupOnPodRestart
@@ -75,18 +81,3 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 30Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm-leader
-spec:
-  ports:
-    - name: http
-      port: 8080
-      protocol: TCP
-      targetPort: 8080
-  selector:
-    leaderworkerset.sigs.k8s.io/name: vllm
-    role: leader
-  type: ClusterIP
