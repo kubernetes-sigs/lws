@@ -21,7 +21,6 @@
       - v1
       operations:
       - CREATE
-      - UPDATE
       resources:
       - pods
     sideEffects: None
