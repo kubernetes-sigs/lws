@@ -10,7 +10,7 @@ description: >
 
 In this example, we demonstrate how to deploy a distributed inference service using LeaderWorkerSet (LWS) with [SGLang](https://docs.sglang.ai/) on GPU clusters.
 
-SGLang provides native support for distributed tensor-parallel inference and serving, enabling efficient deployment of large language models (LLMs) such as DeepSeek-R1 671B and Llama-3.1-405B across multiple nodes. This example uses the [meta-llama/Meta-Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) model to demonstrate multi-node serving capabilities. For implementation details on distributed execution, see the SGLang docs [Run Multi-Node Inference](https://docs.sglang.ai/references/multi_node.html).
+SGLang provides native support for distributed tensor-parallel inference and serving, enabling efficient deployment of large language models (LLMs) such as DeepSeek-R1 671B and Llama-3.1-405B across multiple nodes. This example uses the [meta-llama/Meta-Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) model to demonstrate multi-node serving capabilities. For implementation details on distributed execution, see the SGLang docs [Run Multi-Node Inference](https://docs.sglang.ai/references/multi_node_deployment/multi_node.html).
 
 Since SGLang employs tensor parallelism for multi-node inference, which requires more frequent communications than pipeline parallelism, ensure high-speed bandwidth between nodes to avoid poor performance.
 

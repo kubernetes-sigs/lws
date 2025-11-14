@@ -56,7 +56,7 @@ OptimizationJobs.
 it leverages LWS for multi-node inference, see documentation [here](https://docs.sglang.ai/ome/docs/concepts/inference_service/#multi-node-mode)
 
 [**SGLang**](https://github.com/sgl-project/sglang): SGLang, a fast serving framework for large language models and vision language models. It can be deployed with LWS on Kubernetes for
-distributed model serving, see documentation [here](https://docs.sglang.ai/references/deploy_on_k8s.html#deploy-on-kubernetes)
+distributed model serving, see documentation [here](https://docs.sglang.ai/references/multi_node_deployment/deploy_on_k8s.html)
 
 [**vLLM**](https://github.com/vllm-project/vllm): vLLM is a fast and easy-to-use library for LLM inference, it can be deployed with LWS on Kubernetes for distributed model serving, see documentation [here](https://docs.vllm.ai/en/stable/deployment/frameworks/lws.html).
 
