@@ -89,7 +89,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			}
 
 			for _, expectedAnnotation := range expectedAnnotations {
-				gomega.Expect(pod.Labels[expectedAnnotation]).To(gomega.Not(gomega.BeNil()))
+				gomega.Expect(pod.Annotations[expectedAnnotation]).To(gomega.Not(gomega.BeNil()))
 			}
 		}
 
@@ -203,7 +203,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			}
 
 			for _, expectedAnnotation := range expectedAnnotations {
-				gomega.Expect(pod.Labels[expectedAnnotation]).To(gomega.Not(gomega.BeNil()))
+				gomega.Expect(pod.Annotations[expectedAnnotation]).To(gomega.Not(gomega.BeNil()))
 			}
 
 		}
@@ -260,7 +260,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		for _, p := range lwsPods.Items {
 			gomega.Expect(testing.CheckAnnotation(p, leaderworkerset.SizeAnnotationKey, strconv.Itoa(newSize))).To(gomega.Succeed())
 		}
-		gomega.Expect(len(lwsPods.Items) == newSize*replicas).To(gomega.BeTrue())
+		gomega.Expect(len(lwsPods.Items)).To(gomega.Equal(newSize * replicas))
 	})
 
 	ginkgo.It("When changing subdomainPolicy, adds correct env vars", func() {
@@ -476,6 +476,7 @@ func serviceAccountToken(serviceAccountName, namespace string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer os.Remove(tokenRequestFile)
 
 	var out string
 	verifyTokenCreation := func(g gomega.Gomega) {
