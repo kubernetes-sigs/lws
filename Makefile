@@ -378,6 +378,7 @@ YQ = $(PROJECT_DIR)/bin/yq
 yq: ## Download yq locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/mikefarah/yq/v4@v4.45.1
 
+.PHONY: crds
 crds: kustomize yq # update helm CRD files
 	$(KUSTOMIZE) build config/default \
 	| $(YQ) 'select(.kind == "CustomResourceDefinition")' \
