@@ -18,6 +18,7 @@ package schedulerprovider
 
 import (
 	"context"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +32,8 @@ import (
 )
 
 const (
-	Volcano ProviderType = "volcano"
+	Volcano                 ProviderType = "volcano"
+	VolcanoAnnotationPrefix string       = "volcano.sh/"
 )
 
 type VolcanoProvider struct {
@@ -63,6 +65,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 					leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
 					leaderworkerset.RevisionKey:        leaderPod.Labels[leaderworkerset.RevisionKey],
 				},
+				Annotations: inheritVolcanoAnnotations(lws),
 			},
 			Spec: volcanov1beta1.PodGroupSpec{
 				// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
@@ -103,4 +106,14 @@ func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey] = GetPodGroupName(lwsName, groupIndex, pod.Labels[leaderworkerset.RevisionKey])
 
 	return nil
+}
+
+func inheritVolcanoAnnotations(lws *leaderworkerset.LeaderWorkerSet) map[string]string {
+	res := map[string]string{}
+	for k, v := range lws.Annotations {
+		if strings.HasPrefix(k, VolcanoAnnotationPrefix) {
+			res[k] = v
+		}
+	}
+	return res
 }
