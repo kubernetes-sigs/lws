@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	appsv1 "k8s.io/api/apps/v1"
 )
 
 func TestGetParentNameAndOrdinal(t *testing.T) {
@@ -72,6 +73,80 @@ func TestGetParentNameAndOrdinal(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.wantOrd, ord); diff != "" {
 				t.Errorf("unexpected ordinal: %s", diff)
+			}
+		})
+	}
+}
+
+func TestStatefulsetReady(t *testing.T) {
+	replicas := int32(3)
+	tests := []struct {
+		name     string
+		sts      appsv1.StatefulSet
+		wantBool bool
+	}{
+		{
+			name: "statefulset is ready when AvailableReplicas equals Spec.Replicas and revisions match",
+			sts: appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					AvailableReplicas: 3,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-1",
+				},
+			},
+			wantBool: true,
+		},
+		{
+			name: "statefulset is not ready when AvailableReplicas less than Spec.Replicas",
+			sts: appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					AvailableReplicas: 2,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-1",
+				},
+			},
+			wantBool: false,
+		},
+		{
+			name: "statefulset is not ready when CurrentRevision != UpdateRevision",
+			sts: appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					AvailableReplicas: 3,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-2",
+				},
+			},
+			wantBool: false,
+		},
+		{
+			name: "statefulset is not ready when both conditions fail",
+			sts: appsv1.StatefulSet{
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: &replicas,
+				},
+				Status: appsv1.StatefulSetStatus{
+					AvailableReplicas: 2,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-2",
+				},
+			},
+			wantBool: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StatefulsetReady(tc.sts)
+			if diff := cmp.Diff(tc.wantBool, got); diff != "" {
+				t.Errorf("unexpected StatefulsetReady result: %s", diff)
 			}
 		})
 	}
