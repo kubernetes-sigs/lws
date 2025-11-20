@@ -46,6 +46,6 @@ func GetParentNameAndOrdinal(name string) (string, int) {
 
 // StatefulsetReady checks whether a sts is ready.
 func StatefulsetReady(sts appsv1.StatefulSet) bool {
-	return *sts.Spec.Replicas == sts.Status.AvailableReplicas &&
+	return *sts.Spec.Replicas == sts.Status.ReadyReplicas &&
 		sts.Status.CurrentRevision == sts.Status.UpdateRevision
 }
