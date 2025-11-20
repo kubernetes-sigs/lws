@@ -92,7 +92,7 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:  3,
+					ReadyReplicas:   3,
 					CurrentRevision: "rev-1",
 					UpdateRevision:  "rev-1",
 				},
@@ -106,7 +106,7 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:  2,
+					ReadyReplicas:   2,
 					CurrentRevision: "rev-1",
 					UpdateRevision:  "rev-1",
 				},
@@ -120,7 +120,7 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:  3,
+					ReadyReplicas:   3,
 					CurrentRevision: "rev-1",
 					UpdateRevision:  "rev-2",
 				},
@@ -134,7 +134,7 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:  2,
+					ReadyReplicas:   2,
 					CurrentRevision: "rev-1",
 					UpdateRevision:  "rev-2",
 				},
