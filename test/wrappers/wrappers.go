@@ -336,6 +336,13 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 	}
 }
 
+func MakeLeaderPodSpecWithTPUResourceAndNodeSelector(key, value string) corev1.PodSpec {
+	leaderPodSpec := MakeLeaderPodSpecWithTPUResource()
+	leaderPodSpec.NodeSelector = make(map[string]string)
+	leaderPodSpec.NodeSelector[key] = value
+	return leaderPodSpec
+}
+
 func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{

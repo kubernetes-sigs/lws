@@ -30,13 +30,15 @@ import (
 
 func TestAddTPUVariables(t *testing.T) {
 	tests := []struct {
-		name                       string
-		pod                        *corev1.Pod
-		size                       int
-		hasWorkerIndexLabelKey     bool
-		expectedTpuWorkerHostNames string
-		expectedTpuWorkerId        string
-		expectedTpuName            string
+		name                        string
+		pod                         *corev1.Pod
+		size                        int
+		hasWorkerIndexLabelKey      bool
+		expectedTpuWorkerHostNames  string
+		expectedTpuWorkerId         string
+		expectedTpuName             string
+		expectedTpuProcessAddresses string
+		expectedTpuProcessPort      string
 	}{
 		{
 			name: "Worker Index is 0",
@@ -77,6 +79,29 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuWorkerId:        "3",
 			expectedTpuName:            "test-sample-1",
 		},
+		{
+			name: "Worker Index is non-zero, size is above 2, tpu7x",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResourceAndNodeSelector(TpuAcceleratorLabel, Tpu7xAccelerator),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-3",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey: "3",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
+				},
+			},
+			size:                        5,
+			hasWorkerIndexLabelKey:      true,
+			expectedTpuWorkerHostNames:  "test-sample-1.default,test-sample-1-1.default,test-sample-1-2.default,test-sample-1-3.default,test-sample-1-4.default",
+			expectedTpuWorkerId:         "3",
+			expectedTpuName:             "test-sample-1",
+			expectedTpuProcessAddresses: "test-sample-1.default:8476,test-sample-1-1.default:8476,test-sample-1-2.default:8476,test-sample-1-3.default:8476,test-sample-1-4.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
 	}
 
 	for _, tc := range tests {
@@ -102,6 +127,14 @@ func TestAddTPUVariables(t *testing.T) {
 				if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[2].Value, tc.expectedTpuName); diff != "" {
 					t.Errorf("unexpected add TPU Name operation: %s", diff)
 				}
+				if tc.expectedTpuProcessAddresses != "" {
+					if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[3].Value, tc.expectedTpuProcessAddresses); diff != "" {
+						t.Errorf("unexpected add TPU process addresses operation: %s", diff)
+					}
+					if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[4].Value, tc.expectedTpuProcessPort); diff != "" {
+						t.Errorf("unexpected add TPU process port operation: %s", diff)
+					}
+				}
 			}
 		})
 	}
@@ -109,11 +142,13 @@ func TestAddTPUVariables(t *testing.T) {
 
 func TestAddTPUVariablesSubGroup(t *testing.T) {
 	tests := []struct {
-		name                       string
-		pod                        *corev1.Pod
-		expectedTpuWorkerHostNames string
-		expectedTpuWorkerId        string
-		expectedTpuName            string
+		name                        string
+		pod                         *corev1.Pod
+		expectedTpuWorkerHostNames  string
+		expectedTpuWorkerId         string
+		expectedTpuName             string
+		expectedTpuProcessAddresses string
+		expectedTpuProcessPort      string
 	}{
 		{
 			name: "Leader requests TPU resources",
@@ -198,6 +233,29 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			expectedTpuWorkerHostNames: "test-sample-0-1.default,test-sample-0-2.default",
 			expectedTpuName:            "test-sample-0",
 		},
+		{
+			name: "Leader requests TPU resources, worker with subgroup index > 0, v7x",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResourceAndNodeSelector(TpuAcceleratorLabel, Tpu7xAccelerator),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1-7",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "7",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:           "true",
+						leaderworkerset.SubGroupSizeAnnotationKey: "4",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "3",
+			expectedTpuWorkerHostNames:  "test-sample-1-4.default,test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default",
+			expectedTpuName:             "test-sample-1",
+			expectedTpuProcessAddresses: "test-sample-1-4.default:8476,test-sample-1-5.default:8476,test-sample-1-6.default:8476,test-sample-1-7.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +271,14 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[2].Value, tc.expectedTpuName); diff != "" {
 				t.Errorf("unexpected add TPU Name operation: %s", diff)
+			}
+			if tc.expectedTpuProcessAddresses != "" {
+				if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[3].Value, tc.expectedTpuProcessAddresses); diff != "" {
+					t.Errorf("unexpected add TPU process addresses operation: %s", diff)
+				}
+				if diff := cmp.Diff(tc.pod.Spec.Containers[0].Env[4].Value, tc.expectedTpuProcessPort); diff != "" {
+					t.Errorf("unexpected add TPU process port operation: %s", diff)
+				}
 			}
 		})
 	}
