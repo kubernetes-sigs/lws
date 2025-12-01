@@ -86,29 +86,29 @@ func TestStatefulsetReady(t *testing.T) {
 		wantBool bool
 	}{
 		{
-			name: "statefulset is ready when ReadyReplicas equals Spec.Replicas and revisions match",
+			name: "statefulset is ready when AvailableReplicas equals Spec.Replicas and revisions match",
 			sts: appsv1.StatefulSet{
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:   3,
-					CurrentRevision: "rev-1",
-					UpdateRevision:  "rev-1",
+					AvailableReplicas: 3,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-1",
 				},
 			},
 			wantBool: true,
 		},
 		{
-			name: "statefulset is not ready when ReadyReplicas less than Spec.Replicas",
+			name: "statefulset is not ready when AvailableReplicas less than Spec.Replicas",
 			sts: appsv1.StatefulSet{
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:   2,
-					CurrentRevision: "rev-1",
-					UpdateRevision:  "rev-1",
+					AvailableReplicas: 2,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-1",
 				},
 			},
 			wantBool: false,
@@ -120,9 +120,9 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:   3,
-					CurrentRevision: "rev-1",
-					UpdateRevision:  "rev-2",
+					AvailableReplicas: 3,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-2",
 				},
 			},
 			wantBool: false,
@@ -134,9 +134,9 @@ func TestStatefulsetReady(t *testing.T) {
 					Replicas: &replicas,
 				},
 				Status: appsv1.StatefulSetStatus{
-					ReadyReplicas:   2,
-					CurrentRevision: "rev-1",
-					UpdateRevision:  "rev-2",
+					AvailableReplicas: 2,
+					CurrentRevision:   "rev-1",
+					UpdateRevision:    "rev-2",
 				},
 			},
 			wantBool: false,
