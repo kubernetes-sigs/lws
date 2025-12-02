@@ -67,7 +67,7 @@ kind: LeaderWorkerSet
 metadata:
   name: vllm
   labels:
-    kueue.x-k8s.io/queue-name: tas-user-queue
+    kueue.x-k8s.io/queue-name: default
 spec:
   replicas: 1
   leaderWorkerTemplate:
