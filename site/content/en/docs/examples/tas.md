@@ -11,39 +11,52 @@ running workloads efficiently. The bandwidth between the Pods depends on the pla
 This example will cover how to deploy a vLLM multi-host workload using TAS.
 
 ## Define topology levels
-In a yaml file, define the different levels of the topology, the type of resource you will schedule on, and the name of the ClusterQueue that will be created.
+In a yaml file, define the different levels of the topology and the type of resource you will schedule on.
 
 
 {{< tabpane >}}
 {{< tab header="GKE" lang="shell" >}}
-autoKueue:
-  tasLevels:
-    - name: "cloud.google.com/gce-topology-block"
-    - name: "cloud.google.com/gce-topology-subblock"
-    - name: "cloud.google.com/gce-topology-host"
-    - name: "kubernetes.io/hostname"
-  nodeLabel:
-    cloud.google.com/gke-gpu: "true"
-  clusterQueueName: cq
+kueuePopulator:
+  config:
+    topology:
+      levels:
+        - nodeLabel: "cloud.google.com/gce-topology-block"
+        - nodeLabel: "cloud.google.com/gce-topology-subblock"
+        - nodeLabel: "cloud.google.com/gce-topology-host"
+        - nodeLabel: "kubernetes.io/hostname"
+    resourceFlavor:
+      nodeLabels:
+        cloud.google.com/gke-gpu: "true"
 {{< /tab >}}
 {{< /tabpane >}}
 
 ## Install the Kueue Controller 
-Install the Kueue controller using helm, enabling the AutoKueue functionality
+In a yaml file, enable LWS support for the Kueue controller
+
 ```
-$ helm install kueue oci://quay.io/edwinhr716/autokueue/kueue --version 0.14.1 --namespace=kueue-system --values <topology-yaml-file> --set "enableAutoKueue=true"
+managerConfig:
+  controllerManagerConfigYaml: |-
+    integrations:
+      frameworks:
+      - "leaderworkerset.x-k8s.io/leaderworkerset"
 ```
 
-## Apply a LocalQueue
-Create a localQueue, using the clusterQueueName you specified.
+Install the Kueue controller, passing the yaml file to enable LWS
+
 ```
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: LocalQueue
-metadata:
-  namespace: "default"
-  name: "tas-user-queue"
-spec:
-  clusterQueue: "cq"
+$ helm install kueue oci://registry.k8s.io/kueue/charts/kueue   --version 0.15.0  --namespace kueue-system   --create-namespace --values 
+<lws-enabled-yaml>   --wait
+```
+
+Now install Kueue-populator, passing the topology definition
+
+```
+helm install kueue-populator oci://us-central1-docker.pkg.dev/k8s-staging-images/kueue/charts/kueue-populator \
+  --version 0.15.0 \
+  --namespace kueue-system \
+  --create-namespace \
+  --wait \
+  -f <topology-yaml-file>
 ```
 
 ## Apply the following LWS yaml
