@@ -12,7 +12,7 @@ jobs:
       - name: Set up Go 1.x
         uses: actions/setup-go@v6
         with:
-          go-version: 1.25.3
+          go-version: 1.25
         id: go
 
       - name: Checkout code
@@ -24,7 +24,7 @@ jobs:
           docker buildx build --no-cache --output=type=docker -t test/lws:latest \
              --platform=linux/amd64 \
              --build-arg BASE_IMAGE=gcr.io/distroless/static:nonroot \
-             --build-arg BUILDER_IMAGE=golang:1.25.3 \
+             --build-arg BUILDER_IMAGE=golang:1.25 \
              --build-arg CGO_ENABLED=0 \
              -f ./Dockerfile .
 
