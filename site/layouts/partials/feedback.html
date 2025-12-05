@@ -20,10 +20,10 @@
       <button class="btn btn-primary feedback--answer feedback--answer-yes" style="width: 5rem;">Yes</button>
       <button class="btn btn-primary feedback--answer feedback--answer-no" style="width: 5rem;">No</button>
       <p class="feedback--response feedback--response-yes">
-        {{ .yes | safeHTML }}
+        {{ .Site.Params.ui.feedback.yes | safeHTML }}
       </p>
       <p class="feedback--response feedback--response-no">
-        {{ .no | safeHTML }}
+        {{ .Site.Params.ui.feedback.no | safeHTML }}
       </p>
     </div>
   </div>

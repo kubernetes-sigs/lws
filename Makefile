@@ -326,6 +326,10 @@ code-generator:
 	cp -f $(CODEGEN_ROOT)/generate-internal-groups.sh $(PROJECT_DIR)/bin/
 	cp -f $(CODEGEN_ROOT)/kube_codegen.sh $(PROJECT_DIR)/bin/
 
+.PHONY: site-server
+site-server: hugo
+	(cd site; $(HUGO) server)
+
 ##@ Release
 .PHONY: artifacts
 artifacts: kustomize helm yq
@@ -345,7 +349,7 @@ artifacts: kustomize helm yq
 
 .PHONY: prepare-release-branch
 prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
-	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md -i site/config.toml
+	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md -i site/hugo.toml
 	$(SED) -r 's/--version="v?[0-9]+\.[0-9]+\.[0-9]+/--version="$(CHART_VERSION)/g' -i charts/lws/README.md
 	$(SED) -r 's/\bVERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/VERSION=\1$(RELEASE_VERSION)/g' -i site/content/en/docs/installation/_index.md
 	$(SED) -r 's/\bCHART_VERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/CHART_VERSION=\1$(CHART_VERSION)/g' -i site/content/en/docs/installation/_index.md
@@ -377,6 +381,12 @@ YQ = $(PROJECT_DIR)/bin/yq
 .PHONY: yq
 yq: ## Download yq locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install github.com/mikefarah/yq/v4@v4.45.1
+
+
+HUGO = $(PROJECT_DIR)/bin/hugo
+.PHONY: hugo
+hugo:
+	@GOBIN=$(PROJECT_DIR)/bin CGO_ENABLED=1 $(GO_CMD) install -tags extended github.com/gohugoio/hugo@v0.152.2
 
 .PHONY: crds
 crds: kustomize yq # update helm CRD files
