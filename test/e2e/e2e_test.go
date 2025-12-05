@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -285,6 +286,34 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		for _, pod := range lwsPodsAfterUpgrade.Items {
 			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
 			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-0.test-sample,test-sample-0-1.test-sample")).Should(gomega.Succeed())
+		}
+	})
+
+	ginkgo.It("When changing addLeaderService, adds correct env vars", func() {
+		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
+		workerPodSpec := wrappers.MakeWorkerPodSpecWithTPUResource()
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(workerPodSpec).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		lwsPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+
+		for _, pod := range lwsPods.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-leader")).ShouldNot(gomega.Succeed())
+		}
+
+		testing.UpdateLeaderServicePorts(ctx, k8sClient, lws, []corev1.ServicePort{{
+			Name:       "tpu-port",
+			Port:       8470,
+			TargetPort: intstr.FromInt(8470),
+		}})
+		lwsPodsAfterUpgrade := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPodsAfterUpgrade)
+
+		for _, pod := range lwsPodsAfterUpgrade.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(pod)).To(gomega.BeTrue())
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(pod, "test-sample-leader")).Should(gomega.Succeed())
 		}
 	})
 
