@@ -206,6 +206,18 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
 		return false, nil
 	}
+
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod)
+	if err != nil {
+		return false, err
+	}
+
+	_, foundKey := pod.Annotations[leaderworkerset.DefaultRecreateGroupOnPodRestartKey]
+
+	if pendingPods && !foundKey {
+		return false, nil
+	}
+
 	var leader corev1.Pod
 	if !podutils.LeaderPod(pod) {
 		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
@@ -277,6 +289,37 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 		return "", fmt.Errorf("node does not have topology label: %s", topology)
 	}
 	return topology, nil
+}
+
+func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod) (bool, error) {
+	groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
+	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+	groupSize, err := strconv.Atoi(pod.Labels[leaderworkerset.LwsGroupSize])
+
+	if err != nil {
+		return false, err
+	}
+
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:    lwsName,
+		leaderworkerset.GroupIndexLabelKey: groupIndex,
+	})
+
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, podSelector, client.InNamespace(pod.Namespace)); err != nil {
+		return false, err
+	}
+
+	if groupSize != len(podList.Items) {
+		return true, nil
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodPending {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet

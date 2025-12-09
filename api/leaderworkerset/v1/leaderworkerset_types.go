@@ -92,6 +92,8 @@ const (
 	// Leader pods will have an annotation that determines what type of domain
 	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
 	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
+
+	DefaultRecreateGroupOnPodRestartKey string = "leaderworkerset.sigs.k8s.io/defaultRecreateGroupOnPodRestart"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
