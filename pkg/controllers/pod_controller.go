@@ -199,6 +199,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
 	if leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy != leaderworkerset.RecreateGroupOnPodRestart {
 		return false, nil
 	}
@@ -207,7 +208,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod)
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod, int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size))
 	if err != nil {
 		return false, err
 	}
@@ -215,6 +216,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	_, foundKey := pod.Annotations[leaderworkerset.DefaultRecreateGroupOnPodRestartKey]
 
 	if pendingPods && !foundKey {
+		log.V(2).Info("Skipping RecreateGroupOnPodRestart because there is a pod pending: %s", pod.Name)
 		return false, nil
 	}
 
@@ -291,14 +293,10 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 	return topology, nil
 }
 
-func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod) (bool, error) {
+func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, groupSize int) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
 	groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
-	groupSize, err := strconv.Atoi(pod.Labels[leaderworkerset.LwsGroupSize])
-
-	if err != nil {
-		return false, err
-	}
 
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:    lwsName,
@@ -314,8 +312,9 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod) 
 		return true, nil
 	}
 
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodPending {
+	for _, groupPod := range podList.Items {
+		if groupPod.Status.Phase == corev1.PodPending {
+			log.V(2).Info("pod %s is set to pending", pod.Name)
 			return true, nil
 		}
 	}
