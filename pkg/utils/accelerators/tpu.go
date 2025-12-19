@@ -29,17 +29,16 @@ import (
 )
 
 const (
-	TpuResourceName     corev1.ResourceName = corev1.ResourceName("google.com/tpu")
-	TpuWorkerHostNames  string              = "TPU_WORKER_HOSTNAMES"
-	TpuProcessAddresses string              = "TPU_PROCESS_ADDRESSES"
-	TpuProcessPortName  string              = "TPU_PROCESS_PORT"
-	TpuProcessPort      string              = "8476"
-	TpuWorkerId         string              = "TPU_WORKER_ID"
-	TpuName             string              = "TPU_NAME"
-	Tpu
-	LeaderRequestsTPUsAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
-	TpuAcceleratorLabel             string = "cloud.google.com/gke-tpu-accelerator"
-	Tpu7xAccelerator                string = "tpu7x"
+	TpuResourceName                 corev1.ResourceName = corev1.ResourceName("google.com/tpu")
+	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
+	TpuProcessAddresses             string              = "TPU_PROCESS_ADDRESSES"
+	TpuProcessPortName              string              = "TPU_PROCESS_PORT"
+	TpuProcessPort                  string              = "8476"
+	TpuWorkerId                     string              = "TPU_WORKER_ID"
+	TpuName                         string              = "TPU_NAME"
+	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
+	TpuAcceleratorLabel             string              = "cloud.google.com/gke-tpu-accelerator"
+	Tpu7xAccelerator                string              = "tpu7x"
 )
 
 // PodRequestsTPUs returns true if the pod requesting TPUs
