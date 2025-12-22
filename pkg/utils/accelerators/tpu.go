@@ -34,7 +34,7 @@ const (
 	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
 	TpuProcessAddresses             string              = "TPU_PROCESS_ADDRESSES"
 	TpuProcessPortName              string              = "TPU_PROCESS_PORT"
-	TpuProcessDefaultPort                  string              = "8476"
+	TpuProcessDefaultPort           string              = "8476"
 	TpuWorkerId                     string              = "TPU_WORKER_ID"
 	TpuName                         string              = "TPU_NAME"
 	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
@@ -122,7 +122,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
 	if !tpuProcessPortInContainer {
 		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
-		tpuProcessPort = TpuProcessPort
+		tpuProcessPort = TpuProcessDefaultPort
 	}
 
 	start := subGroupSize*subGroupIndex + 1
@@ -207,7 +207,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
 	if !tpuProcessPortInContainer {
 		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
-		tpuProcessPort = TpuProcessPort
+		tpuProcessPort = TpuProcessDefaultPort
 	}
 
 	leaderName := pod.Name

@@ -140,7 +140,7 @@ func TestAddTPUVariables(t *testing.T) {
 						if diff := cmp.Diff(envVar.Value, tc.expectedTpuProcessAddresses); diff != "" {
 							t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 						}
-					case TpuProcessPort:
+					case TpuProcessPortName:
 						if diff := cmp.Diff(envVar.Value, tc.expectedTpuProcessPort); diff != "" {
 							t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 						}
@@ -299,7 +299,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 					if diff := cmp.Diff(envVar.Value, tc.expectedTpuProcessAddresses); diff != "" {
 						t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 					}
-				case TpuProcessPort:
+				case TpuProcessPortName:
 					if diff := cmp.Diff(envVar.Value, tc.expectedTpuProcessPort); diff != "" {
 						t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 					}
