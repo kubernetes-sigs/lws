@@ -34,7 +34,7 @@ const (
 	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
 	TpuProcessAddresses             string              = "TPU_PROCESS_ADDRESSES"
 	TpuProcessPortName              string              = "TPU_PROCESS_PORT"
-	TpuProcessPort                  string              = "8476"
+	TpuProcessDefaultPort                  string              = "8476"
 	TpuWorkerId                     string              = "TPU_WORKER_ID"
 	TpuName                         string              = "TPU_NAME"
 	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
