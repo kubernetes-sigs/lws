@@ -4,6 +4,12 @@ metadata:
   name: lws
 spec:
   replicas: 2
+  networkConfig:
+    leaderServicePorts:
+      - name: http
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
   leaderWorkerTemplate:
     size: 2
     restartPolicy: RecreateGroupOnPodRestart
@@ -43,18 +49,3 @@ spec:
             volumeMounts:
               - mountPath: /mnt/volume
                 name: persistent-storage
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: lws-leader
-spec:
-  ports:
-    - name: http
-      port: 8080
-      protocol: TCP
-      targetPort: 8080
-  selector:
-    leaderworkerset.sigs.k8s.io/name: lws
-    role: leader
-  type: ClusterIP

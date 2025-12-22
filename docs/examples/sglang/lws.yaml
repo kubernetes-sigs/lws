@@ -4,6 +4,11 @@ metadata:
   name: sglang
 spec:
   replicas: 2
+  networkConfig:
+    leaderServicePorts:
+      - port: 40000
+        protocol: TCP
+        targetPort: 40000
   leaderWorkerTemplate:
     size: 2
     restartPolicy: RecreateGroupOnPodRestart
@@ -87,16 +92,3 @@ spec:
           - name: dshm
             emptyDir:
               medium: Memory
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: sglang-leader
-spec:
-  selector:
-    leaderworkerset.sigs.k8s.io/name: sglang
-    role: leader
-  ports:
-    - protocol: TCP
-      port: 40000
-      targetPort: 40000

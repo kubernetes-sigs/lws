@@ -18,13 +18,15 @@ limitations under the License.
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // NetworkConfigApplyConfiguration represents a declarative configuration of the NetworkConfig type for use
 // with apply.
 type NetworkConfigApplyConfiguration struct {
-	SubdomainPolicy *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	SubdomainPolicy    *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	LeaderServicePorts []corev1.ServicePort               `json:"leaderServicePorts,omitempty"`
 }
 
 // NetworkConfigApplyConfiguration constructs a declarative configuration of the NetworkConfig type for use with
@@ -38,5 +40,15 @@ func NetworkConfig() *NetworkConfigApplyConfiguration {
 // If called multiple times, the SubdomainPolicy field is set to the value of the last call.
 func (b *NetworkConfigApplyConfiguration) WithSubdomainPolicy(value leaderworkersetv1.SubdomainPolicy) *NetworkConfigApplyConfiguration {
 	b.SubdomainPolicy = &value
+	return b
+}
+
+// WithLeaderServicePorts adds the given value to the LeaderServicePorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the LeaderServicePorts field.
+func (b *NetworkConfigApplyConfiguration) WithLeaderServicePorts(values ...corev1.ServicePort) *NetworkConfigApplyConfiguration {
+	for i := range values {
+		b.LeaderServicePorts = append(b.LeaderServicePorts, values[i])
+	}
 	return b
 }

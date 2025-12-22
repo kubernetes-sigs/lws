@@ -242,6 +242,11 @@ type NetworkConfig struct {
 	// the headless service, defaults to shared
 	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
+	// LeaderServicePorts indicates whether to create a ClusterIP service for
+	// the leader pods. If specified, a ClusterIP service will be created for
+	// the leader pods using the given ports.
+	// +optional
+	LeaderServicePorts []corev1.ServicePort `json:"leaderServicePorts,omitempty"`
 }
 
 type SubdomainPolicy string
@@ -258,6 +263,8 @@ const (
 	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
+
+const LeaderServicePostfix string = "-leader"
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
