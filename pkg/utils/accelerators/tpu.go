@@ -25,6 +25,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
 
@@ -37,8 +38,6 @@ const (
 	TpuWorkerId                     string              = "TPU_WORKER_ID"
 	TpuName                         string              = "TPU_NAME"
 	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
-	TpuAcceleratorLabel             string              = "cloud.google.com/gke-tpu-accelerator"
-	Tpu7xAccelerator                string              = "tpu7x"
 )
 
 // PodRequestsTPUs returns true if the pod requesting TPUs
@@ -120,6 +119,12 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
 	}
 
+	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
+	if !tpuProcessPortInContainer {
+		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
+		tpuProcessPort = TpuProcessPort
+	}
+
 	start := subGroupSize*subGroupIndex + 1
 	end := subGroupSize * (subGroupIndex + 1)
 	var hostnames []string
@@ -128,7 +133,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		// The leader requests TPU resources, so it should be included in hostnames.
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, TpuProcessPort))
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
 		end -= 1
 	} else {
 		leaderName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
@@ -140,7 +145,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 			// the hostname list should shift to the left by one
 			end -= 1
 			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, TpuProcessPort))
+			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
 		} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
 			// Since the first subGroup has been shifted to the left by one, all other subsequent
 			// subGroups should be shifted as well
@@ -151,10 +156,9 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 
 	for i := start; i <= end; i++ {
 		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s-%d.%s:%s", leaderName, i, pod.Spec.Subdomain, TpuProcessPort))
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s-%d.%s:%s", leaderName, i, pod.Spec.Subdomain, tpuProcessPort))
 	}
 
-	tpuType := pod.Spec.NodeSelector[TpuAcceleratorLabel]
 	container.Env = append(container.Env,
 		corev1.EnvVar{
 			Name:  TpuWorkerHostNames,
@@ -168,18 +172,16 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 			Name:  TpuName,
 			Value: fmt.Sprint(leaderName),
 		},
+		corev1.EnvVar{
+			Name:  TpuProcessAddresses,
+			Value: strings.Join(hostnamesAddresses[:], ","),
+		},
 	)
-	if tpuType == Tpu7xAccelerator {
-		container.Env = append(container.Env,
-			corev1.EnvVar{
-				Name:  TpuProcessAddresses,
-				Value: strings.Join(hostnamesAddresses[:], ","),
-			},
-			corev1.EnvVar{
-				Name:  TpuProcessPortName,
-				Value: TpuProcessPort,
-			},
-		)
+	if !tpuProcessPortInContainer {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  TpuProcessPortName,
+			Value: tpuProcessPort,
+		})
 	}
 	return nil
 
@@ -202,6 +204,12 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		}
 	}
 
+	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
+	if !tpuProcessPortInContainer {
+		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
+		tpuProcessPort = TpuProcessPort
+	}
+
 	leaderName := pod.Name
 	tpuWorkerId := 0
 	var hostnames []string
@@ -209,7 +217,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		// if this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0
 		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, TpuProcessPort))
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
 	} else {
 		leaderName, tpuWorkerId = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if leaderName == "" {
@@ -218,7 +226,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
 			// The leader requests TPUs, and so it will be added to the hostnames and will get TPU_WORKER_ID=0
 			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, TpuProcessPort))
+			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
 		} else {
 			// The leader doesn't request TPUs, and so it is only the workers that will be assigned
 			// TPU_WORKER_ID, and so we have to shift the IDs by 1 since the leader is not a TPU worker.
@@ -229,9 +237,9 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	for i := 1; i <= size-1; i++ {
 		// hostname for worker pod, leaderPodName-Index.Subdomain
 		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s-%d.%s:%s", leaderName, i, pod.Spec.Subdomain, TpuProcessPort))
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s-%d.%s:%s", leaderName, i, pod.Spec.Subdomain, tpuProcessPort))
 	}
-	tpuType := pod.Spec.NodeSelector[TpuAcceleratorLabel]
+
 	container.Env = append(container.Env,
 		corev1.EnvVar{
 			Name:  TpuWorkerHostNames,
@@ -245,18 +253,16 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 			Name:  TpuName,
 			Value: fmt.Sprint(leaderName),
 		},
+		corev1.EnvVar{
+			Name:  TpuProcessAddresses,
+			Value: strings.Join(hostnamesAddresses[:], ","),
+		},
 	)
-	if tpuType == Tpu7xAccelerator {
-		container.Env = append(container.Env,
-			corev1.EnvVar{
-				Name:  TpuProcessAddresses,
-				Value: strings.Join(hostnamesAddresses[:], ","),
-			},
-			corev1.EnvVar{
-				Name:  TpuProcessPortName,
-				Value: TpuProcessPort,
-			},
-		)
+	if !tpuProcessPortInContainer {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  TpuProcessPortName,
+			Value: tpuProcessPort,
+		})
 	}
 	return nil
 }
