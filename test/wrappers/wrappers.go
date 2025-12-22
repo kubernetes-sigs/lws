@@ -336,6 +336,12 @@ func MakeLeaderPodSpecWithTPUResource() corev1.PodSpec {
 	}
 }
 
+func MakeLeaderPodSpecWithTPUAndEnvVars(e ...corev1.EnvVar) corev1.PodSpec {
+	podSpec := MakeLeaderPodSpecWithTPUResource()
+	podSpec.Containers[0].Env = e
+	return podSpec
+}
+
 func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{

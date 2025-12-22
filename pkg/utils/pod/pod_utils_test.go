@@ -184,3 +184,73 @@ func TestAddLWSVariables(t *testing.T) {
 		})
 	}
 }
+
+func TestGetEnvVarIfInContainer(t *testing.T) {
+	tests := []struct {
+		name             string
+		container        corev1.Container
+		envVarName       string
+		expectEnvVar     bool
+		expectedEnvValue string
+	}{
+		{
+			name: "Container contains the environment variable, returns correct value",
+			container: corev1.Container{
+				Name: "test",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "PROCESS_PORT",
+						Value: "8776",
+					},
+					{
+						Name:  "PROCESS_ID",
+						Value: "1",
+					},
+				},
+			},
+			envVarName:       "PROCESS_PORT",
+			expectEnvVar:     true,
+			expectedEnvValue: "8776",
+		},
+		{
+			name: "Container does not contain the environment variable, returns empty string",
+			container: corev1.Container{
+				Name: "test",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "PROCESS_ADDRESSES",
+						Value: "lws-default.0",
+					},
+					{
+						Name:  "PROCESS_ID",
+						Value: "1",
+					},
+				},
+			},
+			envVarName:       "PROCESS_PORT",
+			expectEnvVar:     false,
+			expectedEnvValue: "",
+		},
+		{
+			name: "Container does not contain any environment variable, returns empty string",
+			container: corev1.Container{
+				Name: "test",
+			},
+			envVarName:       "PROCESS_PORT",
+			expectEnvVar:     false,
+			expectedEnvValue: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			envVarInContainer, envVarValue := GetEnvVarValueIfInContainer(&tc.container, tc.envVarName)
+			if envVarInContainer != tc.expectEnvVar {
+				t.Errorf("Unexpected env var in container, %s with value %s", tc.envVarName, envVarValue)
+			}
+			if envVarValue != tc.expectedEnvValue {
+				t.Errorf("Unexpected env var value, got: %s, expected: %s", envVarValue, tc.expectedEnvValue)
+			}
+		})
+	}
+}
