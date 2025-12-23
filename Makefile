@@ -392,4 +392,4 @@ hugo:
 crds: kustomize yq # update helm CRD files
 	$(KUSTOMIZE) build config/default \
 	| $(YQ) 'select(.kind == "CustomResourceDefinition")' \
-	> charts/lws/templates/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml
+	> charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml
