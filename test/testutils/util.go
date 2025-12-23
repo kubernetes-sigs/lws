@@ -370,6 +370,7 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 		}
 
 		sts.Status.ReadyReplicas = *sts.Spec.Replicas
+		sts.Status.AvailableReplicas = *sts.Spec.Replicas
 		sts.Status.Replicas = *sts.Spec.Replicas
 		sts.Status.CurrentRevision = ""
 		sts.Status.UpdateRevision = ""
@@ -656,6 +657,7 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 			return err
 		}
 		sts.Status.ReadyReplicas = *sts.Spec.Replicas
+		sts.Status.AvailableReplicas = *sts.Spec.Replicas
 		sts.Status.Replicas = *sts.Spec.Replicas
 		sts.Status.CurrentRevision = ""
 		sts.Status.UpdateRevision = ""
