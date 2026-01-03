@@ -92,6 +92,15 @@ func getPodConditionFromList(conditions []corev1.PodCondition, conditionType cor
 	return -1, nil
 }
 
+func GetEnvVarValueIfInContainer(c *corev1.Container, envVarName string) (bool, string) {
+	for _, env := range c.Env {
+		if envVarName == env.Name {
+			return true, env.Value
+		}
+	}
+	return false, ""
+}
+
 // addEnvVarsIfNotExists adds env vars to the container if they don't already exist.
 // It takes a slice of existing env vars and appends new env vars to the beginning of it,
 // ensuring that the 'firstEnv' and 'e' env vars maintain their order at the front.
