@@ -294,7 +294,6 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 }
 
 func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, groupSize int) (bool, error) {
-	log := ctrl.LoggerFrom(ctx)
 	groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
 
@@ -314,7 +313,6 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, 
 
 	for _, groupPod := range podList.Items {
 		if groupPod.Status.Phase == corev1.PodPending {
-			log.V(2).Info("pod %s is set to pending", pod.Name)
 			return true, nil
 		}
 	}
