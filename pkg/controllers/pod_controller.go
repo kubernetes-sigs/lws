@@ -213,9 +213,9 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, err
 	}
 
-	_, foundKey := pod.Annotations[leaderworkerset.DefaultRecreateGroupOnPodRestartKey]
+	_, recreateGroupAfterStart := pod.Annotations[leaderworkerset.RecreateGroupAfterStart]
 
-	if pendingPods && !foundKey {
+	if pendingPods && recreateGroupAfterStart {
 		log.V(2).Info("Skipping RecreateGroupOnPodRestart because there is a pod pending: %s", pod.Name)
 		return false, nil
 	}

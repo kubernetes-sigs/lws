@@ -93,7 +93,9 @@ const (
 	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
 	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
 
-	DefaultRecreateGroupOnPodRestartKey string = "leaderworkerset.sigs.k8s.io/defaultRecreateGroupOnPodRestart"
+	// Enables feature where the group will be restarted if and only if all pods in the
+	// group are not pending
+	RecreateGroupAfterStart string = "leaderworkerset.sigs.k8s.io/recreateGroupAfterStart"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
