@@ -95,7 +95,7 @@ const (
 
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
-	RecreateGroupAfterStart string = "leaderworkerset.sigs.k8s.io/experimentalRecreateGroupAfterStart"
+	RecreateGroupAfterStart string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
