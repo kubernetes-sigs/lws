@@ -460,6 +460,36 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is RecreateGroupOnRestart, RecreateGroupAfterStart is set, and a pod is pending", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(3).RestartGroupAfterStart()
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
+						// delete one worker pod
+						var workers corev1.PodList
+						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+						testing.SetPodToPending(ctx, k8sClient, lws.Name+"-0-2", lws)
+						gomega.Expect(k8sClient.Delete(ctx, &workers.Items[0])).To(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						gomega.Expect(leaderPod.DeletionTimestamp == nil).To(gomega.BeTrue())
+						var leaders corev1.PodList
+						gomega.Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).To(gomega.Succeed())
+						gomega.Expect(len(leaders.Items)).To(gomega.Equal(1))
+						var workers corev1.PodList
+						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+						gomega.Expect(len(workers.Items)).To(gomega.Equal(2))
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("Replicas are processing will set condition to progressing with correct message with correct event", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{

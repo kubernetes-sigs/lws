@@ -360,6 +360,17 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+func SetPodToPending(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		var pod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &pod); err != nil {
+			return err
+		}
+		pod.Status.Phase = corev1.PodPending
+		return k8sClient.Status().Update(ctx, &pod)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)

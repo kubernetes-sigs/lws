@@ -84,6 +84,12 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacement() *LeaderWorkerSetW
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) RestartGroupAfterStart() *LeaderWorkerSetWrapper {
+	lwsWrapper.Annotations = map[string]string{}
+	lwsWrapper.Annotations[leaderworkerset.RecreateGroupAfterStart] = "enable"
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) RestartPolicy(policy leaderworkerset.RestartPolicyType) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.RestartPolicy = policy
 	return lwsWrapper
