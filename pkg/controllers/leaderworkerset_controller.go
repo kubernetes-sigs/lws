@@ -295,8 +295,8 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 2:
 	// Indicates a new rolling update here.
 	if leaderWorkerSetUpdated {
-		// Processing scaling up/down first prior to rolling update.
-		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
+		protectedPartition := lwsReplicas
+		return protectedPartition, burstReplicas, nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
