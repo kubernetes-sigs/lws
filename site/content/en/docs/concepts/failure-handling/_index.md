@@ -32,11 +32,10 @@ spec:
     restartPolicy: None
 ```
 
-### RestartAfterGroupStart (Experimental)
+### RecreateGroupAfterStart (Experimental)
 
 When any pod in a group fails, the entire group is recreated if and only if there are no pods currently pending.
-
-{{< feature-state state="experimental" for_version="v0.8" >}}
+This feature is currently experimental on versions 0.8+.
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
