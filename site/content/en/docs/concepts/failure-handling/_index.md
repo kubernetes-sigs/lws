@@ -32,6 +32,20 @@ spec:
     restartPolicy: None
 ```
 
+### RecreateGroupAfterStart (Experimental)
+
+When any pod in a group fails, the entire group is recreated if and only if there are no pods currently pending.
+This feature is currently experimental on versions 0.8+.
+
+```yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+  annotations:
+    leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start: true
+```
+
 ## Node Failure Handling
 
 **With RecreateGroupOnPodRestart (default)**: When a node fails, the entire group is recreated on healthy nodes.
