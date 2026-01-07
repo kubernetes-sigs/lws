@@ -43,12 +43,7 @@ In the following we'll show how rolling update processes for a leaderWorkerSet w
 | Stage9     | 0 | 4 |  ✅  | ✅ |  ✅ | ✅ | | | Rolling update completed |
 
 ## MaxUnavailable Feature
-`MaxUnavailable` currently requires the [MaxUnavailableStatefulSet][max_unavailable] to be enabled. See upstream discussion [here][max_unavailable_enhancement] and LWS side discussion [here][lws_max_unavailable_enhancement]
+`MaxUnavailable` was graduated to Beta in Kubernetes [1.35](1.35_release_notes), which means that it is enabled by default.
 
 
-
-[feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
-[start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
-[max_unavailable]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods
-[max_unavailable_enhancement]: https://github.com/kubernetes/enhancements/issues/961
-[lws_max_unavailable_enhancement]: https://github.com/kubernetes-sigs/lws/issues/315
+[1.35_release_notes]: https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/#maxunavailable-for-statefulsets
