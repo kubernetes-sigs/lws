@@ -114,8 +114,8 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if leaderSts.DeletionTimestamp != nil {
-		return ctrl.Result{}, nil
+	if leaderSts != nil && leaderSts.DeletionTimestamp != nil {
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Handles two cases:
