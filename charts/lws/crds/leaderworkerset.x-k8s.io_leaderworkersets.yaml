@@ -3,6 +3,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
+  labels:
+    app.kubernetes.io/instance: lws
+    app.kubernetes.io/name: lws
   name: leaderworkersets.leaderworkerset.x-k8s.io
 spec:
   conversion:
