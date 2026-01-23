@@ -8,11 +8,10 @@ namespace: lws-system
 # field above.
 namePrefix: lws-
 
-# Labels to add to all resources and selectors.
-#labels:
-#- includeSelectors: true
-#  pairs:
-#    someName: someValue
+# Common labels to add to all resources and selectors (matches Helm behavior).
+commonLabels:
+  app.kubernetes.io/name: lws
+  app.kubernetes.io/instance: lws
 
 resources:
 - ../crd
