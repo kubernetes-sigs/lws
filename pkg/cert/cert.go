@@ -57,5 +57,6 @@ func CertsManager(mgr ctrl.Manager, namespace string, configServiceName string, 
 				Name: mutatingWebhookConfName,
 			},
 		},
+		EnableReadinessCheck: true,
 	})
 }
