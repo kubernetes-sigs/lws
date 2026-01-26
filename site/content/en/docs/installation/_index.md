@@ -38,6 +38,7 @@ machine type for your nodes.**
 
 To install a released version of LeaderWorkerSet in your cluster, run the following command:
 
+
 ```shell
 VERSION=v0.8.0
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
