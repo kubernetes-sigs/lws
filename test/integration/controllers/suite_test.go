@@ -104,14 +104,16 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("leaderworkerset"))
+	// TODO: Deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead.
+	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("leaderworkerset")) // nolint
 
 	err = controllers.SetupIndexes(k8sManager.GetFieldIndexer())
 	Expect(err).ToNot(HaveOccurred())
 	err = lwsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("pod"), nil)
+	// TODO: Deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead.
+	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorderFor("pod"), nil) // nolint
 	err = podController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

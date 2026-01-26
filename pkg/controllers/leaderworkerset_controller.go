@@ -368,7 +368,8 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
 	// these fields to the ones desired by the lws controller
 	// TODO b/316776287 add E2E test for SSA
-	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{
+	// TODO: Deprecated: Use client.Client.Apply() and client.Client.SubResource("subrsource").Apply() instead.
+	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{ //nolint
 		FieldManager: fieldManager,
 		Force:        ptr.To[bool](true),
 	})

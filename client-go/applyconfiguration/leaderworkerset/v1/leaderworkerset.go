@@ -25,6 +25,8 @@ import (
 
 // LeaderWorkerSetApplyConfiguration represents a declarative configuration of the LeaderWorkerSet type for use
 // with apply.
+//
+// LeaderWorkerSet is the Schema for the leaderworkersets API
 type LeaderWorkerSetApplyConfiguration struct {
 	metav1.TypeMetaApplyConfiguration    `json:",inline"`
 	*metav1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
@@ -42,6 +44,7 @@ func LeaderWorkerSet(name, namespace string) *LeaderWorkerSetApplyConfiguration 
 	b.WithAPIVersion("leaderworkerset.x-k8s.io/v1")
 	return b
 }
+
 func (b LeaderWorkerSetApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value
