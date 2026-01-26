@@ -55,7 +55,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.8.0
+CHART_VERSION=v0.8.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
