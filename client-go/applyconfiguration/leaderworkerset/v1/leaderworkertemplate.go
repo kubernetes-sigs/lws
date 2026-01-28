@@ -26,13 +26,37 @@ import (
 
 // LeaderWorkerTemplateApplyConfiguration represents a declarative configuration of the LeaderWorkerTemplate type for use
 // with apply.
+//
+// Template of the leader/worker pods, the group will include at least one leader pod.
+// Defaults to the worker template if not specified. The idea is to allow users to create a
+// group with identical templates without needing to specify the template in both places.
+// For the leader it represents the id of the group, while for the workers it represents the
+// index within the group. For this reason, users should depend on the labels injected by this
+// API whenever possible.
 type LeaderWorkerTemplateApplyConfiguration struct {
-	LeaderTemplate                       *corev1.PodTemplateSpecApplyConfiguration               `json:"leaderTemplate,omitempty"`
-	WorkerTemplate                       *corev1.PodTemplateSpecApplyConfiguration               `json:"workerTemplate,omitempty"`
-	Size                                 *int32                                                  `json:"size,omitempty"`
-	RestartPolicy                        *leaderworkersetv1.RestartPolicyType                    `json:"restartPolicy,omitempty"`
-	SubGroupPolicy                       *SubGroupPolicyApplyConfiguration                       `json:"subGroupPolicy,omitempty"`
-	VolumeClaimTemplates                 []apicorev1.PersistentVolumeClaim                       `json:"volumeClaimTemplates,omitempty"`
+	// LeaderTemplate defines the pod template for leader pods.
+	LeaderTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"leaderTemplate,omitempty"`
+	// WorkerTemplate defines the pod template for worker pods.
+	WorkerTemplate *corev1.PodTemplateSpecApplyConfiguration `json:"workerTemplate,omitempty"`
+	// Number of pods to create. It is the total number of pods in each group.
+	// The minimum is 1 which represent the leader. When set to 1, the leader
+	// pod is created for each group as well as a 0-replica StatefulSet for the workers.
+	// Default to 1.
+	Size *int32 `json:"size,omitempty"`
+	// RestartPolicy defines the restart policy when pod failures happen.
+	// The former named Default policy is deprecated, will be removed in the future,
+	// replace with None policy for the same behavior.
+	RestartPolicy *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	// SubGroupPolicy describes the policy that will be applied when creating subgroups
+	// in each replica.
+	SubGroupPolicy *SubGroupPolicyApplyConfiguration `json:"subGroupPolicy,omitempty"`
+	// VolumeClaimTemplates is a list of claims that pods are allowed to reference.
+	// Every claim in this list must have at least one matching (by name) volumeMount
+	// in one container in the template. A claim in this list takes precedence over
+	// any volumes in the template, with the same name.
+	VolumeClaimTemplates []apicorev1.PersistentVolumeClaim `json:"volumeClaimTemplates,omitempty"`
+	// PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
+	// the VolumeClaimTemplates.
 	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
 }
 

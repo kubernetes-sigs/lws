@@ -25,12 +25,10 @@ import (
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -40,8 +38,7 @@ type LeaderWorkerSetWebhook struct{}
 
 // SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
 func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&v1.LeaderWorkerSet{}).
+	return ctrl.NewWebhookManagedBy(mgr, &v1.LeaderWorkerSet{}).
 		WithDefaulter(&LeaderWorkerSetWebhook{}).
 		WithValidator(&LeaderWorkerSetWebhook{}).
 		Complete()
@@ -49,11 +46,10 @@ func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
 
 //+kubebuilder:webhook:path=/mutate-leaderworkerset-x-k8s-io-v1-leaderworkerset,mutating=true,failurePolicy=fail,sideEffects=None,groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=create;update,versions=v1,name=mleaderworkerset.kb.io,admissionReviewVersions=v1
 
-var _ webhook.CustomDefaulter = &LeaderWorkerSetWebhook{}
+var _ admission.Defaulter[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 
-// Default implements webhook.Defaulter so a webhook will be registered for the type
-func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object) error {
-	lws := obj.(*v1.LeaderWorkerSet)
+// Default implements admission.Defaulter[*v1.LeaderWorkerSet] so a webhook will be registered for the type
+func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWorkerSet) error {
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.RecreateGroupOnPodRestart
 	}
@@ -90,21 +86,19 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, obj runtime.Object
 
 //+kubebuilder:webhook:path=/validate-leaderworkerset-x-k8s-io-v1-leaderworkerset,mutating=false,failurePolicy=fail,sideEffects=None,groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=create;update,versions=v1,name=vleaderworkerset.kb.io,admissionReviewVersions=v1
 
-var _ webhook.CustomValidator = &LeaderWorkerSetWebhook{}
+var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 
-// ValidateCreate implements webhook.Validator so a webhook will be registered for the type
-func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	allErrs := r.generalValidate(obj)
+// ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
+func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
+	allErrs := r.generalValidate(lws)
 	return nil, allErrs.ToAggregate()
 }
 
-// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	allErrs := r.generalValidate(newObj)
+// ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
+func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
+	allErrs := r.generalValidate(newLws)
 	specPath := field.NewPath("spec")
 
-	oldLws := oldObj.(*v1.LeaderWorkerSet)
-	newLws := newObj.(*v1.LeaderWorkerSet)
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"))...)
 	}
@@ -121,13 +115,12 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 	return nil, allErrs.ToAggregate()
 }
 
-// ValidateDelete implements webhook.Validator so a webhook will be registered for the type
-func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
+func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func (r *LeaderWorkerSetWebhook) generalValidate(obj runtime.Object) field.ErrorList {
-	lws := obj.(*v1.LeaderWorkerSet)
+func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.ErrorList {
 	specPath := field.NewPath("spec")
 	metadataPath := field.NewPath("metadata")
 

@@ -22,7 +22,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -44,8 +43,7 @@ func NewPodWebhook(sp schedulerprovider.SchedulerProvider) *PodWebhook {
 }
 
 func (p *PodWebhook) Setup(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&corev1.Pod{}).
+	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
 		WithDefaulter(p).
 		WithValidator(p).
 		Complete()
@@ -54,12 +52,8 @@ func (p *PodWebhook) Setup(mgr ctrl.Manager) error {
 //+kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=pods,verbs=create;update,versions=v1,name=vpod.kb.io,sideEffects=None,admissionReviewVersions=v1
 
 // validate admits a pod if a specific annotation exists.
-func (p *PodWebhook) validate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (p *PodWebhook) validate(ctx context.Context, pod *corev1.Pod) (admission.Warnings, error) {
 	log := logf.FromContext(ctx)
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		return nil, fmt.Errorf("expected a Pod but got a %T", obj)
-	}
 
 	log.V(2).Info("Validating Pod")
 
@@ -72,26 +66,22 @@ func (p *PodWebhook) validate(ctx context.Context, obj runtime.Object) (admissio
 	return nil, nil
 }
 
-func (p *PodWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	return p.validate(ctx, obj)
+func (p *PodWebhook) ValidateCreate(ctx context.Context, pod *corev1.Pod) (admission.Warnings, error) {
+	return p.validate(ctx, pod)
 }
 
-func (p *PodWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (p *PodWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *corev1.Pod) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func (p *PodWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (p *PodWebhook) ValidateDelete(ctx context.Context, pod *corev1.Pod) (admission.Warnings, error) {
 	return nil, nil
 }
 
 //+kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
 
-func (p *PodWebhook) Default(ctx context.Context, obj runtime.Object) error {
+func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 	log := logf.FromContext(ctx)
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		return fmt.Errorf("expected a Pod but got a %T", obj)
-	}
 
 	log.V(2).Info("Defaulting Pod")
 	// if pod is not part of leaderworkerset, skip

@@ -23,12 +23,21 @@ import (
 
 // LeaderWorkerSetStatusApplyConfiguration represents a declarative configuration of the LeaderWorkerSetStatus type for use
 // with apply.
+//
+// LeaderWorkerSetStatus defines the observed state of LeaderWorkerSet
 type LeaderWorkerSetStatusApplyConfiguration struct {
-	Conditions      []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	ReadyReplicas   *int32                               `json:"readyReplicas,omitempty"`
-	UpdatedReplicas *int32                               `json:"updatedReplicas,omitempty"`
-	Replicas        *int32                               `json:"replicas,omitempty"`
-	HPAPodSelector  *string                              `json:"hpaPodSelector,omitempty"`
+	// Conditions track the condition of the leaderworkerset.
+	Conditions []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	// ReadyReplicas track the number of groups that are in ready state (updated or not).
+	ReadyReplicas *int32 `json:"readyReplicas,omitempty"`
+	// UpdatedReplicas track the number of groups that have been updated (ready or not).
+	UpdatedReplicas *int32 `json:"updatedReplicas,omitempty"`
+	// Replicas track the total number of groups that have been created (updated or not, ready or not)
+	Replicas *int32 `json:"replicas,omitempty"`
+	// HPAPodSelector for pods that belong to the LeaderWorkerSet object, this is
+	// needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
+	// we only select the leader pods.
+	HPAPodSelector *string `json:"hpaPodSelector,omitempty"`
 }
 
 // LeaderWorkerSetStatusApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetStatus type for use with
