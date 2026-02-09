@@ -430,10 +430,21 @@ func containerHasAllEnvVars(c corev1.Container, envVars []string) bool {
 }
 
 func hasAllEnvVarPopulated(pod corev1.Pod, envVars []string) bool {
+	isTPUCheck := false
+	for _, e := range envVars {
+		if e == acceleratorutils.TpuWorkerId || e == acceleratorutils.TpuWorkerHostNames {
+			isTPUCheck = true
+			break
+		}
+	}
+
 	var containers []corev1.Container
 	containers = append(containers, pod.Spec.Containers...)
 	containers = append(containers, pod.Spec.InitContainers...)
 	for _, container := range containers {
+		if isTPUCheck && !acceleratorutils.ContainersRequestTPUs(container) {
+			continue
+		}
 		if !containerHasAllEnvVars(container, envVars) {
 			return false
 		}
@@ -482,7 +493,15 @@ func HasTPUEnvVarsPopulated(pod corev1.Pod) bool {
 }
 
 func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
+	tpuContainers := []corev1.Container{}
 	for _, container := range pod.Spec.Containers {
+		if acceleratorutils.ContainersRequestTPUs(container) {
+			tpuContainers = append(tpuContainers, container)
+		}
+	}
+	numTPUContainers := len(tpuContainers)
+
+	for i, container := range tpuContainers {
 		for _, env := range container.Env {
 			if env.Name == acceleratorutils.TpuWorkerHostNames {
 				if env.Value != envVal {
@@ -490,28 +509,32 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 				}
 			}
 			if env.Name == acceleratorutils.TpuWorkerId {
-				if subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
+				var expectedIndex int
+				if subGroupSizeStr, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
 					workerIndex, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
-					subGroupSize, _ := strconv.Atoi(subGroupSize)
-					index := (workerIndex) % subGroupSize
+					subGroupSize, _ := strconv.Atoi(subGroupSizeStr)
+					podWorkerIndex := (workerIndex) % subGroupSize
 					if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" {
-						index = (workerIndex - 1) % subGroupSize
+						podWorkerIndex = (workerIndex - 1) % subGroupSize
 					}
-					if env.Value != fmt.Sprint(index) {
-						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
-					}
+					expectedIndex = podWorkerIndex*numTPUContainers + i
 				} else if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" ||
 					pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
-					if env.Value != pod.Labels[leaderworkerset.WorkerIndexLabelKey] {
-						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
-					}
+					podWorkerIndex, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
+					expectedIndex = podWorkerIndex*numTPUContainers + i
 				} else {
-					index, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
-					if env.Value != fmt.Sprint(index-1) {
-						return fmt.Errorf("incorrect env value for %s", acceleratorutils.TpuWorkerId)
-					}
+					podWorkerIndex, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
+					expectedIndex = (podWorkerIndex-1)*numTPUContainers + i
 				}
-
+				if env.Value != fmt.Sprint(expectedIndex) {
+					return fmt.Errorf("incorrect env value for %s, expect %d, got %s", acceleratorutils.TpuWorkerId, expectedIndex, env.Value)
+				}
+			}
+			if env.Name == acceleratorutils.TpuProcessPortName {
+				expectedPort := strconv.Itoa(8476 + i)
+				if env.Value != expectedPort {
+					return fmt.Errorf("incorrect env value for %s, expect %s, got %s", acceleratorutils.TpuProcessPortName, expectedPort, env.Value)
+				}
 			}
 		}
 	}

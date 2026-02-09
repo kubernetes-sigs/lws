@@ -348,6 +348,28 @@ func MakeLeaderPodSpecWithTPUAndEnvVars(e ...corev1.EnvVar) corev1.PodSpec {
 	return podSpec
 }
 
+func MakeLeaderPodSpecWithTPU() corev1.PodSpec {
+	return MakeLeaderPodSpecWithTPUResource()
+}
+
+func MakeContainerWithTPU(name string) corev1.Container {
+	return corev1.Container{
+		Name:  name,
+		Image: "busybox",
+		Resources: corev1.ResourceRequirements{
+			Limits: map[corev1.ResourceName]resource.Quantity{
+				corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+			},
+		},
+	}
+}
+
+func MakeContainerWithTPUAndEnvVars(name string, e ...corev1.EnvVar) corev1.Container {
+	c := MakeContainerWithTPU(name)
+	c.Env = e
+	return c
+}
+
 func MakeLeaderPodSpecWithTPUResourceMultipleContainers() corev1.PodSpec {
 	return corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -419,5 +441,31 @@ func MakeWorkerPodSpecWithVolumeAndNilImage() corev1.PodSpec {
 				},
 			},
 		},
+	}
+}
+
+func MakeLeaderPodSpecWithTwoTPUContainers() corev1.PodSpec {
+	return corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "worker-1",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Limits: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+					},
+				},
+			},
+			{
+				Name:  "worker-2",
+				Image: "busybox",
+				Resources: corev1.ResourceRequirements{
+					Limits: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+					},
+				},
+			},
+		},
+		Subdomain: "default",
 	}
 }

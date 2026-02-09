@@ -34,7 +34,7 @@ const (
 	TpuWorkerHostNames              string              = "TPU_WORKER_HOSTNAMES"
 	TpuProcessAddresses             string              = "TPU_PROCESS_ADDRESSES"
 	TpuProcessPortName              string              = "TPU_PROCESS_PORT"
-	TpuProcessDefaultPort           string              = "8476"
+	TpuProcessDefaultPort           int                 = 8476
 	TpuWorkerId                     string              = "TPU_WORKER_ID"
 	TpuName                         string              = "TPU_NAME"
 	LeaderRequestsTPUsAnnotationKey string              = "leaderworkerset.sigs.k8s.io/leader-requests-tpus"
@@ -42,7 +42,7 @@ const (
 
 // PodRequestsTPUs returns true if the pod requesting TPUs
 func PodRequestsTPUs(podTs corev1.PodSpec) bool {
-	return containersRequestTPUs(podTs.Containers...) || containersRequestTPUs(podTs.InitContainers...)
+	return ContainersRequestTPUs(podTs.Containers...) || ContainersRequestTPUs(podTs.InitContainers...)
 }
 
 // numTPUsRequested returns the number of requested TPUs
@@ -60,8 +60,8 @@ func numTPUsRequested(container corev1.Container) int64 {
 	return 0
 }
 
-// containersRequestTPUs returns true if the container requests TPUs
-func containersRequestTPUs(containers ...corev1.Container) bool {
+// ContainersRequestTPUs returns true if the container requests TPUs
+func ContainersRequestTPUs(containers ...corev1.Container) bool {
 	for _, container := range containers {
 		if numTPUsRequested(container) != 0 {
 			return true
@@ -70,18 +70,28 @@ func containersRequestTPUs(containers ...corev1.Container) bool {
 	return false
 }
 
+// getContainersRequestingTPUs returns the containers that request TPUs
+func getContainersRequestingTPUs(spec *corev1.PodSpec) []*corev1.Container {
+	var containers []*corev1.Container
+	for i := range spec.Containers {
+		if ContainersRequestTPUs(spec.Containers[i]) {
+			containers = append(containers, &spec.Containers[i])
+		}
+	}
+	for i := range spec.InitContainers {
+		if ContainersRequestTPUs(spec.InitContainers[i]) {
+			containers = append(containers, &spec.InitContainers[i])
+		}
+	}
+	return containers
+}
+
 // getContainerRequestingTPUs returns the container that requests TPUs
 // Assumption is that only one container on a pod will be requesting TPU resource.
 func getContainerRequestingTPUs(spec *corev1.PodSpec) *corev1.Container {
-	for i, container := range spec.Containers {
-		if containersRequestTPUs(container) {
-			return &spec.Containers[i]
-		}
-	}
-	for i, container := range spec.InitContainers {
-		if containersRequestTPUs(container) {
-			return &spec.InitContainers[i]
-		}
+	containers := getContainersRequestingTPUs(spec)
+	if len(containers) > 0 {
+		return containers[0]
 	}
 	return nil
 }
@@ -122,7 +132,7 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
 	if !tpuProcessPortInContainer {
 		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
-		tpuProcessPort = TpuProcessDefaultPort
+		tpuProcessPort = strconv.Itoa(TpuProcessDefaultPort)
 	}
 
 	start := subGroupSize*subGroupIndex + 1
@@ -193,76 +203,97 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	if foundSubGroupSize {
 		return addTPUVariablesSubGroup(pod)
 	}
-	container := getContainerRequestingTPUs(&pod.Spec)
-	if container == nil {
+
+	containers := getContainersRequestingTPUs(&pod.Spec)
+	numContainers := len(containers)
+	if numContainers == 0 {
 		return nil
 	}
-	for _, env := range container.Env {
-		// The assumption is that other env vars are added as well
+
+	for _, env := range containers[0].Env {
+		// The assumption is that other env vars are added as well.
 		if env.Name == TpuWorkerHostNames || env.Name == TpuWorkerId {
 			return nil
 		}
 	}
 
-	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
-	if !tpuProcessPortInContainer {
-		// If user doesn't specify tpuProcessPort, we fall back to hardcoded value
-		tpuProcessPort = TpuProcessDefaultPort
-	}
-
-	leaderName := pod.Name
-	tpuWorkerId := 0
-	var hostnames []string
-	var hostnamesAddresses []string
+	var leaderPodName string
+	var podWorkerIndex int
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
-		// if this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0
-		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
+		// If this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0.
+		leaderPodName = pod.Name
+		podWorkerIndex = 0
 	} else {
-		leaderName, tpuWorkerId = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-		if leaderName == "" {
+		leaderPodName, podWorkerIndex = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		if leaderPodName == "" {
 			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
 		}
-		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
-			// The leader requests TPUs, and so it will be added to the hostnames and will get TPU_WORKER_ID=0
-			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
-		} else {
+		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
 			// The leader doesn't request TPUs, and so it is only the workers that will be assigned
 			// TPU_WORKER_ID, and so we have to shift the IDs by 1 since the leader is not a TPU worker.
-			tpuWorkerId = tpuWorkerId - 1
+			podWorkerIndex = podWorkerIndex - 1
+		}
+	}
+
+	ports := make([]string, numContainers)
+	for i, c := range containers {
+		found, val := podutils.GetEnvVarValueIfInContainer(c, TpuProcessPortName)
+		if found {
+			ports[i] = val
+		} else {
+			// If user doesn't specify tpuProcessPort, we fall back to hardcoded value.
+			ports[i] = strconv.Itoa(TpuProcessDefaultPort + i)
+		}
+	}
+
+	var hostnames []string
+	var hostnamesAddresses []string
+	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" || pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
+		leaderPodHostname := fmt.Sprintf("%s.%s", leaderPodName, pod.Spec.Subdomain)
+		// For now we assume that the leader has the same number of containers
+		// as the current pod, although this may not always be the case.
+		for i := range numContainers {
+			hostnames = append(hostnames, leaderPodHostname)
+			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s:%s", leaderPodHostname, ports[i]))
 		}
 	}
 
 	for i := 1; i <= size-1; i++ {
-		// hostname for worker pod, leaderPodName-Index.Subdomain
-		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", leaderName, i, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s-%d.%s:%s", leaderName, i, pod.Spec.Subdomain, tpuProcessPort))
+		podHostname := fmt.Sprintf("%s-%d.%s", leaderPodName, i-1, pod.Spec.Subdomain)
+		for j := range numContainers {
+			hostnames = append(hostnames, podHostname)
+			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s:%s", podHostname, ports[j]))
+		}
 	}
 
-	container.Env = append(container.Env,
-		corev1.EnvVar{
-			Name:  TpuWorkerHostNames,
-			Value: strings.Join(hostnames[:], ","),
-		},
-		corev1.EnvVar{
-			Name:  TpuWorkerId,
-			Value: fmt.Sprint(tpuWorkerId),
-		},
-		corev1.EnvVar{
-			Name:  TpuName,
-			Value: fmt.Sprint(leaderName),
-		},
-		corev1.EnvVar{
-			Name:  TpuProcessAddresses,
-			Value: strings.Join(hostnamesAddresses[:], ","),
-		},
-	)
-	if !tpuProcessPortInContainer {
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  TpuProcessPortName,
-			Value: tpuProcessPort,
-		})
+	for i, container := range containers {
+		tpuWorkerId := podWorkerIndex*numContainers + i
+		tpuProcessPortInContainer, _ := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
+
+		container.Env = append(container.Env,
+			corev1.EnvVar{
+				Name:  TpuWorkerHostNames,
+				Value: strings.Join(hostnames, ","),
+			},
+			corev1.EnvVar{
+				Name:  TpuWorkerId,
+				Value: strconv.Itoa(tpuWorkerId),
+			},
+			corev1.EnvVar{
+				Name:  TpuName,
+				Value: leaderPodName,
+			},
+			corev1.EnvVar{
+				Name:  TpuProcessAddresses,
+				Value: strings.Join(hostnamesAddresses, ","),
+			},
+		)
+		if !tpuProcessPortInContainer {
+			container.Env = append(container.Env, corev1.EnvVar{
+				Name:  TpuProcessPortName,
+				Value: ports[i],
+			})
+		}
 	}
 	return nil
 }

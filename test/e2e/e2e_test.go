@@ -241,6 +241,25 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
+	ginkgo.It("Adds env vars to multiple containers when using TPU", func() {
+		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTwoTPUContainers()
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(2).LeaderTemplateSpec(leaderPodSpec).WorkerTemplateSpec(leaderPodSpec).Obj()
+
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		lwsPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, lwsPods)
+
+		for _, p := range lwsPods.Items {
+			gomega.Expect(testing.HasTPUEnvVarsPopulated(p)).To(gomega.BeTrue())
+			// Correctness of IDs and ports is checked inside CheckTPUContainerHasCorrectEnvVars
+			// We need expected hostnames string.
+			// For replica 2, size 2:
+			leaderName := lws.Name + "-0"
+			expectedHostnames := fmt.Sprintf("%[1]s.%[2]s,%[1]s.%[2]s,%[1]s-0.%[2]s,%[1]s-0.%[2]s", leaderName, p.Spec.Subdomain)
+			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(p, expectedHostnames)).To(gomega.Succeed())
+		}
+	})
+
 	ginkgo.It("When changing size, recreates the Pods with correct count and size annotation", func() {
 		replicas := 2
 		size := 2
