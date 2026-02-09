@@ -254,8 +254,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			// Correctness of IDs and ports is checked inside CheckTPUContainerHasCorrectEnvVars
 			// We need expected hostnames string.
 			// For replica 2, size 2:
-			leaderName := lws.Name + "-0"
-			expectedHostnames := fmt.Sprintf("%[1]s.%[2]s,%[1]s.%[2]s,%[1]s-0.%[2]s,%[1]s-0.%[2]s", leaderName, p.Spec.Subdomain)
+			groupIndex := p.Labels[leaderworkerset.GroupIndexLabelKey]
+			leaderName := lws.Name + "-" + groupIndex
+			expectedHostnames := fmt.Sprintf("%[1]s.%[2]s,%[1]s.%[2]s,%[1]s-1.%[2]s,%[1]s-1.%[2]s", leaderName, p.Spec.Subdomain)
 			gomega.Expect(testing.CheckTPUContainerHasCorrectEnvVars(p, expectedHostnames)).To(gomega.Succeed())
 		}
 	})

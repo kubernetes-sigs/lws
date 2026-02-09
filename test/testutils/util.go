@@ -441,15 +441,17 @@ func hasAllEnvVarPopulated(pod corev1.Pod, envVars []string) bool {
 	var containers []corev1.Container
 	containers = append(containers, pod.Spec.Containers...)
 	containers = append(containers, pod.Spec.InitContainers...)
+	checked := false
 	for _, container := range containers {
 		if isTPUCheck && !acceleratorutils.ContainersRequestTPUs(container) {
 			continue
 		}
+		checked = true
 		if !containerHasAllEnvVars(container, envVars) {
 			return false
 		}
 	}
-	return true
+	return checked
 }
 
 func HasLWSEnvVarsPopulated(pod corev1.Pod) bool {

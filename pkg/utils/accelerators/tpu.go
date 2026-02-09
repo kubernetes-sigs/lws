@@ -259,7 +259,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	}
 
 	for i := 1; i <= size-1; i++ {
-		podHostname := fmt.Sprintf("%s-%d.%s", leaderPodName, i-1, pod.Spec.Subdomain)
+		podHostname := fmt.Sprintf("%s-%d.%s", leaderPodName, i, pod.Spec.Subdomain)
 		for j := range numContainers {
 			hostnames = append(hostnames, podHostname)
 			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s:%s", podHostname, ports[j]))
