@@ -221,11 +221,10 @@ func TestAddTPUVariables(t *testing.T) {
 					t.Errorf("Expected TPU_PROCESS_ADDRESSES: %s, found %s", tc.expectedTpuProcessAddresses, tpuProcessAddresses)
 				}
 				foundTpuProcessPort, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
-				// For multi-container, we only check the port of the first container against expectedTpuProcessPort
-				if i == 0 {
-					if !foundTpuProcessPort || tpuProcessPort != tc.expectedTpuProcessPort {
-						t.Errorf("Expected TPU_PROCESS_PORT: %s, found %s", tc.expectedTpuProcessPort, tpuProcessPort)
-					}
+				expectedPort, _ := strconv.Atoi(tc.expectedTpuProcessPort)
+				expectedTpuProcessPort := strconv.Itoa(expectedPort + i)
+				if !foundTpuProcessPort || tpuProcessPort != expectedTpuProcessPort {
+					t.Errorf("Expected TPU_PROCESS_PORT: %s, found %s", expectedTpuProcessPort, tpuProcessPort)
 				}
 			}
 		})
