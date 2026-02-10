@@ -18,7 +18,6 @@ package accelerator
 
 import (
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -42,6 +41,7 @@ func TestAddTPUVariables(t *testing.T) {
 		expectedTpuName             string
 		expectedTpuProcessAddresses string
 		expectedTpuProcessPort      string
+		expectedError               bool
 	}{
 		{
 			name: "Leader requests TPU resources, leader pod",
@@ -181,6 +181,49 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessAddresses: "test-sample-0.default:8478,test-sample-0.default:8479,test-sample-0-1.default:8478,test-sample-0-1.default:8479",
 			expectedTpuProcessPort:      "8478",
 		},
+		{
+			name: "TPU resources in init containers",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "sample-0",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey: "0",
+					},
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						wrappers.MakeContainerWithTPU("i1"),
+					},
+					Subdomain: "default",
+				},
+			},
+			size:                        1,
+			expectedTpuName:             "sample-0",
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "sample-0.default",
+			expectedTpuProcessAddresses: "sample-0.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Invalid pod name",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{Name: "invalidname"},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
+				},
+			},
+			size:          1,
+			expectedError: true,
+		},
+		{
+			name: "Zero containers requesting TPUs",
+			pod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c1"}},
+				},
+			},
+			size: 1,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,10 +232,28 @@ func TestAddTPUVariables(t *testing.T) {
 				tc.pod.Spec.Subdomain = "default"
 			}
 			err := AddTPUVariables(tc.pod, tc.size)
+			if tc.expectedError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
 			if err != nil {
 				t.Errorf("Error parsing parent: %s", err.Error())
 			}
 			containers := getContainersRequestingTPUs(&tc.pod.Spec)
+			if len(containers) == 0 && !tc.expectedError {
+				for _, c := range tc.pod.Spec.Containers {
+					if len(c.Env) != 0 {
+						t.Errorf("Expected no env vars in container %s, found %v", c.Name, c.Env)
+					}
+				}
+				for _, c := range tc.pod.Spec.InitContainers {
+					if len(c.Env) != 0 {
+						t.Errorf("Expected no env vars in init container %s, found %v", c.Name, c.Env)
+					}
+				}
+			}
 			for i, container := range containers {
 				var podWorkerIndex int
 				if tc.pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
@@ -231,6 +292,28 @@ func TestAddTPUVariables(t *testing.T) {
 	}
 }
 
+func TestAddTPUVariablesSkipExisting(t *testing.T) {
+	podWithEnv := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "c1",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+					},
+					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
+				},
+			},
+		},
+	}
+	if err := AddTPUVariables(podWithEnv, 1); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if len(podWithEnv.Spec.Containers[0].Env) != 1 {
+		t.Errorf("Expected skip injection, but env changed: %v", podWithEnv.Spec.Containers[0].Env)
+	}
+}
+
 func TestAddTPUVariablesSubGroup(t *testing.T) {
 	tests := []struct {
 		name                        string
@@ -240,6 +323,7 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 		expectedTpuName             string
 		expectedTpuProcessAddresses string
 		expectedTpuProcessPort      string
+		expectedError               bool
 	}{
 		{
 			name: "Leader requests TPU resources",
@@ -354,12 +438,95 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			expectedTpuProcessAddresses: "test-sample-1-5.default:8478,test-sample-1-6.default:8478,test-sample-1-7.default:8478,test-sample-1-8.default:8478",
 			expectedTpuProcessPort:      "8478",
 		},
+		{
+			name: "Invalid size",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "invalid"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "Invalid index",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+					Labels:      map[string]string{leaderworkerset.SubGroupIndexLabelKey: "invalid"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "Invalid worker index",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+					Labels: map[string]string{
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+						leaderworkerset.WorkerIndexLabelKey:   "invalid",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "Invalid name",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Name:        "invalidname",
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+					Labels: map[string]string{
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+						leaderworkerset.WorkerIndexLabelKey:   "1",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "Zero containers requesting TPUs",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c1"}},
+				},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := addTPUVariablesSubGroup(tc.pod)
+			if tc.expectedError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
 			if err != nil {
 				t.Errorf("Error parsing parent: %s", err.Error())
+			}
+			containers := getContainersRequestingTPUs(&tc.pod.Spec)
+			if len(containers) == 0 && !tc.expectedError {
+				for _, c := range tc.pod.Spec.Containers {
+					if len(c.Env) != 0 {
+						t.Errorf("Expected no env vars in container %s, found %v", c.Name, c.Env)
+					}
+				}
 			}
 			for _, envVar := range tc.pod.Spec.Containers[0].Env {
 				switch envVar.Name {
@@ -384,6 +551,96 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 						t.Errorf("unexpected add TPU worker ID operation: %s", diff)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestAddTPUVariablesSubGroupSkipExisting(t *testing.T) {
+	podWithEnv := &corev1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "c1",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+					},
+					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
+				},
+			},
+		},
+	}
+	if err := AddTPUVariables(podWithEnv, 1); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestGetContainersRequestingTPUs(t *testing.T) {
+	tests := []struct {
+		name                 string
+		podSpec              *corev1.PodSpec
+		expectedNumContainer int
+	}{
+		{
+			name: "pod requests TPU resources",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					wrappers.MakeContainerWithTPU("c1"),
+				},
+			},
+			expectedNumContainer: 1,
+		},
+		{
+			name: "pod does not request TPU resources",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name: "c1",
+					},
+				},
+			},
+			expectedNumContainer: 0,
+		},
+		{
+			name: "pod requests multiple TPU resources",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					wrappers.MakeContainerWithTPU("c1"),
+					wrappers.MakeContainerWithTPU("c2"),
+				},
+			},
+			expectedNumContainer: 2,
+		},
+		{
+			name: "mix containers",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					wrappers.MakeContainerWithTPU("c1"),
+					{
+						Name: "c2",
+					},
+				},
+			},
+			expectedNumContainer: 1,
+		},
+		{
+			name: "init containers requested TPUs",
+			podSpec: &corev1.PodSpec{
+				InitContainers: []corev1.Container{
+					wrappers.MakeContainerWithTPU("i1"),
+				},
+			},
+			expectedNumContainer: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			containers := getContainersRequestingTPUs(tc.podSpec)
+			if len(containers) != tc.expectedNumContainer {
+				t.Fatalf("Expected %d containers, found %d", tc.expectedNumContainer, len(containers))
 			}
 		})
 	}
@@ -437,65 +694,6 @@ func TestGetContainerRequestingTPUs(t *testing.T) {
 	}
 }
 
-func TestGetContainersRequestingTPUs(t *testing.T) {
-	tests := []struct {
-		name                 string
-		podSpec              *corev1.PodSpec
-		expectedNumContainer int
-	}{
-		{
-			name: "pod requests TPU resources",
-			podSpec: &corev1.PodSpec{
-				Containers: []corev1.Container{
-					wrappers.MakeContainerWithTPU("c1"),
-				},
-			},
-			expectedNumContainer: 1,
-		},
-		{
-			name: "pod does not request TPU resources",
-			podSpec: &corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name: "c1",
-					},
-				},
-			},
-			expectedNumContainer: 0,
-		},
-		{
-			name: "pod requests multiple TPU resources",
-			podSpec: &corev1.PodSpec{
-				Containers: []corev1.Container{
-					wrappers.MakeContainerWithTPU("c1"),
-					wrappers.MakeContainerWithTPU("c2"),
-				},
-			},
-			expectedNumContainer: 2,
-		},
-		{
-			name: "mix containers",
-			podSpec: &corev1.PodSpec{
-				Containers: []corev1.Container{
-					wrappers.MakeContainerWithTPU("c1"),
-					{
-						Name: "c2",
-					},
-				},
-			},
-			expectedNumContainer: 1,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			containers := getContainersRequestingTPUs(tc.podSpec)
-			if len(containers) != tc.expectedNumContainer {
-				t.Fatalf("Expected %d containers, found %d", tc.expectedNumContainer, len(containers))
-			}
-		})
-	}
-}
-
 func TestPodRequestsTPUs(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -507,6 +705,19 @@ func TestPodRequestsTPUs(t *testing.T) {
 			podSpec: corev1.PodSpec{
 				Containers: []corev1.Container{
 					wrappers.MakeContainerWithTPU("c1"),
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "tpu resource in requests, not limits",
+			podSpec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+						},
+					},
 				},
 			},
 			expected: true,
@@ -532,300 +743,5 @@ func TestPodRequestsTPUs(t *testing.T) {
 				t.Errorf("Expected %v, got %v", tc.expected, !tc.expected)
 			}
 		})
-	}
-}
-
-func TestAddTPUVariablesSkipExisting(t *testing.T) {
-	podWithEnv := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
-					},
-					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
-				},
-			},
-		},
-	}
-	if err := AddTPUVariables(podWithEnv, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(podWithEnv.Spec.Containers[0].Env) != 1 {
-		t.Errorf("Expected skip injection, but env changed: %v", podWithEnv.Spec.Containers[0].Env)
-	}
-}
-
-func TestAddTPUVariablesInvalidPodName(t *testing.T) {
-	invalidPod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "invalidname", // No index
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				wrappers.MakeContainerWithTPU("c1"),
-			},
-		},
-	}
-	if err := AddTPUVariables(invalidPod, 1); err == nil {
-		t.Error("Expected error for invalid pod name, got nil")
-	}
-}
-
-func TestAddTPUVariablesWithRequests(t *testing.T) {
-	podWithRequests := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "sample-0",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
-					},
-				},
-			},
-		},
-	}
-	if err := AddTPUVariables(podWithRequests, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	found := false
-	for _, env := range podWithRequests.Spec.Containers[0].Env {
-		if env.Name == TpuWorkerId {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("TPU variables not injected for Request-based TPU spec")
-	}
-}
-
-func TestAddTPUVariablesSubGroupSkipExisting(t *testing.T) {
-	podWithEnv := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
-					},
-					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
-				},
-			},
-		},
-	}
-	if err := AddTPUVariables(podWithEnv, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-}
-
-func TestAddTPUVariablesSubGroupInvalidSize(t *testing.T) {
-	invalidSize := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "invalid"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(invalidSize, 1); err == nil {
-		t.Error("Expected error for invalid subgroup size, got nil")
-	}
-}
-
-func TestAddTPUVariablesSubGroupInvalidIndex(t *testing.T) {
-	invalidIndex := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-			Labels:      map[string]string{leaderworkerset.SubGroupIndexLabelKey: "invalid"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(invalidIndex, 1); err == nil {
-		t.Error("Expected error for invalid subgroup index, got nil")
-	}
-}
-
-func TestAddTPUVariablesSubGroupInvalidWorkerIndex(t *testing.T) {
-	invalidWorker := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-			Labels: map[string]string{
-				leaderworkerset.SubGroupIndexLabelKey: "0",
-				leaderworkerset.WorkerIndexLabelKey:   "invalid",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(invalidWorker, 1); err == nil {
-		t.Error("Expected error for invalid worker index, got nil")
-	}
-}
-
-func TestAddTPUVariablesSubGroupInvalidParentName(t *testing.T) {
-	invalidParent := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name:        "invalidname",
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-			Labels: map[string]string{
-				leaderworkerset.SubGroupIndexLabelKey: "0",
-				leaderworkerset.WorkerIndexLabelKey:   "1",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(invalidParent, 1); err == nil {
-		t.Error("Expected error for invalid parent name in subgroup, got nil")
-	}
-}
-
-func TestGetContainersRequestingTPUsInitCoverage(t *testing.T) {
-	pod := &corev1.PodSpec{
-		InitContainers: []corev1.Container{
-			wrappers.MakeContainerWithTPU("i1"),
-		},
-	}
-	containers := getContainersRequestingTPUs(pod)
-	if len(containers) != 1 || containers[0].Name != "i1" {
-		t.Errorf("Expected 1 init container, got %d", len(containers))
-	}
-}
-
-func TestAddTPUVariablesZeroContainers(t *testing.T) {
-	pod := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "c1"}},
-		},
-	}
-	if err := AddTPUVariables(pod, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(pod.Spec.Containers[0].Env) != 0 {
-		t.Error("Expected no env vars added for pod without TPU containers")
-	}
-}
-
-func TestAddTPUVariablesInitContainers(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "sample-0",
-		},
-		Spec: corev1.PodSpec{
-			InitContainers: []corev1.Container{
-				wrappers.MakeContainerWithTPU("i1"),
-			},
-			Subdomain: "default",
-		},
-	}
-	if err := AddTPUVariables(pod, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(pod.Spec.InitContainers[0].Env) == 0 {
-		t.Error("Expected env vars added to init container")
-	}
-}
-
-func TestAddTPUVariablesSubGroupSkip(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
-					},
-					Env: []corev1.EnvVar{{Name: TpuWorkerHostNames, Value: "alreadySet"}},
-				},
-			},
-		},
-	}
-	if err := AddTPUVariables(pod, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(pod.Spec.Containers[0].Env) != 1 {
-		t.Error("Expected skip injection in subgroup, but env changed")
-	}
-}
-
-func TestAddTPUVariablesSubGroupLeader(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "sample-0",
-			Labels: map[string]string{
-				leaderworkerset.WorkerIndexLabelKey:   "0",
-				leaderworkerset.SubGroupIndexLabelKey: "0",
-			},
-			Annotations: map[string]string{
-				leaderworkerset.SubGroupSizeAnnotationKey: "2",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(pod, 2); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	// Check if hostname contains leader hostname
-	found := false
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == TpuWorkerHostNames && strings.Contains(env.Value, "sample-0") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected leader hostname in TPU_WORKER_HOSTNAMES for subgroup leader")
-	}
-}
-
-func TestAddTPUVariablesSubGroupErrorParent(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "invalidname", // No index
-			Labels: map[string]string{
-				leaderworkerset.WorkerIndexLabelKey:   "1",
-				leaderworkerset.SubGroupIndexLabelKey: "0",
-			},
-			Annotations: map[string]string{
-				leaderworkerset.SubGroupSizeAnnotationKey: "2",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{wrappers.MakeContainerWithTPU("c1")},
-		},
-	}
-	if err := AddTPUVariables(pod, 2); err == nil {
-		t.Error("Expected error for invalid parent name in subgroup worker, got nil")
-	}
-}
-
-func TestAddTPUVariablesSubGroupZeroContainers(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "c1"}},
-		},
-	}
-	if err := AddTPUVariables(pod, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
 	}
 }
