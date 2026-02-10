@@ -576,6 +576,9 @@ func TestAddTPUVariablesSubGroupSkipExisting(t *testing.T) {
 	if err := AddTPUVariables(podWithEnv, 1); err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
+	if len(podWithEnv.Spec.Containers[0].Env) != 1 {
+		t.Errorf("Expected skip injection, but env changed: %v", podWithEnv.Spec.Containers[0].Env)
+	}
 }
 
 func TestGetContainersRequestingTPUs(t *testing.T) {
