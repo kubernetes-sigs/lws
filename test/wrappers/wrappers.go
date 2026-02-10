@@ -348,10 +348,6 @@ func MakeLeaderPodSpecWithTPUAndEnvVars(e ...corev1.EnvVar) corev1.PodSpec {
 	return podSpec
 }
 
-func MakeLeaderPodSpecWithTPU() corev1.PodSpec {
-	return MakeLeaderPodSpecWithTPUResource()
-}
-
 func MakeContainerWithTPU(name string) corev1.Container {
 	return corev1.Container{
 		Name:  name,

@@ -46,7 +46,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Leader requests TPU resources, leader pod",
 			pod: &corev1.Pod{
-				Spec: wrappers.MakeLeaderPodSpecWithTPU(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-0",
 					Namespace: "default",
@@ -68,7 +68,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Leader requests TPU resources, worker pod",
 			pod: &corev1.Pod{
-				Spec: wrappers.MakeLeaderPodSpecWithTPU(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-0-0",
 					Namespace: "default",
@@ -90,7 +90,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Leader pod always in TPU mesh",
 			pod: &corev1.Pod{
-				Spec: wrappers.MakeLeaderPodSpecWithTPU(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-0",
 					Namespace: "default",
@@ -109,7 +109,7 @@ func TestAddTPUVariables(t *testing.T) {
 		{
 			name: "Leader does not request TPU resources, worker pod",
 			pod: &corev1.Pod{
-				Spec: wrappers.MakeLeaderPodSpecWithTPU(),
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample-0-0",
 					Namespace: "default",
