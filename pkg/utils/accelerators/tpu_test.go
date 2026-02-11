@@ -587,7 +587,6 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 	}
 }
 
-
 func TestGetContainersRequestingTPUs(t *testing.T) {
 	tests := []struct {
 		name                 string
