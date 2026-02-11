@@ -70,7 +70,7 @@ func TestAddTPUVariables(t *testing.T) {
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
-					Name:      "test-sample-0-0",
+					Name:      "test-sample-0-1",
 					Namespace: "default",
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey: "1",
@@ -88,7 +88,7 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessPort:      "8476",
 		},
 		{
-			name: "Leader pod always in TPU mesh",
+			name: "Leader requests TPU resources, leader pod",
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
@@ -111,7 +111,7 @@ func TestAddTPUVariables(t *testing.T) {
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
 				ObjectMeta: v1.ObjectMeta{
-					Name:      "test-sample-0-0",
+					Name:      "test-sample-0-1",
 					Namespace: "default",
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey: "1",
@@ -126,7 +126,7 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessPort:      "8476",
 		},
 		{
-			name: "Test multi-container TPU_PROCESS_ADDRESSES",
+			name: "Test multi-container TPU_PROCESS_ADDRESSES, leader pod",
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -292,25 +292,56 @@ func TestAddTPUVariables(t *testing.T) {
 	}
 }
 
-func TestAddTPUVariablesSkipExisting(t *testing.T) {
-	podWithEnv := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+func TestAddTPUVariablesSkip(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+	}{
+		{
+			name: "Skip injection if TPU_WORKER_ID already exists, non-subgroup",
+			pod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "c1",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+							},
+							Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
+						},
 					},
-					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
+				},
+			},
+		},
+		{
+			name: "Skip injection if TPU_WORKER_ID already exists, subgroup",
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "c1",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
+							},
+							Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
+						},
+					},
 				},
 			},
 		},
 	}
-	if err := AddTPUVariables(podWithEnv, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(podWithEnv.Spec.Containers[0].Env) != 1 {
-		t.Errorf("Expected skip injection, but env changed: %v", podWithEnv.Spec.Containers[0].Env)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := AddTPUVariables(tc.pod, 1); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			if len(tc.pod.Spec.Containers[0].Env) != 1 {
+				t.Errorf("Expected skip injection, but env changed: %v", tc.pod.Spec.Containers[0].Env)
+			}
+		})
 	}
 }
 
@@ -556,30 +587,6 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 	}
 }
 
-func TestAddTPUVariablesSubGroupSkipExisting(t *testing.T) {
-	podWithEnv := &corev1.Pod{
-		ObjectMeta: v1.ObjectMeta{
-			Annotations: map[string]string{leaderworkerset.SubGroupSizeAnnotationKey: "1"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "c1",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{TpuResourceName: resource.MustParse("1")},
-					},
-					Env: []corev1.EnvVar{{Name: TpuWorkerId, Value: "0"}},
-				},
-			},
-		},
-	}
-	if err := AddTPUVariables(podWithEnv, 1); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if len(podWithEnv.Spec.Containers[0].Env) != 1 {
-		t.Errorf("Expected skip injection, but env changed: %v", podWithEnv.Spec.Containers[0].Env)
-	}
-}
 
 func TestGetContainersRequestingTPUs(t *testing.T) {
 	tests := []struct {
