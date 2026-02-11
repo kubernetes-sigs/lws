@@ -19,6 +19,7 @@ artifacts
 # editor and IDE paraphernalia
 .idea
 .vscode
+*.code-workspace
 *.nix
 *.swp
 *.swo
