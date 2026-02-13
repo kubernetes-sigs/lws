@@ -200,7 +200,8 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
-	if leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy != leaderworkerset.RecreateGroupOnPodRestart {
+	policy := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy
+	if policy != leaderworkerset.RecreateGroupOnPodRestart && policy != leaderworkerset.RecreateGroupAfterStart {
 		return false, nil
 	}
 	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
@@ -213,10 +214,10 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, err
 	}
 
-	_, recreateGroupAfterStart := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStart]
+	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
 
-	if pendingPods && recreateGroupAfterStart {
-		log.V(2).Info("Skipping RecreateGroupOnPodRestart because there is a pod pending: %s", pod.Name)
+	if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
+		log.V(2).Info("Skipping group recreation because there is a pod pending: %s", pod.Name)
 		return false, nil
 	}
 
@@ -248,7 +249,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}); err != nil {
 		return false, err
 	}
-	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "RecreateGroupOnPodRestart", fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
+	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "GroupRecreation", fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
 }
 
