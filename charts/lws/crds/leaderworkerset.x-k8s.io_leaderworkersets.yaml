@@ -8227,6 +8227,7 @@ spec:
                       enum:
                         - Default
                         - RecreateGroupOnPodRestart
+                        - RecreateGroupAfterStart
                         - None
                       type: string
                     size:
