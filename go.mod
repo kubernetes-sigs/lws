@@ -9,14 +9,14 @@ require (
 	github.com/onsi/gomega v1.39.0
 	github.com/open-policy-agent/cert-controller v0.15.0
 	github.com/stretchr/testify v1.11.1
-	k8s.io/api v0.35.0
-	k8s.io/apiextensions-apiserver v0.35.0
-	k8s.io/apimachinery v0.35.0
-	k8s.io/apiserver v0.35.0
-	k8s.io/client-go v0.35.0
-	k8s.io/code-generator v0.35.0
-	k8s.io/component-base v0.35.0
-	k8s.io/component-helpers v0.35.0
+	k8s.io/api v0.35.1
+	k8s.io/apiextensions-apiserver v0.35.1
+	k8s.io/apimachinery v0.35.1
+	k8s.io/apiserver v0.35.1
+	k8s.io/client-go v0.35.1
+	k8s.io/code-generator v0.35.1
+	k8s.io/component-base v0.35.1
+	k8s.io/component-helpers v0.35.1
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 	sigs.k8s.io/controller-runtime v0.23.0
