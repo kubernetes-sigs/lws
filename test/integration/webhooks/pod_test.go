@@ -565,7 +565,7 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
-		ginkgo.Entry("Pod requesting TPUs in lws with size 0 will have env var populated in worker pod", &testDefaultingCase{
+		ginkgo.Entry("Pod requesting TPUs in lws with size 1 will have env var populated in leader pod", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -580,6 +580,33 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 						},
 					},
 					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasTPUEnvVarsPopulated(got) {
+					return fmt.Errorf("should expect TPU env vars for pod %s", got.Name)
+				}
+				if err := testutils.CheckTPUContainerHasCorrectEnvVars(got, "test-sample-1.default"); err != nil {
+					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("Pod with multiple containers, only some requesting TPUs", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "1",
+						},
+					},
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResourceMultipleContainers(),
 				}
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
