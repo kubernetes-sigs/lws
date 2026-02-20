@@ -249,7 +249,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}); err != nil {
 		return false, err
 	}
-	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "GroupRecreation", fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
+	r.Record.Eventf(&leaderWorkerSet, corev1.EventTypeNormal, "RecreateGroup", fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
 }
 
