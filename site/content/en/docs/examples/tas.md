@@ -31,28 +31,18 @@ kueuePopulator:
 {{< /tabpane >}}
 
 ## Install the Kueue Controller 
-In a yaml file, enable LWS support for the Kueue controller
+
+Install the Kueue controller
 
 ```
-managerConfig:
-  controllerManagerConfigYaml: |-
-    integrations:
-      frameworks:
-      - "leaderworkerset.x-k8s.io/leaderworkerset"
-```
-
-Install the Kueue controller, passing the yaml file to enable LWS
-
-```
-$ helm install kueue oci://registry.k8s.io/kueue/charts/kueue   --version 0.15.0  --namespace kueue-system   --create-namespace --values 
-<lws-enabled-yaml>   --wait
+$ helm install kueue oci://registry.k8s.io/kueue/charts/kueue --version="0.16.1" --create-namespace --namespace=kueue-system
 ```
 
 Now install Kueue-populator, passing the topology definition
 
 ```
-helm install kueue-populator oci://us-central1-docker.pkg.dev/k8s-staging-images/kueue/charts/kueue-populator \
-  --version 0.15.0 \
+helm install kueue-populator oci://registry.k8s.io/kueue/charts/kueue-populator \
+  --version 0.16.1 \
   --namespace kueue-system \
   --create-namespace \
   --wait \
