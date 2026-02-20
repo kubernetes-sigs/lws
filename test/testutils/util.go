@@ -57,7 +57,7 @@ func MustCreateLws(ctx context.Context, k8sClient client.Client, lws *leaderwork
 
 func CreateWorkerPodsForLeaderPod(ctx context.Context, leaderPod corev1.Pod, k8sClient client.Client, lws leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
-		for i := 1; i <= int(*lws.Spec.LeaderWorkerTemplate.Size); i++ {
+		for i := 1; i < int(*lws.Spec.LeaderWorkerTemplate.Size); i++ {
 			worker := corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      leaderPod.Name + "-" + strconv.Itoa(i),
@@ -91,7 +91,7 @@ func DeleteWorkerPods(ctx context.Context, k8sClient client.Client, lws *leaderw
 	var workers corev1.PodList
 	gomega.Eventually(func() bool {
 		gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
-		return len(workers.Items) == int(*lws.Spec.LeaderWorkerTemplate.Size)
+		return len(workers.Items) == int(*lws.Spec.LeaderWorkerTemplate.Size)-1
 	}, Timeout, Interval).Should(gomega.Equal(true))
 	for i := range workers.Items {
 		gomega.Expect(k8sClient.Delete(ctx, &workers.Items[i])).To(gomega.Succeed())
@@ -357,6 +357,17 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
 		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
 		return k8sClient.Status().Update(ctx, &leaderPod)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+func SetPodToRunning(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Eventually(func() error {
+		var pod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &pod); err != nil {
+			return err
+		}
+		pod.Status.Phase = corev1.PodRunning
+		return k8sClient.Status().Update(ctx, &pod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 

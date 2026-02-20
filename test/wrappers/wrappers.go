@@ -85,8 +85,15 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacement() *LeaderWorkerSetW
 }
 
 func (lwsWrapper *LeaderWorkerSetWrapper) RestartGroupAfterStart() *LeaderWorkerSetWrapper {
-	lwsWrapper.Annotations = map[string]string{}
-	lwsWrapper.Annotations[leaderworkerset.RecreateGroupAfterStart] = "enable"
+	lwsWrapper.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.RecreateGroupAfterStart
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) RestartGroupAfterStartAnnotation() *LeaderWorkerSetWrapper {
+	if lwsWrapper.Annotations == nil {
+		lwsWrapper.Annotations = map[string]string{}
+	}
+	lwsWrapper.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey] = "enable"
 	return lwsWrapper
 }
 
