@@ -36,10 +36,23 @@ spec:
 
 When any pod in a group fails, the entire group is recreated if and only if there are no pods currently pending. This allows for large image pulls to complete without interruption.
 
+On version 0.9+, this feature can be enabled via the `restartPolicy` field:
+
 ```yaml
 spec:
   leaderWorkerTemplate:
     restartPolicy: RecreateGroupAfterStart
+```
+
+On version 0.8, this feature is experimental and can be enabled via the following annotation:
+
+```yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+  annotations:
+    leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start: true
 ```
 
 ## Node Failure Handling
