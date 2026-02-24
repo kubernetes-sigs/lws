@@ -407,7 +407,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(3)
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(4)
 			},
 			updates: []*update{
 				{
@@ -436,7 +436,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("Pod restart will delete the pod group when restart policy is RecreateGroupOnPodRestart", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(3)
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(4)
 			},
 			updates: []*update{
 				{
@@ -455,14 +455,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var leaderPod corev1.Pod
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
 						gomega.Expect(leaderPod.DeletionTimestamp != nil).To(gomega.BeTrue())
-						testing.ValidateEvent(ctx, k8sClient, "RecreateGroupOnPodRestart", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleted leader pod test-sample-0 to recreate group 0", lws.Namespace)
+						testing.ValidateEvent(ctx, k8sClient, "RecreateGroup", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleted leader pod test-sample-0 to recreate group 0", lws.Namespace)
 					},
 				},
 			},
 		}),
-		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is RecreateGroupOnRestart, RecreateGroupAfterStart is set, and a pod is pending", &testCase{
+		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is RecreateGroupOnPodRestart, RecreateGroupAfterStart annotation is set, and a pod is pending", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(3).RestartGroupAfterStart()
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(4).RestartGroupAfterStartAnnotation()
 			},
 			updates: []*update{
 				{
@@ -488,6 +488,78 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						gomega.Expect(len(workers.Items)).To(gomega.Equal(2))
 					},
 				},
+			},
+		}),
+		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is RecreateGroupAfterStart, and a pod is pending", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupAfterStart).Replica(1).Size(4)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
+						// delete one worker pod
+						var workers corev1.PodList
+						gomega.Eventually(func() int {
+							gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+							return len(workers.Items)
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
+						testing.SetPodToPending(ctx, k8sClient, lws.Name+"-0-2", lws)
+						gomega.Expect(k8sClient.Delete(ctx, &workers.Items[0])).To(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						gomega.Expect(leaderPod.DeletionTimestamp == nil).To(gomega.BeTrue())
+						var leaders corev1.PodList
+						gomega.Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.WorkerIndexLabelKey: "0"})).To(gomega.Succeed())
+						gomega.Expect(len(leaders.Items)).To(gomega.Equal(1))
+						var workers corev1.PodList
+						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+						gomega.Expect(len(workers.Items)).To(gomega.Equal(2))
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("Pod restart will recreate the pod group when restart policy is RecreateGroupAfterStart, and no pod is pending", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupAfterStart).Replica(1).Size(4)
+			},
+			updates: []*update{
+				func() *update {
+					var deletedPodName string
+					return &update{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							var leaderPod corev1.Pod
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+							testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
+							var workers corev1.PodList
+							gomega.Eventually(func() int {
+								gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+								return len(workers.Items)
+							}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
+							// set all Pods status to running
+							testing.SetPodToRunning(ctx, k8sClient, leaderPod.Name, lws)
+							for _, worker := range workers.Items {
+								testing.SetPodToRunning(ctx, k8sClient, worker.Name, lws)
+							}
+							deletedPodName = workers.Items[0].Name
+							// delete one worker pod
+							gomega.Expect(k8sClient.Delete(ctx, &workers.Items[0])).To(gomega.Succeed())
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							var leaderPod corev1.Pod
+							gomega.Eventually(func() bool {
+								gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+								return leaderPod.DeletionTimestamp != nil
+							}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+							expectedMessage := fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group 0", deletedPodName, lws.Name+"-0")
+							testing.ValidateEvent(ctx, k8sClient, "RecreateGroup", corev1.EventTypeNormal, expectedMessage, lws.Namespace)
+						},
+					}
+				}(),
 			},
 		}),
 		ginkgo.Entry("Replicas are processing will set condition to progressing with correct message with correct event", &testCase{
@@ -2004,7 +2076,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("resize should update the size of the replicas", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2)
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(3)
 			},
 			updates: []*update{
 				{
@@ -2021,9 +2093,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					},
 				},
 				{
-					// Update size to 3.
+					// Update size to 4.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.UpdateSize(ctx, k8sClient, lws, 3)
+						testing.UpdateSize(ctx, k8sClient, lws, 4)
 						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
