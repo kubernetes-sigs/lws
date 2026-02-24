@@ -470,7 +470,12 @@ func ValidateEvent(ctx context.Context, k8sClient client.Client, eventReason str
 			}
 		}
 
-		return fmt.Errorf("mismatch with the expected event: expected r:%v t:%v n:%v", eventReason, eventType, eventNote)
+		fmt.Printf("Events found in namespace %s:\n", namespace)
+		for _, item := range events.Items {
+			fmt.Printf("  Reason: %s, Type: %s, Note: %s\n", item.Reason, item.Type, item.Note)
+		}
+
+		return fmt.Errorf("mismatch with the expected event: expected r:%v t:%v n:%v; got r:%v t:%v n:%v", eventReason, eventType, eventNote, events.Items[0].Reason, events.Items[0].Type, events.Items[0].Note)
 
 	}, Timeout, Interval).Should(gomega.BeNil())
 }
