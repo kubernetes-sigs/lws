@@ -33,7 +33,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -53,7 +53,7 @@ import (
 type LeaderWorkerSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	Record record.EventRecorder
+	Record events.EventRecorder
 }
 
 var (
@@ -72,9 +72,14 @@ const (
 	GroupsProgressing = "GroupsProgressing"
 	GroupsUpdating    = "GroupsUpdating"
 	CreatingRevision  = "CreatingRevision"
+
+	// Event actions
+	Create = "Create"
+	Update = "Update"
+	Delete = "Delete"
 )
 
-func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record record.EventRecorder) *LeaderWorkerSetReconciler {
+func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record events.EventRecorder) *LeaderWorkerSetReconciler {
 	return &LeaderWorkerSetReconciler{
 		Client: client,
 		Scheme: scheme,
@@ -82,7 +87,8 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 	}
 }
 
-//+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch;get;list
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;watch;update;patch;get;list
 //+kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/finalizers,verbs=update
@@ -90,7 +96,6 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;patch
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/finalizers,verbs=update
@@ -140,7 +145,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
 		}
-		r.Record.Eventf(lws, corev1.EventTypeNormal, CreatingRevision, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
 	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated)
@@ -151,24 +156,23 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
-			r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
 		}
 		return ctrl.Result{}, err
 	}
 
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
-		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("Created leader statefulset %s", lws.Name))
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
 	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
 		// An event is logged to track update progress.
-		r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsUpdating, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
 	}
 
 	// Create headless service if it does not exist.
 	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, corev1.EventTypeWarning, FailedCreate,
-			fmt.Sprintf("Failed to create headless service for error: %v", err))
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -291,7 +295,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
 			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
-			r.Record.Eventf(lws, corev1.EventTypeNormal, GroupsProgressing, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
 		}
 		return burstReplicas
@@ -474,7 +478,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
 	if updateCondition {
-		r.Record.Eventf(lws, corev1.EventTypeNormal, conditions[0].Reason, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
+		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, conditions[0].Reason, Update, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, updateDone, nil
 }
@@ -672,7 +676,7 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 	return sts, nil
 }
 
-func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, recorder record.EventRecorder) (*appsv1.ControllerRevision, error) {
+func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, recorder events.EventRecorder) (*appsv1.ControllerRevision, error) {
 	revisionKey := ""
 	if sts != nil {
 		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
@@ -692,7 +696,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 		if revisionKey != "" {
 			message = fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
 		}
-		recorder.Eventf(lws, corev1.EventTypeNormal, CreatingRevision, message)
+		recorder.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, message)
 	}
 	return newRevision, err
 }

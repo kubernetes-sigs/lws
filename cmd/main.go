@@ -192,11 +192,10 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 	<-certsReady
 	setupLog.Info("certs ready")
 
-	// TODO: Deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead.
 	if err := controllers.NewLeaderWorkerSetReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		mgr.GetEventRecorderFor("leaderworkerset"), //nolint
+		mgr.GetEventRecorder("leaderworkerset"),
 	).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)
@@ -213,8 +212,7 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		setupLog.Info("Gang scheduling enabled", "provider", *cfg.GangSchedulingManagement.SchedulerProvider)
 	}
 	// Set up pod reconciler.
-	// TODO: Deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead.
-	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("leaderworkerset"), sp) //nolint
+	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorder("leaderworkerset"), sp)
 	if err := podController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pod")
 		os.Exit(1)
