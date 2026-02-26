@@ -35,13 +35,15 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec"><code>LeaderWorkerSetSpec</code></a>
 </td>
 <td>
-   <span class="text-muted">No description provided.</span></td>
+   <p>spec defines the desired behavior of LeaderWorkerSet.</p>
+</td>
 </tr>
 <tr><td><code>status</code> <B>[Required]</B><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetStatus"><code>LeaderWorkerSetStatus</code></a>
 </td>
 <td>
-   <span class="text-muted">No description provided.</span></td>
+   <p>status represents the current status of LeaderWorkerSet.</p>
+</td>
 </tr>
 </tbody>
 </table>
@@ -73,7 +75,7 @@ Worker pods are named using the format: leaderWorkerSetName-leaderIndex-workerIn
 <code>int32</code>
 </td>
 <td>
-   <p>Number of leader-workers groups. A scale subresource is available to enable HPA. The
+   <p>replicas is the number of leader-workers groups. A scale subresource is available to enable HPA. The
 selector for HPA will be that of the leader pod, and so practically HPA will be looking up the
 leader pod metrics. Note that the leader pod could aggregate metrics from
 the rest of the group and expose them as a summary custom metric representing the whole
@@ -86,14 +88,14 @@ Default to 1.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate"><code>LeaderWorkerTemplate</code></a>
 </td>
 <td>
-   <p>LeaderWorkerTemplate defines the template for leader/worker pods</p>
+   <p>leaderWorkerTemplate defines the template for leader/worker pods</p>
 </td>
 </tr>
 <tr><td><code>rolloutStrategy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-RolloutStrategy"><code>RolloutStrategy</code></a>
 </td>
 <td>
-   <p>RolloutStrategy defines the strategy that will be applied to update replicas
+   <p>rolloutStrategy defines the strategy that will be applied to update replicas
 when a revision is made to the leaderWorkerTemplate.</p>
 </td>
 </tr>
@@ -101,14 +103,14 @@ when a revision is made to the leaderWorkerTemplate.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-StartupPolicyType"><code>StartupPolicyType</code></a>
 </td>
 <td>
-   <p>StartupPolicy determines the startup policy for the worker statefulset.</p>
+   <p>startupPolicy determines the startup policy for the worker statefulset.</p>
 </td>
 </tr>
 <tr><td><code>networkConfig</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-NetworkConfig"><code>NetworkConfig</code></a>
 </td>
 <td>
-   <p>NetworkConfig defines the network configuration of the group</p>
+   <p>networkConfig defines the network configuration of the group</p>
 </td>
 </tr>
 </tbody>
@@ -130,39 +132,39 @@ when a revision is made to the leaderWorkerTemplate.</p>
 <tbody>
     
   
-<tr><td><code>conditions</code> <B>[Required]</B><br/>
+<tr><td><code>conditions</code><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
 <td>
-   <p>Conditions track the condition of the leaderworkerset.</p>
+   <p>conditions track the condition of the leaderworkerset.</p>
 </td>
 </tr>
-<tr><td><code>readyReplicas</code> <B>[Required]</B><br/>
+<tr><td><code>readyReplicas</code><br/>
 <code>int32</code>
 </td>
 <td>
-   <p>ReadyReplicas track the number of groups that are in ready state (updated or not).</p>
+   <p>readyReplicas track the number of groups that are in ready state (updated or not).</p>
 </td>
 </tr>
-<tr><td><code>updatedReplicas</code> <B>[Required]</B><br/>
+<tr><td><code>updatedReplicas</code><br/>
 <code>int32</code>
 </td>
 <td>
-   <p>UpdatedReplicas track the number of groups that have been updated (ready or not).</p>
+   <p>updatedReplicas track the number of groups that have been updated (ready or not).</p>
 </td>
 </tr>
-<tr><td><code>replicas</code> <B>[Required]</B><br/>
+<tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
 <td>
-   <p>Replicas track the total number of groups that have been created (updated or not, ready or not)</p>
+   <p>replicas track the total number of groups that have been created (updated or not, ready or not)</p>
 </td>
 </tr>
-<tr><td><code>hpaPodSelector</code> <B>[Required]</B><br/>
+<tr><td><code>hpaPodSelector</code><br/>
 <code>string</code>
 </td>
 <td>
-   <p>HPAPodSelector for pods that belong to the LeaderWorkerSet object, this is
+   <p>hpaPodSelector for pods that belong to the LeaderWorkerSet object, this is
 needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
 we only select the leader pods.</p>
 </td>
@@ -195,21 +197,21 @@ API whenever possible.</p>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
 </td>
 <td>
-   <p>LeaderTemplate defines the pod template for leader pods.</p>
+   <p>leaderTemplate defines the pod template for leader pods.</p>
 </td>
 </tr>
 <tr><td><code>workerTemplate</code> <B>[Required]</B><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
 </td>
 <td>
-   <p>WorkerTemplate defines the pod template for worker pods.</p>
+   <p>workerTemplate defines the pod template for worker pods.</p>
 </td>
 </tr>
 <tr><td><code>size</code><br/>
 <code>int32</code>
 </td>
 <td>
-   <p>Number of pods to create. It is the total number of pods in each group.
+   <p>size is the number of pods to create. It is the total number of pods in each group.
 The minimum is 1 which represent the leader. When set to 1, the leader
 pod is created for each group as well as a 0-replica StatefulSet for the workers.
 Default to 1.</p>
@@ -219,7 +221,7 @@ Default to 1.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-RestartPolicyType"><code>RestartPolicyType</code></a>
 </td>
 <td>
-   <p>RestartPolicy defines the restart policy when pod failures happen.
+   <p>restartPolicy defines the restart policy when pod failures happen.
 The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
@@ -228,7 +230,7 @@ replace with None policy for the same behavior.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
 <td>
-   <p>SubGroupPolicy describes the policy that will be applied when creating subgroups
+   <p>subGroupPolicy describes the policy that will be applied when creating subgroups
 in each replica.</p>
 </td>
 </tr>
@@ -236,7 +238,7 @@ in each replica.</p>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#persistentvolumeclaim-v1-core"><code>[]k8s.io/api/core/v1.PersistentVolumeClaim</code></a>
 </td>
 <td>
-   <p>VolumeClaimTemplates is a list of claims that pods are allowed to reference.
+   <p>volumeClaimTemplates is a list of claims that pods are allowed to reference.
 Every claim in this list must have at least one matching (by name) volumeMount
 in one container in the template. A claim in this list takes precedence over
 any volumes in the template, with the same name.</p>
@@ -246,7 +248,7 @@ any volumes in the template, with the same name.</p>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#statefulsetpersistentvolumeclaimretentionpolicy-v1-apps"><code>k8s.io/api/apps/v1.StatefulSetPersistentVolumeClaimRetentionPolicy</code></a>
 </td>
 <td>
-   <p>PersistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
+   <p>persistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
 the VolumeClaimTemplates.</p>
 </td>
 </tr>
@@ -271,7 +273,7 @@ the VolumeClaimTemplates.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-SubdomainPolicy"><code>SubdomainPolicy</code></a>
 </td>
 <td>
-   <p>SubdomainPolicy determines the policy that will be used when creating
+   <p>subdomainPolicy determines the policy that will be used when creating
 the headless service, defaults to shared</p>
 </td>
 </tr>
@@ -310,7 +312,7 @@ the headless service, defaults to shared</p>
 <code>int32</code>
 </td>
 <td>
-   <p>Partition indicates the ordinal at which the lws should be partitioned for updates.
+   <p>partition indicates the ordinal at which the lws should be partitioned for updates.
 During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 The groups from 0 to Partition-1 will not be updated.
 This is helpful in incremental rollout strategies like canary deployments
@@ -325,7 +327,7 @@ The default value is 0.</p>
 <code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code>
 </td>
 <td>
-   <p>The maximum number of replicas that can be unavailable during the update.
+   <p>maxUnavailable is the maximum number of replicas that can be unavailable during the update.
 Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
 Absolute number is calculated from percentage by rounding down.
 This can not be 0 if MaxSurge is 0.
@@ -341,7 +343,7 @@ during the update.</p>
 <code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code>
 </td>
 <td>
-   <p>The maximum number of replicas that can be scheduled above the original number of
+   <p>maxSurge is the maximum number of replicas that can be scheduled above the original number of
 replicas.
 Value can be an absolute number (ex: 5) or a percentage of total replicas at
 the start of the update (ex: 10%).
@@ -378,14 +380,14 @@ will use to perform replica updates.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-RolloutStrategyType"><code>RolloutStrategyType</code></a>
 </td>
 <td>
-   <p>Type defines the rollout strategy, it can only be “RollingUpdate” for now.</p>
+   <p>type defines the rollout strategy, it can only be “RollingUpdate” for now.</p>
 </td>
 </tr>
 <tr><td><code>rollingUpdateConfiguration</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-RollingUpdateConfiguration"><code>RollingUpdateConfiguration</code></a>
 </td>
 <td>
-   <p>RollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.</p>
+   <p>rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.</p>
 </td>
 </tr>
 </tbody>
@@ -435,7 +437,7 @@ will use to perform replica updates.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicyType"><code>SubGroupPolicyType</code></a>
 </td>
 <td>
-   <p>Defines what type of Subgroups to create. Defaults to
+   <p>subGroupPolicyType defines what type of Subgroups to create. Defaults to
 LeaderWorker</p>
 </td>
 </tr>
@@ -443,7 +445,7 @@ LeaderWorker</p>
 <code>int32</code>
 </td>
 <td>
-   <p>The number of pods per subgroup. This value is immutable,
+   <p>subGroupSize is the number of pods per subgroup. This value is immutable,
 and must not be greater than LeaderWorkerSet.Spec.Size.
 Size must be divisible by subGroupSize in which case the
 subgroups will be of equal size. Or size - 1 is divisible

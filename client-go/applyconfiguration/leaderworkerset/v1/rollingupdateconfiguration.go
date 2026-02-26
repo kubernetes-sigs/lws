@@ -26,7 +26,7 @@ import (
 //
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfigurationApplyConfiguration struct {
-	// Partition indicates the ordinal at which the lws should be partitioned for updates.
+	// partition indicates the ordinal at which the lws should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
 	// This is helpful in incremental rollout strategies like canary deployments
@@ -36,7 +36,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// This is as expected to reduce the reconciling complexity.
 	// The default value is 0.
 	Partition *int32 `json:"partition,omitempty"`
-	// The maximum number of replicas that can be unavailable during the update.
+	// maxUnavailable is the maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
 	// This can not be 0 if MaxSurge is 0.
@@ -47,7 +47,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// that at least 70% of original number of replicas are available at all times
 	// during the update.
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
-	// The maximum number of replicas that can be scheduled above the original number of
+	// maxSurge is the maximum number of replicas that can be scheduled above the original number of
 	// replicas.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
 	// the start of the update (ex: 10%).
