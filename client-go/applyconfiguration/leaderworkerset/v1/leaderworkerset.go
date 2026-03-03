@@ -28,10 +28,13 @@ import (
 //
 // LeaderWorkerSet is the Schema for the leaderworkersets API
 type LeaderWorkerSetApplyConfiguration struct {
-	metav1.TypeMetaApplyConfiguration    `json:",inline"`
+	metav1.TypeMetaApplyConfiguration `json:",inline"`
+	// metadata is the standard object's metadata.
 	*metav1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
-	Spec                                 *LeaderWorkerSetSpecApplyConfiguration   `json:"spec,omitempty"`
-	Status                               *LeaderWorkerSetStatusApplyConfiguration `json:"status,omitempty"`
+	// spec defines the desired behavior of LeaderWorkerSet.
+	Spec *LeaderWorkerSetSpecApplyConfiguration `json:"spec,omitempty"`
+	// status represents the current status of LeaderWorkerSet.
+	Status *LeaderWorkerSetStatusApplyConfiguration `json:"status,omitempty"`
 }
 
 // LeaderWorkerSet constructs a declarative configuration of the LeaderWorkerSet type for use with

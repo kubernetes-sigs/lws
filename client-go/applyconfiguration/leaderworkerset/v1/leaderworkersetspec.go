@@ -35,7 +35,7 @@ import (
 // gets a workerIndex, and it is always set to 0.
 // Worker pods are named using the format: leaderWorkerSetName-leaderIndex-workerIndex.
 type LeaderWorkerSetSpecApplyConfiguration struct {
-	// Number of leader-workers groups. A scale subresource is available to enable HPA. The
+	// replicas is the number of leader-workers groups. A scale subresource is available to enable HPA. The
 	// selector for HPA will be that of the leader pod, and so practically HPA will be looking up the
 	// leader pod metrics. Note that the leader pod could aggregate metrics from
 	// the rest of the group and expose them as a summary custom metric representing the whole
@@ -43,14 +43,14 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// On scale down, the leader pod as well as the workers statefulset will be deleted.
 	// Default to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
-	// LeaderWorkerTemplate defines the template for leader/worker pods
+	// leaderWorkerTemplate defines the template for leader/worker pods
 	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
-	// RolloutStrategy defines the strategy that will be applied to update replicas
+	// rolloutStrategy defines the strategy that will be applied to update replicas
 	// when a revision is made to the leaderWorkerTemplate.
 	RolloutStrategy *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
-	// StartupPolicy determines the startup policy for the worker statefulset.
+	// startupPolicy determines the startup policy for the worker statefulset.
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
-	// NetworkConfig defines the network configuration of the group
+	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
 }
 

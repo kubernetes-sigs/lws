@@ -27,9 +27,9 @@ import (
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller
 // will use to perform replica updates.
 type RolloutStrategyApplyConfiguration struct {
-	// Type defines the rollout strategy, it can only be “RollingUpdate” for now.
+	// type defines the rollout strategy, it can only be “RollingUpdate” for now.
 	Type *leaderworkersetv1.RolloutStrategyType `json:"type,omitempty"`
-	// RollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
+	// rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
 	RollingUpdateConfiguration *RollingUpdateConfigurationApplyConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 
