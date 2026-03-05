@@ -337,7 +337,6 @@ to implement this enhancement.
 - Service orchestration
 - Comprehensive test coverage (>80%)
 - Documentation and examples
-- Feature gate: `DisaggDeployment`
 
 **Beta (v0.2)**:
 - Production usage feedback incorporated
