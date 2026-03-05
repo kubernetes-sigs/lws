@@ -193,9 +193,9 @@ type ServiceTemplate struct {
 - `side` is either `prefill` or `decode`
 
 **Labels**: The following labels are applied to managed LeaderWorkerSets:
-- `leaderworkerset.x-k8s.io/disagg-name`: DisaggDeployment name
-- `leaderworkerset.x-k8s.io/disagg-side`: `prefill` or `decode`
-- `leaderworkerset.x-k8s.io/disagg-revision`: Template hash
+- `disaggdeployment.x-k8s.io/name`: DisaggDeployment name
+- `disaggdeployment.x-k8s.io/side`: `prefill` or `decode`
+- `disaggdeployment.x-k8s.io/revision`: Template hash
 
 ### Two-Dimensional Rolling Update Algorithm
 
