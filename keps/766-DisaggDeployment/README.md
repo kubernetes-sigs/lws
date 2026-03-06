@@ -33,6 +33,7 @@ workload primitive.
   - [Alternative 1: Extend LeaderWorkerSet with Multi-Template Support](#alternative-1-extend-leaderworkerset-with-multi-template-support)
   - [Alternative 2: Helm Chart or Kustomize Overlay](#alternative-2-helm-chart-or-kustomize-overlay)
   - [Alternative 3: External Controller Without CRD](#alternative-3-external-controller-without-crd)
+  - [Alternative 4: Use LWS Partition Field Instead of Multiple LWS per Revision](#alternative-4-use-lws-partition-field-instead-of-multiple-lws-per-revision)
 <!-- /toc -->
 
 ## Summary
@@ -387,3 +388,29 @@ Build an external controller that watches LeaderWorkerSets with specific labels 
 - Poor user experience (no single resource to manage)
 - Harder to discover and use
 - State management would be complex without a CRD
+
+### Alternative 4: Use LWS Partition Field Instead of Multiple LWS per Revision
+
+Instead of creating separate LeaderWorkerSets per revision (resulting in up to 4 LWS during updates: old-prefill, old-decode, new-prefill, new-decode), use the LWS `partition` field to perform in-place updates within a single LWS per side.
+
+**How it would work**:
+- DisaggDeployment creates exactly 2 LWS: `{name}-prefill` and `{name}-decode`
+- Rolling updates manipulate the `partition` field on both LWS to progressively update groups
+- Groups with ordinal `>= partition` get the new template; groups `< partition` remain on old
+
+**Why we chose multiple LWS per revision instead**:
+
+1. **Revision-aware traffic routing**: DisaggDeployment is designed for disaggregated inference, where a load balancer (e.g., a modified LLM-d Endpoint Picker) must route prefill requests to backends whose decode counterparts are on the **same revision**. With separate LWS (and Service) per revision, each pod's revision is explicit via labels (`disaggdeployment.x-k8s.io/revision`). The load balancer can count backends per revision across both pools and distribute traffic proportionally. With partition-based updates, pods within the same LWS have different templates based on ordinal, making revision-aware routing significantly more complex. The goal is to avoid having a prefill talk to an incompatible decode—both sides must be treated as totally incompatible. This special routing requires work on the LLM-d side.
+
+2. **LWS as a read-only resource**: Treating LWS as a read-only resource (similar to how Deployment treats ReplicaSet) makes more sense for this use case. During a coordinated rollout, you want to update prefill and decode at different paces depending on the step you are at—it's a tied update across two dimensions. This level of control is difficult to achieve with partition, which operates on a single LWS independently.
+
+3. **Ops observability**: Separate LWS per revision is simpler for ops observability. You can see directly at which stage your update is, since you can see the version right away during updates (e.g., "old-prefill: 2 replicas, new-prefill: 3 replicas") rather than inspecting partition boundaries within a single LWS.
+
+**Trade-offs acknowledged**:
+- **Resource overhead**: Up to 4 LWS exist during updates vs. 2. However, LWS is a lightweight coordination resource; the actual pod count remains the same.
+- **Complexity**: The two-dimensional rolling update algorithm is more complex than coordinating two partition values. However, this complexity is encapsulated in the DisaggDeployment controller.
+
+**Potential LWS improvements that could enable partition-based approach**:
+- Pod-level revision labels (independent of LWS name) would help with traffic routing
+- Revision-aware service selectors at the LWS level
+- See also: [#710](https://github.com/kubernetes-sigs/lws/issues/710) for related discussion on revision tracking
