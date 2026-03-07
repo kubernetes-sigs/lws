@@ -149,7 +149,7 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 		return nil, err
 	}
 	history := revisionList.Items
-	var owned []*appsv1.ControllerRevision
+	owned := make([]*appsv1.ControllerRevision, 0, len(history))
 	for i := range history {
 		ref := metav1.GetControllerOfNoCopy(&history[i])
 		if ref == nil || ref.UID == parent.GetUID() {
