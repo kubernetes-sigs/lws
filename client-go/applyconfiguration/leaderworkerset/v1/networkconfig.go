@@ -24,7 +24,7 @@ import (
 // NetworkConfigApplyConfiguration represents a declarative configuration of the NetworkConfig type for use
 // with apply.
 type NetworkConfigApplyConfiguration struct {
-	// SubdomainPolicy determines the policy that will be used when creating
+	// subdomainPolicy determines the policy that will be used when creating
 	// the headless service, defaults to shared
 	SubdomainPolicy *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
 }
