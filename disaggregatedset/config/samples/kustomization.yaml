@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- disagg_v1alpha1_disaggregatedset.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
