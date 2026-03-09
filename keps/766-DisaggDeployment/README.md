@@ -1,7 +1,7 @@
-# KEP-766: DisaggDeployment
+# KEP-766: DisaggregatedSet
 
 <!--
-This KEP proposes adding DisaggDeployment as a higher-level API for managing
+This KEP proposes adding DisaggregatedSet as a higher-level API for managing
 disaggregated inference workloads using LeaderWorkerSet as the underlying
 workload primitive.
 -->
@@ -19,7 +19,7 @@ workload primitive.
   - [Notes/Constraints](#notesconstraints)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-  - [DisaggDeployment API](#disaggdeployment-api)
+  - [DisaggregatedSet API](#disaggregatedset-api)
   - [Two-Dimensional Rolling Update Algorithm](#two-dimensional-rolling-update-algorithm)
   - [Service Orchestration](#service-orchestration)
   - [Controller Architecture](#controller-architecture)
@@ -38,11 +38,11 @@ workload primitive.
 
 ## Summary
 
-This KEP proposes adding `DisaggDeployment` as a new Custom Resource Definition (CRD) to the LeaderWorkerSet (LWS) project. DisaggDeployment is a higher-level abstraction that orchestrates multiple LeaderWorkerSets with coordinated lifecycle management, specifically designed for disaggregated inference architectures where "prefill" and "decode" workloads run on separate infrastructure.
+This KEP proposes adding `DisaggregatedSet` as a new Custom Resource Definition (CRD) to the LeaderWorkerSet (LWS) project. DisaggregatedSet is a higher-level abstraction that orchestrates multiple LeaderWorkerSets with coordinated lifecycle management, specifically designed for disaggregated inference architectures where "prefill" and "decode" workloads run on separate infrastructure.
 
 Disaggregated serving is an optimization for LLM inference workloads that takes advantage of the fact that the two phases of inference (prefill and decode) have different computational characteristics. State-of-the-art LLM serving frameworks such as [vLLM](https://github.com/vllm-project/vllm) and [SGLang](https://github.com/sgl-project/sglang) support this optimization.
 
-DisaggDeployment simplifies the deployment of disaggregated LLM inference by:
+DisaggregatedSet simplifies the deployment of disaggregated LLM inference by:
 - Managing two LeaderWorkerSets (prefill and decode) as a single logical unit
 - Providing coordinated two-dimensional rolling updates across both sides
 - Automatically creating Services when both sides are ready
@@ -73,7 +73,7 @@ Currently, deploying disaggregated inference workloads requires users to manuall
 
 1. **Auto-scaling support**: HPA/VPA integration or automatic scaling based on inference load metrics is out of scope.
 
-2. **Multi-cluster federation**: Managing DisaggDeployments across multiple Kubernetes clusters is not addressed.
+2. **Multi-cluster federation**: Managing DisaggregatedSets across multiple Kubernetes clusters is not addressed.
 
 3. **Custom workload backends**: Supporting backends other than LeaderWorkerSet (e.g., StatefulSet, Deployment) is not planned.
 
@@ -83,7 +83,7 @@ Currently, deploying disaggregated inference workloads requires users to manuall
 
 ## Proposal
 
-We propose adding a new CRD called `DisaggDeployment` that acts as a higher-level controller over LeaderWorkerSet resources. The DisaggDeployment controller will:
+We propose adding a new CRD called `DisaggregatedSet` that acts as a higher-level controller over LeaderWorkerSet resources. The DisaggregatedSet controller will:
 
 1. Create and manage two LeaderWorkerSets (one for prefill, one for decode)
 2. Coordinate rolling updates using a two-dimensional algorithm
@@ -93,7 +93,7 @@ We propose adding a new CRD called `DisaggDeployment` that acts as a higher-leve
 
 #### Story 1: Deploy Disaggregated LLM Inference
 
-As a platform engineer, I want to deploy a disaggregated LLM inference workload by creating a single DisaggDeployment resource that specifies both prefill and decode configurations, so that I don't have to manage two separate LeaderWorkerSets manually.
+As a platform engineer, I want to deploy a disaggregated LLM inference workload by creating a single DisaggregatedSet resource that specifies both prefill and decode configurations, so that I don't have to manage two separate LeaderWorkerSets manually.
 
 #### Story 2: Rolling Update with Zero Downtime
 
@@ -119,29 +119,29 @@ As an application developer, I want Services to be automatically created for my 
 
 **Risk**: Adding a new CRD increases the API surface and maintenance burden.
 
-**Mitigation**: DisaggDeployment is additive and does not modify existing LeaderWorkerSet behavior. Users who don't need disaggregated inference can continue using LeaderWorkerSet directly.
+**Mitigation**: DisaggregatedSet is additive and does not modify existing LeaderWorkerSet behavior. Users who don't need disaggregated inference can continue using LeaderWorkerSet directly.
 
 ## Design Details
 
-### DisaggDeployment API
+### DisaggregatedSet API
 
 ```go
-// DisaggDeployment is the Schema for the disaggdeployments API
-type DisaggDeployment struct {
+// DisaggregatedSet is the Schema for the disaggregated sets API
+type DisaggregatedSet struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitempty"`
 
-    Spec   DisaggDeploymentSpec   `json:"spec"`
-    Status DisaggDeploymentStatus `json:"status,omitempty"`
+    Spec   DisaggregatedSetSpec   `json:"spec"`
+    Status DisaggregatedSetStatus `json:"status,omitempty"`
 }
 
-// DisaggDeploymentSpec defines the desired state of DisaggDeployment
-type DisaggDeploymentSpec struct {
-    // Prefill configuration for the disaggregated deployment
+// DisaggregatedSetSpec defines the desired state of DisaggregatedSet
+type DisaggregatedSetSpec struct {
+    // Prefill configuration for the disaggregated set
     // +required
     Prefill *DisaggSideConfig `json:"prefill"`
 
-    // Decode configuration for the disaggregated deployment
+    // Decode configuration for the disaggregated set
     // +required
     Decode *DisaggSideConfig `json:"decode"`
 }
@@ -189,14 +189,14 @@ type ServiceTemplate struct {
 }
 ```
 
-**Naming Convention**: LeaderWorkerSets are named `{disaggdeployment-name}-{revision}-{side}` where:
+**Naming Convention**: LeaderWorkerSets are named `{disaggregatedset-name}-{revision}-{side}` where:
 - `revision` is a truncated hash of both pod templates (ensures coordinated updates)
 - `side` is either `prefill` or `decode`
 
 **Labels**: The following labels are applied to managed LeaderWorkerSets:
-- `disaggdeployment.x-k8s.io/name`: DisaggDeployment name
-- `disaggdeployment.x-k8s.io/side`: `prefill` or `decode`
-- `disaggdeployment.x-k8s.io/revision`: Template hash
+- `disaggregatedset.x-k8s.io/name`: DisaggregatedSet name
+- `disaggregatedset.x-k8s.io/side`: `prefill` or `decode`
+- `disaggregatedset.x-k8s.io/revision`: Template hash
 
 ### Two-Dimensional Rolling Update Algorithm
 
@@ -296,7 +296,7 @@ Services are managed based on workload readiness:
 The controller follows a stateless design:
 
 1. **Reconciliation Loop**:
-   - Fetch DisaggDeployment
+   - Fetch DisaggregatedSet
    - Compute revision hash from both templates
    - Cleanup drained workloads (both sides at 0)
    - Route to rolling update or simple reconcile based on old workload existence
@@ -323,7 +323,7 @@ to implement this enhancement.
 
 #### Integration tests
 
-- DisaggDeployment creation creates two LeaderWorkerSets
+- DisaggregatedSet creation creates two LeaderWorkerSets
 - Template update triggers coordinated rolling update
 - Service created only when both sides ready
 - Interrupted rollout resumes correctly after controller restart
@@ -332,7 +332,7 @@ to implement this enhancement.
 ### Graduation Criteria
 
 **Alpha (v0.1)**:
-- DisaggDeployment CRD with validation
+- DisaggregatedSet CRD with validation
 - LeaderWorkerSet creation and ownership
 - Two-dimensional rolling update algorithm
 - Service orchestration
@@ -356,7 +356,7 @@ to implement this enhancement.
 
 1. **Increased Complexity**: Adding another CRD increases the API surface and learning curve for new users.
 
-2. **Opinionated Design**: DisaggDeployment assumes a prefill/decode architecture which may not fit all disaggregated workloads.
+2. **Opinionated Design**: DisaggregatedSet assumes a prefill/decode architecture which may not fit all disaggregated workloads.
 
 3. **Controller Overhead**: Managing an additional controller layer adds some overhead, though minimal for typical deployment sizes.
 
@@ -394,13 +394,13 @@ Build an external controller that watches LeaderWorkerSets with specific labels 
 Instead of creating separate LeaderWorkerSets per revision (resulting in up to 4 LWS during updates: old-prefill, old-decode, new-prefill, new-decode), use the LWS `partition` field to perform in-place updates within a single LWS per side.
 
 **How it would work**:
-- DisaggDeployment creates exactly 2 LWS: `{name}-prefill` and `{name}-decode`
+- DisaggregatedSet creates exactly 2 LWS: `{name}-prefill` and `{name}-decode`
 - Rolling updates manipulate the `partition` field on both LWS to progressively update groups
 - Groups with ordinal `>= partition` get the new template; groups `< partition` remain on old
 
 **Why we chose multiple LWS per revision instead**:
 
-1. **Revision-aware traffic routing**: DisaggDeployment is designed for disaggregated inference, where a load balancer (e.g., a modified LLM-d Endpoint Picker) must route prefill requests to backends whose decode counterparts are on the **same revision**. With separate LWS (and Service) per revision, each pod's revision is explicit via labels (`disaggdeployment.x-k8s.io/revision`). The load balancer can count backends per revision across both pools and distribute traffic proportionally. With partition-based updates, pods within the same LWS have different templates based on ordinal, making revision-aware routing significantly more complex. The goal is to avoid having a prefill talk to an incompatible decode—both sides must be treated as totally incompatible. This special routing requires work on the LLM-d side.
+1. **Revision-aware traffic routing**: DisaggregatedSet is designed for disaggregated inference, where a load balancer (e.g., a modified LLM-d Endpoint Picker) must route prefill requests to backends whose decode counterparts are on the **same revision**. With separate LWS (and Service) per revision, each pod's revision is explicit via labels (`disaggregatedset.x-k8s.io/revision`). The load balancer can count backends per revision across both pools and distribute traffic proportionally. With partition-based updates, pods within the same LWS have different templates based on ordinal, making revision-aware routing significantly more complex. The goal is to avoid having a prefill talk to an incompatible decode—both sides must be treated as totally incompatible. This special routing requires work on the LLM-d side.
 
 2. **LWS as a read-only resource**: Treating LWS as a read-only resource (similar to how Deployment treats ReplicaSet) makes more sense for this use case. During a coordinated rollout, you want to update prefill and decode at different paces depending on the step you are at—it's a tied update across two dimensions. This level of control is difficult to achieve with partition, which operates on a single LWS independently.
 
@@ -408,7 +408,7 @@ Instead of creating separate LeaderWorkerSets per revision (resulting in up to 4
 
 **Trade-offs acknowledged**:
 - **Resource overhead**: Up to 4 LWS exist during updates vs. 2. However, LWS is a lightweight coordination resource; the actual pod count remains the same.
-- **Complexity**: The two-dimensional rolling update algorithm is more complex than coordinating two partition values. However, this complexity is encapsulated in the DisaggDeployment controller.
+- **Complexity**: The two-dimensional rolling update algorithm is more complex than coordinating two partition values. However, this complexity is encapsulated in the DisaggregatedSet controller.
 
 **Potential LWS improvements that could enable partition-based approach**:
 - Pod-level revision labels (independent of LWS name) would help with traffic routing
