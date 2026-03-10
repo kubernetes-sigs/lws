@@ -495,6 +495,130 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
+	Context("Labels and Annotations Propagation", func() {
+		const deploymentName = "test-labels"
+
+		AfterEach(func() {
+			cleanupDeployment(deploymentName)
+		})
+
+		It("should propagate custom labels and annotations to LWS and Service", func() {
+			By("creating DisaggregatedSet with custom labels and annotations")
+			yaml := `apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+kind: DisaggregatedSet
+metadata:
+  name: test-labels
+  namespace: default
+spec:
+  prefill:
+    replicas: 1
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        metadata:
+          labels:
+            custom-label: prefill-value
+            env: production
+          annotations:
+            custom-annotation: prefill-annotation
+            prometheus.io/scrape: "true"
+        spec:
+          containers:
+          - name: main
+            image: registry.k8s.io/pause:3.9
+    serviceTemplate:
+      metadata:
+        labels:
+          service-label: prefill-svc
+        annotations:
+          service-annotation: prefill-svc-annotation
+      spec:
+        ports:
+        - port: 8080
+          targetPort: 8080
+  decode:
+    replicas: 1
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        metadata:
+          labels:
+            custom-label: decode-value
+          annotations:
+            custom-annotation: decode-annotation
+        spec:
+          containers:
+          - name: main
+            image: registry.k8s.io/pause:3.9
+    serviceTemplate:
+      metadata:
+        labels:
+          service-label: decode-svc
+        annotations:
+          service-annotation: decode-svc-annotation
+      spec:
+        ports:
+        - port: 8080
+          targetPort: 8080
+`
+			Expect(applyYAML(yaml)).To(Succeed())
+
+			By("verifying LWS has merged labels and user annotations")
+			Eventually(func(g Gomega) {
+				// Check prefill LWS labels
+				cmd := exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.leaderWorkerTemplate.workerTemplate.metadata.labels}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Verify user labels are present
+				g.Expect(output).To(ContainSubstring("custom-label"))
+				g.Expect(output).To(ContainSubstring("prefill-value"))
+				g.Expect(output).To(ContainSubstring("env"))
+				g.Expect(output).To(ContainSubstring("production"))
+				// Verify auto-populated labels are present
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/side"))
+
+				// Check prefill LWS annotations
+				cmd = exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.leaderWorkerTemplate.workerTemplate.metadata.annotations}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-annotation"))
+				g.Expect(output).To(ContainSubstring("prefill-annotation"))
+				g.Expect(output).To(ContainSubstring("prometheus.io/scrape"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+
+			By("verifying Services have merged labels and user annotations")
+			Eventually(func(g Gomega) {
+				// Check prefill service labels
+				cmd := exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].metadata.labels}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Verify user labels are present
+				g.Expect(output).To(ContainSubstring("service-label"))
+				g.Expect(output).To(ContainSubstring("prefill-svc"))
+				// Verify auto-populated labels are present
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/side"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/revision"))
+
+				// Check prefill service annotations
+				cmd = exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].metadata.annotations}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("service-annotation"))
+				g.Expect(output).To(ContainSubstring("prefill-svc-annotation"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+		})
+	})
+
 	Context("Cleanup and Deletion", func() {
 		const deploymentName = "test-cleanup"
 
