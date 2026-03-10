@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -79,13 +81,7 @@ func (manager *ServiceManager) ReconcileServices(
 	}
 
 	// Check if target revision is ready on both sides
-	targetRevisionReady := false
-	for _, revision := range readyRevisions {
-		if revision == targetRevision {
-			targetRevisionReady = true
-			break
-		}
-	}
+	targetRevisionReady := slices.Contains(readyRevisions, targetRevision)
 
 	// Only create services for the target revision (current spec).
 	// If target revision is not ready, keep existing services unchanged to prevent flip-flop.
@@ -152,15 +148,24 @@ func (manager *ServiceManager) buildService(
 ) *corev1.Service {
 	serviceName := GenerateServiceName(deployment.Name, sideName, revision)
 
-	// Start with user-provided labels, then overlay auto-populated labels
+	// Build labels: start with flat labels, overlay metadata.labels, then auto-populated
 	labels := make(map[string]string)
-	for key, value := range serviceTemplate.Labels {
-		labels[key] = value
+	// First, copy flat labels (deprecated, for backward compatibility)
+	maps.Copy(labels, serviceTemplate.Labels)
+	// Then, overlay metadata.labels (takes precedence over flat labels)
+	if serviceTemplate.Metadata != nil {
+		maps.Copy(labels, serviceTemplate.Metadata.Labels)
 	}
-	// Auto-populated labels take precedence
+	// Auto-populated labels take final precedence
 	labels[LabelDisaggName] = deployment.Name
 	labels[LabelDisaggSide] = sideName
 	labels[LabelRevision] = revision
+
+	// Build annotations from metadata
+	var annotations map[string]string
+	if serviceTemplate.Metadata != nil && len(serviceTemplate.Metadata.Annotations) > 0 {
+		annotations = maps.Clone(serviceTemplate.Metadata.Annotations)
+	}
 
 	// Build the Service spec
 	spec := serviceTemplate.Spec.DeepCopy()
@@ -177,9 +182,10 @@ func (manager *ServiceManager) buildService(
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: deployment.Namespace,
-			Labels:    labels,
+			Name:        serviceName,
+			Namespace:   deployment.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggv1alpha1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",

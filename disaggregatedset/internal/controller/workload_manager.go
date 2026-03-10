@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -70,19 +71,46 @@ func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
 	return &LeaderWorkerSetManager{client: c}
 }
 
+// mergeLabels merges user-provided labels with auto-populated labels.
+// Auto-populated labels take precedence over user labels.
+func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
+	merged := make(map[string]string, len(userLabels)+len(autoLabels))
+	// Copy user labels first
+	maps.Copy(merged, userLabels)
+	// Overlay auto-populated labels (these take precedence)
+	maps.Copy(merged, autoLabels)
+	return merged
+}
+
+// copyAnnotations creates a copy of annotations map.
+// Returns nil if the input is nil or empty.
+func copyAnnotations(annotations map[string]string) map[string]string {
+	if len(annotations) == 0 {
+		return nil
+	}
+	return maps.Clone(annotations)
+}
+
 // Create creates a new LeaderWorkerSet with the given configuration.
 // All fields from DisaggSideConfig are passed through to the LWS spec.
+// User-provided labels and annotations from workerTemplate.metadata are merged with
+// auto-populated labels. Auto-populated labels take precedence.
 func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params CreateParams) error {
 	workloadName := GenerateName(params.DisaggregatedSet.Name, params.Side, params.Revision)
 	replicas := int32(params.Replicas)
 	config := params.Config
+
+	// Merge user-provided labels with auto-populated labels for workerTemplate
+	workerLabels := mergeLabels(config.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
+	workerAnnotations := copyAnnotations(config.LeaderWorkerTemplate.WorkerTemplate.Annotations)
 
 	// Build LWS LeaderWorkerTemplate from DisaggSideConfig.LeaderWorkerTemplate
 	lwsTemplate := leaderworkerset.LeaderWorkerTemplate{
 		Size: config.LeaderWorkerTemplate.Size,
 		WorkerTemplate: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: params.Labels,
+				Labels:      workerLabels,
+				Annotations: workerAnnotations,
 			},
 			Spec: config.LeaderWorkerTemplate.WorkerTemplate.Spec,
 		},
@@ -93,9 +121,13 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 
 	// Pass through LeaderTemplate if specified
 	if config.LeaderWorkerTemplate.LeaderTemplate != nil {
+		// Merge user-provided labels with auto-populated labels for leaderTemplate
+		leaderLabels := mergeLabels(config.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
+		leaderAnnotations := copyAnnotations(config.LeaderWorkerTemplate.LeaderTemplate.Annotations)
 		lwsTemplate.LeaderTemplate = &corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: params.Labels,
+				Labels:      leaderLabels,
+				Annotations: leaderAnnotations,
 			},
 			Spec: config.LeaderWorkerTemplate.LeaderTemplate.Spec,
 		}

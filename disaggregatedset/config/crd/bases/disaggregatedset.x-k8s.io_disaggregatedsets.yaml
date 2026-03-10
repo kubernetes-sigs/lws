@@ -17835,6 +17835,26 @@ spec:
                           Labels to add to the Service. These are merged with the auto-populated
                           labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
                           User-provided labels cannot override auto-populated labels.
+                          Deprecated: Use metadata.labels instead. This field is kept for backward compatibility.
+                        type: object
+                      metadata:
+                        description: |-
+                          Metadata specifies labels and annotations for the Service.
+                          Labels from metadata.labels take precedence over the flat labels field.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add to the Service.
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Labels to add to the Service. These are merged with the auto-populated
+                              labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
+                              User-provided labels cannot override auto-populated labels.
+                            type: object
                         type: object
                       spec:
                         description: |-
@@ -35988,6 +36008,26 @@ spec:
                           Labels to add to the Service. These are merged with the auto-populated
                           labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
                           User-provided labels cannot override auto-populated labels.
+                          Deprecated: Use metadata.labels instead. This field is kept for backward compatibility.
+                        type: object
+                      metadata:
+                        description: |-
+                          Metadata specifies labels and annotations for the Service.
+                          Labels from metadata.labels take precedence over the flat labels field.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add to the Service.
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Labels to add to the Service. These are merged with the auto-populated
+                              labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
+                              User-provided labels cannot override auto-populated labels.
+                            type: object
                         type: object
                       spec:
                         description: |-
