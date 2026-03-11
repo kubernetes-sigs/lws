@@ -225,9 +225,11 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew SideReplicaState,
 
 	needsScaleUp := nextNewState.Prefill > currentNew.Prefill || nextNewState.Decode > currentNew.Decode
 
-	// Check surge constraint for scale-up (old + new <= target + surge)
-	prefillSurgeOK := currentOld.Prefill+nextNewState.Prefill <= targetNew.Prefill+config.PrefillMaxSurge
-	decodeSurgeOK := currentOld.Decode+nextNewState.Decode <= targetNew.Decode+config.DecodeMaxSurge
+	// Check surge constraint for scale-up (old + new <= max(source, target) + surge)
+	// Use max(source, target) so that dimensions scaling down (source > target) don't
+	// block scale-up — the system already runs source replicas, surge is relative to that.
+	prefillSurgeOK := currentOld.Prefill+nextNewState.Prefill <= max(source.Prefill, targetNew.Prefill)+config.PrefillMaxSurge
+	decodeSurgeOK := currentOld.Decode+nextNewState.Decode <= max(source.Decode, targetNew.Decode)+config.DecodeMaxSurge
 
 	if needsScaleUp && prefillSurgeOK && decodeSurgeOK {
 		// Scale up new replicas (keep old unchanged)
@@ -241,6 +243,20 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew SideReplicaState,
 
 	// Scale down: first try proportional drain
 	nextOldState := computeNextOldReplicas(source, currentOld, totalNumSteps)
+
+	// Enforce maxUnavailable constraint: old + new >= target - maxUnavailable per side.
+	// Only enforce when source >= target for that side — when scaling up (source < target),
+	// the system never had enough replicas to maintain the target level.
+	minOldPrefill := 0
+	if source.Prefill >= targetNew.Prefill {
+		minOldPrefill = max(0, targetNew.Prefill-config.PrefillMaxUnavailable-currentNew.Prefill)
+	}
+	minOldDecode := 0
+	if source.Decode >= targetNew.Decode {
+		minOldDecode = max(0, targetNew.Decode-config.DecodeMaxUnavailable-currentNew.Decode)
+	}
+	nextOldState.Prefill = max(nextOldState.Prefill, minOldPrefill)
+	nextOldState.Decode = max(nextOldState.Decode, minOldDecode)
 
 	needsScaleDown := nextOldState.Prefill < currentOld.Prefill || nextOldState.Decode < currentOld.Decode
 
@@ -257,10 +273,14 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew SideReplicaState,
 	// Proportional drain didn't help - surge is blocking and old step is behind.
 	// Drain exactly what's needed to allow the next scale-up.
 	if needsScaleUp {
-		maxOldPrefill := targetNew.Prefill + config.PrefillMaxSurge - nextNewState.Prefill
-		maxOldDecode := targetNew.Decode + config.DecodeMaxSurge - nextNewState.Decode
+		maxOldPrefill := max(source.Prefill, targetNew.Prefill) + config.PrefillMaxSurge - nextNewState.Prefill
+		maxOldDecode := max(source.Decode, targetNew.Decode) + config.DecodeMaxSurge - nextNewState.Decode
 		drainedOldPrefill := max(0, min(currentOld.Prefill, maxOldPrefill))
 		drainedOldDecode := max(0, min(currentOld.Decode, maxOldDecode))
+
+		// Enforce maxUnavailable constraint on fallback drain path
+		drainedOldPrefill = max(drainedOldPrefill, minOldPrefill)
+		drainedOldDecode = max(drainedOldDecode, minOldDecode)
 
 		if drainedOldPrefill < currentOld.Prefill || drainedOldDecode < currentOld.Decode {
 			return &UpdateStep{

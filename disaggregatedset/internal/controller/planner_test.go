@@ -334,13 +334,10 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(),
 			expected: []UpdateStep{
 				step(5, 5, 0, 0),
-				step(4, 4, 0, 0), // scale down (can't scale up: surge=1, 5+1>2+1)
-				step(3, 3, 0, 0), // scale down
-				step(2, 2, 0, 0), // scale down (now old=2=target)
-				step(2, 2, 1, 1), // scale up (surge: 2+1<=2+1)
-				step(1, 1, 1, 1), // scale down
-				step(1, 1, 2, 2), // scale up (new at target)
-				step(0, 0, 2, 2), // scale down
+				step(5, 5, 1, 1), // scale up (surge uses max(5,2)+1=6: 5+1<=6)
+				step(4, 4, 1, 1), // scale down
+				step(4, 4, 2, 2), // scale up (new at target)
+				step(0, 0, 2, 2), // drain all old
 			},
 		},
 		{
@@ -349,16 +346,16 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(),
 			expected: []UpdateStep{
 				step(3, 5, 0, 0),
-				step(3, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(2, 3, 1, 1),
-				step(2, 2, 1, 1),
-				step(2, 2, 2, 2),
-				step(2, 2, 3, 2),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 3),
-				step(1, 1, 5, 3),
-				step(0, 0, 5, 3),
+				step(3, 5, 1, 1), // scale up (surge uses max(3,5)+1=6: 3+1<=6, 5+1<=6)
+				step(3, 4, 1, 1), // scale down decode
+				step(3, 4, 2, 2), // scale up
+				step(3, 4, 3, 2), // scale up
+				step(2, 3, 3, 2), // scale down
+				step(2, 3, 4, 3), // scale up
+				step(2, 2, 4, 3), // scale down decode
+				step(1, 1, 4, 3), // scale down
+				step(1, 1, 5, 3), // scale up (new at target)
+				step(0, 0, 5, 3), // drain all old
 			},
 		},
 		{
@@ -367,14 +364,13 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(),
 			expected: []UpdateStep{
 				step(2, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(1, 2, 0, 0),
-				step(1, 2, 1, 1),
-				step(1, 2, 2, 1),
-				step(1, 1, 2, 1),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 2),
-				step(0, 0, 4, 2),
+				step(2, 4, 1, 1), // scale up (surge uses max(2,4)+1=5: 2+1<=5, 4+1<=5)
+				step(2, 4, 2, 1), // scale up
+				step(2, 3, 2, 1), // scale down decode
+				step(2, 3, 3, 2), // scale up
+				step(1, 2, 3, 2), // scale down
+				step(1, 2, 4, 2), // scale up (new at target)
+				step(0, 0, 4, 2), // drain all old
 			},
 		},
 		{
@@ -383,15 +379,15 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(),
 			expected: []UpdateStep{
 				step(3, 5, 0, 0),
-				step(3, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(2, 2, 0, 0),
-				step(2, 2, 1, 1),
-				step(2, 2, 2, 1),
-				step(1, 1, 2, 1),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 2),
-				step(0, 0, 4, 2),
+				step(3, 5, 1, 1), // scale up (surge uses max(3,4)+1=5, max(5,2)+1=6: 3+1<=5, 5+1<=6)
+				step(3, 5, 2, 1), // scale up
+				step(3, 4, 2, 1), // scale down decode
+				step(2, 3, 2, 1), // scale down
+				step(2, 3, 3, 2), // scale up
+				step(2, 2, 3, 2), // scale down decode
+				step(1, 1, 3, 2), // scale down
+				step(1, 1, 4, 2), // scale up (new at target)
+				step(0, 0, 4, 2), // drain all old
 			},
 		},
 		{
@@ -416,6 +412,21 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 				step(2, 3, 2, 3),
 				step(2, 3, 4, 6),
 				step(0, 0, 4, 6),
+			},
+		},
+		{
+			name:          "asymmetric_5_3_surge2",
+			sourcePrefill: 5, sourceDecode: 3, targetPrefill: 5, targetDecode: 3,
+			config: config(2, 0, 2, 0),
+			expected: []UpdateStep{
+				step(5, 3, 0, 0),
+				step(5, 3, 2, 1),
+				step(4, 2, 2, 1),
+				step(3, 2, 2, 1),
+				step(3, 2, 4, 2),
+				step(2, 1, 4, 2),
+				step(2, 1, 5, 3),
+				step(0, 0, 5, 3),
 			},
 		},
 		// Edge cases
