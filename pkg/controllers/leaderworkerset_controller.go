@@ -300,7 +300,11 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
 			finalReplicas := lwsReplicas + utils.NonZeroValue(unreadyReplicas-int32(maxUnavailableInt))
-			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			if finalReplicas == stsReplicas-1 {
+				r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			} else if finalReplicas < stsReplicas {
+				r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1))
+			}
 			return finalReplicas
 		}
 		return burstReplicas
