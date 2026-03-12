@@ -288,13 +288,18 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 	burstReplicas := lwsReplicas + int32(maxSurge)
 
+	maxUnavailableInt, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	// wantReplicas calculates the final replicas if needed.
 	wantReplicas := func(unreadyReplicas int32) int32 {
 		if unreadyReplicas <= int32(maxSurge) {
 			// When we have n unready replicas and n bursted replicas, we should
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
-			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+			finalReplicas := lwsReplicas + utils.NonZeroValue(unreadyReplicas-int32(maxUnavailableInt))
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
 		}
@@ -336,10 +341,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 5:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 
-	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
-	if err != nil {
-		return 0, 0, err
-	}
+	rollingStep := maxUnavailableInt
 	// Make sure that we always respect the maxUnavailable, or
 	// we'll violate it when reclaiming bursted replicas.
 	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
