@@ -295,8 +295,10 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// wantReplicas calculates the final replicas if needed.
 	wantReplicas := func(unreadyReplicas int32) int32 {
 		finalReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), unreadyReplicas)
-		if finalReplicas < burstReplicas {
+		if finalReplicas == stsReplicas-1 {
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+		} else if finalReplicas < stsReplicas {
+			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1))
 		}
 		return finalReplicas
 	}
