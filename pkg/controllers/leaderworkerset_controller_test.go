@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -25,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
@@ -37,6 +39,11 @@ import (
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+type fakeEventRecorder struct{}
+
+func (fakeEventRecorder) Eventf(regarding runtime.Object, related runtime.Object, eventtype, reason, action, note string, args ...interface{}) {
+}
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
@@ -589,6 +596,201 @@ func TestExclusiveConditionTypes(t *testing.T) {
 				t.Errorf("Expected value %t, got %t", tc.expectExclusiveConditionTypes, exclusiveConditionTypes)
 			}
 		})
+	}
+}
+
+func TestCalculateRollingUpdateReplicas(t *testing.T) {
+	tests := []struct {
+		name           string
+		lwsReplicas    int32
+		maxSurge       int32
+		maxUnavailable int32
+		unready        int32
+		wantReplicas   int32
+	}{
+		{
+			name:           "keeps surge replicas until maxUnavailable budget covers unready desired replicas",
+			lwsReplicas:    1,
+			maxSurge:       1,
+			maxUnavailable: 0,
+			unready:        1,
+			wantReplicas:   2,
+		},
+		{
+			name:           "reclaims surge replicas gradually once enough desired replicas are ready",
+			lwsReplicas:    4,
+			maxSurge:       2,
+			maxUnavailable: 1,
+			unready:        2,
+			wantReplicas:   5,
+		},
+		{
+			name:           "reclaims surge even before partition reaches zero when maxUnavailable permits it",
+			lwsReplicas:    2,
+			maxSurge:       2,
+			maxUnavailable: 1,
+			unready:        2,
+			wantReplicas:   3,
+		},
+		{
+			name:           "falls back to desired replicas when all desired replicas are ready",
+			lwsReplicas:    1,
+			maxSurge:       1,
+			maxUnavailable: 0,
+			unready:        0,
+			wantReplicas:   1,
+		},
+		{
+			name:           "reclaims surge when maxUnavailable permits an unready desired replica",
+			lwsReplicas:    1,
+			maxSurge:       1,
+			maxUnavailable: 1,
+			unready:        1,
+			wantReplicas:   1,
+		},
+		{
+			name:           "does not surge when maxSurge is zero",
+			lwsReplicas:    3,
+			maxSurge:       0,
+			maxUnavailable: 0,
+			unready:        1,
+			wantReplicas:   3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := calculateRollingUpdateReplicas(tc.lwsReplicas, tc.maxSurge, tc.maxUnavailable, tc.unready)
+			if got != tc.wantReplicas {
+				t.Fatalf("calculateRollingUpdateReplicas()=%d, want %d", got, tc.wantReplicas)
+			}
+		})
+	}
+}
+
+func TestRollingUpdateParametersScaleUpDoesNotCreateExtraSurge(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(3).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(1),
+			},
+		}).Obj()
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        lws.Name,
+			Namespace:   lws.Namespace,
+			Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(2)},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](2),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
+			},
+		},
+	}
+
+	partition, replicas, err := reconciler.rollingUpdateParameters(context.Background(), lws, sts, "rev-new", false)
+	if err != nil {
+		t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
+	}
+	if partition != 0 {
+		t.Fatalf("rollingUpdateParameters() partition=%d, want 0", partition)
+	}
+	if replicas != 3 {
+		t.Fatalf("rollingUpdateParameters() replicas=%d, want 3", replicas)
+	}
+}
+
+func TestRollingUpdateParametersScaleUpWithTemplateUpdateDoesNotCreateExtraSurge(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(3).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(1),
+			},
+		}).Obj()
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        lws.Name,
+			Namespace:   lws.Namespace,
+			Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(2)},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](2),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
+			},
+		},
+	}
+
+	partition, replicas, err := reconciler.rollingUpdateParameters(context.Background(), lws, sts, "rev-new", true)
+	if err != nil {
+		t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
+	}
+	if partition != 2 {
+		t.Fatalf("rollingUpdateParameters() partition=%d, want 2", partition)
+	}
+	if replicas != 3 {
+		t.Fatalf("rollingUpdateParameters() replicas=%d, want 3", replicas)
+	}
+}
+
+func TestRollingUpdateParametersTemplateUpdateReclaimsSurgeWhenAllowed(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(2).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(2),
+			},
+		}).Obj()
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        lws.Name,
+			Namespace:   lws.Namespace,
+			Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(2)},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](2),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
+			},
+		},
+	}
+
+	partition, replicas, err := reconciler.rollingUpdateParameters(context.Background(), lws, sts, "rev-new", true)
+	if err != nil {
+		t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
+	}
+	if partition != 2 {
+		t.Fatalf("rollingUpdateParameters() partition=%d, want 2", partition)
+	}
+	if replicas != 3 {
+		t.Fatalf("rollingUpdateParameters() replicas=%d, want 3", replicas)
 	}
 }
 
