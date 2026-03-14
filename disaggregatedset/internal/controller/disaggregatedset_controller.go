@@ -67,7 +67,7 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
-	// Validate both sides are configured - DisaggregatedSet requires both prefill and decode
+	// Validate both phases are configured - DisaggregatedSet requires both prefill and decode
 	if disaggregatedSet.Spec.Prefill == nil || disaggregatedSet.Spec.Decode == nil {
 		return ctrl.Result{}, fmt.Errorf("DisaggregatedSet requires both prefill and decode to be configured")
 	}
@@ -75,7 +75,7 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 	// Compute revision from both templates (truncated to 8 chars)
 	revision := ComputeRevision(disaggregatedSet.Spec.Prefill, disaggregatedSet.Spec.Decode)
 
-	// Cleanup old workloads with 0 replicas on both sides (housekeeping)
+	// Cleanup old workloads with 0 replicas on both phases (housekeeping)
 	if err := reconciler.cleanupDrainedWorkloads(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -91,7 +91,7 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	// Stateless routing: if old replicas exist → rolling update, else → simple reconcile
 	var result ctrl.Result
-	if len(oldWorkloads) > 0 && oldWorkloads.GetTotalReplicasPerSide(SidePrefill)+oldWorkloads.GetTotalReplicasPerSide(SideDecode) > 0 {
+	if len(oldWorkloads) > 0 && oldWorkloads.GetTotalReplicasPerPhase(PhasePrefill)+oldWorkloads.GetTotalReplicasPerPhase(PhaseDecode) > 0 {
 		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, revision)
 		if err != nil {
 			return result, err
@@ -130,11 +130,11 @@ func (reconciler *DisaggregatedSetReconciler) createRollingUpdateExecutor() *Rol
 
 // reconcileSimple handles non-rolling-update reconciliation (fresh deploy or stable state)
 func (reconciler *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) (ctrl.Result, error) {
-	sideConfigs := getSideConfigs(disaggregatedSet)
+	phaseConfigs := GetPhaseConfigs(disaggregatedSet)
 
-	for side, config := range sideConfigs {
-		if err := reconciler.reconcileSideSimple(ctx, disaggregatedSet, side, config, revision); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s side: %w", side, err)
+	for phase, config := range phaseConfigs {
+		if err := reconciler.reconcilePhaseSimple(ctx, disaggregatedSet, phase, config, revision); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s phase: %w", phase, err)
 		}
 	}
 
@@ -146,12 +146,12 @@ func (reconciler *DisaggregatedSetReconciler) reconcileSimple(ctx context.Contex
 	return ctrl.Result{}, nil
 }
 
-// reconcileSideSimple handles simple reconciliation for a single side
-func (reconciler *DisaggregatedSetReconciler) reconcileSideSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, side string, config *disaggv1alpha1.DisaggSideConfig, revision string) error {
+// reconcilePhaseSimple handles simple reconciliation for a single phase
+func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, phase string, config *disaggv1alpha1.DisaggregatedPhaseSpec, revision string) error {
 	log := logf.FromContext(ctx)
 
-	workloadName := GenerateName(disaggregatedSet.Name, side, revision)
-	labels := GenerateLabels(disaggregatedSet.Name, side, revision)
+	workloadName := GenerateName(disaggregatedSet.Name, phase, revision)
+	labels := GenerateLabels(disaggregatedSet.Name, phase, revision)
 
 	// Check if workload exists
 	existing, err := reconciler.WorkloadManager.Get(ctx, disaggregatedSet.Namespace, workloadName)
@@ -166,10 +166,10 @@ func (reconciler *DisaggregatedSetReconciler) reconcileSideSimple(ctx context.Co
 
 	if existing == nil {
 		// Create new workload with full replicas
-		log.Info("Creating workload", "side", side, "name", workloadName, "replicas", desiredReplicas)
+		log.Info("Creating workload", "phase", phase, "name", workloadName, "replicas", desiredReplicas)
 		return reconciler.WorkloadManager.Create(ctx, CreateParams{
 			DisaggregatedSet: disaggregatedSet,
-			Side:             side,
+			Phase:            phase,
 			Config:           config,
 			Revision:         revision,
 			Labels:           labels,
@@ -179,7 +179,7 @@ func (reconciler *DisaggregatedSetReconciler) reconcileSideSimple(ctx context.Co
 
 	// Update if needed
 	if existing.Replicas != int(desiredReplicas) {
-		log.Info("Scaling workload", "side", side, "name", workloadName, "from", existing.Replicas, "to", desiredReplicas)
+		log.Info("Scaling workload", "phase", phase, "name", workloadName, "from", existing.Replicas, "to", desiredReplicas)
 		if err := reconciler.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale workload %s: %w", workloadName, err)
 		}
@@ -192,8 +192,8 @@ func (reconciler *DisaggregatedSetReconciler) reconcileSideSimple(ctx context.Co
 func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
-	for _, side := range []string{SidePrefill, SideDecode} {
-		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, side)
+	for _, phase := range []string{PhasePrefill, PhaseDecode} {
+		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, phase)
 		if err != nil {
 			return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 		}
@@ -210,7 +210,7 @@ func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Co
 	return nil
 }
 
-// cleanupDrainedWorkloads deletes old workloads where both sides have 0 replicas.
+// cleanupDrainedWorkloads deletes old workloads where both phases have 0 replicas.
 // This is coordinated cleanup - we only delete when BOTH prefill and decode are drained.
 func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
@@ -228,15 +228,15 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 		if revisionReplicas[workload.Revision] == nil {
 			revisionReplicas[workload.Revision] = make(map[string]int)
 		}
-		revisionReplicas[workload.Revision][workload.Side] = workload.Replicas
+		revisionReplicas[workload.Revision][workload.Phase] = workload.Replicas
 	}
 
-	for oldRevision, sides := range revisionReplicas {
-		if sides[SidePrefill] != 0 || sides[SideDecode] != 0 { // Delete revisions where both sides are at 0
+	for oldRevision, phases := range revisionReplicas {
+		if phases[PhasePrefill] != 0 || phases[PhaseDecode] != 0 { // Delete revisions where both phases are at 0
 			continue
 		}
-		for _, side := range []string{SidePrefill, SideDecode} {
-			workloadName := GenerateName(disaggregatedSet.Name, side, oldRevision)
+		for _, phase := range []string{PhasePrefill, PhaseDecode} {
+			workloadName := GenerateName(disaggregatedSet.Name, phase, oldRevision)
 			log.Info("Deleting drained workload", "name", workloadName)
 			if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {
 				return fmt.Errorf("failed to delete workload %s: %w", workloadName, err)
@@ -247,21 +247,6 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 	}
 
 	return nil
-}
-
-// getSideConfigs returns a map of side configurations from the DisaggregatedSet spec
-func getSideConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggSideConfig {
-	sideConfigs := make(map[string]*disaggv1alpha1.DisaggSideConfig)
-
-	if disaggregatedSet.Spec.Prefill != nil {
-		sideConfigs[SidePrefill] = disaggregatedSet.Spec.Prefill
-	}
-
-	if disaggregatedSet.Spec.Decode != nil {
-		sideConfigs[SideDecode] = disaggregatedSet.Spec.Decode
-	}
-
-	return sideConfigs
 }
 
 // setOwnerReference sets the owner reference manually

@@ -26,10 +26,10 @@ func main() {
 	sourceDecode := flag.Int("source-decode", 0, "Source decode replicas (required)")
 	targetPrefill := flag.Int("target-prefill", 0, "Target prefill replicas (required)")
 	targetDecode := flag.Int("target-decode", 0, "Target decode replicas (required)")
-	prefillSurge := flag.Int("prefill-surge", 1, "Max surge for prefill side")
-	decodeSurge := flag.Int("decode-surge", 1, "Max surge for decode side")
-	prefillUnavailable := flag.Int("prefill-unavailable", 0, "Max unavailable for prefill side")
-	decodeUnavailable := flag.Int("decode-unavailable", 0, "Max unavailable for decode side")
+	prefillSurge := flag.Int("prefill-surge", 1, "Max surge for prefill phase")
+	decodeSurge := flag.Int("decode-surge", 1, "Max surge for decode phase")
+	prefillUnavailable := flag.Int("prefill-unavailable", 0, "Max unavailable for prefill phase")
+	decodeUnavailable := flag.Int("decode-unavailable", 0, "Max unavailable for decode phase")
 
 	flag.Parse()
 
@@ -40,11 +40,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	source := controller.SideReplicaState{
+	source := controller.PhaseReplicaState{
 		Prefill: *sourcePrefill,
 		Decode:  *sourceDecode,
 	}
-	target := controller.SideReplicaState{
+	target := controller.PhaseReplicaState{
 		Prefill: *targetPrefill,
 		Decode:  *targetDecode,
 	}

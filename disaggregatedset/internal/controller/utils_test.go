@@ -223,7 +223,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -237,7 +237,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "2",
@@ -261,7 +261,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SideDecode,
+						LabelDisaggPhase: PhaseDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "4",
@@ -275,7 +275,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggSide: SideDecode,
+						LabelDisaggPhase: PhaseDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "6",
@@ -299,7 +299,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -313,7 +313,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-decode-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SideDecode,
+						LabelDisaggPhase: PhaseDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "6",
@@ -327,7 +327,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-2",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "2",
@@ -351,7 +351,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					// No annotations
 				},
@@ -372,7 +372,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SideDecode,
+						LabelDisaggPhase: PhaseDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "not-a-number",
@@ -395,7 +395,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -409,7 +409,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "invalid",
@@ -433,7 +433,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggSide: SidePrefill,
+						LabelDisaggPhase: PhasePrefill,
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{

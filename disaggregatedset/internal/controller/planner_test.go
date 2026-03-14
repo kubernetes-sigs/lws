@@ -663,24 +663,24 @@ func TestBatchSize(t *testing.T) {
 
 func TestComputeTotalSteps(t *testing.T) {
 	testCases := []struct {
-		source, target SideReplicaState
+		source, target PhaseReplicaState
 		config         RollingUpdateConfig
 		expected       int
 	}{
 		{
-			SideReplicaState{4, 4}, SideReplicaState{4, 4},
+			PhaseReplicaState{4, 4}, PhaseReplicaState{4, 4},
 			DefaultRollingUpdateConfig(), 4,
 		},
 		{
-			SideReplicaState{6, 2}, SideReplicaState{6, 2},
+			PhaseReplicaState{6, 2}, PhaseReplicaState{6, 2},
 			DefaultRollingUpdateConfig(), 6,
 		},
 		{
-			SideReplicaState{4, 4}, SideReplicaState{4, 4},
+			PhaseReplicaState{4, 4}, PhaseReplicaState{4, 4},
 			config(2, 0, 2, 0), 2,
 		},
 		{
-			SideReplicaState{0, 0}, SideReplicaState{3, 3},
+			PhaseReplicaState{0, 0}, PhaseReplicaState{3, 3},
 			DefaultRollingUpdateConfig(), 3,
 		},
 	}
@@ -693,9 +693,9 @@ func TestComputeTotalSteps(t *testing.T) {
 
 func TestCorrectAbnormalState_Normal(t *testing.T) {
 	// Normal state should return nil
-	currentOld := SideReplicaState{Prefill: 2, Decode: 2}
-	currentNew := SideReplicaState{Prefill: 2, Decode: 2}
-	source := SideReplicaState{Prefill: 4, Decode: 4}
+	currentOld := PhaseReplicaState{Prefill: 2, Decode: 2}
+	currentNew := PhaseReplicaState{Prefill: 2, Decode: 2}
+	source := PhaseReplicaState{Prefill: 4, Decode: 4}
 
 	result := correctAbnormalState(currentOld, currentNew, source)
 	assert.Nil(t, result, "normal state should return nil")
@@ -703,9 +703,9 @@ func TestCorrectAbnormalState_Normal(t *testing.T) {
 
 func TestCorrectAbnormalState_Abnormal(t *testing.T) {
 	// Abnormal state: old > source
-	currentOld := SideReplicaState{Prefill: 5, Decode: 5}
-	currentNew := SideReplicaState{Prefill: 2, Decode: 2}
-	source := SideReplicaState{Prefill: 4, Decode: 4}
+	currentOld := PhaseReplicaState{Prefill: 5, Decode: 5}
+	currentNew := PhaseReplicaState{Prefill: 2, Decode: 2}
+	source := PhaseReplicaState{Prefill: 4, Decode: 4}
 
 	result := correctAbnormalState(currentOld, currentNew, source)
 	require.NotNil(t, result, "abnormal state should return correction step")
@@ -720,24 +720,24 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 
 	testCases := []struct {
 		name       string
-		source     SideReplicaState
-		currentOld SideReplicaState
-		currentNew SideReplicaState
-		targetNew  SideReplicaState
+		source     PhaseReplicaState
+		currentOld PhaseReplicaState
+		currentNew PhaseReplicaState
+		targetNew  PhaseReplicaState
 	}{
 		{
 			name:       "exactly at target",
-			source:     SideReplicaState{3, 6},
-			currentOld: SideReplicaState{0, 0},
-			currentNew: SideReplicaState{3, 6},
-			targetNew:  SideReplicaState{3, 6},
+			source:     PhaseReplicaState{3, 6},
+			currentOld: PhaseReplicaState{0, 0},
+			currentNew: PhaseReplicaState{3, 6},
+			targetNew:  PhaseReplicaState{3, 6},
 		},
 		{
 			name:       "new exceeds target",
-			source:     SideReplicaState{3, 6},
-			currentOld: SideReplicaState{0, 0},
-			currentNew: SideReplicaState{4, 7},
-			targetNew:  SideReplicaState{3, 6},
+			source:     PhaseReplicaState{3, 6},
+			currentOld: PhaseReplicaState{0, 0},
+			currentNew: PhaseReplicaState{4, 7},
+			targetNew:  PhaseReplicaState{3, 6},
 		},
 	}
 
@@ -752,10 +752,10 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 func TestComputeNextStep_FreshStart(t *testing.T) {
 	cfg := DefaultRollingUpdateConfig()
 
-	source := SideReplicaState{4, 4}
-	currentOld := SideReplicaState{4, 4}
-	currentNew := SideReplicaState{0, 0}
-	targetNew := SideReplicaState{4, 4}
+	source := PhaseReplicaState{4, 4}
+	currentOld := PhaseReplicaState{4, 4}
+	currentNew := PhaseReplicaState{0, 0}
+	targetNew := PhaseReplicaState{4, 4}
 
 	result := ComputeNextStep(source, currentOld, currentNew, targetNew, cfg)
 	require.NotNil(t, result, "fresh start should return a step")
@@ -772,37 +772,37 @@ func TestComputeNextStep_FreshStart(t *testing.T) {
 func TestComputeNextNewReplicas_EdgeCases(t *testing.T) {
 	testCases := []struct {
 		name       string
-		target     SideReplicaState
-		currentNew SideReplicaState
+		target     PhaseReplicaState
+		currentNew PhaseReplicaState
 		totalSteps int
-		checkFunc  func(t *testing.T, result SideReplicaState)
+		checkFunc  func(t *testing.T, result PhaseReplicaState)
 	}{
 		{
 			name:       "target_prefill_zero",
-			target:     SideReplicaState{Prefill: 0, Decode: 4},
-			currentNew: SideReplicaState{Prefill: 0, Decode: 2},
+			target:     PhaseReplicaState{Prefill: 0, Decode: 4},
+			currentNew: PhaseReplicaState{Prefill: 0, Decode: 2},
 			totalSteps: 4,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.Equal(t, 0, result.Prefill, "prefill should remain 0 when target is 0")
 				assert.Greater(t, result.Decode, 2, "decode should increase")
 			},
 		},
 		{
 			name:       "target_decode_zero",
-			target:     SideReplicaState{Prefill: 4, Decode: 0},
-			currentNew: SideReplicaState{Prefill: 2, Decode: 0},
+			target:     PhaseReplicaState{Prefill: 4, Decode: 0},
+			currentNew: PhaseReplicaState{Prefill: 2, Decode: 0},
 			totalSteps: 4,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.Greater(t, result.Prefill, 2, "prefill should increase")
 				assert.Equal(t, 0, result.Decode, "decode should remain 0 when target is 0")
 			},
 		},
 		{
 			name:       "total_steps_zero",
-			target:     SideReplicaState{Prefill: 4, Decode: 4},
-			currentNew: SideReplicaState{Prefill: 2, Decode: 2},
+			target:     PhaseReplicaState{Prefill: 4, Decode: 4},
+			currentNew: PhaseReplicaState{Prefill: 2, Decode: 2},
 			totalSteps: 0,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.Equal(t, 4, result.Prefill, "should return target when totalSteps is 0")
 				assert.Equal(t, 4, result.Decode, "should return target when totalSteps is 0")
 			},
@@ -824,37 +824,37 @@ func TestComputeNextNewReplicas_EdgeCases(t *testing.T) {
 func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 	testCases := []struct {
 		name       string
-		source     SideReplicaState
-		currentOld SideReplicaState
+		source     PhaseReplicaState
+		currentOld PhaseReplicaState
 		totalSteps int
-		checkFunc  func(t *testing.T, result SideReplicaState)
+		checkFunc  func(t *testing.T, result PhaseReplicaState)
 	}{
 		{
 			name:       "source_prefill_zero",
-			source:     SideReplicaState{Prefill: 0, Decode: 4},
-			currentOld: SideReplicaState{Prefill: 0, Decode: 3},
+			source:     PhaseReplicaState{Prefill: 0, Decode: 4},
+			currentOld: PhaseReplicaState{Prefill: 0, Decode: 3},
 			totalSteps: 4,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.Equal(t, 0, result.Prefill, "prefill should remain 0")
 				assert.LessOrEqual(t, result.Decode, 3, "decode should decrease or stay same")
 			},
 		},
 		{
 			name:       "source_decode_zero",
-			source:     SideReplicaState{Prefill: 4, Decode: 0},
-			currentOld: SideReplicaState{Prefill: 3, Decode: 0},
+			source:     PhaseReplicaState{Prefill: 4, Decode: 0},
+			currentOld: PhaseReplicaState{Prefill: 3, Decode: 0},
 			totalSteps: 4,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.LessOrEqual(t, result.Prefill, 3, "prefill should decrease or stay same")
 				assert.Equal(t, 0, result.Decode, "decode should remain 0")
 			},
 		},
 		{
 			name:       "total_steps_zero",
-			source:     SideReplicaState{Prefill: 4, Decode: 4},
-			currentOld: SideReplicaState{Prefill: 2, Decode: 2},
+			source:     PhaseReplicaState{Prefill: 4, Decode: 4},
+			currentOld: PhaseReplicaState{Prefill: 2, Decode: 2},
 			totalSteps: 0,
-			checkFunc: func(t *testing.T, result SideReplicaState) {
+			checkFunc: func(t *testing.T, result PhaseReplicaState) {
 				assert.Equal(t, 0, result.Prefill, "should return zeros when totalSteps is 0")
 				assert.Equal(t, 0, result.Decode, "should return zeros when totalSteps is 0")
 			},

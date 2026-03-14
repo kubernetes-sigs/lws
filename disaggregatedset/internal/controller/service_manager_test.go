@@ -35,7 +35,7 @@ func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
 
-	t.Run("no service created when only one side is ready", func(t *testing.T) {
+	t.Run("no service created when only one phase is ready", func(t *testing.T) {
 		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
@@ -45,9 +45,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 2},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 0}, // not ready
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 2},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 0}, // not ready
 				},
 			},
 		}
@@ -59,22 +59,22 @@ func TestServiceManager(t *testing.T) {
 		serviceList := &corev1.ServiceList{}
 		err = fakeClient.List(ctx, serviceList)
 		require.NoError(t, err)
-		assert.Empty(t, serviceList.Items, "no services should be created when only one side is ready")
+		assert.Empty(t, serviceList.Items, "no services should be created when only one phase is ready")
 	})
 
-	t.Run("services created when both sides have >= 1 ready replica", func(t *testing.T) {
+	t.Run("services created when both phases have >= 1 ready replica", func(t *testing.T) {
 		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// Both sides ready
+		// Both phases ready
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -82,17 +82,17 @@ func TestServiceManager(t *testing.T) {
 		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
 		require.NoError(t, err)
 
-		// Verify services created for both sides
+		// Verify services created for both phases
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhasePrefill, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, prefillService)
 		require.NoError(t, err, "prefill service should exist")
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err, "decode service should exist")
@@ -107,9 +107,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -119,7 +119,7 @@ func TestServiceManager(t *testing.T) {
 
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhasePrefill, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, prefillService)
 		require.NoError(t, err)
@@ -137,9 +137,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -149,7 +149,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -167,9 +167,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "ef53f2d7",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "my-app-ef53f2d7-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "my-app-ef53f2d7-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "my-app-ef53f2d7-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "my-app-ef53f2d7-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -199,9 +199,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -211,7 +211,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -219,10 +219,10 @@ func TestServiceManager(t *testing.T) {
 		// Verify standard labels are present
 		assert.Equal(t, "test-deploy", decodeService.Labels[LabelDisaggName], "name label should be set")
 		assert.Equal(t, "abc12345", decodeService.Labels[LabelRevision], "revision label should be set")
-		assert.Equal(t, SideDecode, decodeService.Labels[LabelDisaggSide], "side label should be set")
+		assert.Equal(t, PhaseDecode, decodeService.Labels[LabelDisaggPhase], "phase label should be set")
 	})
 
-	t.Run("selector matches pod labels", func(t *testing.T) {
+	t.Run("selector matches pod labels for phase and revision", func(t *testing.T) {
 		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
@@ -231,9 +231,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -243,7 +243,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "abc12345"),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -251,7 +251,7 @@ func TestServiceManager(t *testing.T) {
 		// Verify selector matches expected pod labels
 		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[LabelDisaggName])
 		assert.Equal(t, "abc12345", decodeService.Spec.Selector[LabelRevision])
-		assert.Equal(t, SideDecode, decodeService.Spec.Selector[LabelDisaggSide])
+		assert.Equal(t, PhaseDecode, decodeService.Spec.Selector[LabelDisaggPhase])
 	})
 
 	t.Run("old services deleted when revision is drained", func(t *testing.T) {
@@ -260,12 +260,12 @@ func TestServiceManager(t *testing.T) {
 		// Create an old service
 		oldService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
+				Name:      GenerateServiceName(deployment.Name, PhaseDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggSide: SideDecode,
-					LabelRevision:   "old12345",
+					LabelDisaggName:  deployment.Name,
+					LabelDisaggPhase: PhaseDecode,
+					LabelRevision:    "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -280,9 +280,9 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "new12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -293,7 +293,7 @@ func TestServiceManager(t *testing.T) {
 		// Verify old service is deleted
 		oldServiceCheck := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "old12345"),
 			Namespace: deployment.Namespace,
 		}, oldServiceCheck)
 		assert.Error(t, err, "old service should be deleted")
@@ -301,7 +301,7 @@ func TestServiceManager(t *testing.T) {
 		// Verify new service exists
 		newService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "new12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "new12345"),
 			Namespace: deployment.Namespace,
 		}, newService)
 		require.NoError(t, err, "new service should exist")
@@ -313,12 +313,12 @@ func TestServiceManager(t *testing.T) {
 		// Create services for old revision (simulating existing state)
 		oldPrefillService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
+				Name:      GenerateServiceName(deployment.Name, PhasePrefill, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggSide: SidePrefill,
-					LabelRevision:   "old12345",
+					LabelDisaggName:  deployment.Name,
+					LabelDisaggPhase: PhasePrefill,
+					LabelRevision:    "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -327,12 +327,12 @@ func TestServiceManager(t *testing.T) {
 		}
 		oldDecodeService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
+				Name:      GenerateServiceName(deployment.Name, PhaseDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggSide: SideDecode,
-					LabelRevision:   "old12345",
+					LabelDisaggName:  deployment.Name,
+					LabelDisaggPhase: PhaseDecode,
+					LabelRevision:    "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -347,16 +347,16 @@ func TestServiceManager(t *testing.T) {
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "old12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 2},
-					SideDecode:  {Name: "test-old12345-decode", ReadyReplicas: 2},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 2},
+					PhaseDecode:  {Name: "test-old12345-decode", ReadyReplicas: 2},
 				},
 			},
 			{
 				Revision: "new12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
+					PhaseDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
 				},
 			},
 		}
@@ -371,14 +371,14 @@ func TestServiceManager(t *testing.T) {
 		// Verify new services are created
 		newPrefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "new12345"),
+			Name:      GenerateServiceName(deployment.Name, PhasePrefill, "new12345"),
 			Namespace: deployment.Namespace,
 		}, newPrefillService)
 		require.NoError(t, err, "new prefill service should exist")
 
 		// Old services should STILL exist (both revisions are ready during rolling update)
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
+			Name:      GenerateServiceName(deployment.Name, PhasePrefill, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		require.NoError(t, err, "old prefill service should still exist during rolling update")
@@ -387,16 +387,16 @@ func TestServiceManager(t *testing.T) {
 		drainedWorkloads := GroupedWorkloads{
 			{
 				Revision: "old12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 0},
-					SideDecode:  {Name: "test-old12345-decode", ReadyReplicas: 0},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 0},
+					PhaseDecode:  {Name: "test-old12345-decode", ReadyReplicas: 0},
 				},
 			},
 			{
 				Revision: "new12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 2},
-					SideDecode:  {Name: "test-new12345-decode", ReadyReplicas: 2},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 2},
+					PhaseDecode:  {Name: "test-new12345-decode", ReadyReplicas: 2},
 				},
 			},
 		}
@@ -407,13 +407,13 @@ func TestServiceManager(t *testing.T) {
 
 		// Old services should now be deleted
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
+			Name:      GenerateServiceName(deployment.Name, PhasePrefill, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		assert.Error(t, err, "old prefill service should be deleted after drain")
 
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
+			Name:      GenerateServiceName(deployment.Name, PhaseDecode, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		assert.Error(t, err, "old decode service should be deleted after drain")
@@ -424,21 +424,21 @@ func TestGenerateServiceName(t *testing.T) {
 	tests := []struct {
 		name     string
 		baseName string
-		side     string
+		phase    string
 		revision string
 		expected string
 	}{
 		{
 			name:     "prefill service",
 			baseName: "my-app",
-			side:     SidePrefill,
+			phase:    PhasePrefill,
 			revision: "abc12345",
 			expected: "my-app-abc12345-prefill-prv",
 		},
 		{
 			name:     "decode service",
 			baseName: "my-app",
-			side:     SideDecode,
+			phase:    PhaseDecode,
 			revision: "def67890",
 			expected: "my-app-def67890-decode-prv",
 		},
@@ -446,7 +446,7 @@ func TestGenerateServiceName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := GenerateServiceName(tt.baseName, tt.side, tt.revision)
+			result := GenerateServiceName(tt.baseName, tt.phase, tt.revision)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -461,7 +461,7 @@ func createTestDeployment(name, namespace string) *disaggv1alpha1.DisaggregatedS
 			UID:       "test-uid",
 		},
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Prefill: &disaggv1alpha1.DisaggSideConfig{
+			Prefill: &disaggv1alpha1.DisaggregatedPhaseSpec{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					WorkerTemplate: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
@@ -470,7 +470,7 @@ func createTestDeployment(name, namespace string) *disaggv1alpha1.DisaggregatedS
 					},
 				},
 			},
-			Decode: &disaggv1alpha1.DisaggSideConfig{
+			Decode: &disaggv1alpha1.DisaggregatedPhaseSpec{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					WorkerTemplate: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{

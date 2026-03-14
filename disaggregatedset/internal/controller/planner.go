@@ -39,7 +39,7 @@ import (
 
 // UpdateStep represents a single step in the rolling update plan.
 // It tracks the replica counts for both old (past) and new deployments
-// for both prefill and decode sides.
+// for both prefill and decode phases.
 type UpdateStep struct {
 	PastPrefill int
 	PastDecode  int
@@ -47,14 +47,14 @@ type UpdateStep struct {
 	NewDecode   int
 }
 
-// SideReplicaState holds the replica counts for both sides.
+// PhaseReplicaState holds the replica counts for both phases.
 // Used for source, current, and target state in rolling update planning.
-type SideReplicaState struct {
+type PhaseReplicaState struct {
 	Prefill int
 	Decode  int
 }
 
-// RollingUpdateConfig holds the rolling update constraints per side.
+// RollingUpdateConfig holds the rolling update constraints per phase.
 type RollingUpdateConfig struct {
 	PrefillMaxSurge       int
 	PrefillMaxUnavailable int
@@ -83,7 +83,7 @@ func batchSize(maxSurge, maxUnavailable int) int {
 // computeTotalSteps computes the total number of steps for the rollout.
 // Based on the maximum replicas (source or target) for each dimension,
 // divided by the batch size (surge or unavailable), taking the max across dimensions.
-func computeTotalSteps(source, target SideReplicaState, config RollingUpdateConfig) int {
+func computeTotalSteps(source, target PhaseReplicaState, config RollingUpdateConfig) int {
 	prefillMaxReplicas := max(source.Prefill, target.Prefill, 0)
 	decodeMaxReplicas := max(source.Decode, target.Decode, 0)
 	prefillBatchSize := batchSize(config.PrefillMaxSurge, config.PrefillMaxUnavailable)
@@ -99,7 +99,7 @@ func computeTotalSteps(source, target SideReplicaState, config RollingUpdateConf
 // Linear interpolation: newAtStep(i) = ceil(i * target / totalSteps)
 //
 // Uses min step index across dimensions to keep prefill/decode in sync.
-func computeNextNewReplicas(target, currentNew SideReplicaState, totalSteps int) SideReplicaState {
+func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int) PhaseReplicaState {
 	if totalSteps == 0 {
 		return target
 	}
@@ -122,7 +122,7 @@ func computeNextNewReplicas(target, currentNew SideReplicaState, totalSteps int)
 		return max(computed, currentVal) // never decrease
 	}
 
-	return SideReplicaState{
+	return PhaseReplicaState{
 		Prefill: computeNew(target.Prefill, currentNew.Prefill),
 		Decode:  computeNew(target.Decode, currentNew.Decode),
 	}
@@ -132,10 +132,10 @@ func computeNextNewReplicas(target, currentNew SideReplicaState, totalSteps int)
 //
 // Linear interpolation: oldAtStep(i) = source - floor(i * source / totalSteps)
 //
-// Uses max step index across dimensions to ensure both sides drain together.
-func computeNextOldReplicas(source, currentOld SideReplicaState, totalSteps int) SideReplicaState {
+// Uses max step index across dimensions to ensure both phases drain together.
+func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int) PhaseReplicaState {
 	if totalSteps == 0 {
-		return SideReplicaState{Prefill: 0, Decode: 0}
+		return PhaseReplicaState{Prefill: 0, Decode: 0}
 	}
 
 	// Step 1: figure out which step we're at based on how many replicas were removed
@@ -158,7 +158,7 @@ func computeNextOldReplicas(source, currentOld SideReplicaState, totalSteps int)
 		return min(computed, currentVal) // never increase
 	}
 
-	return SideReplicaState{
+	return PhaseReplicaState{
 		Prefill: computeOld(source.Prefill, currentOld.Prefill),
 		Decode:  computeOld(source.Decode, currentOld.Decode),
 	}
@@ -168,7 +168,7 @@ func computeNextOldReplicas(source, currentOld SideReplicaState, totalSteps int)
 // This shouldn't happen in normal rollouts (old starts at source and only decreases),
 // but can occur from interrupted rollouts or manual intervention.
 // Returns a correction step if needed, nil otherwise.
-func correctAbnormalState(currentOld, currentNew, source SideReplicaState) *UpdateStep {
+func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *UpdateStep {
 	expectedOldPrefill := min(source.Prefill, currentOld.Prefill)
 	expectedOldDecode := min(source.Decode, currentOld.Decode)
 
@@ -193,7 +193,7 @@ func correctAbnormalState(currentOld, currentNew, source SideReplicaState) *Upda
 //   - currentNew: current replica counts for new workloads (what's already deployed)
 //   - targetNew: target replica counts for new workloads (from spec)
 //   - config: rolling update constraints (maxSurge, maxUnavailable)
-func ComputeNextStep(source, currentOld, currentNew, targetNew SideReplicaState, config RollingUpdateConfig) *UpdateStep {
+func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState, config RollingUpdateConfig) *UpdateStep {
 	// If already at target (no old replicas, new at target), no more steps needed
 	if currentOld.Prefill == 0 && currentOld.Decode == 0 &&
 		currentNew.Prefill >= targetNew.Prefill && currentNew.Decode >= targetNew.Decode {
@@ -279,10 +279,10 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew SideReplicaState,
 // ComputeAllSteps generates the full step sequence from source to target.
 // This is useful for testing and visualization.
 func ComputeAllSteps(pastPrefill, pastDecode, newPrefill, newDecode int, config RollingUpdateConfig) []UpdateStep {
-	targetNew := SideReplicaState{Prefill: newPrefill, Decode: newDecode}
-	source := SideReplicaState{Prefill: pastPrefill, Decode: pastDecode}
-	currentOld := SideReplicaState{Prefill: pastPrefill, Decode: pastDecode}
-	currentNew := SideReplicaState{Prefill: 0, Decode: 0}
+	targetNew := PhaseReplicaState{Prefill: newPrefill, Decode: newDecode}
+	source := PhaseReplicaState{Prefill: pastPrefill, Decode: pastDecode}
+	currentOld := PhaseReplicaState{Prefill: pastPrefill, Decode: pastDecode}
+	currentNew := PhaseReplicaState{Prefill: 0, Decode: 0}
 
 	// Safety limit to prevent infinite loops
 	maxSteps := max(pastPrefill, pastDecode, newPrefill, newDecode)*2 + 10

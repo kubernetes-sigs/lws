@@ -33,8 +33,8 @@ import (
 )
 
 // ServiceManager manages Service resources for DisaggregatedSet.
-// It coordinates Service creation based on cross-side readiness:
-// Services are only created when both prefill and decode sides have at least 1 ready replica.
+// It coordinates Service creation based on cross-phase readiness:
+// Services are only created when both prefill and decode phases have at least 1 ready replica.
 // Services are headless (clusterIP: None) and portless to enable EndpointSlice-based discovery.
 type ServiceManager struct {
 	client client.Client
@@ -50,7 +50,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 }
 
 // ReconcileServices reconciles Services for a DisaggregatedSet.
-// It creates headless portless Services when both sides are ready and cleans up old Services.
+// It creates headless portless Services when both phases are ready and cleans up old Services.
 // The targetRevision parameter is the current revision from the deployment spec.
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
@@ -60,15 +60,15 @@ func (manager *ServiceManager) ReconcileServices(
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Find revisions where both sides are ready (readyReplicas >= 1)
+	// Find revisions where both phases are ready (readyReplicas >= 1)
 	var readyRevisions []string
 	for _, group := range groupedWorkloads {
-		prefillInfo, hasPrefill := group.Sides[SidePrefill]
-		decodeInfo, hasDecode := group.Sides[SideDecode]
+		prefillInfo, hasPrefill := group.Phases[PhasePrefill]
+		decodeInfo, hasDecode := group.Phases[PhaseDecode]
 
 		if hasPrefill && hasDecode && prefillInfo.ReadyReplicas >= 1 && decodeInfo.ReadyReplicas >= 1 {
 			readyRevisions = append(readyRevisions, group.Revision)
-			log.V(1).Info("Revision is ready on both sides",
+			log.V(1).Info("Revision is ready on both phases",
 				"revision", group.Revision,
 				"prefillReady", prefillInfo.ReadyReplicas,
 				"decodeReady", decodeInfo.ReadyReplicas)
@@ -76,34 +76,34 @@ func (manager *ServiceManager) ReconcileServices(
 	}
 
 	if len(readyRevisions) == 0 {
-		log.V(1).Info("No revisions are ready on both sides, skipping Service creation")
+		log.V(1).Info("No revisions are ready on both phases, skipping Service creation")
 		return nil
 	}
 
-	// Check if target revision is ready on both sides
+	// Check if target revision is ready on both phases
 	targetRevisionReady := slices.Contains(readyRevisions, targetRevision)
 
 	// Only create services for the target revision (current spec).
 	// If target revision is not ready, keep existing services unchanged to prevent flip-flop.
 	// This ensures we only ever move forward to the new version, never backward.
 	if !targetRevisionReady {
-		log.V(1).Info("Target revision not ready on both sides, keeping existing services",
+		log.V(1).Info("Target revision not ready on both phases, keeping existing services",
 			"targetRevision", targetRevision,
 			"readyRevisions", readyRevisions)
 		return nil
 	}
 
-	// Create/ensure headless portless Services for both sides
-	sides := []string{SidePrefill, SideDecode}
-	for _, sideName := range sides {
-		if err := manager.ensureService(ctx, deployment, sideName, targetRevision); err != nil {
-			return fmt.Errorf("failed to ensure service for %s: %w", sideName, err)
+	// Create/ensure headless portless Services for both phases
+	phases := []string{PhasePrefill, PhaseDecode}
+	for _, phaseName := range phases {
+		if err := manager.ensureService(ctx, deployment, phaseName, targetRevision); err != nil {
+			return fmt.Errorf("failed to ensure service for %s: %w", phaseName, err)
 		}
 	}
 
 	// Only cleanup old services when the old revision is NO LONGER ready (fully drained).
 	// This prevents flip-flopping during rolling updates when both versions are ready.
-	// We only delete services for revisions that have 0 ready replicas on both sides.
+	// We only delete services for revisions that have 0 ready replicas on both phases.
 	if err := manager.cleanupDrainedServices(ctx, deployment, groupedWorkloads, targetRevision); err != nil {
 		return fmt.Errorf("failed to cleanup drained services: %w", err)
 	}
@@ -111,16 +111,16 @@ func (manager *ServiceManager) ReconcileServices(
 	return nil
 }
 
-// ensureService creates a headless portless Service for a specific side and revision.
+// ensureService creates a headless portless Service for a specific phase and revision.
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
 	deployment *disaggv1alpha1.DisaggregatedSet,
-	sideName string,
+	phaseName string,
 	revision string,
 ) error {
 	log := logf.FromContext(ctx)
 
-	service := manager.buildService(deployment, sideName, revision)
+	service := manager.buildService(deployment, phaseName, revision)
 
 	// Try to create the Service
 	if err := manager.client.Create(ctx, service); err != nil {
@@ -131,30 +131,30 @@ func (manager *ServiceManager) ensureService(
 		return fmt.Errorf("failed to create service %s: %w", service.Name, err)
 	}
 
-	log.V(1).Info("Created Service", "service", service.Name, "revision", revision, "side", sideName)
+	log.V(1).Info("Created Service", "service", service.Name, "revision", revision, "phase", phaseName)
 	return nil
 }
 
-// buildService constructs a headless portless Service object for a specific side and revision.
+// buildService constructs a headless portless Service object for a specific phase and revision.
 func (manager *ServiceManager) buildService(
 	deployment *disaggv1alpha1.DisaggregatedSet,
-	sideName string,
+	phaseName string,
 	revision string,
 ) *corev1.Service {
-	serviceName := GenerateServiceName(deployment.Name, sideName, revision)
+	serviceName := GenerateServiceName(deployment.Name, phaseName, revision)
 
 	// Standard labels only - no user configuration
 	labels := map[string]string{
-		LabelDisaggName: deployment.Name,
-		LabelDisaggSide: sideName,
-		LabelRevision:   revision,
+		LabelDisaggName:  deployment.Name,
+		LabelDisaggPhase: phaseName,
+		LabelRevision:    revision,
 	}
 
-	// Selector matches pod labels for this side and revision
+	// Selector matches pod labels for this phase and revision
 	selector := map[string]string{
-		LabelDisaggName: deployment.Name,
-		LabelDisaggSide: sideName,
-		LabelRevision:   revision,
+		LabelDisaggName:  deployment.Name,
+		LabelDisaggPhase: phaseName,
+		LabelRevision:    revision,
 	}
 
 	return &corev1.Service{
@@ -178,7 +178,7 @@ func (manager *ServiceManager) buildService(
 	}
 }
 
-// cleanupDrainedServices deletes Services for revisions that are no longer ready on both sides.
+// cleanupDrainedServices deletes Services for revisions that are no longer ready on both phases.
 // This is safer than cleanupOldServices because it only removes services for versions
 // that have been fully drained (0 ready replicas), preventing flip-flop during rolling updates.
 func (manager *ServiceManager) cleanupDrainedServices(
@@ -189,11 +189,11 @@ func (manager *ServiceManager) cleanupDrainedServices(
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Build a set of revisions that still have ready replicas on both sides
+	// Build a set of revisions that still have ready replicas on both phases
 	readyRevisionSet := make(map[string]bool)
 	for _, group := range groupedWorkloads {
-		prefillInfo, hasPrefill := group.Sides[SidePrefill]
-		decodeInfo, hasDecode := group.Sides[SideDecode]
+		prefillInfo, hasPrefill := group.Phases[PhasePrefill]
+		decodeInfo, hasDecode := group.Phases[PhaseDecode]
 
 		if hasPrefill && hasDecode && prefillInfo.ReadyReplicas >= 1 && decodeInfo.ReadyReplicas >= 1 {
 			readyRevisionSet[group.Revision] = true
@@ -232,7 +232,7 @@ func (manager *ServiceManager) cleanupDrainedServices(
 }
 
 // GenerateServiceName generates the name for a private Service.
-// Format: {baseName}-{revision}-{side}-prv
-func GenerateServiceName(baseName, side, revision string) string {
-	return fmt.Sprintf("%s-%s-%s-prv", baseName, revision, side)
+// Format: {baseName}-{revision}-{phase}-prv
+func GenerateServiceName(baseName, phase, revision string) string {
+	return fmt.Sprintf("%s-%s-%s-prv", baseName, revision, phase)
 }

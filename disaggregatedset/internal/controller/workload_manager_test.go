@@ -42,9 +42,9 @@ func createTestLWSWithAnnotation(
 			Namespace:   namespace,
 			Annotations: annotations,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deployment",
-				LabelDisaggSide: "prefill",
-				LabelRevision:   "abc123",
+				LabelDisaggName:  "test-deployment",
+				LabelDisaggPhase: "prefill",
+				LabelRevision:    "abc123",
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -480,15 +480,15 @@ func TestManagerCreate(t *testing.T) {
 					UID:       "test-uid",
 				},
 			},
-			Side:     "prefill",
+			Phase:    "prefill",
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deploy",
-				LabelDisaggSide: "prefill",
-				LabelRevision:   "abc123",
+				LabelDisaggName:  "test-deploy",
+				LabelDisaggPhase: "prefill",
+				LabelRevision:    "abc123",
 			},
-			Config: &disaggv1alpha1.DisaggSideConfig{
+			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					Size: ptr.To(int32(1)),
 				},
@@ -513,15 +513,15 @@ func TestManagerCreate(t *testing.T) {
 					UID:       "test-uid",
 				},
 			},
-			Side:     "prefill",
+			Phase:    "prefill",
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deploy",
-				LabelDisaggSide: "prefill",
-				LabelRevision:   "abc123",
+				LabelDisaggName:  "test-deploy",
+				LabelDisaggPhase: "prefill",
+				LabelRevision:    "abc123",
 			},
-			Config: &disaggv1alpha1.DisaggSideConfig{
+			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					Size: ptr.To(int32(1)),
 				},
@@ -533,37 +533,37 @@ func TestManagerCreate(t *testing.T) {
 	})
 }
 
-// TestGetSideConfigs tests the GetSideConfigs function.
-func TestGetSideConfigs(t *testing.T) {
+// TestGetPhaseConfigs tests the GetPhaseConfigs function.
+func TestGetPhaseConfigs(t *testing.T) {
 	testCases := []struct {
-		name          string
-		prefill       *disaggv1alpha1.DisaggSideConfig
-		decode        *disaggv1alpha1.DisaggSideConfig
-		expectedSides []string
+		name           string
+		prefill        *disaggv1alpha1.DisaggregatedPhaseSpec
+		decode         *disaggv1alpha1.DisaggregatedPhaseSpec
+		expectedPhases []string
 	}{
 		{
-			name:          "both sides configured",
-			prefill:       &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(2))},
-			decode:        &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(3))},
-			expectedSides: []string{SidePrefill, SideDecode},
+			name:           "both phases configured",
+			prefill:        &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(2))},
+			decode:         &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))},
+			expectedPhases: []string{PhasePrefill, PhaseDecode},
 		},
 		{
-			name:          "only prefill configured",
-			prefill:       &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(2))},
-			decode:        nil,
-			expectedSides: []string{SidePrefill},
+			name:           "only prefill configured",
+			prefill:        &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(2))},
+			decode:         nil,
+			expectedPhases: []string{PhasePrefill},
 		},
 		{
-			name:          "only decode configured",
-			prefill:       nil,
-			decode:        &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(3))},
-			expectedSides: []string{SideDecode},
+			name:           "only decode configured",
+			prefill:        nil,
+			decode:         &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))},
+			expectedPhases: []string{PhaseDecode},
 		},
 		{
-			name:          "no sides configured",
-			prefill:       nil,
-			decode:        nil,
-			expectedSides: []string{},
+			name:           "no phases configured",
+			prefill:        nil,
+			decode:         nil,
+			expectedPhases: []string{},
 		},
 	}
 
@@ -576,11 +576,11 @@ func TestGetSideConfigs(t *testing.T) {
 				},
 			}
 
-			result := GetSideConfigs(disaggregatedSet)
-			require.Len(t, result, len(testCase.expectedSides))
+			result := GetPhaseConfigs(disaggregatedSet)
+			require.Len(t, result, len(testCase.expectedPhases))
 
-			for _, side := range testCase.expectedSides {
-				require.Contains(t, result, side)
+			for _, phase := range testCase.expectedPhases {
+				require.Contains(t, result, phase)
 			}
 		})
 	}
@@ -589,13 +589,13 @@ func TestGetSideConfigs(t *testing.T) {
 // TestComputeRevision tests the ComputeRevision function.
 func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
-		prefill := &disaggv1alpha1.DisaggSideConfig{
+		prefill := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(2)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),
 			},
 		}
-		decode := &disaggv1alpha1.DisaggSideConfig{
+		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(3)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),
@@ -610,19 +610,19 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("returns different revision for different Size", func(t *testing.T) {
-		prefill1 := &disaggv1alpha1.DisaggSideConfig{
+		prefill1 := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(2)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),
 			},
 		}
-		prefill2 := &disaggv1alpha1.DisaggSideConfig{
+		prefill2 := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(2)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(2)), // Different
 			},
 		}
-		decode := &disaggv1alpha1.DisaggSideConfig{
+		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(3)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),
@@ -636,7 +636,7 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("handles nil prefill", func(t *testing.T) {
-		decode := &disaggv1alpha1.DisaggSideConfig{
+		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(3)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),
@@ -648,7 +648,7 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("handles nil decode", func(t *testing.T) {
-		prefill := &disaggv1alpha1.DisaggSideConfig{
+		prefill := &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(int32(2)),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size: ptr.To(int32(1)),

@@ -29,17 +29,17 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// Side name constants
+// Phase name constants
 const (
-	SidePrefill = "prefill"
-	SideDecode  = "decode"
+	PhasePrefill = "prefill"
+	PhaseDecode  = "decode"
 )
 
 // Label keys used for workload management
 const (
-	LabelDisaggSide = "disaggregatedset.x-k8s.io/side"
-	LabelDisaggName = "disaggregatedset.x-k8s.io/name"
-	LabelRevision   = "disaggregatedset.x-k8s.io/revision"
+	LabelDisaggPhase = "disaggregatedset.x-k8s.io/phase"
+	LabelDisaggName  = "disaggregatedset.x-k8s.io/name"
+	LabelRevision    = "disaggregatedset.x-k8s.io/revision"
 )
 
 // Annotation keys used for workload management
@@ -80,12 +80,12 @@ func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replic
 // ComputeInitialReplicaState computes the total initial replica counts
 // from a list of LWS resources by summing their initial-replicas annotations.
 // If an annotation is missing or invalid, it falls back to spec.Replicas.
-func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) SideReplicaState {
-	state := SideReplicaState{}
+func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) PhaseReplicaState {
+	state := PhaseReplicaState{}
 
 	for i := range lwsList {
 		lws := &lwsList[i]
-		side := lws.Labels[LabelDisaggSide]
+		phase := lws.Labels[LabelDisaggPhase]
 
 		// Try to get initial replicas from annotation
 		var replicas int
@@ -101,10 +101,10 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) SideR
 			}
 		}
 
-		switch side {
-		case SidePrefill:
+		switch phase {
+		case PhasePrefill:
 			state.Prefill += replicas
-		case SideDecode:
+		case PhaseDecode:
 			state.Decode += replicas
 		}
 	}
@@ -118,8 +118,8 @@ type WorkloadInfo struct {
 	Name string
 	// Namespace is the workload namespace
 	Namespace string
-	// Side is the disagg side (prefill or decode)
-	Side string
+	// Phase is the disaggregated phase (prefill or decode)
+	Phase string
 	// Revision is the revision identifier for this workload
 	Revision string
 	// Replicas is the desired replica count
@@ -138,10 +138,10 @@ type WorkloadInfo struct {
 type CreateParams struct {
 	// DisaggregatedSet is the parent resource
 	DisaggregatedSet *disaggv1alpha1.DisaggregatedSet
-	// Side is the disagg side (prefill or decode)
-	Side string
-	// Config is the side configuration
-	Config *disaggv1alpha1.DisaggSideConfig
+	// Phase is the disaggregated phase (prefill or decode)
+	Phase string
+	// Config is the phase configuration
+	Config *disaggv1alpha1.DisaggregatedPhaseSpec
 	// Revision is the revision identifier for this workload
 	Revision string
 	// Labels are the labels to apply to the workload
@@ -151,18 +151,18 @@ type CreateParams struct {
 }
 
 // GenerateName generates a unique name for the workload based on revision.
-// Format: {baseName}-{revision}-{side}
-func GenerateName(baseName, side, revision string) string {
-	return fmt.Sprintf("%s-%s-%s", baseName, revision, side)
+// Format: {baseName}-{revision}-{phase}
+func GenerateName(baseName, phase, revision string) string {
+	return fmt.Sprintf("%s-%s-%s", baseName, revision, phase)
 }
 
-// GenerateLabels generates the standard labels for a side
-func GenerateLabels(baseName, side, revision string) map[string]string {
+// GenerateLabels generates the standard labels for a phase
+func GenerateLabels(baseName, phase, revision string) map[string]string {
 	return map[string]string{
-		"app":           fmt.Sprintf("%s-%s", baseName, side),
-		LabelDisaggSide: side,
-		LabelDisaggName: baseName,
-		LabelRevision:   revision,
+		"app":            fmt.Sprintf("%s-%s", baseName, phase),
+		LabelDisaggPhase: phase,
+		LabelDisaggName:  baseName,
+		LabelRevision:    revision,
 	}
 }
 
@@ -170,10 +170,10 @@ func GenerateLabels(baseName, side, revision string) map[string]string {
 const revisionLength = 8
 
 // ComputeRevision computes a truncated revision identifier from both prefill and decode LeaderWorkerTemplates.
-// This ensures both sides roll together when any field in LeaderWorkerTemplate changes
+// This ensures both phases roll together when any field in LeaderWorkerTemplate changes
 // (including Size, LeaderTemplate, WorkerTemplate, RestartPolicy, SubGroupPolicy, etc.).
 // Returns an 8-character revision identifier suitable for use in resource names.
-func ComputeRevision(prefill, decode *disaggv1alpha1.DisaggSideConfig) string {
+func ComputeRevision(prefill, decode *disaggv1alpha1.DisaggregatedPhaseSpec) string {
 	data := struct {
 		Prefill *leaderworkerset.LeaderWorkerTemplate `json:"prefill,omitempty"`
 		Decode  *leaderworkerset.LeaderWorkerTemplate `json:"decode,omitempty"`
@@ -199,17 +199,17 @@ func ComputeRevision(prefill, decode *disaggv1alpha1.DisaggSideConfig) string {
 	return fullHash
 }
 
-// GetSideConfigs returns a map of side configurations from the DisaggregatedSet spec
-func GetSideConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggSideConfig {
-	sideConfigs := make(map[string]*disaggv1alpha1.DisaggSideConfig)
+// GetPhaseConfigs returns a map of phase configurations from the DisaggregatedSet spec
+func GetPhaseConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggregatedPhaseSpec {
+	phaseConfigs := make(map[string]*disaggv1alpha1.DisaggregatedPhaseSpec)
 
 	if disaggregatedSet.Spec.Prefill != nil {
-		sideConfigs[SidePrefill] = disaggregatedSet.Spec.Prefill
+		phaseConfigs[PhasePrefill] = disaggregatedSet.Spec.Prefill
 	}
 
 	if disaggregatedSet.Spec.Decode != nil {
-		sideConfigs[SideDecode] = disaggregatedSet.Spec.Decode
+		phaseConfigs[PhaseDecode] = disaggregatedSet.Spec.Decode
 	}
 
-	return sideConfigs
+	return phaseConfigs
 }

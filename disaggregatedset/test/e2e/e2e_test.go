@@ -41,12 +41,12 @@ var controllerPodName string
 type disaggregatedSetConfig struct {
 	Name           string
 	Namespace      string
-	PrefillConfig  sideConfig
-	DecodeConfig   sideConfig
+	PrefillConfig  phaseConfig
+	DecodeConfig   phaseConfig
 }
 
-// sideConfig holds configuration for a single side (prefill or decode)
-type sideConfig struct {
+// phaseConfig holds configuration for a single phase (prefill or decode)
+type phaseConfig struct {
 	Replicas       int
 	Image          string
 	MaxSurge       int  // 0 means not set
@@ -69,19 +69,19 @@ metadata:
 spec:
 `, cfg.Name, cfg.Namespace))
 
-	// Prefill side
-	sb.WriteString(buildSideYAML("prefill", cfg.PrefillConfig))
+	// Prefill phase
+	sb.WriteString(buildPhaseYAML("prefill", cfg.PrefillConfig))
 
-	// Decode side
-	sb.WriteString(buildSideYAML("decode", cfg.DecodeConfig))
+	// Decode phase
+	sb.WriteString(buildPhaseYAML("decode", cfg.DecodeConfig))
 
 	return sb.String()
 }
 
-// buildSideYAML generates YAML for a single side configuration
-func buildSideYAML(sideName string, cfg sideConfig) string {
+// buildPhaseYAML generates YAML for a single phase configuration
+func buildPhaseYAML(phaseName string, cfg phaseConfig) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("  %s:\n", sideName))
+	sb.WriteString(fmt.Sprintf("  %s:\n", phaseName))
 	sb.WriteString(fmt.Sprintf("    replicas: %d\n", cfg.Replicas))
 
 	// Rollout strategy
@@ -248,20 +248,20 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			cleanupDeployment(deploymentName)
 		})
 
-		It("should create LWS resources for prefill and decode sides", func() {
+		It("should create LWS resources for prefill and decode phases", func() {
 			By("creating a DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1},
-				DecodeConfig:  sideConfig{Replicas: 1},
+				PrefillConfig: phaseConfig{Replicas: 1},
+				DecodeConfig:  phaseConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
-			By("verifying LWS resources are created for both sides")
+			By("verifying LWS resources are created for both phases")
 			Eventually(func(g Gomega) {
 				// Check prefill LWS
 				cmd := exec.Command("kubectl", "get", "lws", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -269,7 +269,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode LWS
 				cmd = exec.Command("kubectl", "get", "lws", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -299,12 +299,12 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			cleanupDeployment(deploymentName)
 		})
 
-		It("should complete rolling update with both sides scaling together", func() {
+		It("should complete rolling update with both phases scaling together", func() {
 			By("creating initial DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 2},
-				DecodeConfig:  sideConfig{Replicas: 2},
+				PrefillConfig: phaseConfig{Replicas: 2},
+				DecodeConfig:  phaseConfig{Replicas: 2},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
@@ -327,8 +327,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("triggering rolling update by changing image")
 			yamlV2 := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 2, Image: "registry.k8s.io/pause:3.10"},
-				DecodeConfig:  sideConfig{Replicas: 2, Image: "registry.k8s.io/pause:3.10"},
+				PrefillConfig: phaseConfig{Replicas: 2, Image: "registry.k8s.io/pause:3.10"},
+				DecodeConfig:  phaseConfig{Replicas: 2, Image: "registry.k8s.io/pause:3.10"},
 			})
 			Expect(applyYAML(yamlV2)).To(Succeed())
 
@@ -362,32 +362,32 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(activeRevisions).To(Equal(1), "Expected only one active revision after rolling update")
 			}, 3*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("verifying no orphaned single-side workloads exist")
+			By("verifying no orphaned single-phase workloads exist")
 			cmd := exec.Command("kubectl", "get", "lws", "-l",
 				fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
-				"-n", "default", "-o", "jsonpath={range .items[*]}{.metadata.labels.disaggregatedset\\.x-k8s\\.io/revision},{.metadata.labels.disaggregatedset\\.x-k8s\\.io/side},{.spec.replicas}\\n{end}")
+				"-n", "default", "-o", "jsonpath={range .items[*]}{.metadata.labels.disaggregatedset\\.x-k8s\\.io/revision},{.metadata.labels.disaggregatedset\\.x-k8s\\.io/phase},{.spec.replicas}\\n{end}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Group by revision and check both sides exist or both are 0
-			revisionSides := make(map[string]map[string]int)
+			// Group by revision and check both phases exist or both are 0
+			revisionPhases := make(map[string]map[string]int)
 			for _, line := range utils.GetNonEmptyLines(output) {
 				parts := strings.Split(line, ",")
 				if len(parts) == 3 {
-					revision, side := parts[0], parts[1]
+					revision, phase := parts[0], parts[1]
 					var replicas int
 					_, _ = fmt.Sscanf(parts[2], "%d", &replicas)
-					if revisionSides[revision] == nil {
-						revisionSides[revision] = make(map[string]int)
+					if revisionPhases[revision] == nil {
+						revisionPhases[revision] = make(map[string]int)
 					}
-					revisionSides[revision][side] = replicas
+					revisionPhases[revision][phase] = replicas
 				}
 			}
 
-			for revision, sides := range revisionSides {
-				prefillReplicas := sides["prefill"]
-				decodeReplicas := sides["decode"]
-				// If one side has replicas, the other must too (coordinated)
+			for revision, phases := range revisionPhases {
+				prefillReplicas := phases["prefill"]
+				decodeReplicas := phases["decode"]
+				// If one phase has replicas, the other must too (coordinated)
 				// Or both must be 0 (drained)
 				if prefillReplicas > 0 || decodeReplicas > 0 {
 					Expect(prefillReplicas).To(BeNumerically(">", 0),
@@ -414,8 +414,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("creating DisaggregatedSet with 1 replica each")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1},
-				DecodeConfig:  sideConfig{Replicas: 1},
+				PrefillConfig: phaseConfig{Replicas: 1},
+				DecodeConfig:  phaseConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
@@ -427,8 +427,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("scaling up to 3 replicas each")
 			yamlScaledUp := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 3},
-				DecodeConfig:  sideConfig{Replicas: 3},
+				PrefillConfig: phaseConfig{Replicas: 3},
+				DecodeConfig:  phaseConfig{Replicas: 3},
 			})
 			Expect(applyYAML(yamlScaledUp)).To(Succeed())
 
@@ -458,8 +458,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("creating DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1},
-				DecodeConfig:  sideConfig{Replicas: 1},
+				PrefillConfig: phaseConfig{Replicas: 1},
+				DecodeConfig:  phaseConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
@@ -468,11 +468,11 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(countRunningPods(deploymentName)).To(Equal(2))
 			}, 90*time.Second, time.Second).Should(Succeed())
 
-			By("verifying headless portless services are created for both sides")
+			By("verifying headless portless services are created for both phases")
 			Eventually(func(g Gomega) {
 				// Check prefill service exists and is headless
 				cmd := exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.clusterIP}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -480,7 +480,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check prefill service has no ports (portless)
 				cmd = exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.ports}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -488,7 +488,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode service exists and is headless
 				cmd = exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.clusterIP}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -496,7 +496,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode service has no ports (portless)
 				cmd = exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.ports}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -507,7 +507,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Eventually(func(g Gomega) {
 				// Check prefill EndpointSlice exists
 				cmd := exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -515,7 +515,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check prefill EndpointSlice has Ready endpoints
 				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].endpoints[*].conditions.ready}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -523,7 +523,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check prefill EndpointSlice is portless (ports should be null or empty)
 				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].ports}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -533,7 +533,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode EndpointSlice exists
 				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -541,7 +541,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode EndpointSlice has Ready endpoints
 				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].endpoints[*].conditions.ready}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -549,7 +549,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				// Check decode EndpointSlice is portless (ports should be null or empty)
 				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].ports}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -612,7 +612,7 @@ spec:
 			Eventually(func(g Gomega) {
 				// Check prefill LWS labels
 				cmd := exec.Command("kubectl", "get", "lws", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.leaderWorkerTemplate.workerTemplate.metadata.labels}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -623,11 +623,11 @@ spec:
 				g.Expect(output).To(ContainSubstring("production"))
 				// Verify auto-populated labels are present
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
-				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/side"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/phase"))
 
 				// Check prefill LWS annotations
 				cmd = exec.Command("kubectl", "get", "lws", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].spec.leaderWorkerTemplate.workerTemplate.metadata.annotations}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -640,13 +640,13 @@ spec:
 			Eventually(func(g Gomega) {
 				// Check prefill service labels (only standard labels, no user-configurable ones)
 				cmd := exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].metadata.labels}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				// Verify standard labels are present
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
-				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/side"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/phase"))
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/revision"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
@@ -659,8 +659,8 @@ spec:
 			By("creating DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1},
-				DecodeConfig:  sideConfig{Replicas: 1},
+				PrefillConfig: phaseConfig{Replicas: 1},
+				DecodeConfig:  phaseConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
@@ -777,12 +777,12 @@ spec:
 				By("creating initial DisaggregatedSet with source replicas")
 				initialYaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 					Name: deploymentName,
-					PrefillConfig: sideConfig{
+					PrefillConfig: phaseConfig{
 						Replicas:   tc.SourcePrefill,
 						HasRollout: true,
 						MaxSurge:   tc.PrefillSurge,
 					},
-					DecodeConfig: sideConfig{
+					DecodeConfig: phaseConfig{
 						Replicas:   tc.SourceDecode,
 						HasRollout: true,
 						MaxSurge:   tc.DecodeSurge,
@@ -812,13 +812,13 @@ spec:
 				By("triggering rolling update by changing image and target replicas")
 				updatedYaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 					Name: deploymentName,
-					PrefillConfig: sideConfig{
+					PrefillConfig: phaseConfig{
 						Replicas:   tc.TargetPrefill,
 						Image:      "registry.k8s.io/pause:3.10",
 						HasRollout: true,
 						MaxSurge:   tc.PrefillSurge,
 					},
-					DecodeConfig: sideConfig{
+					DecodeConfig: phaseConfig{
 						Replicas:   tc.TargetDecode,
 						Image:      "registry.k8s.io/pause:3.10",
 						HasRollout: true,
@@ -927,11 +927,11 @@ type rolloutTestCase struct {
 
 // getCurrentRolloutState queries the cluster for current LWS replica counts
 func getCurrentRolloutState(deploymentName, oldRevision string) rolloutState {
-	// Get all LWS for this deployment with their revision, side, and replicas
+	// Get all LWS for this deployment with their revision, phase, and replicas
 	cmd := exec.Command("kubectl", "get", "lws", "-l",
 		fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
 		"-n", "default", "-o",
-		"jsonpath={range .items[*]}{.metadata.labels.disaggregatedset\\.x-k8s\\.io/revision},{.metadata.labels.disaggregatedset\\.x-k8s\\.io/side},{.spec.replicas}\n{end}")
+		"jsonpath={range .items[*]}{.metadata.labels.disaggregatedset\\.x-k8s\\.io/revision},{.metadata.labels.disaggregatedset\\.x-k8s\\.io/phase},{.spec.replicas}\n{end}")
 
 	output, err := utils.Run(cmd)
 	if err != nil {
@@ -945,17 +945,17 @@ func getCurrentRolloutState(deploymentName, oldRevision string) rolloutState {
 			continue
 		}
 		revision := parts[0]
-		side := parts[1]
+		phase := parts[1]
 		replicas, _ := strconv.Atoi(parts[2])
 
 		isOld := revision == oldRevision
-		if side == "prefill" {
+		if phase == "prefill" {
 			if isOld {
 				state.OldPrefill = replicas
 			} else {
 				state.NewPrefill = replicas
 			}
-		} else if side == "decode" {
+		} else if phase == "decode" {
 			if isOld {
 				state.OldDecode = replicas
 			} else {

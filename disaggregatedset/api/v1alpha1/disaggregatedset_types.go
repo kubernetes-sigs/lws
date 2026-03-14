@@ -24,7 +24,7 @@ import (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// RolloutStrategy defines the rolling update parameters for a side.
+// RolloutStrategy defines the rolling update parameters for a phase.
 type RolloutStrategy struct {
 	// MaxUnavailable is the maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas (ex: 10%).
@@ -45,9 +45,9 @@ type RolloutStrategy struct {
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
-// DisaggSideConfig defines the configuration for the prefill/decode side.
+// DisaggregatedPhaseSpec defines the configuration for a disaggregated phase (prefill or decode).
 // This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
-type DisaggSideConfig struct {
+type DisaggregatedPhaseSpec struct {
 	// Replicas is the number of leader-worker groups.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=1
@@ -73,15 +73,15 @@ type DisaggSideConfig struct {
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="(self.prefill.replicas == 0 && self.decode.replicas == 0) || (self.prefill.replicas > 0 && self.decode.replicas > 0)",message="replicas must be zero for both sides or non-zero for both sides"
+// +kubebuilder:validation:XValidation:rule="(self.prefill.replicas == 0 && self.decode.replicas == 0) || (self.prefill.replicas > 0 && self.decode.replicas > 0)",message="replicas must be zero for both phases or non-zero for both phases"
 type DisaggregatedSetSpec struct {
-	// Prefill configuration for the disaggregated deployment
+	// Prefill defines the configuration for the prefill phase
 	// +required
-	Prefill *DisaggSideConfig `json:"prefill"`
+	Prefill *DisaggregatedPhaseSpec `json:"prefill"`
 
-	// Decode configuration for the disaggregated deployment
+	// Decode defines the configuration for the decode phase
 	// +required
-	Decode *DisaggSideConfig `json:"decode"`
+	Decode *DisaggregatedPhaseSpec `json:"decode"`
 }
 
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.

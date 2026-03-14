@@ -72,7 +72,7 @@ func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 
 // createTestLWS creates a LeaderWorkerSet for testing.
 func createTestLWS(
-	name, namespace, side, revision string,
+	name, namespace, phase, revision string,
 	replicas, readyReplicas int32,
 	creationTime time.Time,
 ) *leaderworkerset.LeaderWorkerSet {
@@ -82,9 +82,9 @@ func createTestLWS(
 			Namespace:         namespace,
 			CreationTimestamp: metav1.Time{Time: creationTime},
 			Labels: map[string]string{
-				LabelDisaggSide: side,
-				LabelDisaggName: "test",
-				LabelRevision:   revision,
+				LabelDisaggPhase: phase,
+				LabelDisaggName:  "test",
+				LabelRevision:    revision,
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -99,12 +99,12 @@ func createTestLWS(
 
 // createTestLWSWithAnnotations creates a LeaderWorkerSet with custom annotations.
 func createTestLWSWithAnnotations(
-	name, namespace, side, revision string,
+	name, namespace, phase, revision string,
 	replicas, readyReplicas int32,
 	creationTime time.Time,
 	annotations map[string]string,
 ) *leaderworkerset.LeaderWorkerSet {
-	lws := createTestLWS(name, namespace, side, revision, replicas, readyReplicas, creationTime)
+	lws := createTestLWS(name, namespace, phase, revision, replicas, readyReplicas, creationTime)
 	lws.Annotations = annotations
 	return lws
 }
@@ -213,10 +213,10 @@ func setupABCScenario(
 	pSurge, pUnavail := intstr.FromInt(prefillSurge), intstr.FromInt(prefillUnavail)
 	dSurge, dUnavail := intstr.FromInt(decodeSurge), intstr.FromInt(decodeUnavail)
 
-	makeSideConfig := func(
+	makePhaseConfig := func(
 		replicas int32, podSpec corev1.PodSpec, surge, unavail intstr.IntOrString,
-	) *disaggv1alpha1.DisaggSideConfig {
-		return &disaggv1alpha1.DisaggSideConfig{
+	) *disaggv1alpha1.DisaggregatedPhaseSpec {
+		return &disaggv1alpha1.DisaggregatedPhaseSpec{
 			Replicas: ptr.To(replicas),
 			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 				Size:           ptr.To(int32(1)),
@@ -228,15 +228,15 @@ func setupABCScenario(
 		}
 	}
 
-	prefillConfig := makeSideConfig(targetPrefill, podSpecC, pSurge, pUnavail)
-	decodeConfig := makeSideConfig(targetDecode, podSpecC, dSurge, dUnavail)
+	prefillConfig := makePhaseConfig(targetPrefill, podSpecC, pSurge, pUnavail)
+	decodeConfig := makePhaseConfig(targetDecode, podSpecC, dSurge, dUnavail)
 
-	configA := makeSideConfig(targetPrefill, podSpecA, pSurge, pUnavail)
-	configB := makeSideConfig(targetPrefill, podSpecB, pSurge, pUnavail)
+	configA := makePhaseConfig(targetPrefill, podSpecA, pSurge, pUnavail)
+	configB := makePhaseConfig(targetPrefill, podSpecB, pSurge, pUnavail)
 	revisionA := ComputeRevision(
-		configA, makeSideConfig(targetDecode, podSpecA, dSurge, dUnavail))
+		configA, makePhaseConfig(targetDecode, podSpecA, dSurge, dUnavail))
 	revisionB := ComputeRevision(
-		configB, makeSideConfig(targetDecode, podSpecB, dSurge, dUnavail))
+		configB, makePhaseConfig(targetDecode, podSpecB, dSurge, dUnavail))
 	revisionC := ComputeRevision(prefillConfig, decodeConfig)
 
 	deployment := &disaggv1alpha1.DisaggregatedSet{
@@ -250,8 +250,8 @@ func setupABCScenario(
 		Name:       "test",
 		UID:        "uid",
 	}
-	makeLabels := func(side, revision string) map[string]string {
-		return map[string]string{LabelDisaggSide: side, LabelDisaggName: "test", LabelRevision: revision}
+	makeLabels := func(phase, revision string) map[string]string {
+		return map[string]string{LabelDisaggPhase: phase, LabelDisaggName: "test", LabelRevision: revision}
 	}
 
 	var objects []client.Object
@@ -260,20 +260,20 @@ func setupABCScenario(
 		nameA := fmt.Sprintf("test-%s", revisionA)
 		objects = append(objects,
 			createWorkloadForTest(
-				nameA+"-prefill", makeLabels(SidePrefill, revisionA),
+				nameA+"-prefill", makeLabels(PhasePrefill, revisionA),
 				aPrefill, aPrefill, podSpecA, ownerRef),
 			createWorkloadForTest(
-				nameA+"-decode", makeLabels(SideDecode, revisionA),
+				nameA+"-decode", makeLabels(PhaseDecode, revisionA),
 				aDecode, aDecode, podSpecA, ownerRef))
 	}
 	if bPrefill > 0 || bDecode > 0 {
 		nameB := fmt.Sprintf("test-%s", revisionB)
 		objects = append(objects,
 			createWorkloadForTest(
-				nameB+"-prefill", makeLabels(SidePrefill, revisionB),
+				nameB+"-prefill", makeLabels(PhasePrefill, revisionB),
 				bPrefill, bPrefill, podSpecB, ownerRef),
 			createWorkloadForTest(
-				nameB+"-decode", makeLabels(SideDecode, revisionB),
+				nameB+"-decode", makeLabels(PhaseDecode, revisionB),
 				bDecode, bDecode, podSpecB, ownerRef))
 	}
 
@@ -303,9 +303,9 @@ func runReconcileUntilStable(
 }
 
 // assertWorkloadDrained checks that a workload is drained (0 or deleted).
-func assertWorkloadDrained(t *testing.T, fakeClient client.Client, revision, side string) {
-	replicas := getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-%s", revision, side))
-	assert.True(t, replicas == 0 || replicas == -1, "%s %s should be drained, got %d", revision, side, replicas)
+func assertWorkloadDrained(t *testing.T, fakeClient client.Client, revision, phase string) {
+	replicas := getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-%s", revision, phase))
+	assert.True(t, replicas == 0 || replicas == -1, "%s %s should be drained, got %d", revision, phase, replicas)
 }
 
 // =============================================================================
@@ -367,7 +367,7 @@ func TestReconcilerIntegration(t *testing.T) {
 					MaxSurge: &surge, MaxUnavailable: &unavail,
 				}
 			}
-			config := &disaggv1alpha1.DisaggSideConfig{
+			config := &disaggv1alpha1.DisaggregatedPhaseSpec{
 				Replicas: ptr.To(tc.targetReplicas),
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					Size:           ptr.To(int32(2)),
@@ -388,19 +388,19 @@ func TestReconcilerIntegration(t *testing.T) {
 				APIVersion: disaggv1alpha1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet", Name: tc.deployName, UID: "uid",
 			}
-			makeLabels := func(side, revision string) map[string]string {
+			makeLabels := func(phase, revision string) map[string]string {
 				return map[string]string{
-					LabelDisaggSide: side, LabelDisaggName: tc.deployName,
+					LabelDisaggPhase: phase, LabelDisaggName: tc.deployName,
 					LabelRevision: revision,
 				}
 			}
 
 			// Create old workloads if specified
 			if tc.oldSpec >= 0 {
-				for _, side := range []string{SidePrefill, SideDecode} {
-					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, side)
+				for _, phase := range []string{PhasePrefill, PhaseDecode} {
+					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, phase)
 					obj := createWorkloadForTest(
-						name, makeLabels(side, oldRevision),
+						name, makeLabels(phase, oldRevision),
 						tc.oldSpec, tc.oldReady, podSpec, ownerRef)
 					require.NoError(t, fakeClient.Create(context.TODO(), obj))
 				}
@@ -408,10 +408,10 @@ func TestReconcilerIntegration(t *testing.T) {
 
 			// Create new workloads if specified
 			if tc.newSpec >= 0 {
-				for _, side := range []string{SidePrefill, SideDecode} {
-					name := fmt.Sprintf("%s-%s-%s", tc.deployName, newRevision, side)
+				for _, phase := range []string{PhasePrefill, PhaseDecode} {
+					name := fmt.Sprintf("%s-%s-%s", tc.deployName, newRevision, phase)
 					obj := createWorkloadForTest(
-						name, makeLabels(side, newRevision),
+						name, makeLabels(phase, newRevision),
 						tc.newSpec, tc.newReady, podSpec, ownerRef)
 					require.NoError(t, fakeClient.Create(context.TODO(), obj))
 				}
@@ -429,24 +429,24 @@ func TestReconcilerIntegration(t *testing.T) {
 				assert.NotZero(t, result.RequeueAfter)
 			}
 			if tc.expectOldDeleted {
-				for _, side := range []string{SidePrefill, SideDecode} {
-					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, side)
+				for _, phase := range []string{PhasePrefill, PhaseDecode} {
+					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, phase)
 					_, exists, _ := getWorkloadReplicas(fakeClient, name)
-					assert.False(t, exists, "old %s should be deleted", side)
+					assert.False(t, exists, "old %s should be deleted", phase)
 				}
 			}
 			if tc.expectOldScaledDown {
-				for _, side := range []string{SidePrefill, SideDecode} {
-					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, side)
+				for _, phase := range []string{PhasePrefill, PhaseDecode} {
+					name := fmt.Sprintf("%s-%s-%s", tc.deployName, oldRevision, phase)
 					replicas, _, _ := getWorkloadReplicas(fakeClient, name)
-					assert.Less(t, replicas, tc.oldSpec, "old %s should scale down", side)
+					assert.Less(t, replicas, tc.oldSpec, "old %s should scale down", phase)
 				}
 			}
 			if tc.expectNewCreated {
-				for _, side := range []string{SidePrefill, SideDecode} {
-					name := fmt.Sprintf("%s-%s-%s", tc.deployName, newRevision, side)
+				for _, phase := range []string{PhasePrefill, PhaseDecode} {
+					name := fmt.Sprintf("%s-%s-%s", tc.deployName, newRevision, phase)
 					_, exists, _ := getWorkloadReplicas(fakeClient, name)
-					assert.True(t, exists, "new %s should be created", side)
+					assert.True(t, exists, "new %s should be created", phase)
 				}
 			}
 		})
@@ -465,9 +465,9 @@ func TestSortByOldestTimestamp(t *testing.T) {
 		ts := baseTime.Add(time.Duration(offsetMinutes) * time.Minute)
 		return GroupedWorkload{
 			Revision: hash,
-			Sides: map[string]WorkloadInfo{
-				SidePrefill: {CreationTimestamp: ts},
-				SideDecode:  {CreationTimestamp: ts},
+			Phases: map[string]WorkloadInfo{
+				PhasePrefill: {CreationTimestamp: ts},
+				PhaseDecode:  {CreationTimestamp: ts},
 			},
 		}
 	}
@@ -515,19 +515,19 @@ func TestIsWorkloadStable(t *testing.T) {
 		prefillReplicas, prefillReady, decodeReplicas, decodeReady int
 		expected                                                   bool
 	}{
-		{"all sides stable", 3, 3, 2, 2, true},
+		{"all phases stable", 3, 3, 2, 2, true},
 		{"prefill unstable", 3, 2, 2, 2, false},
 		{"decode unstable", 3, 3, 2, 1, false},
-		{"both sides unstable", 3, 1, 2, 0, false},
+		{"both phases unstable", 3, 1, 2, 0, false},
 		{"zero replicas stable", 0, 0, 0, 0, true},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			workload := GroupedWorkload{
 				Revision: "hash1",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Replicas: tc.prefillReplicas, ReadyReplicas: tc.prefillReady},
-					SideDecode:  {Replicas: tc.decodeReplicas, ReadyReplicas: tc.decodeReady},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Replicas: tc.prefillReplicas, ReadyReplicas: tc.prefillReady},
+					PhaseDecode:  {Replicas: tc.decodeReplicas, ReadyReplicas: tc.decodeReady},
 				},
 			}
 			assert.Equal(t, tc.expected, isWorkloadStable(workload))
@@ -536,27 +536,27 @@ func TestIsWorkloadStable(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for getSideConfig
+// Unit Tests for getPhaseConfig
 // =============================================================================
 
-func TestGetSideConfig(t *testing.T) {
-	prefillConfig := &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(3))}
-	decodeConfig := &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(5))}
+func TestGetPhaseConfig(t *testing.T) {
+	prefillConfig := &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))}
+	decodeConfig := &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(5))}
 	deployment := &disaggv1alpha1.DisaggregatedSet{
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{Prefill: prefillConfig, Decode: decodeConfig},
 	}
 
 	testCases := []struct {
-		side             string
-		expectedConfig   *disaggv1alpha1.DisaggSideConfig
+		phase            string
+		expectedConfig   *disaggv1alpha1.DisaggregatedPhaseSpec
 		expectedReplicas int32
 	}{
-		{SidePrefill, prefillConfig, 3},
-		{SideDecode, decodeConfig, 5},
+		{PhasePrefill, prefillConfig, 3},
+		{PhaseDecode, decodeConfig, 5},
 	}
 	for _, tc := range testCases {
-		t.Run(tc.side, func(t *testing.T) {
-			config := getSideConfig(deployment, tc.side)
+		t.Run(tc.phase, func(t *testing.T) {
+			config := getPhaseConfig(deployment, tc.phase)
 			assert.Same(t, tc.expectedConfig, config)
 			assert.Equal(t, tc.expectedReplicas, *config.Replicas)
 		})
@@ -585,8 +585,8 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			prefillConfig := &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(3))}
-			decodeConfig := &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(2))}
+			prefillConfig := &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))}
+			decodeConfig := &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(2))}
 
 			if tc.prefillSurge != nil || tc.prefillUnavail != nil {
 				prefillConfig.RolloutStrategy = &disaggv1alpha1.RolloutStrategy{}
@@ -655,7 +655,7 @@ func TestScaleDownOldWorkloads(t *testing.T) {
 			prefillBudget: 2, decodeBudget: 2,
 		},
 		{
-			name:          "coordinated drain when one side reaches zero",
+			name:          "coordinated drain when one phase reaches zero",
 			workloads:     []workloadDef{{revision: "hash1", prefill: 3, decode: 2, ageHours: 0, expectedPrefill: 0, expectedDecode: 0}},
 			prefillBudget: 1, decodeBudget: 2,
 		},
@@ -700,16 +700,16 @@ func TestScaleDownOldWorkloads(t *testing.T) {
 				baseName := fmt.Sprintf("test-%s", workload.revision)
 				objects = append(objects,
 					createTestLWS(
-						baseName+"-prefill", testNamespace, SidePrefill, workload.revision,
+						baseName+"-prefill", testNamespace, PhasePrefill, workload.revision,
 						workload.prefill, workload.prefill, creationTime),
 					createTestLWS(
-						baseName+"-decode", testNamespace, SideDecode, workload.revision,
+						baseName+"-decode", testNamespace, PhaseDecode, workload.revision,
 						workload.decode, workload.decode, creationTime))
 				grouped = append(grouped, GroupedWorkload{
 					Revision: workload.revision,
-					Sides: map[string]WorkloadInfo{
-						SidePrefill: {Replicas: int(workload.prefill), CreationTimestamp: creationTime},
-						SideDecode:  {Replicas: int(workload.decode), CreationTimestamp: creationTime},
+					Phases: map[string]WorkloadInfo{
+						PhasePrefill: {Replicas: int(workload.prefill), CreationTimestamp: creationTime},
+						PhaseDecode:  {Replicas: int(workload.decode), CreationTimestamp: creationTime},
 					},
 				})
 			}
@@ -751,7 +751,7 @@ func TestScaleUpNewWorkload(t *testing.T) {
 	}{
 		{"scales up prefill only", 2, 4, 2, 4, 4, 4, 4, 4},
 		{"scales up decode only", 4, 2, 4, 2, 4, 4, 4, 4},
-		{"scales up both sides", 1, 2, 1, 2, 4, 4, 4, 4},
+		{"scales up both phases", 1, 2, 1, 2, 4, 4, 4, 4},
 		{"no-op when at target", 4, 4, 4, 4, 4, 4, 4, 4},
 	}
 
@@ -759,8 +759,8 @@ func TestScaleUpNewWorkload(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(
-					createTestLWS("test-newhash-prefill", namespace, SidePrefill, "newhash", tc.initPrefill, tc.initPrefill, baseTime),
-					createTestLWS("test-newhash-decode", namespace, SideDecode, "newhash", tc.initDecode, tc.initDecode, baseTime),
+					createTestLWS("test-newhash-prefill", namespace, PhasePrefill, "newhash", tc.initPrefill, tc.initPrefill, baseTime),
+					createTestLWS("test-newhash-decode", namespace, PhaseDecode, "newhash", tc.initDecode, tc.initDecode, baseTime),
 				).
 				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
 				Build()
@@ -773,9 +773,9 @@ func TestScaleUpNewWorkload(t *testing.T) {
 
 			newWorkload := GroupedWorkload{
 				Revision: "newhash",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Replicas: tc.workloadPrefill},
-					SideDecode:  {Replicas: tc.workloadDecode},
+				Phases: map[string]WorkloadInfo{
+					PhasePrefill: {Replicas: tc.workloadPrefill},
+					PhaseDecode:  {Replicas: tc.workloadDecode},
 				},
 			}
 
@@ -808,7 +808,7 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 			var objects []client.Object
 			if tc.existingReplicas >= 0 {
 				objects = append(objects, createTestLWS(
-					"test-newhash-prefill", testNamespace, SidePrefill, "newhash",
+					"test-newhash-prefill", testNamespace, PhasePrefill, "newhash",
 					tc.existingReplicas, tc.existingReplicas, time.Now()))
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
@@ -821,7 +821,7 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 			deployment := &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "test-uid"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Prefill: &disaggv1alpha1.DisaggSideConfig{
+					Prefill: &disaggv1alpha1.DisaggregatedPhaseSpec{
 						Replicas: ptr.To(int32(4)),
 						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 							Size:           ptr.To(int32(1)),
@@ -832,7 +832,7 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 			}
 
 			created, err := executor.ensureNewWorkloadExists(
-				context.TODO(), deployment, "newhash", SidePrefill,
+				context.TODO(), deployment, "newhash", PhasePrefill,
 				deployment.Spec.Prefill, 2)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expectedCreated, created)
@@ -876,26 +876,26 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 			if tc.aPrefill > 0 || tc.aDecode > 0 {
 				objects = append(objects,
 					createTestLWSWithAnnotations(
-						"test-hashA-prefill", testNamespace, SidePrefill, "hashA",
+						"test-hashA-prefill", testNamespace, PhasePrefill, "hashA",
 						tc.aPrefill, tc.aPrefill, baseTime, initAnnot),
 					createTestLWSWithAnnotations(
-						"test-hashA-decode", testNamespace, SideDecode, "hashA",
+						"test-hashA-decode", testNamespace, PhaseDecode, "hashA",
 						tc.aDecode, tc.aDecode, baseTime, initAnnot))
 			}
 			bTime := baseTime.Add(1 * time.Hour)
 			cTime := baseTime.Add(2 * time.Hour)
 			objects = append(objects,
 				createTestLWSWithAnnotations(
-					"test-hashB-prefill", testNamespace, SidePrefill, "hashB",
+					"test-hashB-prefill", testNamespace, PhasePrefill, "hashB",
 					tc.bPrefill, tc.bPrefill, bTime, initAnnot),
 				createTestLWSWithAnnotations(
-					"test-hashB-decode", testNamespace, SideDecode, "hashB",
+					"test-hashB-decode", testNamespace, PhaseDecode, "hashB",
 					tc.bDecode, tc.bDecode, bTime, initAnnot),
 				createTestLWS(
-					"test-hashC-prefill", testNamespace, SidePrefill, "hashC",
+					"test-hashC-prefill", testNamespace, PhasePrefill, "hashC",
 					tc.cPrefill, tc.cPrefill, cTime),
 				createTestLWS(
-					"test-hashC-decode", testNamespace, SideDecode, "hashC",
+					"test-hashC-decode", testNamespace, PhaseDecode, "hashC",
 					tc.cDecode, tc.cDecode, cTime))
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
@@ -906,30 +906,30 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 			deployment := &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Prefill: &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(4))},
-					Decode:  &disaggv1alpha1.DisaggSideConfig{Replicas: ptr.To(int32(4))},
+					Prefill: &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(4))},
+					Decode:  &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(4))},
 				},
 			}
 
 			oldWorkloads := GroupedWorkloads{
-				{Revision: "hashA", Sides: map[string]WorkloadInfo{
-					SidePrefill: {
+				{Revision: "hashA", Phases: map[string]WorkloadInfo{
+					PhasePrefill: {
 						Replicas: int(tc.aPrefill), ReadyReplicas: int(tc.aPrefill),
 						InitialReplicas: 2, CreationTimestamp: baseTime},
-					SideDecode: {
+					PhaseDecode: {
 						Replicas: int(tc.aDecode), ReadyReplicas: int(tc.aDecode),
 						InitialReplicas: 2, CreationTimestamp: baseTime}}},
-				{Revision: "hashB", Sides: map[string]WorkloadInfo{
-					SidePrefill: {
+				{Revision: "hashB", Phases: map[string]WorkloadInfo{
+					PhasePrefill: {
 						Replicas: int(tc.bPrefill), ReadyReplicas: int(tc.bPrefill),
 						InitialReplicas: 2, CreationTimestamp: bTime},
-					SideDecode: {
+					PhaseDecode: {
 						Replicas: int(tc.bDecode), ReadyReplicas: int(tc.bDecode),
 						InitialReplicas: 2, CreationTimestamp: bTime}}},
 			}
-			newWorkload := GroupedWorkload{Revision: "hashC", Sides: map[string]WorkloadInfo{
-				SidePrefill: {Replicas: int(tc.cPrefill), ReadyReplicas: int(tc.cPrefill)},
-				SideDecode:  {Replicas: int(tc.cDecode), ReadyReplicas: int(tc.cDecode)}}}
+			newWorkload := GroupedWorkload{Revision: "hashC", Phases: map[string]WorkloadInfo{
+				PhasePrefill: {Replicas: int(tc.cPrefill), ReadyReplicas: int(tc.cPrefill)},
+				PhaseDecode:  {Replicas: int(tc.cDecode), ReadyReplicas: int(tc.cDecode)}}}
 
 			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, oldWorkloads, newWorkload)
 			require.NoError(t, err)
@@ -959,10 +959,10 @@ func TestMidRolloutABC(t *testing.T) {
 	runReconcileUntilStable(t, fakeClient, deployment, 20)
 
 	// Verify: A and B drained, C at target (2,4)
-	assertWorkloadDrained(t, fakeClient, revisions.A, SidePrefill)
-	assertWorkloadDrained(t, fakeClient, revisions.A, SideDecode)
-	assertWorkloadDrained(t, fakeClient, revisions.B, SidePrefill)
-	assertWorkloadDrained(t, fakeClient, revisions.B, SideDecode)
+	assertWorkloadDrained(t, fakeClient, revisions.A, PhasePrefill)
+	assertWorkloadDrained(t, fakeClient, revisions.A, PhaseDecode)
+	assertWorkloadDrained(t, fakeClient, revisions.B, PhasePrefill)
+	assertWorkloadDrained(t, fakeClient, revisions.B, PhaseDecode)
 	assert.Equal(t, int32(2), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-prefill", revisions.C)))
 	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-decode", revisions.C)))
 }
@@ -989,7 +989,7 @@ func TestAsymmetricSizesCoordinatedDrain(t *testing.T) {
 		require.NoError(t, err, "Reconcile iteration %d", i)
 		simulateAllReady(fakeClient)
 
-		// Check no orphans (if one side is 0, the other must also be 0)
+		// Check no orphans (if one phase is 0, the other must also be 0)
 		aPrefill := normalize(getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-prefill", revisions.A)))
 		aDecode := normalize(getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-decode", revisions.A)))
 		bPrefill := normalize(getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-prefill", revisions.B)))
@@ -1000,10 +1000,10 @@ func TestAsymmetricSizesCoordinatedDrain(t *testing.T) {
 	}
 
 	// Verify final state: A and B drained, C at target (4,3)
-	assertWorkloadDrained(t, fakeClient, revisions.A, SidePrefill)
-	assertWorkloadDrained(t, fakeClient, revisions.A, SideDecode)
-	assertWorkloadDrained(t, fakeClient, revisions.B, SidePrefill)
-	assertWorkloadDrained(t, fakeClient, revisions.B, SideDecode)
+	assertWorkloadDrained(t, fakeClient, revisions.A, PhasePrefill)
+	assertWorkloadDrained(t, fakeClient, revisions.A, PhaseDecode)
+	assertWorkloadDrained(t, fakeClient, revisions.B, PhasePrefill)
+	assertWorkloadDrained(t, fakeClient, revisions.B, PhaseDecode)
 	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-prefill", revisions.C)))
 	assert.Equal(t, int32(3), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-decode", revisions.C)))
 }

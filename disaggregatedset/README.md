@@ -9,8 +9,8 @@ Disaggregated serving separates the two phases of LLM inference—**prefill** (p
 DisaggregatedSet simplifies deploying these workloads by:
 
 - **Unified Management**: Manage prefill and decode LeaderWorkerSets as a single resource
-- **Coordinated Rolling Updates**: Two-dimensional rollout algorithm updates both sides in lockstep
-- **Service Orchestration**: Automatically create Services when both sides are ready
+- **Coordinated Rolling Updates**: Two-dimensional rollout algorithm updates both phases in lockstep
+- **Service Orchestration**: Automatically create Services when both phases are ready
 - **Stateless Operator**: Safe to restart at any point during operations
 
 ## Features
@@ -21,21 +21,21 @@ Disaggregated deployments often use specific prefill-to-decode ratios (e.g., 3P6
 
 **How it works:**
 
-1. **Compute total steps** based on the larger side: `totalSteps = max(prefillReplicas, decodeReplicas)`
+1. **Compute total steps** based on the larger phase: `totalSteps = max(prefillReplicas, decodeReplicas)`
 2. **Linear interpolation** determines target replicas at each step:
    - New replicas: `ceil(step * target / totalSteps)` — scales up from 0 to target
    - Old replicas: `source - floor(step * source / totalSteps)` — scales down from source to 0
-3. **Two-dimensional coordination** keeps sides in sync:
-   - Scale-up uses `min(prefillStep, decodeStep)` — both sides progress together
-   - Scale-down uses `max(prefillStep, decodeStep)` — both sides drain together
+3. **Two-dimensional coordination** keeps phases in sync:
+   - Scale-up uses `min(prefillStep, decodeStep)` — both phases progress together
+   - Scale-down uses `max(prefillStep, decodeStep)` — both phases drain together
 4. **Decoupled steps**: each reconciliation changes EITHER old OR new replicas, not both
 
 **Key properties:**
 
 - **Ratio preservation**: A 3P6D deployment stays approximately 1:2 throughout the rollout
 - **Scale-up before scale-down**: New replicas are created before old ones are removed (ensures capacity)
-- **Per-side surge constraints**: Respects `maxSurge` and `maxUnavailable` independently per side
-- **Coordinated drain**: If either side reaches 0 replicas, both sides are forced to 0 (prevents orphaned single-side workloads)
+- **Per-phase surge constraints**: Respects `maxSurge` and `maxUnavailable` independently per phase
+- **Coordinated drain**: If either phase reaches 0 replicas, both phases are forced to 0 (prevents orphaned single-phase workloads)
 - **Stability check**: Waits for `replicas == readyReplicas` before proceeding to next step
 
 Visualize the rollout plan with the `plan-steps` CLI:
@@ -67,7 +67,7 @@ Config: prefill(surge=1, unavail=0), decode(surge=1, unavail=0)
 
 ### Service Orchestration
 
-Services are automatically created for each side when **both** prefill and decode are ready. This ensures traffic only flows to fully operational deployments.
+Services are automatically created for each phase when **both** prefill and decode are ready. This ensures traffic only flows to fully operational deployments.
 
 ## Installation
 
@@ -169,11 +169,11 @@ See [`config/samples/`](config/samples/) for more examples.
 
 | Field | Description |
 |-------|-------------|
-| `spec.prefill` | Configuration for prefill side |
-| `spec.decode` | Configuration for decode side |
-| `spec.{side}.replicas` | Number of leader-worker groups |
-| `spec.{side}.leaderWorkerTemplate` | Pod template (same as LWS) |
-| `spec.{side}.rolloutStrategy` | Rolling update configuration |
+| `spec.prefill` | Configuration for prefill phase |
+| `spec.decode` | Configuration for decode phase |
+| `spec.{phase}.replicas` | Number of leader-worker groups |
+| `spec.{phase}.leaderWorkerTemplate` | Pod template (same as LWS) |
+| `spec.{phase}.rolloutStrategy` | Rolling update configuration |
 
 ### Labels and Revision Hash
 
@@ -182,13 +182,13 @@ The operator applies these labels to managed resources:
 | Label | Description |
 |-------|-------------|
 | `disaggregatedset.x-k8s.io/name` | DisaggregatedSet name |
-| `disaggregatedset.x-k8s.io/side` | `prefill` or `decode` |
+| `disaggregatedset.x-k8s.io/phase` | `prefill` or `decode` |
 | `disaggregatedset.x-k8s.io/revision` | Revision hash for rollout tracking |
 
 **Revision hash**: The revision is a truncated SHA256 hash computed from **both** the prefill and decode `leaderWorkerTemplate` fields (serialized as JSON). This means:
 - Changing either prefill OR decode template triggers a new revision
-- Both sides always roll out together with the same revision
-- LeaderWorkerSets are named `{name}-{revision}-{side}` (e.g., `my-llm-a1b2c3d4-prefill`)
+- Both phases always roll out together with the same revision
+- LeaderWorkerSets are named `{name}-{revision}-{phase}` (e.g., `my-llm-a1b2c3d4-prefill`)
 
 ## Architecture
 
@@ -207,9 +207,9 @@ DisaggregatedSet
 
 The operator:
 1. Computes a revision hash from both pod templates (SHA256 of JSON-serialized leaderWorkerTemplates)
-2. Creates/updates LeaderWorkerSets for each side
+2. Creates/updates LeaderWorkerSets for each phase
 3. Coordinates rolling updates using the two-dimensional linear interpolation algorithm
-4. Creates Services when both sides reach ready state
+4. Creates Services when both phases reach ready state
 5. Cleans up old resources when fully drained
 
 ## Development

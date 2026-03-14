@@ -40,7 +40,7 @@ spec:
             description: spec defines the desired state of DisaggregatedSet
             properties:
               decode:
-                description: Decode configuration for the disaggregated deployment
+                description: Decode defines the configuration for the decode phase
                 properties:
                   leaderWorkerTemplate:
                     description: LeaderWorkerTemplate defines the template for leader/worker
@@ -17825,7 +17825,7 @@ spec:
                 - leaderWorkerTemplate
                 type: object
               prefill:
-                description: Prefill configuration for the disaggregated deployment
+                description: Prefill defines the configuration for the prefill phase
                 properties:
                   leaderWorkerTemplate:
                     description: LeaderWorkerTemplate defines the template for leader/worker
@@ -35614,7 +35614,8 @@ spec:
             - prefill
             type: object
             x-kubernetes-validations:
-            - message: replicas must be zero for both sides or non-zero for both sides
+            - message: replicas must be zero for both phases or non-zero for both
+                phases
               rule: (self.prefill.replicas == 0 && self.decode.replicas == 0) || (self.prefill.replicas
                 > 0 && self.decode.replicas > 0)
           status:
