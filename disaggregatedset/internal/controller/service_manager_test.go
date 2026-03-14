@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -36,63 +35,8 @@ func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
 
-	t.Run("no service created when ServiceTemplate is nil", func(t *testing.T) {
-		deployment := &disaggv1alpha1.DisaggregatedSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-deploy",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-			Spec: disaggv1alpha1.DisaggregatedSetSpec{
-				Prefill: &disaggv1alpha1.DisaggSideConfig{
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						WorkerTemplate: corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
-							},
-						},
-					},
-					// ServiceTemplate is nil
-				},
-				Decode: &disaggv1alpha1.DisaggSideConfig{
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						WorkerTemplate: corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
-							},
-						},
-					},
-					// ServiceTemplate is nil
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		// Both sides ready
-		groupedWorkloads := GroupedWorkloads{
-			{
-				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 2},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 2},
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
-		require.NoError(t, err)
-
-		// Verify no services created
-		serviceList := &corev1.ServiceList{}
-		err = fakeClient.List(ctx, serviceList)
-		require.NoError(t, err)
-		assert.Empty(t, serviceList.Items, "no services should be created when ServiceTemplate is nil")
-	})
-
 	t.Run("no service created when only one side is ready", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
+		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -119,7 +63,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("services created when both sides have >= 1 ready replica", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
+		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -138,7 +82,7 @@ func TestServiceManager(t *testing.T) {
 		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
 		require.NoError(t, err)
 
-		// Verify services created
+		// Verify services created for both sides
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
 			Name:      GenerateServiceName(deployment.Name, SidePrefill, "abc12345"),
@@ -154,8 +98,68 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err, "decode service should exist")
 	})
 
-	t.Run("service has correct name format", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("my-app", "default")
+	t.Run("service is headless with clusterIP None", func(t *testing.T) {
+		deployment := createTestDeployment("test-deploy", "default")
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
+		serviceManager := NewServiceManager(fakeClient, scheme)
+
+		groupedWorkloads := GroupedWorkloads{
+			{
+				Revision: "abc12345",
+				Sides: map[string]WorkloadInfo{
+					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				},
+			},
+		}
+
+		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		require.NoError(t, err)
+
+		prefillService := &corev1.Service{}
+		err = fakeClient.Get(ctx, types.NamespacedName{
+			Name:      GenerateServiceName(deployment.Name, SidePrefill, "abc12345"),
+			Namespace: deployment.Namespace,
+		}, prefillService)
+		require.NoError(t, err)
+
+		// Verify headless service
+		assert.Equal(t, corev1.ClusterIPNone, prefillService.Spec.ClusterIP, "service should be headless (clusterIP: None)")
+	})
+
+	t.Run("service is portless with no ports defined", func(t *testing.T) {
+		deployment := createTestDeployment("test-deploy", "default")
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
+		serviceManager := NewServiceManager(fakeClient, scheme)
+
+		groupedWorkloads := GroupedWorkloads{
+			{
+				Revision: "abc12345",
+				Sides: map[string]WorkloadInfo{
+					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
+					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
+				},
+			},
+		}
+
+		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		require.NoError(t, err)
+
+		decodeService := &corev1.Service{}
+		err = fakeClient.Get(ctx, types.NamespacedName{
+			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
+			Namespace: deployment.Namespace,
+		}, decodeService)
+		require.NoError(t, err)
+
+		// Verify portless service
+		assert.Empty(t, decodeService.Spec.Ports, "service should be portless (no ports)")
+	})
+
+	t.Run("service name uses prv prefix", func(t *testing.T) {
+		deployment := createTestDeployment("my-app", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -173,9 +177,9 @@ func TestServiceManager(t *testing.T) {
 		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "ef53f2d7")
 		require.NoError(t, err)
 
-		// Check expected service names
-		expectedPrefillName := "my-app-ef53f2d7-prefill-svc"
-		expectedDecodeName := "my-app-ef53f2d7-decode-svc"
+		// Check expected service names with prv suffix
+		expectedPrefillName := "my-app-ef53f2d7-prefill-prv"
+		expectedDecodeName := "my-app-ef53f2d7-decode-prv"
 
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedPrefillName, Namespace: "default"}, prefillService)
@@ -186,14 +190,8 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err, "service should have correct name: %s", expectedDecodeName)
 	})
 
-	t.Run("auto-populated labels are present and cannot be overridden", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
-		// Add user labels that try to override auto-populated ones
-		deployment.Spec.Decode.ServiceTemplate.Labels = map[string]string{
-			"custom-label":  "custom-value",
-			LabelDisaggName: "should-be-overridden",
-			LabelRevision:   "should-be-overridden",
-		}
+	t.Run("standard labels are applied", func(t *testing.T) {
+		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -218,16 +216,14 @@ func TestServiceManager(t *testing.T) {
 		}, decodeService)
 		require.NoError(t, err)
 
-		// Verify auto-populated labels take precedence
-		assert.Equal(t, "test-deploy", decodeService.Labels[LabelDisaggName], "auto-populated label should override user label")
-		assert.Equal(t, "abc12345", decodeService.Labels[LabelRevision], "auto-populated label should override user label")
-		assert.Equal(t, SideDecode, decodeService.Labels[LabelDisaggSide], "auto-populated label should be present")
-		// Verify user label is still present
-		assert.Equal(t, "custom-value", decodeService.Labels["custom-label"], "user labels should be preserved")
+		// Verify standard labels are present
+		assert.Equal(t, "test-deploy", decodeService.Labels[LabelDisaggName], "name label should be set")
+		assert.Equal(t, "abc12345", decodeService.Labels[LabelRevision], "revision label should be set")
+		assert.Equal(t, SideDecode, decodeService.Labels[LabelDisaggSide], "side label should be set")
 	})
 
-	t.Run("selector auto-populated by default", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
+	t.Run("selector matches pod labels", func(t *testing.T) {
+		deployment := createTestDeployment("test-deploy", "default")
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -252,50 +248,14 @@ func TestServiceManager(t *testing.T) {
 		}, decodeService)
 		require.NoError(t, err)
 
-		// Verify selector is auto-populated
+		// Verify selector matches expected pod labels
 		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[LabelDisaggName])
 		assert.Equal(t, "abc12345", decodeService.Spec.Selector[LabelRevision])
 		assert.Equal(t, SideDecode, decodeService.Spec.Selector[LabelDisaggSide])
 	})
 
-	t.Run("selector not auto-populated when AutoPopulateSelector is false", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
-		autoPopulate := false
-		deployment.Spec.Decode.ServiceTemplate.AutoPopulateSelector = &autoPopulate
-		deployment.Spec.Decode.ServiceTemplate.Spec.Selector = map[string]string{
-			"custom-selector": "custom-value",
-		}
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		groupedWorkloads := GroupedWorkloads{
-			{
-				Revision: "abc12345",
-				Sides: map[string]WorkloadInfo{
-					SidePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
-					SideDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
-		require.NoError(t, err)
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "abc12345"),
-			Namespace: deployment.Namespace,
-		}, decodeService)
-		require.NoError(t, err)
-
-		// Verify selector is NOT auto-populated, uses user-provided
-		assert.Equal(t, "custom-value", decodeService.Spec.Selector["custom-selector"])
-		assert.Empty(t, decodeService.Spec.Selector[LabelDisaggName], "auto-populated selector should not be present")
-	})
-
-	t.Run("old services deleted when new revision becomes ready", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
+	t.Run("old services deleted when revision is drained", func(t *testing.T) {
+		deployment := createTestDeployment("test-deploy", "default")
 
 		// Create an old service
 		oldService := &corev1.Service{
@@ -309,14 +269,14 @@ func TestServiceManager(t *testing.T) {
 				},
 			},
 			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{{Port: 80}},
+				ClusterIP: corev1.ClusterIPNone,
 			},
 		}
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, oldService).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// New revision is ready
+		// New revision is ready, old is drained
 		groupedWorkloads := GroupedWorkloads{
 			{
 				Revision: "new12345",
@@ -348,7 +308,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("no flip-flop when multiple revisions are ready during rolling update", func(t *testing.T) {
-		deployment := createDeploymentWithServiceTemplate("test-deploy", "default")
+		deployment := createTestDeployment("test-deploy", "default")
 
 		// Create services for old revision (simulating existing state)
 		oldPrefillService := &corev1.Service{
@@ -362,7 +322,7 @@ func TestServiceManager(t *testing.T) {
 				},
 			},
 			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{{Port: 80}},
+				ClusterIP: corev1.ClusterIPNone,
 			},
 		}
 		oldDecodeService := &corev1.Service{
@@ -376,7 +336,7 @@ func TestServiceManager(t *testing.T) {
 				},
 			},
 			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{{Port: 80}},
+				ClusterIP: corev1.ClusterIPNone,
 			},
 		}
 
@@ -401,10 +361,10 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		// Target revision is the new one (what the spec says we're rolling to)
+		// Target revision is the new one
 		targetRevision := "new12345"
 
-		// First reconcile - new services created, but OLD services kept (both still ready)
+		// First reconcile - new services created, old services kept (both still ready)
 		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, targetRevision)
 		require.NoError(t, err)
 
@@ -416,51 +376,14 @@ func TestServiceManager(t *testing.T) {
 		}, newPrefillService)
 		require.NoError(t, err, "new prefill service should exist")
 
-		newDecodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "new12345"),
-			Namespace: deployment.Namespace,
-		}, newDecodeService)
-		require.NoError(t, err, "new decode service should exist")
-
-		// Old services should STILL exist (both hashes are ready during rolling update)
+		// Old services should STILL exist (both revisions are ready during rolling update)
 		err = fakeClient.Get(ctx, types.NamespacedName{
 			Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		require.NoError(t, err, "old prefill service should still exist during rolling update")
 
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
-			Namespace: deployment.Namespace,
-		}, &corev1.Service{})
-		require.NoError(t, err, "old decode service should still exist during rolling update")
-
-		// Second reconcile - should be idempotent, no flip-flop
-		err = serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, targetRevision)
-		require.NoError(t, err)
-
-		// Verify new services still exist (not deleted and recreated)
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "new12345"),
-			Namespace: deployment.Namespace,
-		}, newPrefillService)
-		require.NoError(t, err, "new prefill service should still exist after second reconcile")
-
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SideDecode, "new12345"),
-			Namespace: deployment.Namespace,
-		}, newDecodeService)
-		require.NoError(t, err, "new decode service should still exist after second reconcile")
-
-		// Old services should STILL exist (both hashes are still ready)
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
-			Namespace: deployment.Namespace,
-		}, &corev1.Service{})
-		require.NoError(t, err, "old prefill service should still exist after second reconcile")
-
-		// Now simulate old revision being fully drained (0 ready replicas)
+		// Now simulate old revision being fully drained
 		drainedWorkloads := GroupedWorkloads{
 			{
 				Revision: "old12345",
@@ -478,27 +401,59 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		// Third reconcile - old revision is drained, services should be deleted
+		// Reconcile after drain - old services should be deleted
 		err = serviceManager.ReconcileServices(ctx, deployment, drainedWorkloads, targetRevision)
 		require.NoError(t, err)
 
-		// Old services should now be deleted (old revision is drained)
+		// Old services should now be deleted
 		err = fakeClient.Get(ctx, types.NamespacedName{
 			Name:      GenerateServiceName(deployment.Name, SidePrefill, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
-		assert.Error(t, err, "old prefill service should be deleted after old hash is drained")
+		assert.Error(t, err, "old prefill service should be deleted after drain")
 
 		err = fakeClient.Get(ctx, types.NamespacedName{
 			Name:      GenerateServiceName(deployment.Name, SideDecode, "old12345"),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
-		assert.Error(t, err, "old decode service should be deleted after old hash is drained")
+		assert.Error(t, err, "old decode service should be deleted after drain")
 	})
 }
 
-// createDeploymentWithServiceTemplate creates a test deployment with ServiceTemplate configured
-func createDeploymentWithServiceTemplate(name, namespace string) *disaggv1alpha1.DisaggregatedSet {
+func TestGenerateServiceName(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseName string
+		side     string
+		revision string
+		expected string
+	}{
+		{
+			name:     "prefill service",
+			baseName: "my-app",
+			side:     SidePrefill,
+			revision: "abc12345",
+			expected: "my-app-abc12345-prefill-prv",
+		},
+		{
+			name:     "decode service",
+			baseName: "my-app",
+			side:     SideDecode,
+			revision: "def67890",
+			expected: "my-app-def67890-decode-prv",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GenerateServiceName(tt.baseName, tt.side, tt.revision)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// createTestDeployment creates a test deployment without ServiceTemplate
+func createTestDeployment(name, namespace string) *disaggv1alpha1.DisaggregatedSet {
 	return &disaggv1alpha1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -514,16 +469,6 @@ func createDeploymentWithServiceTemplate(name, namespace string) *disaggv1alpha1
 						},
 					},
 				},
-				ServiceTemplate: &disaggv1alpha1.ServiceTemplate{
-					Spec: corev1.ServiceSpec{
-						Type: corev1.ServiceTypeClusterIP,
-						Ports: []corev1.ServicePort{{
-							Port:       80,
-							TargetPort: intstr.FromInt(8080),
-							Protocol:   corev1.ProtocolTCP,
-						}},
-					},
-				},
 			},
 			Decode: &disaggv1alpha1.DisaggSideConfig{
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
@@ -531,16 +476,6 @@ func createDeploymentWithServiceTemplate(name, namespace string) *disaggv1alpha1
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
 						},
-					},
-				},
-				ServiceTemplate: &disaggv1alpha1.ServiceTemplate{
-					Spec: corev1.ServiceSpec{
-						Type: corev1.ServiceTypeClusterIP,
-						Ports: []corev1.ServicePort{{
-							Port:       80,
-							TargetPort: intstr.FromInt(8080),
-							Protocol:   corev1.ProtocolTCP,
-						}},
 					},
 				},
 			},

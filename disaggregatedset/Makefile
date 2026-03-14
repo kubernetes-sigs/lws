@@ -180,7 +180,7 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 
 .PHONY: helm
 helm: manifests kustomize helmify ## Generate Helm chart from kustomize output using helmify.
-	"$(KUSTOMIZE)" build config/default | "$(HELMIFY)" --crd-dir charts/disaggdeployment
+	"$(KUSTOMIZE)" build config/default | "$(HELMIFY)" --crd-dir charts/disaggregatedset
 
 .PHONY: artifacts
 artifacts: manifests kustomize ## Generate release artifacts (manifests.yaml).

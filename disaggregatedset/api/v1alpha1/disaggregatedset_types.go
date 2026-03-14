@@ -17,54 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// ServiceTemplateMetadata defines metadata (labels and annotations) for the Service.
-type ServiceTemplateMetadata struct {
-	// Labels to add to the Service. These are merged with the auto-populated
-	// labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
-	// User-provided labels cannot override auto-populated labels.
-	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
-
-	// Annotations to add to the Service.
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
-
-// ServiceTemplate defines the template for creating a Service alongside the LWS.
-// Services are only created when both prefill and decode sides are ready.
-type ServiceTemplate struct {
-	// Spec is the Service specification.
-	// The selector will be auto-populated unless AutoPopulateSelector is set to false.
-	// +required
-	Spec corev1.ServiceSpec `json:"spec"`
-
-	// Metadata specifies labels and annotations for the Service.
-	// Labels from metadata.labels take precedence over the flat labels field.
-	// +optional
-	Metadata *ServiceTemplateMetadata `json:"metadata,omitempty"`
-
-	// Labels to add to the Service. These are merged with the auto-populated
-	// labels (disaggregatedset.x-k8s.io/name, disaggregatedset.x-k8s.io/revision, disaggregatedset.x-k8s.io/side).
-	// User-provided labels cannot override auto-populated labels.
-	// Deprecated: Use metadata.labels instead. This field is kept for backward compatibility.
-	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
-
-	// AutoPopulateSelector controls whether the selector is auto-populated
-	// with disaggregatedset.x-k8s.io labels. Defaults to true.
-	// Set to false if you want to manage the selector manually.
-	// +kubebuilder:default=true
-	// +optional
-	AutoPopulateSelector *bool `json:"autoPopulateSelector,omitempty"`
-}
 
 // RolloutStrategy defines the rolling update parameters for a side.
 type RolloutStrategy struct {
@@ -88,8 +46,7 @@ type RolloutStrategy struct {
 }
 
 // DisaggSideConfig defines the configuration for the prefill/decode side.
-// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws and adds
-// disagg-specific fields like ServiceTemplate.
+// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
 type DisaggSideConfig struct {
 	// Replicas is the number of leader-worker groups.
 	// +kubebuilder:validation:Minimum=0
@@ -113,11 +70,6 @@ type DisaggSideConfig struct {
 	// NetworkConfig defines the network configuration of the group.
 	// +optional
 	NetworkConfig *leaderworkerset.NetworkConfig `json:"networkConfig,omitempty"`
-
-	// ServiceTemplate defines an optional Service to create alongside the LWS.
-	// Services are only created when both prefill and decode sides are ready.
-	// +optional
-	ServiceTemplate *ServiceTemplate `json:"serviceTemplate,omitempty"`
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet

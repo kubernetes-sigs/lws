@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +35,7 @@ import (
 // ServiceManager manages Service resources for DisaggregatedSet.
 // It coordinates Service creation based on cross-side readiness:
 // Services are only created when both prefill and decode sides have at least 1 ready replica.
+// Services are headless (clusterIP: None) and portless to enable EndpointSlice-based discovery.
 type ServiceManager struct {
 	client client.Client
 	scheme *runtime.Scheme
@@ -50,7 +50,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 }
 
 // ReconcileServices reconciles Services for a DisaggregatedSet.
-// It creates Services when both sides are ready and cleans up old Services.
+// It creates headless portless Services when both sides are ready and cleans up old Services.
 // The targetRevision parameter is the current revision from the deployment spec.
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
@@ -93,13 +93,10 @@ func (manager *ServiceManager) ReconcileServices(
 		return nil
 	}
 
-	// Create/ensure Services for the target revision (only for sides with ServiceTemplate)
-	sideConfigs := GetSideConfigs(deployment)
-	for sideName, config := range sideConfigs {
-		if config.ServiceTemplate == nil {
-			continue
-		}
-		if err := manager.ensureService(ctx, deployment, sideName, targetRevision, config.ServiceTemplate); err != nil {
+	// Create/ensure headless portless Services for both sides
+	sides := []string{SidePrefill, SideDecode}
+	for _, sideName := range sides {
+		if err := manager.ensureService(ctx, deployment, sideName, targetRevision); err != nil {
 			return fmt.Errorf("failed to ensure service for %s: %w", sideName, err)
 		}
 	}
@@ -114,17 +111,16 @@ func (manager *ServiceManager) ReconcileServices(
 	return nil
 }
 
-// ensureService creates or updates a Service for a specific side and revision.
+// ensureService creates a headless portless Service for a specific side and revision.
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
 	deployment *disaggv1alpha1.DisaggregatedSet,
 	sideName string,
 	revision string,
-	serviceTemplate *disaggv1alpha1.ServiceTemplate,
 ) error {
 	log := logf.FromContext(ctx)
 
-	service := manager.buildService(deployment, sideName, revision, serviceTemplate)
+	service := manager.buildService(deployment, sideName, revision)
 
 	// Try to create the Service
 	if err := manager.client.Create(ctx, service); err != nil {
@@ -135,57 +131,37 @@ func (manager *ServiceManager) ensureService(
 		return fmt.Errorf("failed to create service %s: %w", service.Name, err)
 	}
 
-	log.Info("Created Service", "service", service.Name, "revision", revision, "side", sideName)
+	log.V(1).Info("Created Service", "service", service.Name, "revision", revision, "side", sideName)
 	return nil
 }
 
-// buildService constructs a Service object for a specific side and revision.
+// buildService constructs a headless portless Service object for a specific side and revision.
 func (manager *ServiceManager) buildService(
 	deployment *disaggv1alpha1.DisaggregatedSet,
 	sideName string,
 	revision string,
-	serviceTemplate *disaggv1alpha1.ServiceTemplate,
 ) *corev1.Service {
 	serviceName := GenerateServiceName(deployment.Name, sideName, revision)
 
-	// Build labels: start with flat labels, overlay metadata.labels, then auto-populated
-	labels := make(map[string]string)
-	// First, copy flat labels (deprecated, for backward compatibility)
-	maps.Copy(labels, serviceTemplate.Labels)
-	// Then, overlay metadata.labels (takes precedence over flat labels)
-	if serviceTemplate.Metadata != nil {
-		maps.Copy(labels, serviceTemplate.Metadata.Labels)
-	}
-	// Auto-populated labels take final precedence
-	labels[LabelDisaggName] = deployment.Name
-	labels[LabelDisaggSide] = sideName
-	labels[LabelRevision] = revision
-
-	// Build annotations from metadata
-	var annotations map[string]string
-	if serviceTemplate.Metadata != nil && len(serviceTemplate.Metadata.Annotations) > 0 {
-		annotations = maps.Clone(serviceTemplate.Metadata.Annotations)
+	// Standard labels only - no user configuration
+	labels := map[string]string{
+		LabelDisaggName: deployment.Name,
+		LabelDisaggSide: sideName,
+		LabelRevision:   revision,
 	}
 
-	// Build the Service spec
-	spec := serviceTemplate.Spec.DeepCopy()
-
-	// Auto-populate selector if enabled (default: true)
-	autoPopulate := serviceTemplate.AutoPopulateSelector == nil || *serviceTemplate.AutoPopulateSelector
-	if autoPopulate {
-		spec.Selector = map[string]string{
-			LabelDisaggName: deployment.Name,
-			LabelDisaggSide: sideName,
-			LabelRevision:   revision,
-		}
+	// Selector matches pod labels for this side and revision
+	selector := map[string]string{
+		LabelDisaggName: deployment.Name,
+		LabelDisaggSide: sideName,
+		LabelRevision:   revision,
 	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        serviceName,
-			Namespace:   deployment.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
+			Name:      serviceName,
+			Namespace: deployment.Namespace,
+			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggv1alpha1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
@@ -194,7 +170,11 @@ func (manager *ServiceManager) buildService(
 				Controller: ptr.To(true),
 			}},
 		},
-		Spec: *spec,
+		Spec: corev1.ServiceSpec{
+			ClusterIP: corev1.ClusterIPNone, // Headless
+			Selector:  selector,
+			// No ports - portless service for EndpointSlice discovery
+		},
 	}
 }
 
@@ -251,8 +231,8 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	return nil
 }
 
-// GenerateServiceName generates the name for a Service.
-// Format: {baseName}-{revision}-{side}-svc
+// GenerateServiceName generates the name for a private Service.
+// Format: {baseName}-{revision}-{side}-prv
 func GenerateServiceName(baseName, side, revision string) string {
-	return fmt.Sprintf("%s-%s-%s-svc", baseName, revision, side)
+	return fmt.Sprintf("%s-%s-%s-prv", baseName, revision, side)
 }

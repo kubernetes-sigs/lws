@@ -47,13 +47,11 @@ type disaggregatedSetConfig struct {
 
 // sideConfig holds configuration for a single side (prefill or decode)
 type sideConfig struct {
-	Replicas        int
-	Image           string
-	MaxSurge        int    // 0 means not set
-	MaxUnavailable  int    // 0 means not set (but 0 is also valid)
-	HasRollout      bool   // whether to include rollout strategy
-	HasService      bool   // whether to include service template
-	ServicePort     int
+	Replicas       int
+	Image          string
+	MaxSurge       int  // 0 means not set
+	MaxUnavailable int  // 0 means not set (but 0 is also valid)
+	HasRollout     bool // whether to include rollout strategy
 }
 
 // buildDisaggregatedSetYAML generates a DisaggregatedSet YAML from config
@@ -91,19 +89,6 @@ func buildSideYAML(sideName string, cfg sideConfig) string {
 		sb.WriteString("    rolloutStrategy:\n")
 		sb.WriteString(fmt.Sprintf("      maxSurge: %d\n", cfg.MaxSurge))
 		sb.WriteString(fmt.Sprintf("      maxUnavailable: %d\n", cfg.MaxUnavailable))
-	}
-
-	// Service template
-	if cfg.HasService {
-		port := cfg.ServicePort
-		if port == 0 {
-			port = 8080
-		}
-		sb.WriteString("    serviceTemplate:\n")
-		sb.WriteString("      spec:\n")
-		sb.WriteString("        ports:\n")
-		sb.WriteString(fmt.Sprintf("        - port: %d\n", port))
-		sb.WriteString(fmt.Sprintf("          targetPort: %d\n", port))
 	}
 
 	// Leader worker template
@@ -411,6 +396,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 						fmt.Sprintf("Revision %s has prefill replicas but no decode (orphaned)", revision))
 				}
 			}
+
+			// Note: Service and EndpointSlice verification is done in the dedicated
+			// "Service Creation" test. During rolling updates, services are managed
+			// by the controller and will be verified there.
 		})
 	})
 
@@ -465,32 +454,108 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			cleanupDeployment(deploymentName)
 		})
 
-		It("should create versioned services when ServiceTemplate is configured", func() {
-			By("creating DisaggregatedSet with ServiceTemplate")
+		It("should create headless portless private services automatically", func() {
+			By("creating DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1, HasService: true, ServicePort: 8080},
-				DecodeConfig:  sideConfig{Replicas: 1, HasService: true, ServicePort: 8080},
+				PrefillConfig: sideConfig{Replicas: 1},
+				DecodeConfig:  sideConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
-			By("verifying services are created for both sides")
+			By("waiting for pods to be ready")
 			Eventually(func(g Gomega) {
-				// Check prefill service
+				g.Expect(countRunningPods(deploymentName)).To(Equal(2))
+			}, 90*time.Second, time.Second).Should(Succeed())
+
+			By("verifying headless portless services are created for both sides")
+			Eventually(func(g Gomega) {
+				// Check prefill service exists and is headless
 				cmd := exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.clusterIP}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(Equal("None"), "prefill service should be headless")
+
+				// Check prefill service has no ports (portless)
+				cmd = exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.ports}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "prefill service should have no ports")
+
+				// Check decode service exists and is headless
+				cmd = exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.clusterIP}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(Equal("None"), "decode service should be headless")
+
+				// Check decode service has no ports (portless)
+				cmd = exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.ports}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "decode service should have no ports")
+			}, 60*time.Second, time.Second).Should(Succeed())
+
+			By("verifying EndpointSlice is created with Ready pod endpoints")
+			Eventually(func(g Gomega) {
+				// Check prefill EndpointSlice exists
+				cmd := exec.Command("kubectl", "get", "endpointslice", "-l",
 					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(len(utils.GetNonEmptyLines(output))).To(BeNumerically(">=", 1))
+				g.Expect(len(utils.GetNonEmptyLines(output))).To(BeNumerically(">=", 1), "prefill EndpointSlice should exist")
 
-				// Check decode service
-				cmd = exec.Command("kubectl", "get", "svc", "-l",
+				// Check prefill EndpointSlice has Ready endpoints
+				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].endpoints[*].conditions.ready}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("true"), "prefill EndpointSlice should have Ready endpoints")
+
+				// Check prefill EndpointSlice is portless (ports should be null or empty)
+				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].ports}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Portless services have ports: null (jsonpath returns "null") or ports: [] (jsonpath returns "")
+				trimmedOutput := strings.TrimSpace(output)
+				g.Expect(trimmedOutput == "" || trimmedOutput == "null").To(BeTrue(), "prefill EndpointSlice should be portless, got: %q", trimmedOutput)
+
+				// Check decode EndpointSlice exists
+				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
 					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(len(utils.GetNonEmptyLines(output))).To(BeNumerically(">=", 1))
+				g.Expect(len(utils.GetNonEmptyLines(output))).To(BeNumerically(">=", 1), "decode EndpointSlice should exist")
+
+				// Check decode EndpointSlice has Ready endpoints
+				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].endpoints[*].conditions.ready}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("true"), "decode EndpointSlice should have Ready endpoints")
+
+				// Check decode EndpointSlice is portless (ports should be null or empty)
+				cmd = exec.Command("kubectl", "get", "endpointslice", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=decode", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].ports}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Portless services have ports: null (jsonpath returns "null") or ports: [] (jsonpath returns "")
+				trimmedOutput = strings.TrimSpace(output)
+				g.Expect(trimmedOutput == "" || trimmedOutput == "null").To(BeTrue(), "decode EndpointSlice should be portless, got: %q", trimmedOutput)
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
 	})
@@ -502,7 +567,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			cleanupDeployment(deploymentName)
 		})
 
-		It("should propagate custom labels and annotations to LWS and Service", func() {
+		It("should propagate custom labels and annotations to LWS", func() {
 			By("creating DisaggregatedSet with custom labels and annotations")
 			yaml := `apiVersion: disaggregatedset.x-k8s.io/v1alpha1
 kind: DisaggregatedSet
@@ -526,16 +591,6 @@ spec:
           containers:
           - name: main
             image: registry.k8s.io/pause:3.9
-    serviceTemplate:
-      metadata:
-        labels:
-          service-label: prefill-svc
-        annotations:
-          service-annotation: prefill-svc-annotation
-      spec:
-        ports:
-        - port: 8080
-          targetPort: 8080
   decode:
     replicas: 1
     leaderWorkerTemplate:
@@ -550,16 +605,6 @@ spec:
           containers:
           - name: main
             image: registry.k8s.io/pause:3.9
-    serviceTemplate:
-      metadata:
-        labels:
-          service-label: decode-svc
-        annotations:
-          service-annotation: decode-svc-annotation
-      spec:
-        ports:
-        - port: 8080
-          targetPort: 8080
 `
 			Expect(applyYAML(yaml)).To(Succeed())
 
@@ -591,30 +636,18 @@ spec:
 				g.Expect(output).To(ContainSubstring("prometheus.io/scrape"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 
-			By("verifying Services have merged labels and user annotations")
+			By("verifying Services have standard labels only")
 			Eventually(func(g Gomega) {
-				// Check prefill service labels
+				// Check prefill service labels (only standard labels, no user-configurable ones)
 				cmd := exec.Command("kubectl", "get", "svc", "-l",
 					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
 					"-n", "default", "-o", "jsonpath={.items[0].metadata.labels}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				// Verify user labels are present
-				g.Expect(output).To(ContainSubstring("service-label"))
-				g.Expect(output).To(ContainSubstring("prefill-svc"))
-				// Verify auto-populated labels are present
+				// Verify standard labels are present
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/side"))
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/revision"))
-
-				// Check prefill service annotations
-				cmd = exec.Command("kubectl", "get", "svc", "-l",
-					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/side=prefill", deploymentName),
-					"-n", "default", "-o", "jsonpath={.items[0].metadata.annotations}")
-				output, err = utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("service-annotation"))
-				g.Expect(output).To(ContainSubstring("prefill-svc-annotation"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
 	})
@@ -626,20 +659,32 @@ spec:
 			By("creating DisaggregatedSet")
 			yaml := buildDisaggregatedSetYAML(disaggregatedSetConfig{
 				Name:          deploymentName,
-				PrefillConfig: sideConfig{Replicas: 1, HasService: true, ServicePort: 8080},
+				PrefillConfig: sideConfig{Replicas: 1},
 				DecodeConfig:  sideConfig{Replicas: 1},
 			})
 			Expect(applyYAML(yaml)).To(Succeed())
 
 			By("waiting for resources to be created")
 			Eventually(func(g Gomega) {
+				// Check LWS resources
 				cmd := exec.Command("kubectl", "get", "lws", "-l",
 					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
 					"-n", "default", "-o", "name")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(len(utils.GetNonEmptyLines(output))).To(Equal(2))
-			}, 60*time.Second, time.Second).Should(Succeed())
+
+				// Check pods are running (needed for service creation)
+				g.Expect(countRunningPods(deploymentName)).To(Equal(2))
+
+				// Check Services are created (automatic headless services)
+				cmd = exec.Command("kubectl", "get", "svc", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
+					"-n", "default", "-o", "name")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(len(utils.GetNonEmptyLines(output))).To(Equal(2))
+			}, 90*time.Second, time.Second).Should(Succeed())
 
 			By("deleting the DisaggregatedSet")
 			cmd := exec.Command("kubectl", "delete", "disaggregatedset", deploymentName, "-n", "default")

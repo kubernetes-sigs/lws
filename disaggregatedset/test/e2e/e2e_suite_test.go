@@ -126,4 +126,14 @@ var _ = AfterSuite(func() {
 		cmd = exec.Command("kubectl", "config", "use-context", originalKubeContext)
 		_, _ = utils.Run(cmd)
 	}
+
+	// Delete the Kind cluster to ensure a clean state for the next run
+	// This prevents image caching issues where old images persist across test runs
+	By("deleting Kind cluster")
+	kindBin := os.Getenv("KIND")
+	if kindBin == "" {
+		kindBin = "kind"
+	}
+	cmd = exec.Command(kindBin, "delete", "cluster", "--name", kindCluster)
+	_, _ = utils.Run(cmd)
 })

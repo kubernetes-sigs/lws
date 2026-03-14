@@ -136,11 +136,6 @@ spec:
     rolloutStrategy:
       maxSurge: 1
       maxUnavailable: 0
-    serviceTemplate:
-      spec:
-        ports:
-        - port: 8080
-          targetPort: 8080
     leaderWorkerTemplate:
       size: 1
       workerTemplate:
@@ -156,11 +151,6 @@ spec:
     rolloutStrategy:
       maxSurge: 1
       maxUnavailable: 0
-    serviceTemplate:
-      spec:
-        ports:
-        - port: 8080
-          targetPort: 8080
     leaderWorkerTemplate:
       size: 1
       workerTemplate:
@@ -184,7 +174,6 @@ See [`config/samples/`](config/samples/) for more examples.
 | `spec.{side}.replicas` | Number of leader-worker groups |
 | `spec.{side}.leaderWorkerTemplate` | Pod template (same as LWS) |
 | `spec.{side}.rolloutStrategy` | Rolling update configuration |
-| `spec.{side}.serviceTemplate` | Optional Service to create when ready |
 
 ### Labels and Revision Hash
 
