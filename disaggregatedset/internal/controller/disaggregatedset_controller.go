@@ -226,8 +226,6 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 		return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 	}
 
-	phaseNames := GetPhaseNames(disaggregatedSet)
-
 	revisionReplicas := make(map[string]map[string]int)
 	for _, workload := range workloads { // Group by revision
 		if workload.Revision == revision {
@@ -240,10 +238,12 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 	}
 
 	for oldRevision, phases := range revisionReplicas {
-		// Check if all phases are at 0 replicas
+		// Check if all phases belonging to this old revision are at 0 replicas.
+		// We check the actual phases that exist for this revision, not the current spec phases,
+		// because phases may have been added or removed since this revision was created.
 		allDrained := true
-		for _, phaseName := range phaseNames {
-			if phases[phaseName] != 0 {
+		for _, replicas := range phases {
+			if replicas != 0 {
 				allDrained = false
 				break
 			}
@@ -252,8 +252,8 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 			continue
 		}
 
-		// Delete all phase workloads for this revision
-		for _, phaseName := range phaseNames {
+		// Delete all phase workloads for this revision (all phases that exist, not just spec phases)
+		for phaseName := range phases {
 			workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldRevision)
 			log.Info("Deleting drained workload", "name", workloadName)
 			if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {

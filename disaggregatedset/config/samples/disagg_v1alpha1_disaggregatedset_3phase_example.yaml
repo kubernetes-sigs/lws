@@ -1,0 +1,83 @@
+apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+kind: DisaggregatedSet
+metadata:
+  labels:
+    app.kubernetes.io/name: disaggregatedset
+    app.kubernetes.io/managed-by: kustomize
+  name: disaggdeployment-3phase-example
+spec:
+  phases:
+  # Prefill phase - initial token generation
+  - name: prefill
+    replicas: 4
+    rolloutStrategy:
+       maxSurge: 1
+       maxUnavailable: 0
+    leaderWorkerTemplate:
+      size: 2
+      workerTemplate:
+        metadata:
+          labels:
+            app: prefill
+            component: disaggregation
+        spec:
+          containers:
+          - name: model
+            image: registry.k8s.io/pause:3.9
+            resources:
+              limits:
+                cpu: "100m"
+                memory: "64Mi"
+              requests:
+                cpu: "100m"
+                memory: "64Mi"
+
+  # Decode phase - token-by-token generation
+  - name: decode
+    replicas: 2
+    rolloutStrategy:
+       maxSurge: 1
+       maxUnavailable: 0
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        metadata:
+          labels:
+            app: decode
+            component: disaggregation
+        spec:
+          containers:
+          - name: model
+            image: registry.k8s.io/pause:3.9
+            resources:
+              limits:
+                cpu: "100m"
+                memory: "64Mi"
+              requests:
+                cpu: "100m"
+                memory: "64Mi"
+
+  # Encode phase - context encoding
+  - name: encode
+    replicas: 2
+    rolloutStrategy:
+       maxSurge: 1
+       maxUnavailable: 0
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        metadata:
+          labels:
+            app: encode
+            component: disaggregation
+        spec:
+          containers:
+          - name: model
+            image: registry.k8s.io/pause:3.9
+            resources:
+              limits:
+                cpu: "100m"
+                memory: "64Mi"
+              requests:
+                cpu: "100m"
+                memory: "64Mi"

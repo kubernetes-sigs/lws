@@ -31,7 +31,6 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// Event reason constants for rolling update lifecycle
 const (
 	EventReasonRollingUpdateStarted   = "RollingUpdateStarted"
 	EventReasonRollingUpdateCompleted = "RollingUpdateCompleted"
@@ -39,268 +38,17 @@ const (
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonWorkloadDeleted        = "WorkloadDeleted"
+	EventReasonPhasePolicyViolation   = "PhasePolicyViolation"
 )
 
-// ensureNewWorkloadExists creates the new workload for a phase if it doesn't exist.
-// Returns true if a workload was created, false if it already exists.
-func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
-	ctx context.Context,
-	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
-	revision string,
-	phase string,
-	config *disaggv1alpha1.DisaggregatedPhaseSpec,
-	initialReplicas int,
-) (bool, error) {
-	workloadName := GenerateName(disaggregatedSet.Name, phase, revision)
-	existing, err := executor.WorkloadManager.Get(ctx, disaggregatedSet.Namespace, workloadName)
-	if err != nil {
-		return false, fmt.Errorf("failed to get workload %s: %w", workloadName, err)
-	}
-	if existing != nil {
-		return false, nil // Already exists
-	}
-
-	labels := GenerateLabels(disaggregatedSet.Name, phase, revision)
-	if err := executor.WorkloadManager.Create(ctx, CreateParams{
-		DisaggregatedSet: disaggregatedSet,
-		Phase:            phase,
-		Config:           config,
-		Revision:         revision,
-		Labels:           labels,
-		Replicas:         initialReplicas,
-	}); err != nil {
-		return false, fmt.Errorf("failed to create workload %s: %w", workloadName, err)
-	}
-	return true, nil
+// RollingUpdateExecutor handles rolling update plan execution
+type RollingUpdateExecutor struct {
+	Client          client.Client
+	Recorder        record.EventRecorder
+	WorkloadManager *LeaderWorkerSetManager
 }
 
-// scaleDownOldWorkloads scales down old workloads using a budget mechanism.
-// It processes workloads oldest-first (by CreationTimestamp).
-// If a workload reaches 0 on one phase, it forces all phases to 0 (coordinated drain).
-// This handles the case where a new rolling update is triggered while one is already in progress,
-// ensuring we don't leave orphaned single-phase workloads.
-// phaseNames is the ordered list of phase names.
-// toScaleDown contains the number of replicas to scale down per phase (indexed by phase order).
-func scaleDownOldWorkloads(
-	ctx context.Context,
-	executor *RollingUpdateExecutor,
-	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
-	oldWorkloads GroupedWorkloads,
-	phaseNames []string,
-	toScaleDown []int,
-) error {
-	log := logf.FromContext(ctx)
-	sortedWorkloads := sortByOldestTimestamp(oldWorkloads, phaseNames)
-	numPhases := len(phaseNames)
-
-	for _, workload := range sortedWorkloads {
-		// Check if we're done
-		allZero := true
-		for i := 0; i < numPhases; i++ {
-			if toScaleDown[i] > 0 {
-				allZero = false
-				break
-			}
-		}
-		if allZero {
-			break
-		}
-
-		// Get current replicas and calculate drain amounts
-		current := make([]int, numPhases)
-		drain := make([]int, numPhases)
-		newReplicas := make([]int, numPhases)
-		for i, phaseName := range phaseNames {
-			current[i] = workload.Phases[phaseName].Replicas
-			drain[i] = min(toScaleDown[i], current[i])
-			newReplicas[i] = current[i] - drain[i]
-		}
-
-		// If any phase reaches 0, force all to 0 (coordinated drain)
-		anyZero := false
-		for i := 0; i < numPhases; i++ {
-			if newReplicas[i] == 0 {
-				anyZero = true
-				break
-			}
-		}
-		if anyZero {
-			for i := 0; i < numPhases; i++ {
-				toScaleDown[i] += newReplicas[i]
-				newReplicas[i] = 0
-			}
-		}
-
-		// Apply scale-down for each phase
-		for i, phaseName := range phaseNames {
-			if current[i] > newReplicas[i] {
-				workloadName := GenerateName(disaggregatedSet.Name, phaseName, workload.Revision)
-				log.Info("Scaling down old workload", "name", workloadName, "from", current[i], "to", newReplicas[i])
-				if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, newReplicas[i]); err != nil {
-					return fmt.Errorf("failed to scale %s: %w", workloadName, err)
-				}
-				executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingDown,
-					"Scaling down %s workload %s from %d to %d replicas", phaseName, workloadName, current[i], newReplicas[i])
-				toScaleDown[i] -= drain[i]
-			}
-		}
-	}
-
-	return nil
-}
-
-// scaleUpNewWorkload scales up the new workload to match the target replicas.
-// phaseNames is the ordered list of phase names.
-// target contains the target replica counts per phase (indexed by phase order).
-func scaleUpNewWorkload(
-	ctx context.Context,
-	executor *RollingUpdateExecutor,
-	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
-	newWorkload GroupedWorkload,
-	phaseNames []string,
-	target PhaseReplicaState,
-) error {
-	log := logf.FromContext(ctx)
-
-	for i, phaseName := range phaseNames {
-		current := newWorkload.Phases[phaseName].Replicas
-		if current < target[i] {
-			workloadName := GenerateName(disaggregatedSet.Name, phaseName, newWorkload.Revision)
-			log.Info("Scaling up new workload", "name", workloadName, "from", current, "to", target[i])
-			if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, target[i]); err != nil {
-				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
-			}
-			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingUp,
-				"Scaling up %s workload %s from %d to %d replicas", phaseName, workloadName, current, target[i])
-		}
-	}
-
-	return nil
-}
-
-// isWorkloadStable returns true if all phases have replicas == readyReplicas.
-// phaseNames is the ordered list of phase names.
-func isWorkloadStable(workload GroupedWorkload, phaseNames []string) bool {
-	for _, phaseName := range phaseNames {
-		phaseWorkload := workload.Phases[phaseName]
-		if phaseWorkload.Replicas != phaseWorkload.ReadyReplicas {
-			return false
-		}
-	}
-	return true
-}
-
-// sortByOldestTimestamp returns workloads sorted by CreationTimestamp (oldest first).
-// Uses the first phase's timestamp for sorting.
-func sortByOldestTimestamp(workloads GroupedWorkloads, phaseNames []string) GroupedWorkloads {
-	sorted := slices.Clone(workloads)
-	if len(phaseNames) == 0 {
-		return sorted
-	}
-	firstPhase := phaseNames[0]
-	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
-		return a.Phases[firstPhase].CreationTimestamp.Compare(b.Phases[firstPhase].CreationTimestamp)
-	})
-	return sorted
-}
-
-func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
-	ctx context.Context,
-	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
-	oldWorkloads GroupedWorkloads,
-	newWorkload GroupedWorkload,
-) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	phaseNames := GetPhaseNames(disaggregatedSet)
-
-	// Wait for new workload to be stable before computing next step.
-	// This ensures we're working with a consistent state.
-	if !isWorkloadStable(newWorkload, phaseNames) {
-		logArgs := []interface{}{}
-		for _, phaseName := range phaseNames {
-			logArgs = append(logArgs, phaseName+"Replicas", newWorkload.Phases[phaseName].Replicas)
-			logArgs = append(logArgs, phaseName+"Ready", newWorkload.Phases[phaseName].ReadyReplicas)
-		}
-		log.V(1).Info("Waiting for new workload to stabilize", logArgs...)
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-
-	// Build state slices indexed by phase order
-	numPhases := len(phaseNames)
-	source := make(PhaseReplicaState, numPhases)
-	currentOld := make(PhaseReplicaState, numPhases)
-	currentNew := make(PhaseReplicaState, numPhases)
-	targetNew := make(PhaseReplicaState, numPhases)
-	for i, phaseName := range phaseNames {
-		source[i] = oldWorkloads.GetTotalInitialReplicasPerPhase(phaseName)
-		currentOld[i] = oldWorkloads.GetTotalReplicasPerPhase(phaseName)
-		currentNew[i] = newWorkload.Phases[phaseName].Replicas
-		targetNew[i] = getReplicasOrDefault(disaggregatedSet.Spec.Phases[i].Replicas)
-	}
-	config := ExtractRollingUpdateConfig(disaggregatedSet)
-
-	// Compute the next step
-	nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
-	if nextStep == nil {
-		// Rolling update is complete
-		log.Info("Rolling update complete, no more steps needed")
-		executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
-			"Completed rolling update to revision %s", newWorkload.Revision)
-		return ctrl.Result{}, nil
-	}
-
-	logArgs := []interface{}{}
-	for i, phaseName := range phaseNames {
-		logArgs = append(logArgs, "past"+phaseName, nextStep.Past[i])
-		logArgs = append(logArgs, "new"+phaseName, nextStep.New[i])
-	}
-	log.Info("Next step computed", logArgs...)
-
-	// Invariant check: planner should never ask for more old replicas than exist
-	for i := 0; i < numPhases; i++ {
-		if nextStep.Past[i] > currentOld[i] {
-			return ctrl.Result{}, fmt.Errorf("invariant violation: step requests more old replicas than exist for phase %d (step: %d, current: %d)", i, nextStep.Past[i], currentOld[i])
-		}
-	}
-
-	// Scale up new workload first (ensures we never go below minimum capacity if we crash mid-operation)
-	needsScaleUp := false
-	for i := 0; i < numPhases; i++ {
-		if nextStep.New[i] > currentNew[i] {
-			needsScaleUp = true
-			break
-		}
-	}
-	if needsScaleUp {
-		if err := scaleUpNewWorkload(ctx, executor, disaggregatedSet, newWorkload, phaseNames, nextStep.New); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Scale down old workloads after new ones are scaled up and ready
-	needsScaleDown := false
-	reductions := make([]int, numPhases)
-	for i := 0; i < numPhases; i++ {
-		if nextStep.Past[i] < currentOld[i] {
-			needsScaleDown = true
-			reductions[i] = currentOld[i] - nextStep.Past[i]
-		}
-	}
-	if needsScaleDown {
-		if err := scaleDownOldWorkloads(ctx, executor, disaggregatedSet, oldWorkloads, phaseNames, reductions); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// ReconcileRollingUpdateNew is the new entry point for rolling updates.
-// It handles:
-// 1. Fetching and grouping workloads by revision
-// 2. Initializing annotations on old workloads when starting a new rolling update
-// 3. Creating new workloads if they don't exist
-// 4. Executing the rolling update logic
+// ReconcileRollingUpdateNew is the entry point for rolling updates.
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	ctx context.Context,
 	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
@@ -310,99 +58,450 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	phaseNames := GetPhaseNames(disaggregatedSet)
 	phaseConfigs := GetPhaseConfigs(disaggregatedSet)
 
-	// Get workloads
 	oldWorkloads, newWorkload, err := executor.WorkloadManager.GetGroupedWorkloads(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	// Check if we actually have old workloads (rolling update scenario)
 	if len(oldWorkloads) == 0 {
-		// No old workloads - this shouldn't happen if we're called, but handle gracefully
 		return ctrl.Result{}, nil
 	}
 
-	// If new workload doesn't exist, this is a fresh rolling update start
-	// Initialize annotations on old workloads to record the starting point
-	if newWorkload == nil {
-		log.Info("Initiating new rolling update", "revision", revision)
-		executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
-			"Started rolling update to revision %s", revision)
+	// Detect phase changes and enforce policy
+	changes := detectPhaseChanges(phaseNames, oldWorkloads)
+	if len(changes.Added) > 0 || len(changes.Removed) > 0 {
+		if getPhasePolicy(disaggregatedSet.Spec) == disaggv1alpha1.PhasePolicyStrict {
+			return ctrl.Result{}, executor.rejectPhaseChanges(disaggregatedSet, changes)
+		}
+		log.Info("Phase changes detected with Flexible policy", "added", changes.Added, "removed", changes.Removed)
+	}
 
-		// Set initial-replicas annotations on all old workloads
-		for _, oldGrouped := range oldWorkloads {
-			for phaseName, phaseWorkload := range oldGrouped.Phases {
-				workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldGrouped.Revision)
-				_, err := executor.WorkloadManager.SetInitialReplicas(
-					ctx,
-					disaggregatedSet.Namespace,
-					workloadName,
-					phaseWorkload.Replicas,
-				)
-				if err != nil {
-					log.Error(err, "Failed to set initial-replicas annotation", "workload", workloadName)
-					// Continue anyway - not critical for rolling update to proceed
+	// If new workload doesn't exist, initialize rolling update
+	if newWorkload == nil {
+		return executor.initRollingUpdate(ctx, disaggregatedSet, revision, phaseNames, phaseConfigs, oldWorkloads)
+	}
+
+	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldWorkloads, *newWorkload)
+}
+
+func (executor *RollingUpdateExecutor) initRollingUpdate(
+	ctx context.Context,
+	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
+	revision string,
+	phaseNames []string,
+	phaseConfigs map[string]*disaggv1alpha1.DisaggregatedPhaseSpec,
+	oldWorkloads GroupedWorkloads,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Initiating new rolling update", "revision", revision)
+	executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
+		"Started rolling update to revision %s", revision)
+
+	// Set initial-replicas annotations on all old workloads
+	for _, oldGrouped := range oldWorkloads {
+		for phaseName, phaseWorkload := range oldGrouped.Phases {
+			workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldGrouped.Revision)
+			if _, err := executor.WorkloadManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, workloadName, phaseWorkload.Replicas); err != nil {
+				log.Error(err, "Failed to set initial-replicas annotation", "workload", workloadName)
+			}
+		}
+	}
+
+	// Create new workloads with 0 replicas
+	for _, phaseName := range phaseNames {
+		created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, phaseName, phaseConfigs[phaseName], 0)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if created {
+			workloadName := GenerateName(disaggregatedSet.Name, phaseName, revision)
+			log.Info("Created new workload", "phase", phaseName, "revision", revision)
+			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonWorkloadCreated,
+				"Created %s workload %s", phaseName, workloadName)
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
+	ctx context.Context,
+	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
+	oldWorkloads GroupedWorkloads,
+	newWorkload GroupedWorkload,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	specPhaseNames := GetPhaseNames(disaggregatedSet)
+	specPhaseSet, oldPhaseSet := buildPhaseSets(specPhaseNames, oldWorkloads)
+
+	// allPhaseNames = spec phases + removed phases (for progressive drain)
+	allPhaseNames := append(slices.Clone(specPhaseNames), removedPhases(oldPhaseSet, specPhaseSet)...)
+
+	// Wait for new workload stability on spec phases
+	if !isWorkloadStable(newWorkload, specPhaseNames) {
+		log.V(1).Info("Waiting for new workload to stabilize")
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+
+	// Build planner state
+	source, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allPhaseNames, specPhaseSet, oldWorkloads, newWorkload)
+	config := extractRollingUpdateConfig(disaggregatedSet, allPhaseNames, specPhaseSet)
+
+	nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
+	if nextStep == nil {
+		log.Info("Rolling update complete")
+		executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
+			"Completed rolling update to revision %s", newWorkload.Revision)
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Next step computed", buildStepLogArgs(allPhaseNames, nextStep)...)
+
+	// Scale up new (spec phases only), then scale down old (all phases)
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newWorkload, allPhaseNames, specPhaseSet, currentNew, nextStep.New); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldWorkloads, allPhaseNames, currentOld, nextStep.Past); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// --- Helpers ---
+
+func buildPhaseSets(specPhaseNames []string, oldWorkloads GroupedWorkloads) (spec, old map[string]bool) {
+	spec = make(map[string]bool, len(specPhaseNames))
+	for _, name := range specPhaseNames {
+		spec[name] = true
+	}
+	old = make(map[string]bool)
+	for _, wl := range oldWorkloads {
+		for name := range wl.Phases {
+			old[name] = true
+		}
+	}
+	return spec, old
+}
+
+func removedPhases(oldPhaseSet, specPhaseSet map[string]bool) []string {
+	var removed []string
+	for phase := range oldPhaseSet {
+		if !specPhaseSet[phase] {
+			removed = append(removed, phase)
+		}
+	}
+	return removed
+}
+
+func buildPlannerState(
+	ds *disaggv1alpha1.DisaggregatedSet,
+	allPhaseNames []string,
+	specPhaseSet map[string]bool,
+	oldWorkloads GroupedWorkloads,
+	newWorkload GroupedWorkload,
+) (source, currentOld, currentNew, targetNew PhaseReplicaState) {
+	n := len(allPhaseNames)
+	source, currentOld, currentNew, targetNew = make(PhaseReplicaState, n), make(PhaseReplicaState, n), make(PhaseReplicaState, n), make(PhaseReplicaState, n)
+
+	for i, phaseName := range allPhaseNames {
+		source[i] = oldWorkloads.GetTotalInitialReplicasPerPhase(phaseName)
+		currentOld[i] = oldWorkloads.GetTotalReplicasPerPhase(phaseName)
+
+		if specPhaseSet[phaseName] {
+			currentNew[i] = newWorkload.Phases[phaseName].Replicas
+			targetNew[i] = getTargetReplicas(ds, phaseName)
+		}
+		// Removed phases: currentNew=0, targetNew=0 (zero values)
+	}
+	return
+}
+
+func getTargetReplicas(ds *disaggv1alpha1.DisaggregatedSet, phaseName string) int {
+	for _, p := range ds.Spec.Phases {
+		if p.Name == phaseName {
+			if p.Replicas == nil {
+				return 1
+			}
+			return int(*p.Replicas)
+		}
+	}
+	return 1
+}
+
+func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNames []string, specPhaseSet map[string]bool) RollingUpdateConfig {
+	config := DefaultRollingUpdateConfig(len(allPhaseNames))
+
+	specConfigs := make(map[string][2]int) // [maxSurge, maxUnavailable]
+	for _, phase := range ds.Spec.Phases {
+		surge, unavail := 1, 0
+		if phase.RolloutStrategy != nil {
+			if phase.RolloutStrategy.MaxSurge != nil {
+				surge = phase.RolloutStrategy.MaxSurge.IntValue()
+			}
+			if phase.RolloutStrategy.MaxUnavailable != nil {
+				unavail = phase.RolloutStrategy.MaxUnavailable.IntValue()
+			}
+		}
+		specConfigs[phase.Name] = [2]int{surge, unavail}
+	}
+
+	for i, name := range allPhaseNames {
+		if cfg, ok := specConfigs[name]; ok && specPhaseSet[name] {
+			config.MaxSurge[i], config.MaxUnavailable[i] = cfg[0], cfg[1]
+		}
+	}
+	return config
+}
+
+func buildStepLogArgs(phaseNames []string, step *UpdateStep) []interface{} {
+	args := make([]interface{}, 0, len(phaseNames)*4)
+	for i, name := range phaseNames {
+		args = append(args, "past"+name, step.Past[i], "new"+name, step.New[i])
+	}
+	return args
+}
+
+func isWorkloadStable(workload GroupedWorkload, phaseNames []string) bool {
+	for _, name := range phaseNames {
+		if w := workload.Phases[name]; w.Replicas != w.ReadyReplicas {
+			return false
+		}
+	}
+	return true
+}
+
+func sortByOldestTimestamp(workloads GroupedWorkloads, phaseNames []string) GroupedWorkloads {
+	if len(phaseNames) == 0 {
+		return workloads
+	}
+	sorted := slices.Clone(workloads)
+	firstPhase := phaseNames[0]
+	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
+		return a.Phases[firstPhase].CreationTimestamp.Compare(b.Phases[firstPhase].CreationTimestamp)
+	})
+	return sorted
+}
+
+// --- Scaling operations ---
+
+func (executor *RollingUpdateExecutor) scaleUpNew(
+	ctx context.Context,
+	ds *disaggv1alpha1.DisaggregatedSet,
+	newWorkload GroupedWorkload,
+	allPhaseNames []string,
+	specPhaseSet map[string]bool,
+	current, target PhaseReplicaState,
+) error {
+	log := logf.FromContext(ctx)
+	for i, name := range allPhaseNames {
+		if !specPhaseSet[name] || current[i] >= target[i] {
+			continue
+		}
+		workloadName := GenerateName(ds.Name, name, newWorkload.Revision)
+		log.Info("Scaling up", "workload", workloadName, "from", current[i], "to", target[i])
+		if err := executor.WorkloadManager.Scale(ctx, ds.Namespace, workloadName, target[i]); err != nil {
+			return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+		}
+		executor.Recorder.Eventf(ds, corev1.EventTypeNormal, EventReasonScalingUp,
+			"Scaling up %s workload %s from %d to %d replicas", name, workloadName, current[i], target[i])
+	}
+	return nil
+}
+
+func (executor *RollingUpdateExecutor) scaleDownOld(
+	ctx context.Context,
+	ds *disaggv1alpha1.DisaggregatedSet,
+	oldWorkloads GroupedWorkloads,
+	phaseNames []string,
+	current, target PhaseReplicaState,
+) error {
+	budget := make([]int, len(phaseNames))
+	for i := range phaseNames {
+		budget[i] = current[i] - target[i]
+	}
+
+	log := logf.FromContext(ctx)
+	for _, wl := range sortByOldestTimestamp(oldWorkloads, phaseNames) {
+		if allZero(budget) {
+			break
+		}
+
+		// Calculate planned drain and track which phases trigger coordinated drain
+		newReplicas := make(map[string]int)
+		plannedDrain := make(map[string]int)
+		triggersCoordinated := make(map[string]bool)
+
+		for i, name := range phaseNames {
+			info, exists := wl.Phases[name]
+			if !exists {
+				continue
+			}
+			drain := min(budget[i], info.Replicas)
+			plannedDrain[name] = drain
+			newReplicas[name] = info.Replicas - drain
+			if newReplicas[name] == 0 {
+				triggersCoordinated[name] = true
+			}
+		}
+
+		// Coordinated drain: if any phase reaches 0, force all to 0
+		anyTriggered := len(triggersCoordinated) > 0
+		if anyTriggered {
+			for _, name := range phaseNames {
+				if _, exists := wl.Phases[name]; exists {
+					newReplicas[name] = 0
 				}
 			}
 		}
 
-		// Create new workloads for all phases with 0 replicas.
-		// Starting at 0 allows the planner to handle the scale-up as part of the first step,
-		// which maintains consistency with the old code path and ensures proper step tracking.
-		for _, phaseName := range phaseNames {
-			config := phaseConfigs[phaseName]
-			created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, phaseName, config, 0)
-			if err != nil {
-				return ctrl.Result{}, err
+		// Apply scale-downs and update budget
+		for i, name := range phaseNames {
+			info, exists := wl.Phases[name]
+			if !exists || info.Replicas <= newReplicas[name] {
+				continue
 			}
-			if created {
-				log.Info("Created new workload", "phase", phaseName, "revision", revision)
-				workloadName := GenerateName(disaggregatedSet.Name, phaseName, revision)
-				executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonWorkloadCreated,
-					"Created %s workload %s", phaseName, workloadName)
+			workloadName := GenerateName(ds.Name, name, wl.Revision)
+			log.Info("Scaling down", "workload", workloadName, "from", info.Replicas, "to", newReplicas[name])
+			if err := executor.WorkloadManager.Scale(ctx, ds.Namespace, workloadName, newReplicas[name]); err != nil {
+				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
 			}
-		}
+			executor.Recorder.Eventf(ds, corev1.EventTypeNormal, EventReasonScalingDown,
+				"Scaling down %s workload %s from %d to %d replicas", name, workloadName, info.Replicas, newReplicas[name])
 
-		// Requeue to let the workloads be created
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-
-	// Execute the rolling update
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldWorkloads, *newWorkload)
-}
-
-// getReplicasOrDefault returns the value of the pointer or 1 if nil.
-func getReplicasOrDefault(replicas *int32) int {
-	if replicas == nil {
-		return 1
-	}
-	return int(*replicas)
-}
-
-// RollingUpdateExecutor handles rolling update plan execution
-type RollingUpdateExecutor struct {
-	Client          client.Client
-	Recorder        record.EventRecorder
-	WorkloadManager *LeaderWorkerSetManager
-}
-
-// ExtractRollingUpdateConfig extracts the rolling update config from the DisaggregatedSet spec.
-// Returns default values (maxSurge=1, maxUnavailable=0) if not specified.
-// The config is indexed by phase order (matching spec.phases order).
-func ExtractRollingUpdateConfig(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) RollingUpdateConfig {
-	numPhases := len(disaggregatedSet.Spec.Phases)
-	config := DefaultRollingUpdateConfig(numPhases)
-
-	for i, phase := range disaggregatedSet.Spec.Phases {
-		if phase.RolloutStrategy != nil {
-			if phase.RolloutStrategy.MaxSurge != nil {
-				config.MaxSurge[i] = phase.RolloutStrategy.MaxSurge.IntValue()
-			}
-			if phase.RolloutStrategy.MaxUnavailable != nil {
-				config.MaxUnavailable[i] = phase.RolloutStrategy.MaxUnavailable.IntValue()
+			// Only consume budget for phases that triggered coordinated drain.
+			// Phases forced to drain by coordinated drain don't consume budget (budget recycling).
+			if triggersCoordinated[name] || !anyTriggered {
+				budget[i] -= plannedDrain[name]
 			}
 		}
 	}
+	return nil
+}
 
-	return config
+func allZero(s []int) bool {
+	for _, v := range s {
+		if v > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// --- Workload creation ---
+
+func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
+	ctx context.Context,
+	ds *disaggv1alpha1.DisaggregatedSet,
+	revision, phase string,
+	config *disaggv1alpha1.DisaggregatedPhaseSpec,
+	initialReplicas int,
+) (bool, error) {
+	workloadName := GenerateName(ds.Name, phase, revision)
+	existing, err := executor.WorkloadManager.Get(ctx, ds.Namespace, workloadName)
+	if err != nil {
+		return false, fmt.Errorf("failed to get workload %s: %w", workloadName, err)
+	}
+	if existing != nil {
+		return false, nil
+	}
+
+	if err := executor.WorkloadManager.Create(ctx, CreateParams{
+		DisaggregatedSet: ds,
+		Phase:            phase,
+		Config:           config,
+		Revision:         revision,
+		Labels:           GenerateLabels(ds.Name, phase, revision),
+		Replicas:         initialReplicas,
+	}); err != nil {
+		return false, fmt.Errorf("failed to create workload %s: %w", workloadName, err)
+	}
+	return true, nil
+}
+
+// --- Phase policy ---
+
+type phaseChanges struct {
+	Added, Removed []string
+}
+
+func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) phaseChanges {
+	specPhases, oldPhases := buildPhaseSets(specPhaseNames, oldWorkloads)
+
+	var added, removed []string
+	for name := range oldPhases {
+		if !specPhases[name] {
+			removed = append(removed, name)
+		}
+	}
+	for _, name := range specPhaseNames {
+		if !oldPhases[name] {
+			added = append(added, name)
+		}
+	}
+	return phaseChanges{Added: added, Removed: removed}
+}
+
+func getPhasePolicy(spec disaggv1alpha1.DisaggregatedSetSpec) disaggv1alpha1.PhasePolicy {
+	if spec.PhasePolicy == "" {
+		return disaggv1alpha1.PhasePolicyStrict
+	}
+	return spec.PhasePolicy
+}
+
+func (executor *RollingUpdateExecutor) rejectPhaseChanges(ds *disaggv1alpha1.DisaggregatedSet, changes phaseChanges) error {
+	err := fmt.Errorf("phasePolicy is Strict but phases changed: added=%v, removed=%v", changes.Added, changes.Removed)
+	executor.Recorder.Eventf(ds, corev1.EventTypeWarning, EventReasonPhasePolicyViolation,
+		"phasePolicy is Strict but phases changed: added=%v, removed=%v", changes.Added, changes.Removed)
+	return err
+}
+
+// --- Test compatibility wrappers ---
+
+// ExtractRollingUpdateConfig extracts rolling update config for all spec phases.
+func ExtractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet) RollingUpdateConfig {
+	phaseNames := GetPhaseNames(ds)
+	specPhaseSet := make(map[string]bool, len(phaseNames))
+	for _, name := range phaseNames {
+		specPhaseSet[name] = true
+	}
+	return extractRollingUpdateConfig(ds, phaseNames, specPhaseSet)
+}
+
+// scaleDownOldWorkloads is a test-compatible wrapper for scaleDownOld.
+func scaleDownOldWorkloads(
+	ctx context.Context,
+	executor *RollingUpdateExecutor,
+	ds *disaggv1alpha1.DisaggregatedSet,
+	oldWorkloads GroupedWorkloads,
+	phaseNames []string,
+	toScaleDown PhaseReplicaState,
+) error {
+	// current = toScaleDown (budget), target = 0 for all
+	target := make(PhaseReplicaState, len(phaseNames))
+	current := make(PhaseReplicaState, len(phaseNames))
+	for i, name := range phaseNames {
+		current[i] = oldWorkloads.GetTotalReplicasPerPhase(name)
+		target[i] = current[i] - toScaleDown[i]
+	}
+	return executor.scaleDownOld(ctx, ds, oldWorkloads, phaseNames, current, target)
+}
+
+// scaleUpNewWorkload is a test-compatible wrapper for scaleUpNew.
+func scaleUpNewWorkload(
+	ctx context.Context,
+	executor *RollingUpdateExecutor,
+	ds *disaggv1alpha1.DisaggregatedSet,
+	newWorkload GroupedWorkload,
+	phaseNames []string,
+	target PhaseReplicaState,
+) error {
+	specPhaseSet := make(map[string]bool, len(phaseNames))
+	for _, name := range phaseNames {
+		specPhaseSet[name] = true
+	}
+	current := make(PhaseReplicaState, len(phaseNames))
+	for i, name := range phaseNames {
+		current[i] = newWorkload.Phases[name].Replicas
+	}
+	return executor.scaleUpNew(ctx, ds, newWorkload, phaseNames, specPhaseSet, current, target)
 }

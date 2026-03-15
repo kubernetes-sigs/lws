@@ -768,6 +768,95 @@ func TestScaleDownOldWorkloads(t *testing.T) {
 	}
 }
 
+// TestScaleDownOldWorkloadsWithMissingPhase tests that phases not present in
+// old workloads don't trigger false coordinated drain. This was a bug where
+// adding a new phase would cause all old workloads to be brutally drained to 0
+// because the new phase (with 0 replicas in old workload) would trigger
+// coordinated drain logic.
+func TestScaleDownOldWorkloadsWithMissingPhase(t *testing.T) {
+	baseTime := time.Now()
+	// 3 phases: prefill, decode, encode - but old workload only has prefill and decode
+	threePhaseNames := []string{"prefill", "decode", "encode"}
+
+	testCases := []struct {
+		name            string
+		prefillBudget   int
+		decodeBudget    int
+		encodeBudget    int
+		expectedPrefill int32
+		expectedDecode  int32
+	}{
+		{
+			name:            "missing phase should not trigger coordinated drain",
+			prefillBudget:   0, // planner says don't scale down prefill
+			decodeBudget:    1, // planner says scale down 1 decode
+			encodeBudget:    0, // encode doesn't exist in old workload, budget is 0
+			expectedPrefill: 4, // should stay at 4 (no coordinated drain!)
+			expectedDecode:  3, // should scale down from 4 to 3
+		},
+		{
+			name:            "normal drain with missing phase",
+			prefillBudget:   1,
+			decodeBudget:    1,
+			encodeBudget:    0,
+			expectedPrefill: 3,
+			expectedDecode:  3,
+		},
+		{
+			name:            "coordinated drain only when existing phase reaches zero",
+			prefillBudget:   4, // drain all prefill
+			decodeBudget:    0,
+			encodeBudget:    0,
+			expectedPrefill: 0,
+			expectedDecode:  0, // should be 0 due to coordinated drain (prefill reached 0)
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create old workload with only prefill and decode phases (no encode)
+			// Name format: {baseName}-{revision}-{phase} = "test-oldhash-prefill"
+			objects := []client.Object{
+				createTestLWS("test-oldhash-prefill", testNamespace, "prefill", "oldhash",
+					4, 4, baseTime),
+				createTestLWS("test-oldhash-decode", testNamespace, "decode", "oldhash",
+					4, 4, baseTime),
+				// Note: NO encode LWS exists in old workload
+			}
+
+			// GroupedWorkload only has prefill and decode
+			grouped := GroupedWorkloads{
+				{
+					Revision: "oldhash",
+					Phases: map[string]WorkloadInfo{
+						"prefill": {Replicas: 4, CreationTimestamp: baseTime},
+						"decode":  {Replicas: 4, CreationTimestamp: baseTime},
+						// Note: encode is NOT in this map
+					},
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
+			executor := newTestExecutor(fakeClient)
+			deployment := &disaggv1alpha1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+
+			// toScaleDown indexed by 3 phases: [prefill, decode, encode]
+			toScaleDown := []int{tc.prefillBudget, tc.decodeBudget, tc.encodeBudget}
+			err := scaleDownOldWorkloads(context.TODO(), executor, deployment, grouped, threePhaseNames, toScaleDown)
+			require.NoError(t, err)
+
+			// Verify prefill and decode were scaled correctly
+			assert.Equal(t, tc.expectedPrefill,
+				getTestLWSReplicas(fakeClient, testNamespace, "test-oldhash-prefill"),
+				"prefill replicas mismatch")
+			assert.Equal(t, tc.expectedDecode,
+				getTestLWSReplicas(fakeClient, testNamespace, "test-oldhash-decode"),
+				"decode replicas mismatch")
+		})
+	}
+}
+
 // =============================================================================
 // Unit Tests for scaleUpNewWorkload
 // =============================================================================
@@ -1053,4 +1142,229 @@ func TestAsymmetricSizesCoordinatedDrain(t *testing.T) {
 	assertWorkloadDrained(t, fakeClient, revisions.B, testPhaseDecode)
 	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-prefill", revisions.C)))
 	assert.Equal(t, int32(3), getTestLWSReplicas(fakeClient, "default", fmt.Sprintf("test-%s-decode", revisions.C)))
+}
+
+// =============================================================================
+// Unit Tests for PhasePolicy Enforcement
+// =============================================================================
+
+// setupPhasePolicyScenario creates a scenario for testing phasePolicy enforcement.
+// Returns client, deployment, executor, and the new revision.
+func setupPhasePolicyScenario(
+	t *testing.T,
+	oldPhaseNames []string,
+	newPhaseNames []string,
+	phasePolicy disaggv1alpha1.PhasePolicy,
+) (client.Client, *disaggv1alpha1.DisaggregatedSet, *RollingUpdateExecutor, string) {
+	podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:old"}}}
+	podSpecNew := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:new"}}}
+
+	// Create old phases
+	var oldPhases []disaggv1alpha1.DisaggregatedPhaseSpec
+	for _, name := range oldPhaseNames {
+		oldPhases = append(oldPhases, disaggv1alpha1.DisaggregatedPhaseSpec{
+			Name:     name,
+			Replicas: ptr.To(int32(2)),
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				Size:           ptr.To(int32(1)),
+				WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+			},
+		})
+	}
+
+	// Create new phases (for the deployment spec)
+	var newPhases []disaggv1alpha1.DisaggregatedPhaseSpec
+	for _, name := range newPhaseNames {
+		newPhases = append(newPhases, disaggv1alpha1.DisaggregatedPhaseSpec{
+			Name:     name,
+			Replicas: ptr.To(int32(2)),
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				Size:           ptr.To(int32(1)),
+				WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpecNew},
+			},
+		})
+	}
+
+	oldRevision := ComputeRevision(oldPhases)
+	newRevision := ComputeRevision(newPhases)
+
+	deployment := &disaggv1alpha1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
+		Spec: disaggv1alpha1.DisaggregatedSetSpec{
+			Phases:      newPhases,
+			PhasePolicy: phasePolicy,
+		},
+	}
+
+	ownerRef := metav1.OwnerReference{
+		APIVersion: disaggv1alpha1.GroupVersion.String(),
+		Kind:       "DisaggregatedSet",
+		Name:       "test",
+		UID:        "uid",
+	}
+
+	var objects []client.Object
+	objects = append(objects, deployment)
+
+	// Create old workloads
+	baseTime := time.Now()
+	for _, phaseName := range oldPhaseNames {
+		labels := map[string]string{
+			LabelDisaggPhase: phaseName,
+			LabelDisaggName:  "test",
+			LabelRevision:    oldRevision,
+		}
+		objects = append(objects, createWorkloadForTest(
+			fmt.Sprintf("test-%s-%s", oldRevision, phaseName),
+			labels, 2, 2, podSpec, ownerRef))
+	}
+
+	// Create new workloads (empty, to simulate rolling update in progress)
+	for _, phaseName := range newPhaseNames {
+		labels := map[string]string{
+			LabelDisaggPhase: phaseName,
+			LabelDisaggName:  "test",
+			LabelRevision:    newRevision,
+		}
+		lws := createWorkloadForTest(
+			fmt.Sprintf("test-%s-%s", newRevision, phaseName),
+			labels, 0, 0, podSpecNew, ownerRef)
+		lws.(*leaderworkerset.LeaderWorkerSet).ObjectMeta.CreationTimestamp = metav1.Time{Time: baseTime.Add(time.Hour)}
+		objects = append(objects, lws)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testSchemeForUnit()).
+		WithObjects(objects...).
+		WithStatusSubresource(statusSubresourceObjects()...).
+		Build()
+
+	executor := newTestExecutor(fakeClient)
+	return fakeClient, deployment, executor, newRevision
+}
+
+func TestPhasePolicyStrictBlocksPhaseAddition(t *testing.T) {
+	// Old: prefill, decode -> New: prefill, decode, encode (added encode)
+	_, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode"},
+		[]string{"prefill", "decode", "encode"},
+		disaggv1alpha1.PhasePolicyStrict,
+	)
+
+	_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "phasePolicy is Strict but phases changed")
+	assert.Contains(t, err.Error(), "added=[encode]")
+}
+
+func TestPhasePolicyStrictBlocksPhaseRemoval(t *testing.T) {
+	// Old: prefill, decode, encode -> New: prefill, decode (removed encode)
+	_, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode", "encode"},
+		[]string{"prefill", "decode"},
+		disaggv1alpha1.PhasePolicyStrict,
+	)
+
+	_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "phasePolicy is Strict but phases changed")
+	assert.Contains(t, err.Error(), "removed=[encode]")
+}
+
+func TestPhasePolicyStrictBlocksPhaseRename(t *testing.T) {
+	// Old: prefill, decode, encode -> New: prefill, decode, decode-long-context (renamed encode)
+	_, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode", "encode"},
+		[]string{"prefill", "decode", "decode-long-context"},
+		disaggv1alpha1.PhasePolicyStrict,
+	)
+
+	_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "phasePolicy is Strict but phases changed")
+	assert.Contains(t, err.Error(), "added=[decode-long-context]")
+	assert.Contains(t, err.Error(), "removed=[encode]")
+}
+
+func TestPhasePolicyFlexibleAllowsPhaseRename(t *testing.T) {
+	// Old: prefill, decode, encode -> New: prefill, decode, decode-long-context
+	fakeClient, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode", "encode"},
+		[]string{"prefill", "decode", "decode-long-context"},
+		disaggv1alpha1.PhasePolicyFlexible,
+	)
+
+	// Get old revision for checking drain
+	podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:old"}}}
+	oldPhases := []disaggv1alpha1.DisaggregatedPhaseSpec{
+		{Name: "prefill", Replicas: ptr.To(int32(2)), LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+			Size: ptr.To(int32(1)), WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec}}},
+		{Name: "decode", Replicas: ptr.To(int32(2)), LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+			Size: ptr.To(int32(1)), WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec}}},
+		{Name: "encode", Replicas: ptr.To(int32(2)), LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+			Size: ptr.To(int32(1)), WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec}}},
+	}
+	oldRevision := ComputeRevision(oldPhases)
+
+	// Run reconciles until encode is drained to 0 (progressive drain takes multiple reconciles)
+	// We also simulate new workloads becoming ready after each reconcile for the Planner to progress.
+	for i := 0; i < 20; i++ {
+		_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+		require.NoError(t, err)
+
+		// Simulate new workloads becoming ready by updating their status
+		for _, phase := range []string{"prefill", "decode", "decode-long-context"} {
+			lwsName := fmt.Sprintf("test-%s-%s", revision, phase)
+			lws := &leaderworkerset.LeaderWorkerSet{}
+			if err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: testNamespace, Name: lwsName}, lws); err == nil {
+				if lws.Spec.Replicas != nil {
+					lws.Status.ReadyReplicas = *lws.Spec.Replicas
+					lws.Status.Replicas = *lws.Spec.Replicas
+					_ = fakeClient.Status().Update(context.TODO(), lws)
+				}
+			}
+		}
+
+		// Check if encode is drained
+		encodeReplicas := getTestLWSReplicas(fakeClient, testNamespace, fmt.Sprintf("test-%s-encode", oldRevision))
+		if encodeReplicas == 0 {
+			break
+		}
+	}
+
+	// Verify encode phase was drained (scaled to 0)
+	encodeReplicas := getTestLWSReplicas(fakeClient, testNamespace, fmt.Sprintf("test-%s-encode", oldRevision))
+	assert.Equal(t, int32(0), encodeReplicas, "encode phase should be drained to 0")
+}
+
+func TestPhasePolicyDefaultIsStrict(t *testing.T) {
+	// When phasePolicy is not set (empty), it should default to Strict
+	_, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode"},
+		[]string{"prefill", "decode", "encode"},
+		"", // Empty = should default to Strict
+	)
+
+	_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "phasePolicy is Strict but phases changed")
+}
+
+func TestPhasePolicyStrictAllowsSamePhases(t *testing.T) {
+	// Old: prefill, decode -> New: prefill, decode (same phases, just image change)
+	_, deployment, executor, revision := setupPhasePolicyScenario(
+		t,
+		[]string{"prefill", "decode"},
+		[]string{"prefill", "decode"},
+		disaggv1alpha1.PhasePolicyStrict,
+	)
+
+	// Should not error - phases are the same
+	_, err := executor.ReconcileRollingUpdateNew(context.TODO(), deployment, revision)
+	require.NoError(t, err)
 }
