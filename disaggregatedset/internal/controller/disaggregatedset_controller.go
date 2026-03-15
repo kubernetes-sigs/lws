@@ -67,13 +67,13 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
-	// Validate both phases are configured - DisaggregatedSet requires both prefill and decode
-	if disaggregatedSet.Spec.Prefill == nil || disaggregatedSet.Spec.Decode == nil {
-		return ctrl.Result{}, fmt.Errorf("DisaggregatedSet requires both prefill and decode to be configured")
+	// Validate phases are configured (API validation ensures at least 2)
+	if len(disaggregatedSet.Spec.Phases) < 2 {
+		return ctrl.Result{}, fmt.Errorf("DisaggregatedSet requires at least 2 phases")
 	}
 
-	// Compute revision from both templates (truncated to 8 chars)
-	revision := ComputeRevision(disaggregatedSet.Spec.Prefill, disaggregatedSet.Spec.Decode)
+	// Compute revision from all phase templates (truncated to 8 chars)
+	revision := ComputeRevision(disaggregatedSet.Spec.Phases)
 
 	// Cleanup old workloads with 0 replicas on both phases (housekeeping)
 	if err := reconciler.cleanupDrainedWorkloads(ctx, disaggregatedSet, revision); err != nil {
@@ -91,7 +91,12 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	// Stateless routing: if old replicas exist → rolling update, else → simple reconcile
 	var result ctrl.Result
-	if len(oldWorkloads) > 0 && oldWorkloads.GetTotalReplicasPerPhase(PhasePrefill)+oldWorkloads.GetTotalReplicasPerPhase(PhaseDecode) > 0 {
+	phaseNames := GetPhaseNames(disaggregatedSet)
+	totalOldReplicas := 0
+	for _, phaseName := range phaseNames {
+		totalOldReplicas += oldWorkloads.GetTotalReplicasPerPhase(phaseName)
+	}
+	if len(oldWorkloads) > 0 && totalOldReplicas > 0 {
 		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, revision)
 		if err != nil {
 			return result, err
@@ -192,8 +197,9 @@ func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.C
 func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
-	for _, phase := range []string{PhasePrefill, PhaseDecode} {
-		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, phase)
+	phaseNames := GetPhaseNames(disaggregatedSet)
+	for _, phaseName := range phaseNames {
+		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, phaseName)
 		if err != nil {
 			return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 		}
@@ -210,8 +216,8 @@ func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Co
 	return nil
 }
 
-// cleanupDrainedWorkloads deletes old workloads where both phases have 0 replicas.
-// This is coordinated cleanup - we only delete when BOTH prefill and decode are drained.
+// cleanupDrainedWorkloads deletes old workloads where all phases have 0 replicas.
+// This is coordinated cleanup - we only delete when ALL phases are drained.
 func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
@@ -219,6 +225,8 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 	if err != nil {
 		return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 	}
+
+	phaseNames := GetPhaseNames(disaggregatedSet)
 
 	revisionReplicas := make(map[string]map[string]int)
 	for _, workload := range workloads { // Group by revision
@@ -232,11 +240,21 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 	}
 
 	for oldRevision, phases := range revisionReplicas {
-		if phases[PhasePrefill] != 0 || phases[PhaseDecode] != 0 { // Delete revisions where both phases are at 0
+		// Check if all phases are at 0 replicas
+		allDrained := true
+		for _, phaseName := range phaseNames {
+			if phases[phaseName] != 0 {
+				allDrained = false
+				break
+			}
+		}
+		if !allDrained {
 			continue
 		}
-		for _, phase := range []string{PhasePrefill, PhaseDecode} {
-			workloadName := GenerateName(disaggregatedSet.Name, phase, oldRevision)
+
+		// Delete all phase workloads for this revision
+		for _, phaseName := range phaseNames {
+			workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldRevision)
 			log.Info("Deleting drained workload", "name", workloadName)
 			if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {
 				return fmt.Errorf("failed to delete workload %s: %w", workloadName, err)

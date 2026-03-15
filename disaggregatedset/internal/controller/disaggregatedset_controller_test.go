@@ -37,6 +37,12 @@ import (
 	controller "sigs.k8s.io/disaggregatedset/internal/controller"
 )
 
+// Test-local phase names
+const (
+	testControllerPhasePrefill = "prefill"
+	testControllerPhaseDecode  = "decode"
+)
+
 func testScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = disaggv1alpha1.AddToScheme(scheme)
@@ -91,18 +97,22 @@ func newTestDisaggregatedSet(name, namespace string, prefillReplicas, decodeRepl
 			UID:       types.UID(name + "-uid"),
 		},
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Prefill: &disaggv1alpha1.DisaggregatedPhaseSpec{
-				Replicas: ptr.To(prefillReplicas),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size:           ptr.To(int32(1)),
-					WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+			Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+				{
+					Name:     testControllerPhasePrefill,
+					Replicas: ptr.To(prefillReplicas),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size:           ptr.To(int32(1)),
+						WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+					},
 				},
-			},
-			Decode: &disaggv1alpha1.DisaggregatedPhaseSpec{
-				Replicas: ptr.To(decodeReplicas),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size:           ptr.To(int32(1)),
-					WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+				{
+					Name:     testControllerPhaseDecode,
+					Replicas: ptr.To(decodeReplicas),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size:           ptr.To(int32(1)),
+						WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+					},
 				},
 			},
 		},
@@ -128,14 +138,14 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
 
-	newRevision := controller.ComputeRevision(disaggregatedSet.Spec.Prefill, disaggregatedSet.Spec.Decode)
+	newRevision := controller.ComputeRevision(disaggregatedSet.Spec.Phases)
 	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, controller.PhasePrefill, newRevision))
+	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerPhasePrefill, newRevision))
 	require.NotNil(t, prefillInfo, "prefill workload should exist")
 	assert.Equal(t, 3, prefillInfo.Replicas, "prefill replicas")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, controller.PhaseDecode, newRevision))
+	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerPhaseDecode, newRevision))
 	require.NotNil(t, decodeInfo, "decode workload should exist")
 	assert.Equal(t, 2, decodeInfo.Replicas, "decode replicas")
 }
@@ -145,10 +155,10 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	scheme := testScheme()
 
 	disaggregatedSet := newTestDisaggregatedSet("scale-test", "default", 5, 4, "nginx:1.0")
-	revision := controller.ComputeRevision(disaggregatedSet.Spec.Prefill, disaggregatedSet.Spec.Decode)
+	revision := controller.ComputeRevision(disaggregatedSet.Spec.Phases)
 
-	prefillRS := createOldLeaderWorkerSet(disaggregatedSet, controller.PhasePrefill, revision, 3)
-	decodeRS := createOldLeaderWorkerSet(disaggregatedSet, controller.PhaseDecode, revision, 2)
+	prefillRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerPhasePrefill, revision, 3)
+	decodeRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerPhaseDecode, revision, 2)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
 		WithStatusSubresource(&disaggv1alpha1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
@@ -165,11 +175,11 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 
 	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, controller.PhasePrefill, revision))
+	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerPhasePrefill, revision))
 	require.NotNil(t, prefillInfo, "prefill workload should exist")
 	assert.Equal(t, 5, prefillInfo.Replicas, "prefill replicas should be scaled to 5")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, controller.PhaseDecode, revision))
+	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerPhaseDecode, revision))
 	require.NotNil(t, decodeInfo, "decode workload should exist")
 	assert.Equal(t, 4, decodeInfo.Replicas, "decode replicas should be scaled to 4")
 }

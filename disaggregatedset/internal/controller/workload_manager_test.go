@@ -533,129 +533,117 @@ func TestManagerCreate(t *testing.T) {
 	})
 }
 
-// TestGetPhaseConfigs tests the GetPhaseConfigs function.
-func TestGetPhaseConfigs(t *testing.T) {
-	testCases := []struct {
-		name           string
-		prefill        *disaggv1alpha1.DisaggregatedPhaseSpec
-		decode         *disaggv1alpha1.DisaggregatedPhaseSpec
-		expectedPhases []string
-	}{
-		{
-			name:           "both phases configured",
-			prefill:        &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(2))},
-			decode:         &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))},
-			expectedPhases: []string{PhasePrefill, PhaseDecode},
-		},
-		{
-			name:           "only prefill configured",
-			prefill:        &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(2))},
-			decode:         nil,
-			expectedPhases: []string{PhasePrefill},
-		},
-		{
-			name:           "only decode configured",
-			prefill:        nil,
-			decode:         &disaggv1alpha1.DisaggregatedPhaseSpec{Replicas: ptr.To(int32(3))},
-			expectedPhases: []string{PhaseDecode},
-		},
-		{
-			name:           "no phases configured",
-			prefill:        nil,
-			decode:         nil,
-			expectedPhases: []string{},
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			disaggregatedSet := &disaggv1alpha1.DisaggregatedSet{
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Prefill: testCase.prefill,
-					Decode:  testCase.decode,
-				},
-			}
-
-			result := GetPhaseConfigs(disaggregatedSet)
-			require.Len(t, result, len(testCase.expectedPhases))
-
-			for _, phase := range testCase.expectedPhases {
-				require.Contains(t, result, phase)
-			}
-		})
-	}
-}
-
 // TestComputeRevision tests the ComputeRevision function.
 func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
-		prefill := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(2)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
+		phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
+			{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
 			},
-		}
-		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(3)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
+			{
+				Name:     "decode",
+				Replicas: ptr.To(int32(3)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
 			},
 		}
 
-		revision1 := ComputeRevision(prefill, decode)
-		revision2 := ComputeRevision(prefill, decode)
+		revision1 := ComputeRevision(phases)
+		revision2 := ComputeRevision(phases)
 
 		require.Equal(t, revision1, revision2)
 		require.Len(t, revision1, 8) // Truncated to 8 characters
 	})
 
 	t.Run("returns different revision for different Size", func(t *testing.T) {
-		prefill1 := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(2)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
+		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+			{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
+			},
+			{
+				Name:     "decode",
+				Replicas: ptr.To(int32(3)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
 			},
 		}
-		prefill2 := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(2)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(2)), // Different
+		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+			{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(2)), // Different
+				},
 			},
-		}
-		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(3)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
+			{
+				Name:     "decode",
+				Replicas: ptr.To(int32(3)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
 			},
 		}
 
-		revision1 := ComputeRevision(prefill1, decode)
-		revision2 := ComputeRevision(prefill2, decode)
+		revision1 := ComputeRevision(phases1)
+		revision2 := ComputeRevision(phases2)
 
 		require.NotEqual(t, revision1, revision2)
 	})
 
-	t.Run("handles nil prefill", func(t *testing.T) {
-		decode := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(3)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
+	t.Run("returns different revision for different phase names", func(t *testing.T) {
+		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+			{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
+			},
+			{
+				Name:     "decode",
+				Replicas: ptr.To(int32(3)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
+			},
+		}
+		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+			{
+				Name:     "other-phase",
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
+			},
+			{
+				Name:     "decode",
+				Replicas: ptr.To(int32(3)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
 			},
 		}
 
-		revision := ComputeRevision(nil, decode)
-		require.Len(t, revision, 8)
+		revision1 := ComputeRevision(phases1)
+		revision2 := ComputeRevision(phases2)
+
+		require.NotEqual(t, revision1, revision2)
 	})
 
-	t.Run("handles nil decode", func(t *testing.T) {
-		prefill := &disaggv1alpha1.DisaggregatedPhaseSpec{
-			Replicas: ptr.To(int32(2)),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
-			},
-		}
+	t.Run("handles empty phases slice", func(t *testing.T) {
+		phases := []disaggv1alpha1.DisaggregatedPhaseSpec{}
 
-		revision := ComputeRevision(prefill, nil)
+		revision := ComputeRevision(phases)
 		require.Len(t, revision, 8)
 	})
 }

@@ -29,11 +29,9 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// Phase name constants
-const (
-	PhasePrefill = "prefill"
-	PhaseDecode  = "decode"
-)
+// NumRequiredPhases is the number of phases required in the DisaggregatedSet spec.
+// The planner currently only supports exactly 2 phases.
+const NumRequiredPhases = 2
 
 // Label keys used for workload management
 const (
@@ -80,12 +78,16 @@ func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replic
 // ComputeInitialReplicaState computes the total initial replica counts
 // from a list of LWS resources by summing their initial-replicas annotations.
 // If an annotation is missing or invalid, it falls back to spec.Replicas.
-func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) PhaseReplicaState {
-	state := PhaseReplicaState{}
+// Returns a map from phase name to replica count.
+func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[string]int {
+	state := make(map[string]int)
 
 	for i := range lwsList {
 		lws := &lwsList[i]
 		phase := lws.Labels[LabelDisaggPhase]
+		if phase == "" {
+			continue
+		}
 
 		// Try to get initial replicas from annotation
 		var replicas int
@@ -101,12 +103,7 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) Phase
 			}
 		}
 
-		switch phase {
-		case PhasePrefill:
-			state.Prefill += replicas
-		case PhaseDecode:
-			state.Decode += replicas
-		}
+		state[phase] += replicas
 	}
 
 	return state
@@ -169,24 +166,26 @@ func GenerateLabels(baseName, phase, revision string) map[string]string {
 // revisionLength is the length of the truncated revision identifier used in resource names
 const revisionLength = 8
 
-// ComputeRevision computes a truncated revision identifier from both prefill and decode LeaderWorkerTemplates.
-// This ensures both phases roll together when any field in LeaderWorkerTemplate changes
+// ComputeRevision computes a truncated revision identifier from all phase LeaderWorkerTemplates.
+// This ensures all phases roll together when any field in LeaderWorkerTemplate changes
 // (including Size, LeaderTemplate, WorkerTemplate, RestartPolicy, SubGroupPolicy, etc.).
 // Returns an 8-character revision identifier suitable for use in resource names.
-func ComputeRevision(prefill, decode *disaggv1alpha1.DisaggregatedPhaseSpec) string {
-	data := struct {
-		Prefill *leaderworkerset.LeaderWorkerTemplate `json:"prefill,omitempty"`
-		Decode  *leaderworkerset.LeaderWorkerTemplate `json:"decode,omitempty"`
-	}{}
-
-	if prefill != nil {
-		data.Prefill = &prefill.LeaderWorkerTemplate
-	}
-	if decode != nil {
-		data.Decode = &decode.LeaderWorkerTemplate
+func ComputeRevision(phases []disaggv1alpha1.DisaggregatedPhaseSpec) string {
+	// Create a slice of templates keyed by phase name for deterministic ordering
+	type phaseTemplate struct {
+		Name     string                               `json:"name"`
+		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
 	}
 
-	jsonData, err := json.Marshal(data)
+	templates := make([]phaseTemplate, 0, len(phases))
+	for _, phase := range phases {
+		templates = append(templates, phaseTemplate{
+			Name:     phase.Name,
+			Template: phase.LeaderWorkerTemplate,
+		})
+	}
+
+	jsonData, err := json.Marshal(templates)
 	if err != nil {
 		return ""
 	}
@@ -199,17 +198,24 @@ func ComputeRevision(prefill, decode *disaggv1alpha1.DisaggregatedPhaseSpec) str
 	return fullHash
 }
 
-// GetPhaseConfigs returns a map of phase configurations from the DisaggregatedSet spec
+// GetPhaseConfigs returns a map of phase configurations from the DisaggregatedSet spec.
+// The map is keyed by phase name.
 func GetPhaseConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggregatedPhaseSpec {
 	phaseConfigs := make(map[string]*disaggv1alpha1.DisaggregatedPhaseSpec)
 
-	if disaggregatedSet.Spec.Prefill != nil {
-		phaseConfigs[PhasePrefill] = disaggregatedSet.Spec.Prefill
-	}
-
-	if disaggregatedSet.Spec.Decode != nil {
-		phaseConfigs[PhaseDecode] = disaggregatedSet.Spec.Decode
+	for i := range disaggregatedSet.Spec.Phases {
+		phase := &disaggregatedSet.Spec.Phases[i]
+		phaseConfigs[phase.Name] = phase
 	}
 
 	return phaseConfigs
+}
+
+// GetPhaseNames returns the ordered list of phase names from the spec.
+func GetPhaseNames(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) []string {
+	names := make([]string, len(disaggregatedSet.Spec.Phases))
+	for i, phase := range disaggregatedSet.Spec.Phases {
+		names[i] = phase.Name
+	}
+	return names
 }

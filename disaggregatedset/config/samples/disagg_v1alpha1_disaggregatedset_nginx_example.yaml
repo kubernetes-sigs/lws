@@ -6,8 +6,9 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: disaggdeployment-nginx-example
 spec:
+  phases:
   # Prefill configuration with 10 nginx replicas
-  prefill:
+  - name: prefill
     replicas: 10
     rolloutStrategy:
        maxSurge: 2
@@ -19,13 +20,13 @@ spec:
           labels:
             app: prefill-nginx
             component: disaggregation
-          annotations: 
+          annotations:
             kueue.x-k8s.io/podset-required-topology: "cloud.provider.com/topology-block"
             kueue.x-k8s.io/podset-group-name: "vllm-multi-host"
         spec:
           containers:
           - name: nginx
-            image: nginx:1.29.3
+            image: nginx:1.29.4
             ports:
             - containerPort: 80
             resources:
@@ -43,7 +44,7 @@ spec:
               periodSeconds: 2
 
   # Decode configuration with 2 nginx replicas
-  decode:
+  - name: decode
     replicas: 2
     rolloutStrategy:
        maxSurge: 2

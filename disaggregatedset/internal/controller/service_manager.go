@@ -50,7 +50,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 }
 
 // ReconcileServices reconciles Services for a DisaggregatedSet.
-// It creates headless portless Services when both phases are ready and cleans up old Services.
+// It creates headless portless Services when all phases are ready and cleans up old Services.
 // The targetRevision parameter is the current revision from the deployment spec.
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
@@ -59,43 +59,49 @@ func (manager *ServiceManager) ReconcileServices(
 	targetRevision string,
 ) error {
 	log := logf.FromContext(ctx)
+	phaseNames := GetPhaseNames(deployment)
 
-	// Find revisions where both phases are ready (readyReplicas >= 1)
+	// Find revisions where all phases are ready (readyReplicas >= 1)
 	var readyRevisions []string
 	for _, group := range groupedWorkloads {
-		prefillInfo, hasPrefill := group.Phases[PhasePrefill]
-		decodeInfo, hasDecode := group.Phases[PhaseDecode]
+		allReady := true
+		logArgs := []interface{}{"revision", group.Revision}
 
-		if hasPrefill && hasDecode && prefillInfo.ReadyReplicas >= 1 && decodeInfo.ReadyReplicas >= 1 {
+		for _, phaseName := range phaseNames {
+			phaseInfo, hasPhase := group.Phases[phaseName]
+			if !hasPhase || phaseInfo.ReadyReplicas < 1 {
+				allReady = false
+				break
+			}
+			logArgs = append(logArgs, phaseName+"Ready", phaseInfo.ReadyReplicas)
+		}
+
+		if allReady {
 			readyRevisions = append(readyRevisions, group.Revision)
-			log.V(1).Info("Revision is ready on both phases",
-				"revision", group.Revision,
-				"prefillReady", prefillInfo.ReadyReplicas,
-				"decodeReady", decodeInfo.ReadyReplicas)
+			log.V(1).Info("Revision is ready on all phases", logArgs...)
 		}
 	}
 
 	if len(readyRevisions) == 0 {
-		log.V(1).Info("No revisions are ready on both phases, skipping Service creation")
+		log.V(1).Info("No revisions are ready on all phases, skipping Service creation")
 		return nil
 	}
 
-	// Check if target revision is ready on both phases
+	// Check if target revision is ready on all phases
 	targetRevisionReady := slices.Contains(readyRevisions, targetRevision)
 
 	// Only create services for the target revision (current spec).
 	// If target revision is not ready, keep existing services unchanged to prevent flip-flop.
 	// This ensures we only ever move forward to the new version, never backward.
 	if !targetRevisionReady {
-		log.V(1).Info("Target revision not ready on both phases, keeping existing services",
+		log.V(1).Info("Target revision not ready on all phases, keeping existing services",
 			"targetRevision", targetRevision,
 			"readyRevisions", readyRevisions)
 		return nil
 	}
 
-	// Create/ensure headless portless Services for both phases
-	phases := []string{PhasePrefill, PhaseDecode}
-	for _, phaseName := range phases {
+	// Create/ensure headless portless Services for all phases
+	for _, phaseName := range phaseNames {
 		if err := manager.ensureService(ctx, deployment, phaseName, targetRevision); err != nil {
 			return fmt.Errorf("failed to ensure service for %s: %w", phaseName, err)
 		}
@@ -103,8 +109,8 @@ func (manager *ServiceManager) ReconcileServices(
 
 	// Only cleanup old services when the old revision is NO LONGER ready (fully drained).
 	// This prevents flip-flopping during rolling updates when both versions are ready.
-	// We only delete services for revisions that have 0 ready replicas on both phases.
-	if err := manager.cleanupDrainedServices(ctx, deployment, groupedWorkloads, targetRevision); err != nil {
+	// We only delete services for revisions that have 0 ready replicas on all phases.
+	if err := manager.cleanupDrainedServices(ctx, deployment, groupedWorkloads, targetRevision, phaseNames); err != nil {
 		return fmt.Errorf("failed to cleanup drained services: %w", err)
 	}
 
@@ -178,7 +184,7 @@ func (manager *ServiceManager) buildService(
 	}
 }
 
-// cleanupDrainedServices deletes Services for revisions that are no longer ready on both phases.
+// cleanupDrainedServices deletes Services for revisions that are no longer ready on all phases.
 // This is safer than cleanupOldServices because it only removes services for versions
 // that have been fully drained (0 ready replicas), preventing flip-flop during rolling updates.
 func (manager *ServiceManager) cleanupDrainedServices(
@@ -186,16 +192,22 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	deployment *disaggv1alpha1.DisaggregatedSet,
 	groupedWorkloads GroupedWorkloads,
 	targetRevision string,
+	phaseNames []string,
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Build a set of revisions that still have ready replicas on both phases
+	// Build a set of revisions that still have ready replicas on all phases
 	readyRevisionSet := make(map[string]bool)
 	for _, group := range groupedWorkloads {
-		prefillInfo, hasPrefill := group.Phases[PhasePrefill]
-		decodeInfo, hasDecode := group.Phases[PhaseDecode]
-
-		if hasPrefill && hasDecode && prefillInfo.ReadyReplicas >= 1 && decodeInfo.ReadyReplicas >= 1 {
+		allReady := true
+		for _, phaseName := range phaseNames {
+			phaseInfo, hasPhase := group.Phases[phaseName]
+			if !hasPhase || phaseInfo.ReadyReplicas < 1 {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
 			readyRevisionSet[group.Revision] = true
 		}
 	}

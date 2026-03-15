@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,38 +25,55 @@ import (
 )
 
 // step is a helper to create UpdateStep instances for tests
-func step(pastPrefill, pastDecode, newPrefill, newDecode int) UpdateStep {
+func step(past, new []int) UpdateStep {
 	return UpdateStep{
-		PastPrefill: pastPrefill,
-		PastDecode:  pastDecode,
-		NewPrefill:  newPrefill,
-		NewDecode:   newDecode,
+		Past: past,
+		New:  new,
 	}
 }
 
 // config is a helper to create RollingUpdateConfig instances for tests
-func config(prefillMaxSurge, prefillMaxUnavailable, decodeMaxSurge, decodeMaxUnavailable int) RollingUpdateConfig {
+func config(surge, unavailable []int) RollingUpdateConfig {
 	return RollingUpdateConfig{
-		PrefillMaxSurge:       prefillMaxSurge,
-		PrefillMaxUnavailable: prefillMaxUnavailable,
-		DecodeMaxSurge:        decodeMaxSurge,
-		DecodeMaxUnavailable:  decodeMaxUnavailable,
+		MaxSurge:       surge,
+		MaxUnavailable: unavailable,
 	}
 }
 
 // completes checks if rollout completes correctly (old=0, new=target)
-func completes(steps []UpdateStep, targetPrefill, targetDecode int) bool {
+func completes(steps []UpdateStep, target []int) bool {
 	if len(steps) == 0 {
 		return false
 	}
 	last := steps[len(steps)-1]
-	return last.PastPrefill == 0 && last.PastDecode == 0 &&
-		last.NewPrefill == targetPrefill && last.NewDecode == targetDecode
+	// Check all old replicas are 0
+	for _, v := range last.Past {
+		if v != 0 {
+			return false
+		}
+	}
+	// Check new replicas match target
+	if len(last.New) != len(target) {
+		return false
+	}
+	for i, v := range last.New {
+		if v != target[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // totalAtStep returns total replica count at a step
 func totalAtStep(s UpdateStep) int {
-	return s.PastPrefill + s.PastDecode + s.NewPrefill + s.NewDecode
+	total := 0
+	for _, v := range s.Past {
+		total += v
+	}
+	for _, v := range s.New {
+		total += v
+	}
+	return total
 }
 
 // stepsEqual compares two step slices for equality
@@ -64,7 +82,25 @@ func stepsEqual(a, b []UpdateStep) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !stepEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// stepEqual compares two UpdateStep instances for equality
+func stepEqual(a, b UpdateStep) bool {
+	if len(a.Past) != len(b.Past) || len(a.New) != len(b.New) {
+		return false
+	}
+	for i := range a.Past {
+		if a.Past[i] != b.Past[i] {
+			return false
+		}
+	}
+	for i := range a.New {
+		if a.New[i] != b.New[i] {
 			return false
 		}
 	}
@@ -77,372 +113,376 @@ func stepsEqual(a, b []UpdateStep) bool {
 
 func TestComputeAllSteps_ExactSequence(t *testing.T) {
 	testCases := []struct {
-		name          string
-		sourcePrefill int
-		sourceDecode  int
-		targetPrefill int
-		targetDecode  int
-		config        RollingUpdateConfig
-		expected      []UpdateStep
+		name         string
+		sourcePhase0 int
+		sourcePhase1 int
+		targetPhase0 int
+		targetPhase1 int
+		config       RollingUpdateConfig
+		expected     []UpdateStep
 	}{
 		// Small symmetric cases (decoupled: scale-up then scale-down alternately)
 		{
-			name:          "small_1_1_surge1",
-			sourcePrefill: 1, sourceDecode: 1, targetPrefill: 1, targetDecode: 1,
-			config: DefaultRollingUpdateConfig(),
+			name:         "small_1_1_surge1",
+			sourcePhase0: 1, sourcePhase1: 1, targetPhase0: 1, targetPhase1: 1,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(1, 1, 0, 0),
-				step(1, 1, 1, 1), // scale up
-				step(0, 0, 1, 1), // scale down
+				step([]int{1, 1}, []int{0, 0}),
+				step([]int{1, 1}, []int{1, 1}), // scale up
+				step([]int{0, 0}, []int{1, 1}), // scale down
 			},
 		},
 		{
-			name:          "small_2_2_surge1",
-			sourcePrefill: 2, sourceDecode: 2, targetPrefill: 2, targetDecode: 2,
-			config: DefaultRollingUpdateConfig(),
+			name:         "small_2_2_surge1",
+			sourcePhase0: 2, sourcePhase1: 2, targetPhase0: 2, targetPhase1: 2,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(2, 2, 0, 0),
-				step(2, 2, 1, 1), // scale up (surge: 2+1 <= 2+1)
-				step(1, 1, 1, 1), // scale down
-				step(1, 1, 2, 2), // scale up (surge: 1+2 <= 2+1)
-				step(0, 0, 2, 2), // scale down
+				step([]int{2, 2}, []int{0, 0}),
+				step([]int{2, 2}, []int{1, 1}), // scale up (surge: 2+1 <= 2+1)
+				step([]int{1, 1}, []int{1, 1}), // scale down
+				step([]int{1, 1}, []int{2, 2}), // scale up (surge: 1+2 <= 2+1)
+				step([]int{0, 0}, []int{2, 2}), // scale down
 			},
 		},
 		{
-			name:          "small_3_3_surge1",
-			sourcePrefill: 3, sourceDecode: 3, targetPrefill: 3, targetDecode: 3,
-			config: DefaultRollingUpdateConfig(),
+			name:         "small_3_3_surge1",
+			sourcePhase0: 3, sourcePhase1: 3, targetPhase0: 3, targetPhase1: 3,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(3, 3, 0, 0),
-				step(3, 3, 1, 1), // scale up
-				step(2, 2, 1, 1), // scale down
-				step(2, 2, 2, 2), // scale up
-				step(1, 1, 2, 2), // scale down
-				step(1, 1, 3, 3), // scale up
-				step(0, 0, 3, 3), // scale down
+				step([]int{3, 3}, []int{0, 0}),
+				step([]int{3, 3}, []int{1, 1}), // scale up
+				step([]int{2, 2}, []int{1, 1}), // scale down
+				step([]int{2, 2}, []int{2, 2}), // scale up
+				step([]int{1, 1}, []int{2, 2}), // scale down
+				step([]int{1, 1}, []int{3, 3}), // scale up
+				step([]int{0, 0}, []int{3, 3}), // scale down
 			},
 		},
 		// Medium asymmetric cases (decoupled steps)
 		{
-			name:          "medium_6_2_surge1",
-			sourcePrefill: 6, sourceDecode: 2, targetPrefill: 6, targetDecode: 2,
-			config: DefaultRollingUpdateConfig(),
+			name:         "medium_6_2_surge1",
+			sourcePhase0: 6, sourcePhase1: 2, targetPhase0: 6, targetPhase1: 2,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(6, 2, 0, 0),
-				step(6, 2, 1, 1),
-				step(5, 2, 1, 1),
-				step(5, 2, 2, 1),
-				step(4, 2, 2, 1),
-				step(4, 2, 3, 1),
-				step(3, 1, 3, 1),
-				step(3, 1, 4, 2),
-				step(2, 1, 4, 2),
-				step(2, 1, 5, 2),
-				step(1, 1, 5, 2),
-				step(1, 1, 6, 2),
-				step(0, 0, 6, 2),
+				step([]int{6, 2}, []int{0, 0}),
+				step([]int{6, 2}, []int{1, 1}),
+				step([]int{5, 2}, []int{1, 1}),
+				step([]int{5, 2}, []int{2, 1}),
+				step([]int{4, 2}, []int{2, 1}),
+				step([]int{4, 2}, []int{3, 1}),
+				step([]int{3, 1}, []int{3, 1}),
+				step([]int{3, 1}, []int{4, 2}),
+				step([]int{2, 1}, []int{4, 2}),
+				step([]int{2, 1}, []int{5, 2}),
+				step([]int{1, 1}, []int{5, 2}),
+				step([]int{1, 1}, []int{6, 2}),
+				step([]int{0, 0}, []int{6, 2}),
 			},
 		},
 		{
-			name:          "medium_6_2_surge2",
-			sourcePrefill: 6, sourceDecode: 2, targetPrefill: 6, targetDecode: 2,
-			config: config(2, 0, 2, 0),
+			name:         "medium_6_2_surge2",
+			sourcePhase0: 6, sourcePhase1: 2, targetPhase0: 6, targetPhase1: 2,
+			config: config([]int{2, 2}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(6, 2, 0, 0),
-				step(6, 2, 2, 1),
-				step(4, 2, 2, 1),
-				step(4, 2, 4, 2),
-				step(2, 1, 4, 2),
-				step(2, 1, 6, 2),
-				step(0, 0, 6, 2),
+				step([]int{6, 2}, []int{0, 0}),
+				step([]int{6, 2}, []int{2, 1}),
+				step([]int{4, 2}, []int{2, 1}),
+				step([]int{4, 2}, []int{4, 2}),
+				step([]int{2, 1}, []int{4, 2}),
+				step([]int{2, 1}, []int{6, 2}),
+				step([]int{0, 0}, []int{6, 2}),
 			},
 		},
 		{
-			name:          "medium_6_4_surge2",
-			sourcePrefill: 6, sourceDecode: 4, targetPrefill: 6, targetDecode: 4,
-			config: config(2, 0, 2, 0),
+			name:         "medium_6_4_surge2",
+			sourcePhase0: 6, sourcePhase1: 4, targetPhase0: 6, targetPhase1: 4,
+			config: config([]int{2, 2}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(6, 4, 0, 0),
-				step(6, 4, 2, 2),
-				step(4, 3, 2, 2),
-				step(4, 3, 4, 3),
-				step(2, 2, 4, 3),
-				step(2, 2, 6, 4),
-				step(0, 0, 6, 4),
+				step([]int{6, 4}, []int{0, 0}),
+				step([]int{6, 4}, []int{2, 2}),
+				step([]int{4, 3}, []int{2, 2}),
+				step([]int{4, 3}, []int{4, 3}),
+				step([]int{2, 2}, []int{4, 3}),
+				step([]int{2, 2}, []int{6, 4}),
+				step([]int{0, 0}, []int{6, 4}),
 			},
 		},
 		// Asymmetric cases (gradual interleaved drain)
 		{
-			name:          "asymmetric_10_1_surge1",
-			sourcePrefill: 10, sourceDecode: 1, targetPrefill: 10, targetDecode: 1,
-			config: DefaultRollingUpdateConfig(),
+			name:         "asymmetric_10_1_surge1",
+			sourcePhase0: 10, sourcePhase1: 1, targetPhase0: 10, targetPhase1: 1,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(10, 1, 0, 0),
-				step(10, 1, 1, 1),
-				step(9, 1, 1, 1),
-				step(9, 1, 2, 1),
-				step(8, 1, 2, 1),
-				step(8, 1, 3, 1),
-				step(7, 1, 3, 1),
-				step(7, 1, 4, 1),
-				step(6, 1, 4, 1),
-				step(6, 1, 5, 1),
-				step(5, 1, 5, 1),
-				step(5, 1, 6, 1),
-				step(4, 1, 6, 1),
-				step(4, 1, 7, 1),
-				step(3, 1, 7, 1),
-				step(3, 1, 8, 1),
-				step(2, 1, 8, 1),
-				step(2, 1, 9, 1),
-				step(1, 1, 9, 1),
-				step(1, 1, 10, 1),
-				step(0, 0, 10, 1),
+				step([]int{10, 1}, []int{0, 0}),
+				step([]int{10, 1}, []int{1, 1}),
+				step([]int{9, 1}, []int{1, 1}),
+				step([]int{9, 1}, []int{2, 1}),
+				step([]int{8, 1}, []int{2, 1}),
+				step([]int{8, 1}, []int{3, 1}),
+				step([]int{7, 1}, []int{3, 1}),
+				step([]int{7, 1}, []int{4, 1}),
+				step([]int{6, 1}, []int{4, 1}),
+				step([]int{6, 1}, []int{5, 1}),
+				step([]int{5, 1}, []int{5, 1}),
+				step([]int{5, 1}, []int{6, 1}),
+				step([]int{4, 1}, []int{6, 1}),
+				step([]int{4, 1}, []int{7, 1}),
+				step([]int{3, 1}, []int{7, 1}),
+				step([]int{3, 1}, []int{8, 1}),
+				step([]int{2, 1}, []int{8, 1}),
+				step([]int{2, 1}, []int{9, 1}),
+				step([]int{1, 1}, []int{9, 1}),
+				step([]int{1, 1}, []int{10, 1}),
+				step([]int{0, 0}, []int{10, 1}),
 			},
 		},
 		{
-			name:          "asymmetric_1_10_surge1",
-			sourcePrefill: 1, sourceDecode: 10, targetPrefill: 1, targetDecode: 10,
-			config: DefaultRollingUpdateConfig(),
+			name:         "asymmetric_1_10_surge1",
+			sourcePhase0: 1, sourcePhase1: 10, targetPhase0: 1, targetPhase1: 10,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(1, 10, 0, 0),
-				step(1, 10, 1, 1),
-				step(1, 9, 1, 1),
-				step(1, 9, 1, 2),
-				step(1, 8, 1, 2),
-				step(1, 8, 1, 3),
-				step(1, 7, 1, 3),
-				step(1, 7, 1, 4),
-				step(1, 6, 1, 4),
-				step(1, 6, 1, 5),
-				step(1, 5, 1, 5),
-				step(1, 5, 1, 6),
-				step(1, 4, 1, 6),
-				step(1, 4, 1, 7),
-				step(1, 3, 1, 7),
-				step(1, 3, 1, 8),
-				step(1, 2, 1, 8),
-				step(1, 2, 1, 9),
-				step(1, 1, 1, 9),
-				step(1, 1, 1, 10),
-				step(0, 0, 1, 10),
+				step([]int{1, 10}, []int{0, 0}),
+				step([]int{1, 10}, []int{1, 1}),
+				step([]int{1, 9}, []int{1, 1}),
+				step([]int{1, 9}, []int{1, 2}),
+				step([]int{1, 8}, []int{1, 2}),
+				step([]int{1, 8}, []int{1, 3}),
+				step([]int{1, 7}, []int{1, 3}),
+				step([]int{1, 7}, []int{1, 4}),
+				step([]int{1, 6}, []int{1, 4}),
+				step([]int{1, 6}, []int{1, 5}),
+				step([]int{1, 5}, []int{1, 5}),
+				step([]int{1, 5}, []int{1, 6}),
+				step([]int{1, 4}, []int{1, 6}),
+				step([]int{1, 4}, []int{1, 7}),
+				step([]int{1, 3}, []int{1, 7}),
+				step([]int{1, 3}, []int{1, 8}),
+				step([]int{1, 2}, []int{1, 8}),
+				step([]int{1, 2}, []int{1, 9}),
+				step([]int{1, 1}, []int{1, 9}),
+				step([]int{1, 1}, []int{1, 10}),
+				step([]int{0, 0}, []int{1, 10}),
 			},
 		},
 		// Large symmetric cases (decoupled: alternating scale-up/scale-down)
 		{
-			name:          "large_10_10_surge1",
-			sourcePrefill: 10, sourceDecode: 10, targetPrefill: 10, targetDecode: 10,
-			config: DefaultRollingUpdateConfig(),
+			name:         "large_10_10_surge1",
+			sourcePhase0: 10, sourcePhase1: 10, targetPhase0: 10, targetPhase1: 10,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(10, 10, 0, 0),
-				step(10, 10, 1, 1), // scale up
-				step(9, 9, 1, 1),   // scale down
-				step(9, 9, 2, 2),   // scale up
-				step(8, 8, 2, 2),   // scale down
-				step(8, 8, 3, 3),
-				step(7, 7, 3, 3),
-				step(7, 7, 4, 4),
-				step(6, 6, 4, 4),
-				step(6, 6, 5, 5),
-				step(5, 5, 5, 5),
-				step(5, 5, 6, 6),
-				step(4, 4, 6, 6),
-				step(4, 4, 7, 7),
-				step(3, 3, 7, 7),
-				step(3, 3, 8, 8),
-				step(2, 2, 8, 8),
-				step(2, 2, 9, 9),
-				step(1, 1, 9, 9),
-				step(1, 1, 10, 10),
-				step(0, 0, 10, 10),
+				step([]int{10, 10}, []int{0, 0}),
+				step([]int{10, 10}, []int{1, 1}), // scale up
+				step([]int{9, 9}, []int{1, 1}),   // scale down
+				step([]int{9, 9}, []int{2, 2}),   // scale up
+				step([]int{8, 8}, []int{2, 2}),   // scale down
+				step([]int{8, 8}, []int{3, 3}),
+				step([]int{7, 7}, []int{3, 3}),
+				step([]int{7, 7}, []int{4, 4}),
+				step([]int{6, 6}, []int{4, 4}),
+				step([]int{6, 6}, []int{5, 5}),
+				step([]int{5, 5}, []int{5, 5}),
+				step([]int{5, 5}, []int{6, 6}),
+				step([]int{4, 4}, []int{6, 6}),
+				step([]int{4, 4}, []int{7, 7}),
+				step([]int{3, 3}, []int{7, 7}),
+				step([]int{3, 3}, []int{8, 8}),
+				step([]int{2, 2}, []int{8, 8}),
+				step([]int{2, 2}, []int{9, 9}),
+				step([]int{1, 1}, []int{9, 9}),
+				step([]int{1, 1}, []int{10, 10}),
+				step([]int{0, 0}, []int{10, 10}),
 			},
 		},
 		{
 			// Surge constraint: old + new <= 10 + 3 = 13
 			// Interleaves scale-up and scale-down to respect surge
-			name:          "large_10_10_surge3",
-			sourcePrefill: 10, sourceDecode: 10, targetPrefill: 10, targetDecode: 10,
-			config: config(3, 0, 3, 0),
+			name:         "large_10_10_surge3",
+			sourcePhase0: 10, sourcePhase1: 10, targetPhase0: 10, targetPhase1: 10,
+			config: config([]int{3, 3}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(10, 10, 0, 0),
-				step(10, 10, 3, 3), // scale up (10+3=13)
-				step(8, 8, 3, 3),   // scale down
-				step(8, 8, 5, 5),   // scale up (8+5=13)
-				step(5, 5, 5, 5),   // scale down (to allow 8)
-				step(5, 5, 8, 8),   // scale up (5+8=13)
-				step(3, 3, 8, 8),   // scale down (to allow 10)
-				step(3, 3, 10, 10), // scale up (3+10=13)
-				step(0, 0, 10, 10), // final drain
+				step([]int{10, 10}, []int{0, 0}),
+				step([]int{10, 10}, []int{3, 3}), // scale up (10+3=13)
+				step([]int{8, 8}, []int{3, 3}),   // scale down
+				step([]int{8, 8}, []int{5, 5}),   // scale up (8+5=13)
+				step([]int{5, 5}, []int{5, 5}),   // scale down (to allow 8)
+				step([]int{5, 5}, []int{8, 8}),   // scale up (5+8=13)
+				step([]int{3, 3}, []int{8, 8}),   // scale down (to allow 10)
+				step([]int{3, 3}, []int{10, 10}), // scale up (3+10=13)
+				step([]int{0, 0}, []int{10, 10}), // final drain
 			},
 		},
 		{
-			name:          "large_12_6_surge2",
-			sourcePrefill: 12, sourceDecode: 6, targetPrefill: 12, targetDecode: 6,
-			config: config(2, 0, 2, 0),
+			name:         "large_12_6_surge2",
+			sourcePhase0: 12, sourcePhase1: 6, targetPhase0: 12, targetPhase1: 6,
+			config: config([]int{2, 2}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(12, 6, 0, 0),
-				step(12, 6, 2, 1),
-				step(10, 5, 2, 1),
-				step(10, 5, 4, 2),
-				step(8, 4, 4, 2),
-				step(8, 4, 6, 3),
-				step(6, 3, 6, 3),
-				step(6, 3, 8, 4),
-				step(4, 2, 8, 4),
-				step(4, 2, 10, 5),
-				step(2, 1, 10, 5),
-				step(2, 1, 12, 6),
-				step(0, 0, 12, 6),
+				step([]int{12, 6}, []int{0, 0}),
+				step([]int{12, 6}, []int{2, 1}),
+				step([]int{10, 5}, []int{2, 1}),
+				step([]int{10, 5}, []int{4, 2}),
+				step([]int{8, 4}, []int{4, 2}),
+				step([]int{8, 4}, []int{6, 3}),
+				step([]int{6, 3}, []int{6, 3}),
+				step([]int{6, 3}, []int{8, 4}),
+				step([]int{4, 2}, []int{8, 4}),
+				step([]int{4, 2}, []int{10, 5}),
+				step([]int{2, 1}, []int{10, 5}),
+				step([]int{2, 1}, []int{12, 6}),
+				step([]int{0, 0}, []int{12, 6}),
 			},
 		},
 		// Scale up/down scenarios (decoupled)
 		{
-			name:          "scale_up_1_1_to_3_3",
-			sourcePrefill: 1, sourceDecode: 1, targetPrefill: 3, targetDecode: 3,
-			config: DefaultRollingUpdateConfig(),
+			name:         "scale_up_1_1_to_3_3",
+			sourcePhase0: 1, sourcePhase1: 1, targetPhase0: 3, targetPhase1: 3,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(1, 1, 0, 0),
-				step(1, 1, 1, 1), // scale up
-				step(1, 1, 2, 2), // scale up (old still 1, new 2, surge ok: 1+2<=3+1)
-				step(1, 1, 3, 3), // scale up (new at target)
-				step(0, 0, 3, 3), // scale down
+				step([]int{1, 1}, []int{0, 0}),
+				step([]int{1, 1}, []int{1, 1}), // scale up
+				step([]int{1, 1}, []int{2, 2}), // scale up (old still 1, new 2, surge ok: 1+2<=3+1)
+				step([]int{1, 1}, []int{3, 3}), // scale up (new at target)
+				step([]int{0, 0}, []int{3, 3}), // scale down
 			},
 		},
 		{
 			// Scale up 4→6 with surge=1: max total = 6+1 = 7
 			// Interleaves scale-up and scale-down to respect surge
-			name:          "scale_up_4_4_to_6_6",
-			sourcePrefill: 4, sourceDecode: 4, targetPrefill: 6, targetDecode: 6,
-			config: DefaultRollingUpdateConfig(),
+			name:         "scale_up_4_4_to_6_6",
+			sourcePhase0: 4, sourcePhase1: 4, targetPhase0: 6, targetPhase1: 6,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(4, 4, 0, 0),
-				step(4, 4, 1, 1), // scale up (4+1=5)
-				step(4, 4, 2, 2), // scale up (4+2=6)
-				step(4, 4, 3, 3), // scale up (4+3=7)
-				step(3, 3, 3, 3), // scale down (to allow 4)
-				step(3, 3, 4, 4), // scale up (3+4=7)
-				step(2, 2, 4, 4), // scale down (to allow 5)
-				step(2, 2, 5, 5), // scale up (2+5=7)
-				step(1, 1, 5, 5), // scale down (to allow 6)
-				step(1, 1, 6, 6), // scale up (1+6=7)
-				step(0, 0, 6, 6), // final drain
+				step([]int{4, 4}, []int{0, 0}),
+				step([]int{4, 4}, []int{1, 1}), // scale up (4+1=5)
+				step([]int{4, 4}, []int{2, 2}), // scale up (4+2=6)
+				step([]int{4, 4}, []int{3, 3}), // scale up (4+3=7)
+				step([]int{3, 3}, []int{3, 3}), // scale down (to allow 4)
+				step([]int{3, 3}, []int{4, 4}), // scale up (3+4=7)
+				step([]int{2, 2}, []int{4, 4}), // scale down (to allow 5)
+				step([]int{2, 2}, []int{5, 5}), // scale up (2+5=7)
+				step([]int{1, 1}, []int{5, 5}), // scale down (to allow 6)
+				step([]int{1, 1}, []int{6, 6}), // scale up (1+6=7)
+				step([]int{0, 0}, []int{6, 6}), // final drain
 			},
 		},
 		{
-			name:          "scale_down_5_5_to_2_2",
-			sourcePrefill: 5, sourceDecode: 5, targetPrefill: 2, targetDecode: 2,
-			config: DefaultRollingUpdateConfig(),
+			name:         "scale_down_5_5_to_2_2",
+			sourcePhase0: 5, sourcePhase1: 5, targetPhase0: 2, targetPhase1: 2,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(5, 5, 0, 0),
-				step(4, 4, 0, 0), // scale down (can't scale up: surge=1, 5+1>2+1)
-				step(3, 3, 0, 0), // scale down
-				step(2, 2, 0, 0), // scale down (now old=2=target)
-				step(2, 2, 1, 1), // scale up (surge: 2+1<=2+1)
-				step(1, 1, 1, 1), // scale down
-				step(1, 1, 2, 2), // scale up (new at target)
-				step(0, 0, 2, 2), // scale down
+				step([]int{5, 5}, []int{0, 0}),
+				step([]int{4, 4}, []int{0, 0}), // scale down (can't scale up: surge=1, 5+1>2+1)
+				step([]int{3, 3}, []int{0, 0}), // scale down
+				step([]int{2, 2}, []int{0, 0}), // scale down (now old=2=target)
+				step([]int{2, 2}, []int{1, 1}), // scale up (surge: 2+1<=2+1)
+				step([]int{1, 1}, []int{1, 1}), // scale down
+				step([]int{1, 1}, []int{2, 2}), // scale up (new at target)
+				step([]int{0, 0}, []int{2, 2}), // scale down
 			},
 		},
 		{
-			name:          "mixed_scale_3_5_to_5_3",
-			sourcePrefill: 3, sourceDecode: 5, targetPrefill: 5, targetDecode: 3,
-			config: DefaultRollingUpdateConfig(),
+			name:         "mixed_scale_3_5_to_5_3",
+			sourcePhase0: 3, sourcePhase1: 5, targetPhase0: 5, targetPhase1: 3,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(3, 5, 0, 0),
-				step(3, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(2, 3, 1, 1),
-				step(2, 2, 1, 1),
-				step(2, 2, 2, 2),
-				step(2, 2, 3, 2),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 3),
-				step(1, 1, 5, 3),
-				step(0, 0, 5, 3),
+				step([]int{3, 5}, []int{0, 0}),
+				step([]int{3, 4}, []int{0, 0}),
+				step([]int{2, 3}, []int{0, 0}),
+				step([]int{2, 3}, []int{1, 1}),
+				step([]int{2, 2}, []int{1, 1}),
+				step([]int{2, 2}, []int{2, 2}),
+				step([]int{2, 2}, []int{3, 2}),
+				step([]int{1, 1}, []int{3, 2}),
+				step([]int{1, 1}, []int{4, 3}),
+				step([]int{1, 1}, []int{5, 3}),
+				step([]int{0, 0}, []int{5, 3}),
 			},
 		},
 		{
-			name:          "asymmetric_2_4_to_4_2",
-			sourcePrefill: 2, sourceDecode: 4, targetPrefill: 4, targetDecode: 2,
-			config: DefaultRollingUpdateConfig(),
+			name:         "asymmetric_2_4_to_4_2",
+			sourcePhase0: 2, sourcePhase1: 4, targetPhase0: 4, targetPhase1: 2,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(2, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(1, 2, 0, 0),
-				step(1, 2, 1, 1),
-				step(1, 2, 2, 1),
-				step(1, 1, 2, 1),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 2),
-				step(0, 0, 4, 2),
+				step([]int{2, 4}, []int{0, 0}),
+				step([]int{2, 3}, []int{0, 0}),
+				step([]int{1, 2}, []int{0, 0}),
+				step([]int{1, 2}, []int{1, 1}),
+				step([]int{1, 2}, []int{2, 1}),
+				step([]int{1, 1}, []int{2, 1}),
+				step([]int{1, 1}, []int{3, 2}),
+				step([]int{1, 1}, []int{4, 2}),
+				step([]int{0, 0}, []int{4, 2}),
 			},
 		},
 		{
-			name:          "proportional_3_5_to_4_2",
-			sourcePrefill: 3, sourceDecode: 5, targetPrefill: 4, targetDecode: 2,
-			config: DefaultRollingUpdateConfig(),
+			name:         "proportional_3_5_to_4_2",
+			sourcePhase0: 3, sourcePhase1: 5, targetPhase0: 4, targetPhase1: 2,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(3, 5, 0, 0),
-				step(3, 4, 0, 0),
-				step(2, 3, 0, 0),
-				step(2, 2, 0, 0),
-				step(2, 2, 1, 1),
-				step(2, 2, 2, 1),
-				step(1, 1, 2, 1),
-				step(1, 1, 3, 2),
-				step(1, 1, 4, 2),
-				step(0, 0, 4, 2),
+				step([]int{3, 5}, []int{0, 0}),
+				step([]int{3, 4}, []int{0, 0}),
+				step([]int{2, 3}, []int{0, 0}),
+				step([]int{2, 2}, []int{0, 0}),
+				step([]int{2, 2}, []int{1, 1}),
+				step([]int{2, 2}, []int{2, 1}),
+				step([]int{1, 1}, []int{2, 1}),
+				step([]int{1, 1}, []int{3, 2}),
+				step([]int{1, 1}, []int{4, 2}),
+				step([]int{0, 0}, []int{4, 2}),
 			},
 		},
 		{
-			name:          "medium_4_4_surge2",
-			sourcePrefill: 4, sourceDecode: 4, targetPrefill: 4, targetDecode: 4,
-			config: config(2, 0, 2, 0),
+			name:         "medium_4_4_surge2",
+			sourcePhase0: 4, sourcePhase1: 4, targetPhase0: 4, targetPhase1: 4,
+			config: config([]int{2, 2}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(4, 4, 0, 0),
-				step(4, 4, 2, 2), // scale up (surge: 4+2<=4+2)
-				step(2, 2, 2, 2), // scale down
-				step(2, 2, 4, 4), // scale up (new at target)
-				step(0, 0, 4, 4), // scale down
+				step([]int{4, 4}, []int{0, 0}),
+				step([]int{4, 4}, []int{2, 2}), // scale up (surge: 4+2<=4+2)
+				step([]int{2, 2}, []int{2, 2}), // scale down
+				step([]int{2, 2}, []int{4, 4}), // scale up (new at target)
+				step([]int{0, 0}, []int{4, 4}), // scale down
 			},
 		},
 		{
-			name:          "asymmetric_surge_4_6",
-			sourcePrefill: 4, sourceDecode: 6, targetPrefill: 4, targetDecode: 6,
-			config: config(2, 0, 3, 0),
+			name:         "asymmetric_surge_4_6",
+			sourcePhase0: 4, sourcePhase1: 6, targetPhase0: 4, targetPhase1: 6,
+			config: config([]int{2, 3}, []int{0, 0}),
 			expected: []UpdateStep{
-				step(4, 6, 0, 0),
-				step(4, 6, 2, 3),
-				step(2, 3, 2, 3),
-				step(2, 3, 4, 6),
-				step(0, 0, 4, 6),
+				step([]int{4, 6}, []int{0, 0}),
+				step([]int{4, 6}, []int{2, 3}),
+				step([]int{2, 3}, []int{2, 3}),
+				step([]int{2, 3}, []int{4, 6}),
+				step([]int{0, 0}, []int{4, 6}),
 			},
 		},
 		// Edge cases
 		{
-			name:          "fresh_deploy_0_0_to_3_3",
-			sourcePrefill: 0, sourceDecode: 0, targetPrefill: 3, targetDecode: 3,
-			config: DefaultRollingUpdateConfig(),
+			name:         "fresh_deploy_0_0_to_3_3",
+			sourcePhase0: 0, sourcePhase1: 0, targetPhase0: 3, targetPhase1: 3,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(0, 0, 0, 0),
-				step(0, 0, 1, 1),
-				step(0, 0, 2, 2),
-				step(0, 0, 3, 3),
+				step([]int{0, 0}, []int{0, 0}),
+				step([]int{0, 0}, []int{1, 1}),
+				step([]int{0, 0}, []int{2, 2}),
+				step([]int{0, 0}, []int{3, 3}),
 			},
 		},
 		{
-			name:          "empty_0_0_to_0_0",
-			sourcePrefill: 0, sourceDecode: 0, targetPrefill: 0, targetDecode: 0,
-			config: DefaultRollingUpdateConfig(),
+			name:         "empty_0_0_to_0_0",
+			sourcePhase0: 0, sourcePhase1: 0, targetPhase0: 0, targetPhase1: 0,
+			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
-				step(0, 0, 0, 0),
+				step([]int{0, 0}, []int{0, 0}),
 			},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := ComputeAllSteps(tc.sourcePrefill, tc.sourceDecode, tc.targetPrefill, tc.targetDecode, tc.config)
+			actual := ComputeAllSteps(
+				[]int{tc.sourcePhase0, tc.sourcePhase1},
+				[]int{tc.targetPhase0, tc.targetPhase1},
+				tc.config,
+			)
 			assert.True(t, stepsEqual(actual, tc.expected), "ComputeAllSteps mismatch:\ngot:  %v\nwant: %v", actual, tc.expected)
 		})
 	}
@@ -453,8 +493,8 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 // =============================================================================
 
 func TestUnavailableBasic_Symmetric4_4(t *testing.T) {
-	steps := ComputeAllSteps(4, 4, 4, 4, config(0, 1, 0, 1))
-	require.True(t, completes(steps, 4, 4), "rollout should complete")
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
 	// Verify total drops below 8 (unavailable pattern)
 	minTotal := 100
@@ -467,16 +507,16 @@ func TestUnavailableBasic_Symmetric4_4(t *testing.T) {
 }
 
 func TestUnavailableBasic_StepSequence(t *testing.T) {
-	steps := ComputeAllSteps(4, 4, 4, 4, config(0, 1, 0, 1))
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
 
 	// Verify unavailable pattern: old decreases faster than new increases
 	foundUnavailablePattern := false
 	for i := 1; i < len(steps); i++ {
 		prev := steps[i-1]
 		curr := steps[i]
-		oldDecreased := curr.PastPrefill < prev.PastPrefill || curr.PastDecode < prev.PastDecode
-		newIncrease := (curr.NewPrefill - prev.NewPrefill) + (curr.NewDecode - prev.NewDecode)
-		oldDecrease := (prev.PastPrefill - curr.PastPrefill) + (prev.PastDecode - curr.PastDecode)
+		oldDecreased := curr.Past[0] < prev.Past[0] || curr.Past[1] < prev.Past[1]
+		newIncrease := (curr.New[0] - prev.New[0]) + (curr.New[1] - prev.New[1])
+		oldDecrease := (prev.Past[0] - curr.Past[0]) + (prev.Past[1] - curr.Past[1])
 		if oldDecreased && oldDecrease > newIncrease {
 			foundUnavailablePattern = true
 			break
@@ -489,11 +529,11 @@ func TestUnavailableBasic_StepSequence(t *testing.T) {
 
 func TestSurgePriority_SurgeTakesPriorityOverUnavailable(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 1, PrefillMaxUnavailable: 1,
-		DecodeMaxSurge: 1, DecodeMaxUnavailable: 1,
+		MaxSurge:       []int{1, 1},
+		MaxUnavailable: []int{1, 1},
 	}
-	steps := ComputeAllSteps(4, 4, 4, 4, cfg)
-	require.True(t, completes(steps, 4, 4), "rollout should complete")
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
+	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
 	// With surge > 0, total should never drop below target (8)
 	for _, s := range steps {
@@ -504,11 +544,11 @@ func TestSurgePriority_SurgeTakesPriorityOverUnavailable(t *testing.T) {
 
 func TestSurgePriority_UnavailableWhenSurgeZero(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 0, PrefillMaxUnavailable: 1,
-		DecodeMaxSurge: 0, DecodeMaxUnavailable: 1,
+		MaxSurge:       []int{0, 0},
+		MaxUnavailable: []int{1, 1},
 	}
-	steps := ComputeAllSteps(4, 4, 4, 4, cfg)
-	require.True(t, completes(steps, 4, 4), "rollout should complete")
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
+	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
 	// With surge=0, total should drop below target (8)
 	minTotal := 100
@@ -522,11 +562,11 @@ func TestSurgePriority_UnavailableWhenSurgeZero(t *testing.T) {
 
 func TestSurgePriority_Surge2Behavior(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 2, PrefillMaxUnavailable: 0,
-		DecodeMaxSurge: 2, DecodeMaxUnavailable: 0,
+		MaxSurge:       []int{2, 2},
+		MaxUnavailable: []int{0, 0},
 	}
-	steps := ComputeAllSteps(6, 6, 6, 6, cfg)
-	require.True(t, completes(steps, 6, 6), "rollout should complete")
+	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
+	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
 	// With surge=2, total should never drop below target (12)
 	for _, s := range steps {
@@ -537,11 +577,11 @@ func TestSurgePriority_Surge2Behavior(t *testing.T) {
 
 func TestSurgePriority_Unavailable2Behavior(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 0, PrefillMaxUnavailable: 2,
-		DecodeMaxSurge: 0, DecodeMaxUnavailable: 2,
+		MaxSurge:       []int{0, 0},
+		MaxUnavailable: []int{2, 2},
 	}
-	steps := ComputeAllSteps(6, 6, 6, 6, cfg)
-	require.True(t, completes(steps, 6, 6), "rollout should complete")
+	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
+	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
 	// With unavailable=2, total should drop below target (12)
 	minTotal := 100
@@ -555,11 +595,11 @@ func TestSurgePriority_Unavailable2Behavior(t *testing.T) {
 
 func TestSurgePriority_BothSurgeAndUnavailableUsesSurge(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 2, PrefillMaxUnavailable: 2,
-		DecodeMaxSurge: 2, DecodeMaxUnavailable: 2,
+		MaxSurge:       []int{2, 2},
+		MaxUnavailable: []int{2, 2},
 	}
-	steps := ComputeAllSteps(6, 6, 6, 6, cfg)
-	require.True(t, completes(steps, 6, 6), "rollout should complete")
+	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
+	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
 	// With both set, surge takes priority (total >= 12)
 	for _, s := range steps {
@@ -568,22 +608,22 @@ func TestSurgePriority_BothSurgeAndUnavailableUsesSurge(t *testing.T) {
 	}
 }
 
-func TestMixedSurgeUnavailable_PrefillSurgeDecodeUnavailable(t *testing.T) {
+func TestMixedSurgeUnavailable_Phase0SurgePhase1Unavailable(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 1, PrefillMaxUnavailable: 0,
-		DecodeMaxSurge: 0, DecodeMaxUnavailable: 1,
+		MaxSurge:       []int{1, 0},
+		MaxUnavailable: []int{0, 1},
 	}
-	steps := ComputeAllSteps(4, 4, 4, 4, cfg)
-	assert.True(t, completes(steps, 4, 4), "rollout should complete")
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
+	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 }
 
-func TestMixedSurgeUnavailable_PrefillUnavailableDecodeSurge(t *testing.T) {
+func TestMixedSurgeUnavailable_Phase0UnavailablePhase1Surge(t *testing.T) {
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 0, PrefillMaxUnavailable: 1,
-		DecodeMaxSurge: 1, DecodeMaxUnavailable: 0,
+		MaxSurge:       []int{0, 1},
+		MaxUnavailable: []int{1, 0},
 	}
-	steps := ComputeAllSteps(4, 4, 4, 4, cfg)
-	assert.True(t, completes(steps, 4, 4), "rollout should complete")
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
+	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 }
 
 func TestMixedSurgeUnavailable_Asymmetric(t *testing.T) {
@@ -594,33 +634,33 @@ func TestMixedSurgeUnavailable_Asymmetric(t *testing.T) {
 	}
 
 	cfg := RollingUpdateConfig{
-		PrefillMaxSurge: 1, PrefillMaxUnavailable: 0,
-		DecodeMaxSurge: 0, DecodeMaxUnavailable: 1,
+		MaxSurge:       []int{1, 0},
+		MaxUnavailable: []int{0, 1},
 	}
 
 	for _, tc := range testCases {
-		steps := ComputeAllSteps(tc.sp, tc.sd, tc.sp, tc.sd, cfg)
-		assert.True(t, completes(steps, tc.sp, tc.sd), "sp=%d, sd=%d: rollout should complete", tc.sp, tc.sd)
+		steps := ComputeAllSteps([]int{tc.sp, tc.sd}, []int{tc.sp, tc.sd}, cfg)
+		assert.True(t, completes(steps, []int{tc.sp, tc.sd}), "sp=%d, sd=%d: rollout should complete", tc.sp, tc.sd)
 	}
 }
 
 func TestUnavailableEdgeCases_ScaleUpWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps(2, 2, 4, 4, config(0, 1, 0, 1))
-	if !completes(steps, 4, 4) {
+	steps := ComputeAllSteps([]int{2, 2}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	if !completes(steps, []int{4, 4}) {
 		t.Error("Scale-up with unavailable did not complete")
 	}
 }
 
 func TestUnavailableEdgeCases_ScaleDownWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps(4, 4, 2, 2, config(0, 1, 0, 1))
-	if !completes(steps, 2, 2) {
+	steps := ComputeAllSteps([]int{4, 4}, []int{2, 2}, config([]int{0, 0}, []int{1, 1}))
+	if !completes(steps, []int{2, 2}) {
 		t.Error("Scale-down with unavailable did not complete")
 	}
 }
 
 func TestUnavailableEdgeCases_FreshDeployWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps(0, 0, 4, 4, config(0, 1, 0, 1))
-	if !completes(steps, 4, 4) {
+	steps := ComputeAllSteps([]int{0, 0}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	if !completes(steps, []int{4, 4}) {
 		t.Error("Fresh deploy with unavailable did not complete")
 	}
 }
@@ -633,9 +673,9 @@ func TestUnavailableEdgeCases_NoInfiniteLoop(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		steps := ComputeAllSteps(tc.size, tc.size, tc.size, tc.size, config(0, tc.unavailable, 0, tc.unavailable))
+		steps := ComputeAllSteps([]int{tc.size, tc.size}, []int{tc.size, tc.size}, config([]int{0, 0}, []int{tc.unavailable, tc.unavailable}))
 		assert.LessOrEqual(t, len(steps), tc.size*4, "size=%d, unavailable=%d: too many steps (%d)", tc.size, tc.unavailable, len(steps))
-		assert.True(t, completes(steps, tc.size, tc.size), "size=%d, unavailable=%d: rollout should complete", tc.size, tc.unavailable)
+		assert.True(t, completes(steps, []int{tc.size, tc.size}), "size=%d, unavailable=%d: rollout should complete", tc.size, tc.unavailable)
 	}
 }
 
@@ -669,19 +709,19 @@ func TestComputeTotalSteps(t *testing.T) {
 	}{
 		{
 			PhaseReplicaState{4, 4}, PhaseReplicaState{4, 4},
-			DefaultRollingUpdateConfig(), 4,
+			DefaultRollingUpdateConfig(2), 4,
 		},
 		{
 			PhaseReplicaState{6, 2}, PhaseReplicaState{6, 2},
-			DefaultRollingUpdateConfig(), 6,
+			DefaultRollingUpdateConfig(2), 6,
 		},
 		{
 			PhaseReplicaState{4, 4}, PhaseReplicaState{4, 4},
-			config(2, 0, 2, 0), 2,
+			config([]int{2, 2}, []int{0, 0}), 2,
 		},
 		{
 			PhaseReplicaState{0, 0}, PhaseReplicaState{3, 3},
-			DefaultRollingUpdateConfig(), 3,
+			DefaultRollingUpdateConfig(2), 3,
 		},
 	}
 
@@ -693,9 +733,9 @@ func TestComputeTotalSteps(t *testing.T) {
 
 func TestCorrectAbnormalState_Normal(t *testing.T) {
 	// Normal state should return nil
-	currentOld := PhaseReplicaState{Prefill: 2, Decode: 2}
-	currentNew := PhaseReplicaState{Prefill: 2, Decode: 2}
-	source := PhaseReplicaState{Prefill: 4, Decode: 4}
+	currentOld := PhaseReplicaState{2, 2}
+	currentNew := PhaseReplicaState{2, 2}
+	source := PhaseReplicaState{4, 4}
 
 	result := correctAbnormalState(currentOld, currentNew, source)
 	assert.Nil(t, result, "normal state should return nil")
@@ -703,20 +743,20 @@ func TestCorrectAbnormalState_Normal(t *testing.T) {
 
 func TestCorrectAbnormalState_Abnormal(t *testing.T) {
 	// Abnormal state: old > source
-	currentOld := PhaseReplicaState{Prefill: 5, Decode: 5}
-	currentNew := PhaseReplicaState{Prefill: 2, Decode: 2}
-	source := PhaseReplicaState{Prefill: 4, Decode: 4}
+	currentOld := PhaseReplicaState{5, 5}
+	currentNew := PhaseReplicaState{2, 2}
+	source := PhaseReplicaState{4, 4}
 
 	result := correctAbnormalState(currentOld, currentNew, source)
 	require.NotNil(t, result, "abnormal state should return correction step")
-	assert.Equal(t, 4, result.PastPrefill, "old prefill should be clamped to source")
-	assert.Equal(t, 4, result.PastDecode, "old decode should be clamped to source")
-	assert.Equal(t, 2, result.NewPrefill, "new prefill should be unchanged")
-	assert.Equal(t, 2, result.NewDecode, "new decode should be unchanged")
+	assert.Equal(t, 4, result.Past[0], "old phase0 should be clamped to source")
+	assert.Equal(t, 4, result.Past[1], "old phase1 should be clamped to source")
+	assert.Equal(t, 2, result.New[0], "new phase0 should be unchanged")
+	assert.Equal(t, 2, result.New[1], "new phase1 should be unchanged")
 }
 
 func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
-	cfg := DefaultRollingUpdateConfig()
+	cfg := DefaultRollingUpdateConfig(2)
 
 	testCases := []struct {
 		name       string
@@ -750,7 +790,7 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 }
 
 func TestComputeNextStep_FreshStart(t *testing.T) {
-	cfg := DefaultRollingUpdateConfig()
+	cfg := DefaultRollingUpdateConfig(2)
 
 	source := PhaseReplicaState{4, 4}
 	currentOld := PhaseReplicaState{4, 4}
@@ -761,8 +801,8 @@ func TestComputeNextStep_FreshStart(t *testing.T) {
 	require.NotNil(t, result, "fresh start should return a step")
 
 	// First step should create some new replicas
-	assert.Greater(t, result.NewPrefill, 0, "first step should create new prefill replicas")
-	assert.Greater(t, result.NewDecode, 0, "first step should create new decode replicas")
+	assert.Greater(t, result.New[0], 0, "first step should create new phase0 replicas")
+	assert.Greater(t, result.New[1], 0, "first step should create new phase1 replicas")
 }
 
 // =============================================================================
@@ -778,33 +818,33 @@ func TestComputeNextNewReplicas_EdgeCases(t *testing.T) {
 		checkFunc  func(t *testing.T, result PhaseReplicaState)
 	}{
 		{
-			name:       "target_prefill_zero",
-			target:     PhaseReplicaState{Prefill: 0, Decode: 4},
-			currentNew: PhaseReplicaState{Prefill: 0, Decode: 2},
+			name:       "target_phase0_zero",
+			target:     PhaseReplicaState{0, 4},
+			currentNew: PhaseReplicaState{0, 2},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.Equal(t, 0, result.Prefill, "prefill should remain 0 when target is 0")
-				assert.Greater(t, result.Decode, 2, "decode should increase")
+				assert.Equal(t, 0, result[0], "phase0 should remain 0 when target is 0")
+				assert.Greater(t, result[1], 2, "phase1 should increase")
 			},
 		},
 		{
-			name:       "target_decode_zero",
-			target:     PhaseReplicaState{Prefill: 4, Decode: 0},
-			currentNew: PhaseReplicaState{Prefill: 2, Decode: 0},
+			name:       "target_phase1_zero",
+			target:     PhaseReplicaState{4, 0},
+			currentNew: PhaseReplicaState{2, 0},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.Greater(t, result.Prefill, 2, "prefill should increase")
-				assert.Equal(t, 0, result.Decode, "decode should remain 0 when target is 0")
+				assert.Greater(t, result[0], 2, "phase0 should increase")
+				assert.Equal(t, 0, result[1], "phase1 should remain 0 when target is 0")
 			},
 		},
 		{
 			name:       "total_steps_zero",
-			target:     PhaseReplicaState{Prefill: 4, Decode: 4},
-			currentNew: PhaseReplicaState{Prefill: 2, Decode: 2},
+			target:     PhaseReplicaState{4, 4},
+			currentNew: PhaseReplicaState{2, 2},
 			totalSteps: 0,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.Equal(t, 4, result.Prefill, "should return target when totalSteps is 0")
-				assert.Equal(t, 4, result.Decode, "should return target when totalSteps is 0")
+				assert.Equal(t, 4, result[0], "should return target when totalSteps is 0")
+				assert.Equal(t, 4, result[1], "should return target when totalSteps is 0")
 			},
 		},
 	}
@@ -830,33 +870,33 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 		checkFunc  func(t *testing.T, result PhaseReplicaState)
 	}{
 		{
-			name:       "source_prefill_zero",
-			source:     PhaseReplicaState{Prefill: 0, Decode: 4},
-			currentOld: PhaseReplicaState{Prefill: 0, Decode: 3},
+			name:       "source_phase0_zero",
+			source:     PhaseReplicaState{0, 4},
+			currentOld: PhaseReplicaState{0, 3},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.Equal(t, 0, result.Prefill, "prefill should remain 0")
-				assert.LessOrEqual(t, result.Decode, 3, "decode should decrease or stay same")
+				assert.Equal(t, 0, result[0], "phase0 should remain 0")
+				assert.LessOrEqual(t, result[1], 3, "phase1 should decrease or stay same")
 			},
 		},
 		{
-			name:       "source_decode_zero",
-			source:     PhaseReplicaState{Prefill: 4, Decode: 0},
-			currentOld: PhaseReplicaState{Prefill: 3, Decode: 0},
+			name:       "source_phase1_zero",
+			source:     PhaseReplicaState{4, 0},
+			currentOld: PhaseReplicaState{3, 0},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.LessOrEqual(t, result.Prefill, 3, "prefill should decrease or stay same")
-				assert.Equal(t, 0, result.Decode, "decode should remain 0")
+				assert.LessOrEqual(t, result[0], 3, "phase0 should decrease or stay same")
+				assert.Equal(t, 0, result[1], "phase1 should remain 0")
 			},
 		},
 		{
 			name:       "total_steps_zero",
-			source:     PhaseReplicaState{Prefill: 4, Decode: 4},
-			currentOld: PhaseReplicaState{Prefill: 2, Decode: 2},
+			source:     PhaseReplicaState{4, 4},
+			currentOld: PhaseReplicaState{2, 2},
 			totalSteps: 0,
 			checkFunc: func(t *testing.T, result PhaseReplicaState) {
-				assert.Equal(t, 0, result.Prefill, "should return zeros when totalSteps is 0")
-				assert.Equal(t, 0, result.Decode, "should return zeros when totalSteps is 0")
+				assert.Equal(t, 0, result[0], "should return zeros when totalSteps is 0")
+				assert.Equal(t, 0, result[1], "should return zeros when totalSteps is 0")
 			},
 		},
 	}
@@ -865,6 +905,104 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result := computeNextOldReplicas(tc.source, tc.currentOld, tc.totalSteps)
 			tc.checkFunc(t, result)
+		})
+	}
+}
+
+// =============================================================================
+// N-Phase Tests (3, 4, 5 phases)
+// =============================================================================
+
+func TestNPhase_RolloutCompletes(t *testing.T) {
+	testCases := []struct {
+		name    string
+		source  []int
+		target  []int
+		surge   []int
+		unavail []int
+	}{
+		// 3-phase scenarios
+		{"3phase_symmetric", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"3phase_asymmetric", []int{6, 3, 2}, []int{6, 3, 2}, []int{2, 1, 1}, []int{0, 0, 0}},
+		{"3phase_different_surge", []int{4, 4, 4}, []int{4, 4, 4}, []int{2, 1, 3}, []int{0, 0, 0}},
+		{"3phase_scale_up", []int{2, 2, 2}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"3phase_scale_down", []int{4, 4, 4}, []int{2, 2, 2}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"3phase_fresh_deploy", []int{0, 0, 0}, []int{3, 3, 3}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"3phase_unavailable", []int{4, 4, 4}, []int{4, 4, 4}, []int{0, 0, 0}, []int{1, 1, 1}},
+		{"3phase_mixed_surge_unavail", []int{4, 4, 4}, []int{4, 4, 4}, []int{1, 0, 2}, []int{0, 1, 0}},
+
+		// 4-phase scenarios
+		{"4phase_symmetric", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"4phase_asymmetric", []int{8, 4, 2, 1}, []int{8, 4, 2, 1}, []int{2, 2, 1, 1}, []int{0, 0, 0, 0}},
+		{"4phase_scale_up", []int{1, 1, 1, 1}, []int{3, 3, 3, 3}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"4phase_scale_down", []int{5, 5, 5, 5}, []int{2, 2, 2, 2}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"4phase_fresh_deploy", []int{0, 0, 0, 0}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+
+		// 5-phase scenarios
+		{"5phase_symmetric", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"5phase_asymmetric", []int{10, 5, 3, 2, 1}, []int{10, 5, 3, 2, 1}, []int{2, 2, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"5phase_scale_up", []int{1, 1, 1, 1, 1}, []int{2, 2, 2, 2, 2}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"5phase_scale_down", []int{6, 6, 6, 6, 6}, []int{3, 3, 3, 3, 3}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"5phase_fresh_deploy", []int{0, 0, 0, 0, 0}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+
+		// Phase addition: 2 phases -> 3 phases (a,b -> a,b,c)
+		{"add_phase_2to3", []int{4, 4, 0}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"add_phase_3to4", []int{3, 3, 3, 0}, []int{3, 3, 3, 3}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"add_phase_5to6", []int{2, 2, 2, 2, 2, 0}, []int{2, 2, 2, 2, 2, 2}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
+
+		// Phase removal: 3 phases -> 2 phases (a,b,c -> a,b)
+		{"remove_phase_3to2", []int{4, 4, 4}, []int{4, 4, 0}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"remove_phase_4to3", []int{3, 3, 3, 3}, []int{3, 3, 3, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+
+		// Phase rename (simultaneous add + remove): a,b,c,d,i -> a,b,c,d,h
+		// Sorted order becomes [a,b,c,d,h,i] with source h=0, target i=0
+		{"rename_phase_5to5", []int{10, 10, 10, 10, 0, 10}, []int{10, 10, 10, 10, 10, 0}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := ComputeAllSteps(tc.source, tc.target, config(tc.surge, tc.unavail))
+			require.True(t, completes(steps, tc.target), "rollout should complete")
+		})
+	}
+}
+
+func TestNPhase_SurgeConstraint(t *testing.T) {
+	testCases := []struct {
+		name     string
+		source   []int
+		target   []int
+		surge    []int
+		maxTotal int // target sum + surge sum
+	}{
+		{"3phase", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}, 12},
+		{"4phase", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, 20},
+		{"5phase", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, 30},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			unavail := make([]int, len(tc.source))
+			steps := ComputeAllSteps(tc.source, tc.target, config(tc.surge, unavail))
+
+			for _, s := range steps {
+				total := totalAtStep(s)
+				assert.LessOrEqual(t, total, tc.maxTotal, "total should not exceed target + surge")
+			}
+		})
+	}
+}
+
+func TestNPhase_DefaultConfig(t *testing.T) {
+	for _, numPhases := range []int{3, 4, 5} {
+		t.Run(fmt.Sprintf("%d_phases", numPhases), func(t *testing.T) {
+			cfg := DefaultRollingUpdateConfig(numPhases)
+			assert.Equal(t, numPhases, len(cfg.MaxSurge))
+			assert.Equal(t, numPhases, len(cfg.MaxUnavailable))
+			for i := 0; i < numPhases; i++ {
+				assert.Equal(t, 1, cfg.MaxSurge[i], "default surge should be 1")
+				assert.Equal(t, 0, cfg.MaxUnavailable[i], "default unavailable should be 0")
+			}
 		})
 	}
 }

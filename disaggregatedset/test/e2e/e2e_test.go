@@ -67,6 +67,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
+  phases:
 `, cfg.Name, cfg.Namespace))
 
 	// Prefill phase
@@ -78,10 +79,10 @@ spec:
 	return sb.String()
 }
 
-// buildPhaseYAML generates YAML for a single phase configuration
+// buildPhaseYAML generates YAML for a single phase configuration as an array element
 func buildPhaseYAML(phaseName string, cfg phaseConfig) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("  %s:\n", phaseName))
+	sb.WriteString(fmt.Sprintf("  - name: %s\n", phaseName))
 	sb.WriteString(fmt.Sprintf("    replicas: %d\n", cfg.Replicas))
 
 	// Rollout strategy
@@ -103,6 +104,65 @@ func buildPhaseYAML(phaseName string, cfg phaseConfig) string {
 	sb.WriteString("          containers:\n")
 	sb.WriteString("          - name: main\n")
 	sb.WriteString(fmt.Sprintf("            image: %s\n", image))
+
+	return sb.String()
+}
+
+// nPhaseDisaggregatedSetConfig holds configuration for N-phase DisaggregatedSet YAML
+type nPhaseDisaggregatedSetConfig struct {
+	Name      string
+	Namespace string
+	Phases    []nPhaseSpec
+}
+
+// nPhaseSpec holds configuration for a single phase in N-phase config
+type nPhaseSpec struct {
+	Name           string
+	Replicas       int
+	Image          string
+	MaxSurge       int
+	MaxUnavailable int
+	HasRollout     bool
+}
+
+// buildNPhaseDisaggregatedSetYAML generates a DisaggregatedSet YAML with N phases
+func buildNPhaseDisaggregatedSetYAML(cfg nPhaseDisaggregatedSetConfig) string {
+	if cfg.Namespace == "" {
+		cfg.Namespace = "default"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(`apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+kind: DisaggregatedSet
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  phases:
+`, cfg.Name, cfg.Namespace))
+
+	for _, phase := range cfg.Phases {
+		sb.WriteString(fmt.Sprintf("  - name: %s\n", phase.Name))
+		sb.WriteString(fmt.Sprintf("    replicas: %d\n", phase.Replicas))
+
+		if phase.HasRollout {
+			sb.WriteString("    rolloutStrategy:\n")
+			sb.WriteString(fmt.Sprintf("      maxSurge: %d\n", phase.MaxSurge))
+			sb.WriteString(fmt.Sprintf("      maxUnavailable: %d\n", phase.MaxUnavailable))
+		}
+
+		image := phase.Image
+		if image == "" {
+			image = "registry.k8s.io/pause:3.9"
+		}
+		sb.WriteString("    leaderWorkerTemplate:\n")
+		sb.WriteString("      size: 1\n")
+		sb.WriteString("      workerTemplate:\n")
+		sb.WriteString("        spec:\n")
+		sb.WriteString("          containers:\n")
+		sb.WriteString("          - name: main\n")
+		sb.WriteString(fmt.Sprintf("            image: %s\n", image))
+	}
 
 	return sb.String()
 }
@@ -575,7 +635,8 @@ metadata:
   name: test-labels
   namespace: default
 spec:
-  prefill:
+  phases:
+  - name: prefill
     replicas: 1
     leaderWorkerTemplate:
       size: 1
@@ -591,7 +652,7 @@ spec:
           containers:
           - name: main
             image: registry.k8s.io/pause:3.9
-  decode:
+  - name: decode
     replicas: 1
     leaderWorkerTemplate:
       size: 1
@@ -730,26 +791,26 @@ spec:
 		// Test cases matching plan-steps output
 		testCases := []rolloutTestCase{
 			{
-				Name:          "scale-down-prefill-scale-up-decode",
+				Name:          "scale-down-phase0-scale-up-phase1",
 				SourcePrefill: 10,
 				SourceDecode:  2,
 				TargetPrefill: 6,
 				TargetDecode:  8,
 				PrefillSurge:  2,
 				DecodeSurge:   2,
-				// Expected steps from: go run ./cmd/plan-steps --source-prefill 10 --source-decode 2 --target-prefill 6 --target-decode 8 --prefill-surge 2 --decode-surge 2
+				// Expected steps from: go run ./cmd/plan-steps --source-phase0 10 --source-phase1 2 --target-phase0 6 --target-phase1 8 --phase0-surge 2 --phase1-surge 2
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old prefill -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 2: old prefill -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 2, NewDecode: 2},  // step 3: new prefill +2, new decode +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 4: old prefill -2, old decode -1
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 5: new prefill +1, new decode +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 6: new prefill +1, new decode +1
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 7: old prefill -2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new prefill +1, new decode +2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new prefill +1, new decode +1
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old prefill -2, old decode -1
+					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old phase0 -2
+					{OldPrefill: 6, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 2: old phase0 -2
+					{OldPrefill: 6, OldDecode: 2, NewPrefill: 2, NewDecode: 2},  // step 3: new phase0 +2, new phase1 +2
+					{OldPrefill: 4, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 4: old phase0 -2, old phase1 -1
+					{OldPrefill: 4, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 5: new phase0 +1, new phase1 +2
+					{OldPrefill: 4, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 6: new phase0 +1, new phase1 +1
+					{OldPrefill: 2, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 7: old phase0 -2
+					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new phase0 +1, new phase1 +2
+					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new phase0 +1, new phase1 +1
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old phase0 -2, old phase1 -1
 				},
 			},
 		}
@@ -891,6 +952,180 @@ spec:
 				}
 			})
 		}
+	})
+
+	Context("N-Phase Rolling Update (3 phases)", func() {
+		const deploymentName = "test-3phase-rolling"
+
+		AfterEach(func() {
+			cleanupDeployment(deploymentName)
+		})
+
+		It("should complete rolling update with 3 phases scaling together", func() {
+			By("creating initial 3-phase DisaggregatedSet")
+			initialYaml := buildNPhaseDisaggregatedSetYAML(nPhaseDisaggregatedSetConfig{
+				Name: deploymentName,
+				Phases: []nPhaseSpec{
+					{Name: "prefill", Replicas: 2, HasRollout: true, MaxSurge: 1},
+					{Name: "decode", Replicas: 2, HasRollout: true, MaxSurge: 1},
+					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
+				},
+			})
+			Expect(applyYAML(initialYaml)).To(Succeed())
+
+			By("waiting for initial deployment to stabilize")
+			Eventually(func(g Gomega) {
+				g.Expect(countRunningPods(deploymentName)).To(Equal(6)) // 2 per phase * 3 phases
+			}, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying 3 LWS resources exist (one per phase)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
+					"-n", "default", "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(len(utils.GetNonEmptyLines(output))).To(Equal(3))
+			}, 60*time.Second, time.Second).Should(Succeed())
+
+			By("triggering rolling update by changing image")
+			updatedYaml := buildNPhaseDisaggregatedSetYAML(nPhaseDisaggregatedSetConfig{
+				Name: deploymentName,
+				Phases: []nPhaseSpec{
+					{Name: "prefill", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+					{Name: "decode", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+					{Name: "encode", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+				},
+			})
+			Expect(applyYAML(updatedYaml)).To(Succeed())
+
+			By("waiting for rolling update to complete")
+			Eventually(func(g Gomega) {
+				// Get all LWS and check only one revision has replicas
+				cmd := exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
+					"-n", "default", "-o", "jsonpath={range .items[*]}{.metadata.labels.disaggregatedset\\.x-k8s\\.io/revision} {.spec.replicas}\\n{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				revisionReplicas := make(map[string]int)
+				for _, line := range utils.GetNonEmptyLines(output) {
+					var revision string
+					var replicas int
+					_, _ = fmt.Sscanf(line, "%s %d", &revision, &replicas)
+					if revision != "" {
+						revisionReplicas[revision] += replicas
+					}
+				}
+
+				activeRevisions := 0
+				for _, replicas := range revisionReplicas {
+					if replicas > 0 {
+						activeRevisions++
+					}
+				}
+				g.Expect(activeRevisions).To(Equal(1), "Expected only one active revision after rolling update")
+			}, 4*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("verifying all 3 phases have correct pod count")
+			Eventually(func(g Gomega) {
+				g.Expect(countRunningPods(deploymentName)).To(Equal(6))
+			}, 60*time.Second, time.Second).Should(Succeed())
+		})
+	})
+
+	// TODO: Phase rename (add + remove phase) requires phasePolicy=Flexible support
+	// which is tracked in Phase 2 of the N-phase implementation plan.
+	// The controller currently only tracks phases from the spec, not from existing workloads.
+	Context("N-Phase Rename (add + remove phase)", func() {
+		const deploymentName = "test-phase-rename"
+
+		AfterEach(func() {
+			cleanupDeployment(deploymentName)
+		})
+
+		PIt("should handle phase rename (remove old phase, add new phase) progressively", func() {
+			By("creating initial 3-phase DisaggregatedSet with phases: prefill, decode, encode")
+			initialYaml := buildNPhaseDisaggregatedSetYAML(nPhaseDisaggregatedSetConfig{
+				Name: deploymentName,
+				Phases: []nPhaseSpec{
+					{Name: "prefill", Replicas: 2, HasRollout: true, MaxSurge: 1},
+					{Name: "decode", Replicas: 2, HasRollout: true, MaxSurge: 1},
+					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
+				},
+			})
+			Expect(applyYAML(initialYaml)).To(Succeed())
+
+			By("waiting for initial deployment to stabilize")
+			Eventually(func(g Gomega) {
+				g.Expect(countRunningPods(deploymentName)).To(Equal(6))
+			}, 3*time.Minute, time.Second).Should(Succeed())
+
+			// Get the initial revision
+			cmd := exec.Command("kubectl", "get", "lws", "-l",
+				fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s", deploymentName),
+				"-n", "default", "-o", "jsonpath={.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}")
+			oldRevision, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			oldRevision = strings.TrimSpace(oldRevision)
+
+			By("applying update that renames 'encode' to 'decode-long-context'")
+			// This is effectively a phase rename: prefill, decode, encode -> prefill, decode, decode-long-context
+			updatedYaml := buildNPhaseDisaggregatedSetYAML(nPhaseDisaggregatedSetConfig{
+				Name: deploymentName,
+				Phases: []nPhaseSpec{
+					{Name: "prefill", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+					{Name: "decode", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+					{Name: "decode-long-context", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+				},
+			})
+			Expect(applyYAML(updatedYaml)).To(Succeed())
+
+			By("waiting for rolling update to complete")
+			Eventually(func(g Gomega) {
+				// Verify old revision has 0 replicas
+				cmd := exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/revision=%s", deploymentName, oldRevision),
+					"-n", "default", "-o", "jsonpath={range .items[*]}{.spec.replicas}\\n{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				totalOldReplicas := 0
+				for _, line := range utils.GetNonEmptyLines(output) {
+					replicas, _ := strconv.Atoi(line)
+					totalOldReplicas += replicas
+				}
+				g.Expect(totalOldReplicas).To(Equal(0), "Old revision should have 0 replicas")
+			}, 4*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("verifying new phases exist with correct replicas")
+			Eventually(func(g Gomega) {
+				// Check decode-long-context phase exists (the new phase)
+				cmd := exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=decode-long-context", deploymentName),
+					"-n", "default", "-o", "jsonpath={.items[0].spec.replicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				replicas, _ := strconv.Atoi(strings.TrimSpace(output))
+				g.Expect(replicas).To(Equal(2), "decode-long-context phase should have 2 replicas")
+
+				// Verify encode phase from old revision is scaled to 0 or deleted
+				cmd = exec.Command("kubectl", "get", "lws", "-l",
+					fmt.Sprintf("disaggregatedset.x-k8s.io/name=%s,disaggregatedset.x-k8s.io/phase=encode", deploymentName),
+					"-n", "default", "-o", "jsonpath={range .items[*]}{.spec.replicas}\\n{end}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				for _, line := range utils.GetNonEmptyLines(output) {
+					replicas, _ := strconv.Atoi(line)
+					g.Expect(replicas).To(Equal(0), "encode phase should be scaled to 0")
+				}
+			}, 60*time.Second, time.Second).Should(Succeed())
+
+			By("verifying total running pods is correct (waiting for old pods to terminate)")
+			Eventually(func(g Gomega) {
+				g.Expect(countRunningPods(deploymentName)).To(Equal(6))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+		})
 	})
 })
 

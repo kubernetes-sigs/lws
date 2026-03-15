@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package controller provides rolling update planning and execution for DisaggDeployment.
+// Package controller provides rolling update planning and execution for DisaggregatedSet.
 //
 // # Rolling Update Algorithm
 //
@@ -30,7 +30,7 @@ limitations under the License.
 // The complexity comes from:
 //   - Decoupling: each step changes EITHER old OR new, not both
 //   - Surge constraints: old + new <= target + maxSurge
-//   - Two dimensions: prefill and decode must stay coordinated
+//   - N dimensions: all phases must stay coordinated
 package controller
 
 import (
@@ -39,36 +39,33 @@ import (
 
 // UpdateStep represents a single step in the rolling update plan.
 // It tracks the replica counts for both old (past) and new deployments
-// for both prefill and decode phases.
+// for N phases (slice-based for flexibility).
 type UpdateStep struct {
-	PastPrefill int
-	PastDecode  int
-	NewPrefill  int
-	NewDecode   int
+	Past []int
+	New  []int
 }
 
-// PhaseReplicaState holds the replica counts for both phases.
+// PhaseReplicaState holds the replica counts for N phases.
 // Used for source, current, and target state in rolling update planning.
-type PhaseReplicaState struct {
-	Prefill int
-	Decode  int
-}
+type PhaseReplicaState = []int
 
 // RollingUpdateConfig holds the rolling update constraints per phase.
 type RollingUpdateConfig struct {
-	PrefillMaxSurge       int
-	PrefillMaxUnavailable int
-	DecodeMaxSurge        int
-	DecodeMaxUnavailable  int
+	MaxSurge       []int
+	MaxUnavailable []int
 }
 
-// DefaultRollingUpdateConfig returns the default rolling update config (maxSurge=1, maxUnavailable=0).
-func DefaultRollingUpdateConfig() RollingUpdateConfig {
+// DefaultRollingUpdateConfig returns the default rolling update config for N phases (maxSurge=1, maxUnavailable=0).
+func DefaultRollingUpdateConfig(numPhases int) RollingUpdateConfig {
+	surge := make([]int, numPhases)
+	unavail := make([]int, numPhases)
+	for i := 0; i < numPhases; i++ {
+		surge[i] = 1
+		unavail[i] = 0
+	}
 	return RollingUpdateConfig{
-		PrefillMaxSurge:       1,
-		PrefillMaxUnavailable: 0,
-		DecodeMaxSurge:        1,
-		DecodeMaxUnavailable:  0,
+		MaxSurge:       surge,
+		MaxUnavailable: unavail,
 	}
 }
 
@@ -84,24 +81,28 @@ func batchSize(maxSurge, maxUnavailable int) int {
 // Based on the maximum replicas (source or target) for each dimension,
 // divided by the batch size (surge or unavailable), taking the max across dimensions.
 func computeTotalSteps(source, target PhaseReplicaState, config RollingUpdateConfig) int {
-	prefillMaxReplicas := max(source.Prefill, target.Prefill, 0)
-	decodeMaxReplicas := max(source.Decode, target.Decode, 0)
-	prefillBatchSize := batchSize(config.PrefillMaxSurge, config.PrefillMaxUnavailable)
-	decodeBatchSize := batchSize(config.DecodeMaxSurge, config.DecodeMaxUnavailable)
-
-	totalPrefillSteps := (prefillMaxReplicas + prefillBatchSize - 1) / prefillBatchSize
-	totalDecodeSteps := (decodeMaxReplicas + decodeBatchSize - 1) / decodeBatchSize
-	return max(totalPrefillSteps, totalDecodeSteps)
+	totalSteps := 0
+	numPhases := len(source)
+	for i := 0; i < numPhases; i++ {
+		maxReplicas := max(source[i], target[i], 0)
+		phaseBatchSize := batchSize(config.MaxSurge[i], config.MaxUnavailable[i])
+		phaseSteps := (maxReplicas + phaseBatchSize - 1) / phaseBatchSize
+		totalSteps = max(totalSteps, phaseSteps)
+	}
+	return totalSteps
 }
 
 // computeNextNewReplicas computes the next new replica count for scale-up.
 //
 // Linear interpolation: newAtStep(i) = ceil(i * target / totalSteps)
 //
-// Uses min step index across dimensions to keep prefill/decode in sync.
+// Uses min step index across dimensions to keep phases in sync.
 func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int) PhaseReplicaState {
+	numPhases := len(target)
 	if totalSteps == 0 {
-		return target
+		result := make([]int, numPhases)
+		copy(result, target)
+		return result
 	}
 
 	// Step 1: figure out which step we're at based on current replicas
@@ -111,9 +112,13 @@ func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int
 		}
 		return int(float64(current) * float64(totalSteps) / float64(targetVal))
 	}
-	stepPrefill := stepIndex(currentNew.Prefill, target.Prefill)
-	stepDecode := stepIndex(currentNew.Decode, target.Decode)
-	nextStepIdx := min(stepPrefill, stepDecode) + 1
+
+	minStepIdx := totalSteps
+	for i := 0; i < numPhases; i++ {
+		stepIdx := stepIndex(currentNew[i], target[i])
+		minStepIdx = min(minStepIdx, stepIdx)
+	}
+	nextStepIdx := minStepIdx + 1
 
 	// Step 2: compute how many replicas we should have at the next step
 	computeNew := func(targetVal, currentVal int) int {
@@ -122,34 +127,43 @@ func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int
 		return max(computed, currentVal) // never decrease
 	}
 
-	return PhaseReplicaState{
-		Prefill: computeNew(target.Prefill, currentNew.Prefill),
-		Decode:  computeNew(target.Decode, currentNew.Decode),
+	result := make([]int, numPhases)
+	for i := 0; i < numPhases; i++ {
+		result[i] = computeNew(target[i], currentNew[i])
 	}
+	return result
 }
 
 // computeNextOldReplicas computes the next old replica count for scale-down.
 //
 // Linear interpolation: oldAtStep(i) = source - floor(i * source / totalSteps)
 //
-// Uses max step index across dimensions to ensure both phases drain together.
+// Uses max step index across dimensions to ensure all phases drain together.
 func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int) PhaseReplicaState {
+	numPhases := len(source)
 	if totalSteps == 0 {
-		return PhaseReplicaState{Prefill: 0, Decode: 0}
+		return make([]int, numPhases)
 	}
 
 	// Step 1: figure out which step we're at based on how many replicas were removed
+	// Skip phases with source=0 (new phases) - they don't affect drain timing
 	stepIndex := func(removed, sourceVal int) int {
 		if sourceVal == 0 {
-			return totalSteps
+			return 0 // New phases don't contribute to drain step calculation
 		}
 		return int(float64(removed) * float64(totalSteps) / float64(sourceVal))
 	}
-	removedPrefill := source.Prefill - currentOld.Prefill
-	removedDecode := source.Decode - currentOld.Decode
-	stepPrefill := stepIndex(removedPrefill, source.Prefill)
-	stepDecode := stepIndex(removedDecode, source.Decode)
-	nextStepIdx := max(stepPrefill, stepDecode) + 1
+
+	maxStepIdx := 0
+	for i := 0; i < numPhases; i++ {
+		if source[i] == 0 {
+			continue // Skip new phases
+		}
+		removed := source[i] - currentOld[i]
+		stepIdx := stepIndex(removed, source[i])
+		maxStepIdx = max(maxStepIdx, stepIdx)
+	}
+	nextStepIdx := maxStepIdx + 1
 
 	// Step 2: compute how many replicas should remain at the next step
 	computeOld := func(sourceVal, currentVal int) int {
@@ -158,10 +172,11 @@ func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int
 		return min(computed, currentVal) // never increase
 	}
 
-	return PhaseReplicaState{
-		Prefill: computeOld(source.Prefill, currentOld.Prefill),
-		Decode:  computeOld(source.Decode, currentOld.Decode),
+	result := make([]int, numPhases)
+	for i := 0; i < numPhases; i++ {
+		result[i] = computeOld(source[i], currentOld[i])
 	}
+	return result
 }
 
 // correctAbnormalState corrects abnormal states where old replicas exceed the inferred source.
@@ -169,15 +184,22 @@ func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int
 // but can occur from interrupted rollouts or manual intervention.
 // Returns a correction step if needed, nil otherwise.
 func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *UpdateStep {
-	expectedOldPrefill := min(source.Prefill, currentOld.Prefill)
-	expectedOldDecode := min(source.Decode, currentOld.Decode)
+	numPhases := len(source)
+	expectedOld := make([]int, numPhases)
+	needsCorrection := false
+	for i := 0; i < numPhases; i++ {
+		expectedOld[i] = min(source[i], currentOld[i])
+		if currentOld[i] > expectedOld[i] {
+			needsCorrection = true
+		}
+	}
 
-	if currentOld.Prefill > expectedOldPrefill || currentOld.Decode > expectedOldDecode {
+	if needsCorrection {
+		newCopy := make([]int, numPhases)
+		copy(newCopy, currentNew)
 		return &UpdateStep{
-			PastPrefill: expectedOldPrefill,
-			PastDecode:  expectedOldDecode,
-			NewPrefill:  currentNew.Prefill,
-			NewDecode:   currentNew.Decode,
+			Past: expectedOld,
+			New:  newCopy,
 		}
 	}
 	return nil
@@ -194,9 +216,20 @@ func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *Upd
 //   - targetNew: target replica counts for new workloads (from spec)
 //   - config: rolling update constraints (maxSurge, maxUnavailable)
 func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState, config RollingUpdateConfig) *UpdateStep {
+	numPhases := len(source)
+
 	// If already at target (no old replicas, new at target), no more steps needed
-	if currentOld.Prefill == 0 && currentOld.Decode == 0 &&
-		currentNew.Prefill >= targetNew.Prefill && currentNew.Decode >= targetNew.Decode {
+	allOldZero := true
+	allNewAtTarget := true
+	for i := 0; i < numPhases; i++ {
+		if currentOld[i] != 0 {
+			allOldZero = false
+		}
+		if currentNew[i] < targetNew[i] {
+			allNewAtTarget = false
+		}
+	}
+	if allOldZero && allNewAtTarget {
 		return nil
 	}
 
@@ -211,63 +244,81 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 	}
 
 	// If new replicas are at target but old replicas still exist, drain them
-	if currentNew.Prefill >= targetNew.Prefill && currentNew.Decode >= targetNew.Decode {
+	if allNewAtTarget {
 		return &UpdateStep{
-			PastPrefill: 0,
-			PastDecode:  0,
-			NewPrefill:  currentNew.Prefill,
-			NewDecode:   currentNew.Decode,
+			Past: make([]int, numPhases),
+			New:  currentNew,
 		}
 	}
 
 	// Compute what new replicas should be at the next step
 	nextNewState := computeNextNewReplicas(targetNew, currentNew, totalNumSteps)
 
-	needsScaleUp := nextNewState.Prefill > currentNew.Prefill || nextNewState.Decode > currentNew.Decode
+	needsScaleUp := false
+	for i := 0; i < numPhases; i++ {
+		if nextNewState[i] > currentNew[i] {
+			needsScaleUp = true
+			break
+		}
+	}
 
 	// Check surge constraint for scale-up (old + new <= target + surge)
-	prefillSurgeOK := currentOld.Prefill+nextNewState.Prefill <= targetNew.Prefill+config.PrefillMaxSurge
-	decodeSurgeOK := currentOld.Decode+nextNewState.Decode <= targetNew.Decode+config.DecodeMaxSurge
+	// Skip removed phases (target=0) - they don't need surge protection
+	surgeOK := true
+	for i := 0; i < numPhases; i++ {
+		if targetNew[i] == 0 {
+			continue // Removed phases just drain, no surge constraint
+		}
+		if currentOld[i]+nextNewState[i] > targetNew[i]+config.MaxSurge[i] {
+			surgeOK = false
+			break
+		}
+	}
 
-	if needsScaleUp && prefillSurgeOK && decodeSurgeOK {
+	if needsScaleUp && surgeOK {
 		// Scale up new replicas (keep old unchanged)
 		return &UpdateStep{
-			PastPrefill: currentOld.Prefill,
-			PastDecode:  currentOld.Decode,
-			NewPrefill:  nextNewState.Prefill,
-			NewDecode:   nextNewState.Decode,
+			Past: currentOld,
+			New:  nextNewState,
 		}
 	}
 
 	// Scale down: first try proportional drain
 	nextOldState := computeNextOldReplicas(source, currentOld, totalNumSteps)
 
-	needsScaleDown := nextOldState.Prefill < currentOld.Prefill || nextOldState.Decode < currentOld.Decode
+	needsScaleDown := false
+	for i := 0; i < numPhases; i++ {
+		if nextOldState[i] < currentOld[i] {
+			needsScaleDown = true
+			break
+		}
+	}
 
 	if needsScaleDown {
 		// Scale down old replicas (keep new unchanged)
 		return &UpdateStep{
-			PastPrefill: nextOldState.Prefill,
-			PastDecode:  nextOldState.Decode,
-			NewPrefill:  currentNew.Prefill,
-			NewDecode:   currentNew.Decode,
+			Past: nextOldState,
+			New:  currentNew,
 		}
 	}
 
 	// Proportional drain didn't help - surge is blocking and old step is behind.
 	// Drain exactly what's needed to allow the next scale-up.
 	if needsScaleUp {
-		maxOldPrefill := targetNew.Prefill + config.PrefillMaxSurge - nextNewState.Prefill
-		maxOldDecode := targetNew.Decode + config.DecodeMaxSurge - nextNewState.Decode
-		drainedOldPrefill := max(0, min(currentOld.Prefill, maxOldPrefill))
-		drainedOldDecode := max(0, min(currentOld.Decode, maxOldDecode))
+		drainedOld := make([]int, numPhases)
+		needsDrain := false
+		for i := 0; i < numPhases; i++ {
+			maxOld := targetNew[i] + config.MaxSurge[i] - nextNewState[i]
+			drainedOld[i] = max(0, min(currentOld[i], maxOld))
+			if drainedOld[i] < currentOld[i] {
+				needsDrain = true
+			}
+		}
 
-		if drainedOldPrefill < currentOld.Prefill || drainedOldDecode < currentOld.Decode {
+		if needsDrain {
 			return &UpdateStep{
-				PastPrefill: drainedOldPrefill,
-				PastDecode:  drainedOldDecode,
-				NewPrefill:  currentNew.Prefill,
-				NewDecode:   currentNew.Decode,
+				Past: drainedOld,
+				New:  currentNew,
 			}
 		}
 	}
@@ -276,30 +327,38 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 	return nil
 }
 
-// ComputeAllSteps generates the full step sequence from source to target.
+// ComputeAllSteps generates the full step sequence from source to target for N phases.
 // This is useful for testing and visualization.
-func ComputeAllSteps(pastPrefill, pastDecode, newPrefill, newDecode int, config RollingUpdateConfig) []UpdateStep {
-	targetNew := PhaseReplicaState{Prefill: newPrefill, Decode: newDecode}
-	source := PhaseReplicaState{Prefill: pastPrefill, Decode: pastDecode}
-	currentOld := PhaseReplicaState{Prefill: pastPrefill, Decode: pastDecode}
-	currentNew := PhaseReplicaState{Prefill: 0, Decode: 0}
+func ComputeAllSteps(source, target PhaseReplicaState, config RollingUpdateConfig) []UpdateStep {
+	numPhases := len(source)
+
+	// Make copies of source for current state
+	currentOld := make([]int, numPhases)
+	copy(currentOld, source)
+	currentNew := make([]int, numPhases)
 
 	// Safety limit to prevent infinite loops
-	maxSteps := max(pastPrefill, pastDecode, newPrefill, newDecode)*2 + 10
+	maxReplicas := 0
+	for i := 0; i < numPhases; i++ {
+		maxReplicas = max(maxReplicas, source[i], target[i])
+	}
+	maxSteps := maxReplicas*2 + 10
 
-	steps := []UpdateStep{{PastPrefill: pastPrefill, PastDecode: pastDecode, NewPrefill: 0, NewDecode: 0}}
+	// Initial step: all old replicas, no new replicas
+	initialPast := make([]int, numPhases)
+	copy(initialPast, source)
+	initialNew := make([]int, numPhases)
+	steps := []UpdateStep{{Past: initialPast, New: initialNew}}
 
 	for i := 0; i < maxSteps; i++ {
-		nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
+		nextStep := ComputeNextStep(source, currentOld, currentNew, target, config)
 		if nextStep == nil {
 			break
 		}
 
 		steps = append(steps, *nextStep)
-		currentOld.Prefill = nextStep.PastPrefill
-		currentOld.Decode = nextStep.PastDecode
-		currentNew.Prefill = nextStep.NewPrefill
-		currentNew.Decode = nextStep.NewDecode
+		currentOld = nextStep.Past
+		currentNew = nextStep.New
 	}
 
 	return steps

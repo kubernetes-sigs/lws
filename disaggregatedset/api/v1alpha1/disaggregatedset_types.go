@@ -45,9 +45,16 @@ type RolloutStrategy struct {
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
-// DisaggregatedPhaseSpec defines the configuration for a disaggregated phase (prefill or decode).
+// DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
 // This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
 type DisaggregatedPhaseSpec struct {
+	// Name is the unique identifier for this phase.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +required
+	Name string `json:"name"`
+
 	// Replicas is the number of leader-worker groups.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=1
@@ -73,21 +80,48 @@ type DisaggregatedPhaseSpec struct {
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="(self.prefill.replicas == 0 && self.decode.replicas == 0) || (self.prefill.replicas > 0 && self.decode.replicas > 0)",message="replicas must be zero for both phases or non-zero for both phases"
+// +kubebuilder:validation:XValidation:rule="size(self.phases) >= 2",message="at least 2 phases are required"
+// +kubebuilder:validation:XValidation:rule="self.phases.all(p, self.phases.filter(q, q.name == p.name).size() == 1)",message="phase names must be unique"
+// +kubebuilder:validation:XValidation:rule="self.phases.all(p, p.replicas == 0) || self.phases.all(p, p.replicas > 0)",message="replicas must be zero for all phases or non-zero for all phases"
 type DisaggregatedSetSpec struct {
-	// Prefill defines the configuration for the prefill phase
+	// Phases defines the list of phases (at least 2 required).
+	// Each phase has a unique name and its own configuration.
+	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:MaxItems=10
 	// +required
-	Prefill *DisaggregatedPhaseSpec `json:"prefill"`
+	Phases []DisaggregatedPhaseSpec `json:"phases"`
+}
 
-	// Decode defines the configuration for the decode phase
+// PhaseStatus defines the observed state of a single phase.
+type PhaseStatus struct {
+	// Name is the name of the phase (matches spec.phases[].name).
 	// +required
-	Decode *DisaggregatedPhaseSpec `json:"decode"`
+	Name string `json:"name"`
+
+	// Replicas is the total number of replicas for this phase.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ReadyReplicas is the number of ready replicas for this phase.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// UpdatedReplicas is the number of replicas updated to the latest revision.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 }
 
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.
 type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+
+	// PhaseStatuses contains the status for each phase.
+	// The order matches spec.phases.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	PhaseStatuses []PhaseStatus `json:"phaseStatuses,omitempty"`
 
 	// conditions represent the current state of the DisaggregatedSet resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.

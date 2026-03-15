@@ -76,65 +76,73 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 
 // scaleDownOldWorkloads scales down old workloads using a budget mechanism.
 // It processes workloads oldest-first (by CreationTimestamp).
-// If a workload reaches 0 on one phase, it forces both phases to 0 (coordinated drain).
+// If a workload reaches 0 on one phase, it forces all phases to 0 (coordinated drain).
 // This handles the case where a new rolling update is triggered while one is already in progress,
 // ensuring we don't leave orphaned single-phase workloads.
+// phaseNames is the ordered list of phase names.
+// toScaleDown contains the number of replicas to scale down per phase (indexed by phase order).
 func scaleDownOldWorkloads(
 	ctx context.Context,
 	executor *RollingUpdateExecutor,
 	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
 	oldWorkloads GroupedWorkloads,
-	prefillToScaleDown int,
-	decodeToScaleDown int,
+	phaseNames []string,
+	toScaleDown []int,
 ) error {
 	log := logf.FromContext(ctx)
-	sortedWorkloads := sortByOldestTimestamp(oldWorkloads)
+	sortedWorkloads := sortByOldestTimestamp(oldWorkloads, phaseNames)
+	numPhases := len(phaseNames)
+
 	for _, workload := range sortedWorkloads {
-		if prefillToScaleDown <= 0 && decodeToScaleDown <= 0 {
+		// Check if we're done
+		allZero := true
+		for i := 0; i < numPhases; i++ {
+			if toScaleDown[i] > 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
 			break
 		}
 
-		currentPrefill := workload.Phases[PhasePrefill].Replicas
-		currentDecode := workload.Phases[PhaseDecode].Replicas
-
-		// Calculate how much to drain from this workload
-		prefillDrain := min(prefillToScaleDown, currentPrefill)
-		decodeDrain := min(decodeToScaleDown, currentDecode)
-		newPrefill := currentPrefill - prefillDrain
-		newDecode := currentDecode - decodeDrain
-
-		// If either phase reaches 0, force both to 0 (coordinated drain).
-		// This handles cases where a new rolling update is triggered mid-rollout,
-		// ensuring we don't leave orphaned single-phase workloads.
-		if newPrefill == 0 || newDecode == 0 {
-			prefillToScaleDown += newPrefill
-			decodeToScaleDown += newDecode
-			newPrefill = 0
-			newDecode = 0
+		// Get current replicas and calculate drain amounts
+		current := make([]int, numPhases)
+		drain := make([]int, numPhases)
+		newReplicas := make([]int, numPhases)
+		for i, phaseName := range phaseNames {
+			current[i] = workload.Phases[phaseName].Replicas
+			drain[i] = min(toScaleDown[i], current[i])
+			newReplicas[i] = current[i] - drain[i]
 		}
 
-		// Apply scale-down for prefill
-		if currentPrefill > newPrefill {
-			workloadName := GenerateName(disaggregatedSet.Name, PhasePrefill, workload.Revision)
-			log.Info("Scaling down old workload", "name", workloadName, "from", currentPrefill, "to", newPrefill)
-			if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, newPrefill); err != nil {
-				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+		// If any phase reaches 0, force all to 0 (coordinated drain)
+		anyZero := false
+		for i := 0; i < numPhases; i++ {
+			if newReplicas[i] == 0 {
+				anyZero = true
+				break
 			}
-			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingDown,
-				"Scaling down %s workload %s from %d to %d replicas", PhasePrefill, workloadName, currentPrefill, newPrefill)
-			prefillToScaleDown -= prefillDrain
+		}
+		if anyZero {
+			for i := 0; i < numPhases; i++ {
+				toScaleDown[i] += newReplicas[i]
+				newReplicas[i] = 0
+			}
 		}
 
-		// Apply scale-down for decode
-		if currentDecode > newDecode {
-			workloadName := GenerateName(disaggregatedSet.Name, PhaseDecode, workload.Revision)
-			log.Info("Scaling down old workload", "name", workloadName, "from", currentDecode, "to", newDecode)
-			if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, newDecode); err != nil {
-				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+		// Apply scale-down for each phase
+		for i, phaseName := range phaseNames {
+			if current[i] > newReplicas[i] {
+				workloadName := GenerateName(disaggregatedSet.Name, phaseName, workload.Revision)
+				log.Info("Scaling down old workload", "name", workloadName, "from", current[i], "to", newReplicas[i])
+				if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, newReplicas[i]); err != nil {
+					return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+				}
+				executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingDown,
+					"Scaling down %s workload %s from %d to %d replicas", phaseName, workloadName, current[i], newReplicas[i])
+				toScaleDown[i] -= drain[i]
 			}
-			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingDown,
-				"Scaling down %s workload %s from %d to %d replicas", PhaseDecode, workloadName, currentDecode, newDecode)
-			decodeToScaleDown -= decodeDrain
 		}
 	}
 
@@ -142,46 +150,39 @@ func scaleDownOldWorkloads(
 }
 
 // scaleUpNewWorkload scales up the new workload to match the target replicas.
+// phaseNames is the ordered list of phase names.
+// target contains the target replica counts per phase (indexed by phase order).
 func scaleUpNewWorkload(
 	ctx context.Context,
 	executor *RollingUpdateExecutor,
 	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
 	newWorkload GroupedWorkload,
-	targetPrefill int,
-	targetDecode int,
+	phaseNames []string,
+	target PhaseReplicaState,
 ) error {
 	log := logf.FromContext(ctx)
 
-	currentPrefill := newWorkload.Phases[PhasePrefill].Replicas
-	currentDecode := newWorkload.Phases[PhaseDecode].Replicas
-
-	if currentPrefill < targetPrefill {
-		workloadName := GenerateName(disaggregatedSet.Name, PhasePrefill, newWorkload.Revision)
-		log.Info("Scaling up new workload", "name", workloadName, "from", currentPrefill, "to", targetPrefill)
-		if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, targetPrefill); err != nil {
-			return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+	for i, phaseName := range phaseNames {
+		current := newWorkload.Phases[phaseName].Replicas
+		if current < target[i] {
+			workloadName := GenerateName(disaggregatedSet.Name, phaseName, newWorkload.Revision)
+			log.Info("Scaling up new workload", "name", workloadName, "from", current, "to", target[i])
+			if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, target[i]); err != nil {
+				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
+			}
+			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingUp,
+				"Scaling up %s workload %s from %d to %d replicas", phaseName, workloadName, current, target[i])
 		}
-		executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Scaling up %s workload %s from %d to %d replicas", PhasePrefill, workloadName, currentPrefill, targetPrefill)
-	}
-
-	if currentDecode < targetDecode {
-		workloadName := GenerateName(disaggregatedSet.Name, PhaseDecode, newWorkload.Revision)
-		log.Info("Scaling up new workload", "name", workloadName, "from", currentDecode, "to", targetDecode)
-		if err := executor.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, targetDecode); err != nil {
-			return fmt.Errorf("failed to scale %s: %w", workloadName, err)
-		}
-		executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Scaling up %s workload %s from %d to %d replicas", PhaseDecode, workloadName, currentDecode, targetDecode)
 	}
 
 	return nil
 }
 
 // isWorkloadStable returns true if all phases have replicas == readyReplicas.
-func isWorkloadStable(workload GroupedWorkload) bool {
-	for _, phase := range []string{PhasePrefill, PhaseDecode} {
-		phaseWorkload := workload.Phases[phase]
+// phaseNames is the ordered list of phase names.
+func isWorkloadStable(workload GroupedWorkload, phaseNames []string) bool {
+	for _, phaseName := range phaseNames {
+		phaseWorkload := workload.Phases[phaseName]
 		if phaseWorkload.Replicas != phaseWorkload.ReadyReplicas {
 			return false
 		}
@@ -190,10 +191,15 @@ func isWorkloadStable(workload GroupedWorkload) bool {
 }
 
 // sortByOldestTimestamp returns workloads sorted by CreationTimestamp (oldest first).
-func sortByOldestTimestamp(workloads GroupedWorkloads) GroupedWorkloads {
+// Uses the first phase's timestamp for sorting.
+func sortByOldestTimestamp(workloads GroupedWorkloads, phaseNames []string) GroupedWorkloads {
 	sorted := slices.Clone(workloads)
+	if len(phaseNames) == 0 {
+		return sorted
+	}
+	firstPhase := phaseNames[0]
 	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
-		return a.Phases[PhasePrefill].CreationTimestamp.Compare(b.Phases[PhasePrefill].CreationTimestamp)
+		return a.Phases[firstPhase].CreationTimestamp.Compare(b.Phases[firstPhase].CreationTimestamp)
 	})
 	return sorted
 }
@@ -205,33 +211,31 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	newWorkload GroupedWorkload,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	phaseNames := GetPhaseNames(disaggregatedSet)
 
 	// Wait for new workload to be stable before computing next step.
 	// This ensures we're working with a consistent state.
-	if !isWorkloadStable(newWorkload) {
-		log.V(1).Info("Waiting for new workload to stabilize",
-			"prefillReplicas", newWorkload.Phases[PhasePrefill].Replicas,
-			"prefillReady", newWorkload.Phases[PhasePrefill].ReadyReplicas,
-			"decodeReplicas", newWorkload.Phases[PhaseDecode].Replicas,
-			"decodeReady", newWorkload.Phases[PhaseDecode].ReadyReplicas)
+	if !isWorkloadStable(newWorkload, phaseNames) {
+		logArgs := []interface{}{}
+		for _, phaseName := range phaseNames {
+			logArgs = append(logArgs, phaseName+"Replicas", newWorkload.Phases[phaseName].Replicas)
+			logArgs = append(logArgs, phaseName+"Ready", newWorkload.Phases[phaseName].ReadyReplicas)
+		}
+		log.V(1).Info("Waiting for new workload to stabilize", logArgs...)
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	source := PhaseReplicaState{
-		Prefill: oldWorkloads.GetTotalInitialReplicasPerPhase(PhasePrefill),
-		Decode:  oldWorkloads.GetTotalInitialReplicasPerPhase(PhaseDecode),
-	}
-	currentOld := PhaseReplicaState{
-		Prefill: oldWorkloads.GetTotalReplicasPerPhase(PhasePrefill),
-		Decode:  oldWorkloads.GetTotalReplicasPerPhase(PhaseDecode),
-	}
-	currentNew := PhaseReplicaState{
-		Prefill: newWorkload.Phases[PhasePrefill].Replicas,
-		Decode:  newWorkload.Phases[PhaseDecode].Replicas,
-	}
-	targetNew := PhaseReplicaState{
-		Prefill: getReplicasOrDefault(disaggregatedSet.Spec.Prefill.Replicas),
-		Decode:  getReplicasOrDefault(disaggregatedSet.Spec.Decode.Replicas),
+	// Build state slices indexed by phase order
+	numPhases := len(phaseNames)
+	source := make(PhaseReplicaState, numPhases)
+	currentOld := make(PhaseReplicaState, numPhases)
+	currentNew := make(PhaseReplicaState, numPhases)
+	targetNew := make(PhaseReplicaState, numPhases)
+	for i, phaseName := range phaseNames {
+		source[i] = oldWorkloads.GetTotalInitialReplicasPerPhase(phaseName)
+		currentOld[i] = oldWorkloads.GetTotalReplicasPerPhase(phaseName)
+		currentNew[i] = newWorkload.Phases[phaseName].Replicas
+		targetNew[i] = getReplicasOrDefault(disaggregatedSet.Spec.Phases[i].Replicas)
 	}
 	config := ExtractRollingUpdateConfig(disaggregatedSet)
 
@@ -245,29 +249,45 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Next step computed",
-		"pastPrefill", nextStep.PastPrefill,
-		"pastDecode", nextStep.PastDecode,
-		"newPrefill", nextStep.NewPrefill,
-		"newDecode", nextStep.NewDecode)
+	logArgs := []interface{}{}
+	for i, phaseName := range phaseNames {
+		logArgs = append(logArgs, "past"+phaseName, nextStep.Past[i])
+		logArgs = append(logArgs, "new"+phaseName, nextStep.New[i])
+	}
+	log.Info("Next step computed", logArgs...)
 
 	// Invariant check: planner should never ask for more old replicas than exist
-	if nextStep.PastPrefill > currentOld.Prefill || nextStep.PastDecode > currentOld.Decode {
-		return ctrl.Result{}, fmt.Errorf("invariant violation: step requests more old replicas than exist (step: %+v, current: %+v)", nextStep, currentOld)
+	for i := 0; i < numPhases; i++ {
+		if nextStep.Past[i] > currentOld[i] {
+			return ctrl.Result{}, fmt.Errorf("invariant violation: step requests more old replicas than exist for phase %d (step: %d, current: %d)", i, nextStep.Past[i], currentOld[i])
+		}
 	}
 
 	// Scale up new workload first (ensures we never go below minimum capacity if we crash mid-operation)
-	if nextStep.NewPrefill > currentNew.Prefill || nextStep.NewDecode > currentNew.Decode {
-		if err := scaleUpNewWorkload(ctx, executor, disaggregatedSet, newWorkload, nextStep.NewPrefill, nextStep.NewDecode); err != nil {
+	needsScaleUp := false
+	for i := 0; i < numPhases; i++ {
+		if nextStep.New[i] > currentNew[i] {
+			needsScaleUp = true
+			break
+		}
+	}
+	if needsScaleUp {
+		if err := scaleUpNewWorkload(ctx, executor, disaggregatedSet, newWorkload, phaseNames, nextStep.New); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Scale down old workloads after new ones are scaled up and ready
-	if nextStep.PastPrefill < currentOld.Prefill || nextStep.PastDecode < currentOld.Decode {
-		prefillReduction := currentOld.Prefill - nextStep.PastPrefill
-		decodeReduction := currentOld.Decode - nextStep.PastDecode
-		if err := scaleDownOldWorkloads(ctx, executor, disaggregatedSet, oldWorkloads, prefillReduction, decodeReduction); err != nil {
+	needsScaleDown := false
+	reductions := make([]int, numPhases)
+	for i := 0; i < numPhases; i++ {
+		if nextStep.Past[i] < currentOld[i] {
+			needsScaleDown = true
+			reductions[i] = currentOld[i] - nextStep.Past[i]
+		}
+	}
+	if needsScaleDown {
+		if err := scaleDownOldWorkloads(ctx, executor, disaggregatedSet, oldWorkloads, phaseNames, reductions); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -287,6 +307,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	revision string,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	phaseNames := GetPhaseNames(disaggregatedSet)
+	phaseConfigs := GetPhaseConfigs(disaggregatedSet)
 
 	// Get workloads
 	oldWorkloads, newWorkload, err := executor.WorkloadManager.GetGroupedWorkloads(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
@@ -309,8 +331,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 
 		// Set initial-replicas annotations on all old workloads
 		for _, oldGrouped := range oldWorkloads {
-			for phase, phaseWorkload := range oldGrouped.Phases {
-				workloadName := GenerateName(disaggregatedSet.Name, phase, oldGrouped.Revision)
+			for phaseName, phaseWorkload := range oldGrouped.Phases {
+				workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldGrouped.Revision)
 				_, err := executor.WorkloadManager.SetInitialReplicas(
 					ctx,
 					disaggregatedSet.Namespace,
@@ -324,20 +346,20 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 			}
 		}
 
-		// Create new workloads for both phases with 0 replicas.
+		// Create new workloads for all phases with 0 replicas.
 		// Starting at 0 allows the planner to handle the scale-up as part of the first step,
 		// which maintains consistency with the old code path and ensures proper step tracking.
-		for _, phase := range []string{PhasePrefill, PhaseDecode} {
-			config := getPhaseConfig(disaggregatedSet, phase)
-			created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, phase, config, 0)
+		for _, phaseName := range phaseNames {
+			config := phaseConfigs[phaseName]
+			created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, phaseName, config, 0)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 			if created {
-				log.Info("Created new workload", "phase", phase, "revision", revision)
-				workloadName := GenerateName(disaggregatedSet.Name, phase, revision)
+				log.Info("Created new workload", "phase", phaseName, "revision", revision)
+				workloadName := GenerateName(disaggregatedSet.Name, phaseName, revision)
 				executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonWorkloadCreated,
-					"Created %s workload %s", phase, workloadName)
+					"Created %s workload %s", phaseName, workloadName)
 			}
 		}
 
@@ -347,14 +369,6 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 
 	// Execute the rolling update
 	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldWorkloads, *newWorkload)
-}
-
-// getPhaseConfig returns the config for a given phase
-func getPhaseConfig(disaggregatedSet *disaggv1alpha1.DisaggregatedSet, phase string) *disaggv1alpha1.DisaggregatedPhaseSpec {
-	if phase == PhasePrefill {
-		return disaggregatedSet.Spec.Prefill
-	}
-	return disaggregatedSet.Spec.Decode
 }
 
 // getReplicasOrDefault returns the value of the pointer or 1 if nil.
@@ -374,26 +388,19 @@ type RollingUpdateExecutor struct {
 
 // ExtractRollingUpdateConfig extracts the rolling update config from the DisaggregatedSet spec.
 // Returns default values (maxSurge=1, maxUnavailable=0) if not specified.
+// The config is indexed by phase order (matching spec.phases order).
 func ExtractRollingUpdateConfig(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) RollingUpdateConfig {
-	config := DefaultRollingUpdateConfig()
+	numPhases := len(disaggregatedSet.Spec.Phases)
+	config := DefaultRollingUpdateConfig(numPhases)
 
-	if disaggregatedSet.Spec.Prefill != nil && disaggregatedSet.Spec.Prefill.RolloutStrategy != nil {
-		rollCfg := disaggregatedSet.Spec.Prefill.RolloutStrategy
-		if rollCfg.MaxSurge != nil {
-			config.PrefillMaxSurge = rollCfg.MaxSurge.IntValue()
-		}
-		if rollCfg.MaxUnavailable != nil {
-			config.PrefillMaxUnavailable = rollCfg.MaxUnavailable.IntValue()
-		}
-	}
-
-	if disaggregatedSet.Spec.Decode != nil && disaggregatedSet.Spec.Decode.RolloutStrategy != nil {
-		rollCfg := disaggregatedSet.Spec.Decode.RolloutStrategy
-		if rollCfg.MaxSurge != nil {
-			config.DecodeMaxSurge = rollCfg.MaxSurge.IntValue()
-		}
-		if rollCfg.MaxUnavailable != nil {
-			config.DecodeMaxUnavailable = rollCfg.MaxUnavailable.IntValue()
+	for i, phase := range disaggregatedSet.Spec.Phases {
+		if phase.RolloutStrategy != nil {
+			if phase.RolloutStrategy.MaxSurge != nil {
+				config.MaxSurge[i] = phase.RolloutStrategy.MaxSurge.IntValue()
+			}
+			if phase.RolloutStrategy.MaxUnavailable != nil {
+				config.MaxUnavailable[i] = phase.RolloutStrategy.MaxUnavailable.IntValue()
+			}
 		}
 	}
 

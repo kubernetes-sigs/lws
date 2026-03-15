@@ -3,7 +3,8 @@ kind: DisaggregatedSet
 metadata:
   name: disaggregatedset-sample
 spec:
-  prefill:
+  phases:
+  - name: prefill
     replicas: 2
     leaderWorkerTemplate:
       size: 1
@@ -12,7 +13,7 @@ spec:
           containers:
           - name: prefill
             image: registry.k8s.io/pause:3.9
-  decode:
+  - name: decode
     replicas: 2
     leaderWorkerTemplate:
       size: 1
