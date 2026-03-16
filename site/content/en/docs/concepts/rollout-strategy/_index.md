@@ -7,8 +7,10 @@ description: >
 
 Rolling update is vital to online services with zero downtime. For LLM inference services, this is particularly important, which helps to mitigate stockout. Two different configurations are supported in LWS, `maxUnavailable` and `maxSurge`:
 
-- `MaxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1. Note that only values >= 1 are supported.
-- `MaxSurge`: Indicates how many extra replicas can be deployed during the update. Defaults to 0.
+- `maxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1.
+- `maxSurge`: Indicates how many extra replicas can be deployed during the update. Defaults to 0.
+
+Note that `maxSurge` and `maxUnavailable` can not both be zero at the same time.
 
 Here's a leaderWorkerSet configured with rollout strategy, you can find the example [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/sample/lws-rollout-strategy.yaml):
 
