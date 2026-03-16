@@ -2297,6 +2297,83 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+
+		ginkgo.Entry("rolling update with maxSurge=1 and single replica creates surge before rolling", &testCase{
+			// Regression test for: with replicas=1 and maxSurge=1, calling
+			// wantReplicas(lwsReplicas) in Case 2 satisfied the shrink condition
+			// (unreadyReplicas(1) <= maxSurge(1)), so the controller returned
+			// replicas=1 and emitted a spurious "deleting surge replica" event
+			// without ever creating the surge pod, leaving the update stuck forever.
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(1).MaxSurge(1)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 1)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 1)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 1)
+					},
+				},
+				{
+					// Trigger rolling update by changing worker template.
+					// The controller must expand to burstReplicas (2) with partition=1
+					// so the surge pod gets the new template. Before the fix, Case 2
+					// returned replicas=1 and the STS never grew.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// replicas must be 2 (1 original + 1 surge) to prove the surge
+						// was actually created. partition=1 means pod-0 (old) is held,
+						// pod-1 (surge, new template) is created first.
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 0)
+					},
+				},
+				{
+					// Create the surge leader pod and mark it ready. The controller
+					// advances partition to 0 (pod-0 starts updating) while keeping
+					// replicas=2 until pod-0 is also ready on the new template.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderSts appsv1.StatefulSet
+						testing.GetLeaderStatefulset(ctx, lws, k8sClient, &leaderSts)
+						gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 1, 2)).To(gomega.Succeed())
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// pod-1 (surge) is ready; partition advances to 0 so pod-0
+						// can be updated. Surge (replicas=2) is kept until pod-0 is
+						// also updated, ensuring zero downtime.
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+					},
+				},
+				{
+					// Mark group-0 ready on the new template; the rollout completes.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-0", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 1)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 1)
+					},
+				},
+			},
+		}),
 	) // end of DescribeTable
 
 	ginkgo.Context("with gang scheduling enabled", ginkgo.Ordered, func() {

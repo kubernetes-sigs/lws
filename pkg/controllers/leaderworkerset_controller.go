@@ -288,12 +288,27 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 	burstReplicas := lwsReplicas + int32(maxSurge)
 
-	// wantReplicas calculates the final replicas if needed.
+	// wantReplicas calculates the desired total replicas (including any surge)
+	// during an in-progress rolling update based on the number of currently
+	// unready (not-yet-updated) replicas. It is only called after the initial
+	// surge expansion has already happened (i.e. stsReplicas == burstReplicas).
+	//
+	// We enter the shrink path only when both conditions hold:
+	//   1. unreadyReplicas < lwsReplicas: at least one original replica has
+	//      already been successfully updated, so the surge pod has served its
+	//      purpose and can start being released.
+	//   2. unreadyReplicas <= maxSurge: the remaining unready replicas fit
+	//      within the surge budget, meaning we can safely reduce replicas.
+	//
+	// Without condition (1), a single-replica LWS (lwsReplicas=1, maxSurge=1)
+	// would satisfy (2) immediately on the first reconcile after Case 2 expands
+	// to burstReplicas, causing the surge to be released before any replica has
+	// actually been updated.
 	wantReplicas := func(unreadyReplicas int32) int32 {
-		if unreadyReplicas <= int32(maxSurge) {
-			// When we have n unready replicas and n bursted replicas, we should
-			// start to release the burst replica gradually for the accommodation of
-			// the unready ones.
+		if unreadyReplicas < lwsReplicas && unreadyReplicas <= int32(maxSurge) {
+			// At least one replica has been updated and the remaining unready
+			// count fits within the surge budget. Release one surge slot per
+			// newly-ready replica so we converge back on lwsReplicas.
 			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 			return finalReplicas
@@ -302,10 +317,16 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 
 	// Case 2:
-	// Indicates a new rolling update here.
+	// Indicates a new rolling update here. At this point all existing replicas
+	// are still running the old template (none are unready due to the update),
+	// so we must first expand to burstReplicas before the rolling partition
+	// can start advancing. Calling wantReplicas(lwsReplicas) here was wrong:
+	// with replicas=1 and maxSurge=1 it satisfied the shrink condition and
+	// immediately returned lwsReplicas, preventing the surge replica from ever
+	// being created.
 	if leaderWorkerSetUpdated {
 		// Processing scaling up/down first prior to rolling update.
-		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
+		return min(lwsReplicas, stsReplicas), burstReplicas, nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
