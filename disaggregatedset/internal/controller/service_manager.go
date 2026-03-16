@@ -64,19 +64,19 @@ func (manager *ServiceManager) ReconcileServices(
 	// Find revisions where all phases are ready (readyReplicas >= 1)
 	var readyRevisions []string
 	for _, group := range groupedWorkloads {
-		allReady := true
+		phasesReady := true
 		logArgs := []interface{}{"revision", group.Revision}
 
 		for _, phaseName := range phaseNames {
 			phaseInfo, hasPhase := group.Phases[phaseName]
 			if !hasPhase || phaseInfo.ReadyReplicas < 1 {
-				allReady = false
+				phasesReady = false
 				break
 			}
 			logArgs = append(logArgs, phaseName+"Ready", phaseInfo.ReadyReplicas)
 		}
 
-		if allReady {
+		if phasesReady {
 			readyRevisions = append(readyRevisions, group.Revision)
 			log.V(1).Info("Revision is ready on all phases", logArgs...)
 		}
@@ -199,15 +199,15 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	// Build a set of revisions that still have ready replicas on all phases
 	readyRevisionSet := make(map[string]bool)
 	for _, group := range groupedWorkloads {
-		allReady := true
+		phasesReady := true
 		for _, phaseName := range phaseNames {
 			phaseInfo, hasPhase := group.Phases[phaseName]
 			if !hasPhase || phaseInfo.ReadyReplicas < 1 {
-				allReady = false
+				phasesReady = false
 				break
 			}
 		}
-		if allReady {
+		if phasesReady {
 			readyRevisionSet[group.Revision] = true
 		}
 	}

@@ -370,13 +370,10 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{5, 5}, []int{0, 0}),
-				step([]int{4, 4}, []int{0, 0}), // scale down (can't scale up: surge=1, 5+1>2+1)
-				step([]int{3, 3}, []int{0, 0}), // scale down
-				step([]int{2, 2}, []int{0, 0}), // scale down (now old=2=target)
-				step([]int{2, 2}, []int{1, 1}), // scale up (surge: 2+1<=2+1)
-				step([]int{1, 1}, []int{1, 1}), // scale down
-				step([]int{1, 1}, []int{2, 2}), // scale up (new at target)
-				step([]int{0, 0}, []int{2, 2}), // scale down
+				step([]int{5, 5}, []int{1, 1}), // scale up (surge uses max(5,2)+1=6: 5+1<=6)
+				step([]int{4, 4}, []int{1, 1}), // scale down
+				step([]int{4, 4}, []int{2, 2}), // scale up (new at target)
+				step([]int{0, 0}, []int{2, 2}), // drain all old
 			},
 		},
 		{
@@ -385,16 +382,16 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 4}, []int{0, 0}),
-				step([]int{2, 3}, []int{0, 0}),
-				step([]int{2, 3}, []int{1, 1}),
-				step([]int{2, 2}, []int{1, 1}),
-				step([]int{2, 2}, []int{2, 2}),
-				step([]int{2, 2}, []int{3, 2}),
-				step([]int{1, 1}, []int{3, 2}),
-				step([]int{1, 1}, []int{4, 3}),
-				step([]int{1, 1}, []int{5, 3}),
-				step([]int{0, 0}, []int{5, 3}),
+				step([]int{3, 5}, []int{1, 1}), // scale up (surge uses max(3,5)+1=6: 3+1<=6, 5+1<=6)
+				step([]int{3, 4}, []int{1, 1}), // scale down decode
+				step([]int{3, 4}, []int{2, 2}), // scale up
+				step([]int{3, 4}, []int{3, 2}), // scale up
+				step([]int{2, 3}, []int{3, 2}), // scale down
+				step([]int{2, 3}, []int{4, 3}), // scale up
+				step([]int{2, 2}, []int{4, 3}), // scale down decode
+				step([]int{1, 1}, []int{4, 3}), // scale down
+				step([]int{1, 1}, []int{5, 3}), // scale up (new at target)
+				step([]int{0, 0}, []int{5, 3}), // drain all old
 			},
 		},
 		{
@@ -403,14 +400,13 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{2, 4}, []int{0, 0}),
-				step([]int{2, 3}, []int{0, 0}),
-				step([]int{1, 2}, []int{0, 0}),
-				step([]int{1, 2}, []int{1, 1}),
-				step([]int{1, 2}, []int{2, 1}),
-				step([]int{1, 1}, []int{2, 1}),
-				step([]int{1, 1}, []int{3, 2}),
-				step([]int{1, 1}, []int{4, 2}),
-				step([]int{0, 0}, []int{4, 2}),
+				step([]int{2, 4}, []int{1, 1}), // scale up (surge uses max(2,4)+1=5: 2+1<=5, 4+1<=5)
+				step([]int{2, 4}, []int{2, 1}), // scale up
+				step([]int{2, 3}, []int{2, 1}), // scale down decode
+				step([]int{2, 3}, []int{3, 2}), // scale up
+				step([]int{1, 2}, []int{3, 2}), // scale down
+				step([]int{1, 2}, []int{4, 2}), // scale up (new at target)
+				step([]int{0, 0}, []int{4, 2}), // drain all old
 			},
 		},
 		{
@@ -419,15 +415,15 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 4}, []int{0, 0}),
-				step([]int{2, 3}, []int{0, 0}),
-				step([]int{2, 2}, []int{0, 0}),
-				step([]int{2, 2}, []int{1, 1}),
-				step([]int{2, 2}, []int{2, 1}),
-				step([]int{1, 1}, []int{2, 1}),
-				step([]int{1, 1}, []int{3, 2}),
-				step([]int{1, 1}, []int{4, 2}),
-				step([]int{0, 0}, []int{4, 2}),
+				step([]int{3, 5}, []int{1, 1}), // scale up (surge uses max(3,4)+1=5, max(5,2)+1=6: 3+1<=5, 5+1<=6)
+				step([]int{3, 5}, []int{2, 1}), // scale up
+				step([]int{3, 4}, []int{2, 1}), // scale down decode
+				step([]int{2, 3}, []int{2, 1}), // scale down
+				step([]int{2, 3}, []int{3, 2}), // scale up
+				step([]int{2, 2}, []int{3, 2}), // scale down decode
+				step([]int{1, 1}, []int{3, 2}), // scale down
+				step([]int{1, 1}, []int{4, 2}), // scale up (new at target)
+				step([]int{0, 0}, []int{4, 2}), // drain all old
 			},
 		},
 		{
@@ -452,6 +448,21 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 				step([]int{2, 3}, []int{2, 3}),
 				step([]int{2, 3}, []int{4, 6}),
 				step([]int{0, 0}, []int{4, 6}),
+			},
+		},
+		{
+			name:         "asymmetric_5_3_surge2",
+			sourcePhase0: 5, sourcePhase1: 3, targetPhase0: 5, targetPhase1: 3,
+			config: config([]int{2, 2}, []int{0, 0}),
+			expected: []UpdateStep{
+				step([]int{5, 3}, []int{0, 0}),
+				step([]int{5, 3}, []int{2, 1}),
+				step([]int{4, 2}, []int{2, 1}),
+				step([]int{3, 2}, []int{2, 1}),
+				step([]int{3, 2}, []int{4, 2}),
+				step([]int{2, 1}, []int{4, 2}),
+				step([]int{2, 1}, []int{5, 3}),
+				step([]int{0, 0}, []int{5, 3}),
 			},
 		},
 		// Edge cases

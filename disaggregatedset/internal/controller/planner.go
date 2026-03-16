@@ -262,14 +262,16 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 		}
 	}
 
-	// Check surge constraint for scale-up (old + new <= target + surge)
+	// Check surge constraint for scale-up (old + new <= max(source, target) + surge)
+	// Use max(source, target) so that dimensions scaling down (source > target) don't
+	// block scale-up — the system already runs source replicas, surge is relative to that.
 	// Skip removed phases (target=0) - they don't need surge protection
 	surgeOK := true
 	for i := 0; i < numPhases; i++ {
 		if targetNew[i] == 0 {
 			continue // Removed phases just drain, no surge constraint
 		}
-		if currentOld[i]+nextNewState[i] > targetNew[i]+config.MaxSurge[i] {
+		if currentOld[i]+nextNewState[i] > max(source[i], targetNew[i])+config.MaxSurge[i] {
 			surgeOK = false
 			break
 		}
@@ -285,6 +287,17 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 
 	// Scale down: first try proportional drain
 	nextOldState := computeNextOldReplicas(source, currentOld, totalNumSteps)
+
+	// Enforce maxUnavailable constraint: old + new >= target - maxUnavailable per phase.
+	// Only enforce when source >= target for that phase — when scaling up (source < target),
+	// the system never had enough replicas to maintain the target level.
+	minOld := make([]int, numPhases)
+	for i := 0; i < numPhases; i++ {
+		if source[i] >= targetNew[i] {
+			minOld[i] = max(0, targetNew[i]-config.MaxUnavailable[i]-currentNew[i])
+		}
+		nextOldState[i] = max(nextOldState[i], minOld[i])
+	}
 
 	needsScaleDown := false
 	for i := 0; i < numPhases; i++ {
@@ -308,8 +321,10 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 		drainedOld := make([]int, numPhases)
 		needsDrain := false
 		for i := 0; i < numPhases; i++ {
-			maxOld := targetNew[i] + config.MaxSurge[i] - nextNewState[i]
+			maxOld := max(source[i], targetNew[i]) + config.MaxSurge[i] - nextNewState[i]
 			drainedOld[i] = max(0, min(currentOld[i], maxOld))
+			// Enforce maxUnavailable constraint on fallback drain path
+			drainedOld[i] = max(drainedOld[i], minOld[i])
 			if drainedOld[i] < currentOld[i] {
 				needsDrain = true
 			}
