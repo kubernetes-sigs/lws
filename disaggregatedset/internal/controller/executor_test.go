@@ -593,7 +593,7 @@ func TestGetPhaseConfigs(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for ExtractRollingUpdateConfig
+// Unit Tests for extractRollingUpdateConfig
 // =============================================================================
 
 func TestExtractRollingUpdateConfig(t *testing.T) {
@@ -639,11 +639,13 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 				{Name: testPhaseDecode, Replicas: ptr.To(int32(2)), RolloutStrategy: decodeRollout},
 			}
 
-			deployment := &disaggv1alpha1.DisaggregatedSet{
+			ds := &disaggv1alpha1.DisaggregatedSet{
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{Phases: phases},
 			}
 
-			config := ExtractRollingUpdateConfig(deployment)
+			phaseNames := []string{testPhasePrefill, testPhaseDecode}
+			specPhaseSet := map[string]bool{testPhasePrefill: true, testPhaseDecode: true}
+			config := extractRollingUpdateConfig(ds, phaseNames, specPhaseSet)
 
 			assert.Equal(t, tc.expectedPrefillSurge, config.MaxSurge[0])
 			assert.Equal(t, tc.expectedPrefillUnavail, config.MaxUnavailable[0])
@@ -654,10 +656,10 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for scaleDownOldWorkloads
+// Unit Tests for scaleDownOld
 // =============================================================================
 
-// workloadDef defines a workload for scaleDownOldWorkloads test cases.
+// workloadDef defines a workload for scaleDownOld test cases.
 type workloadDef struct {
 	revision                        string
 	prefill, decode                 int32
@@ -665,7 +667,7 @@ type workloadDef struct {
 	expectedPrefill, expectedDecode int32
 }
 
-func TestScaleDownOldWorkloads(t *testing.T) {
+func TestScaleDownOld(t *testing.T) {
 	baseTime := time.Now()
 	phaseNames := testPhaseNames()
 
@@ -750,10 +752,18 @@ func TestScaleDownOldWorkloads(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			deployment := &disaggv1alpha1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggv1alpha1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
-			toScaleDown := []int{tc.prefillBudget, tc.decodeBudget}
-			err := scaleDownOldWorkloads(context.TODO(), executor, deployment, grouped, phaseNames, toScaleDown)
+			// Convert budget to current/target format
+			current := PhaseReplicaState{
+				grouped.GetTotalReplicasPerPhase(testPhasePrefill),
+				grouped.GetTotalReplicasPerPhase(testPhaseDecode),
+			}
+			target := PhaseReplicaState{
+				current[0] - tc.prefillBudget,
+				current[1] - tc.decodeBudget,
+			}
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, phaseNames, current, target)
 			require.NoError(t, err)
 
 			for _, workload := range tc.workloads {
@@ -768,12 +778,12 @@ func TestScaleDownOldWorkloads(t *testing.T) {
 	}
 }
 
-// TestScaleDownOldWorkloadsWithMissingPhase tests that phases not present in
+// TestScaleDownOldWithMissingPhase tests that phases not present in
 // old workloads don't trigger false coordinated drain. This was a bug where
 // adding a new phase would cause all old workloads to be brutally drained to 0
 // because the new phase (with 0 replicas in old workload) would trigger
 // coordinated drain logic.
-func TestScaleDownOldWorkloadsWithMissingPhase(t *testing.T) {
+func TestScaleDownOldWithMissingPhase(t *testing.T) {
 	baseTime := time.Now()
 	// 3 phases: prefill, decode, encode - but old workload only has prefill and decode
 	threePhaseNames := []string{"prefill", "decode", "encode"}
@@ -815,7 +825,6 @@ func TestScaleDownOldWorkloadsWithMissingPhase(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create old workload with only prefill and decode phases (no encode)
-			// Name format: {baseName}-{revision}-{phase} = "test-oldhash-prefill"
 			objects := []client.Object{
 				createTestLWS("test-oldhash-prefill", testNamespace, "prefill", "oldhash",
 					4, 4, baseTime),
@@ -839,11 +848,20 @@ func TestScaleDownOldWorkloadsWithMissingPhase(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			deployment := &disaggv1alpha1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggv1alpha1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
-			// toScaleDown indexed by 3 phases: [prefill, decode, encode]
-			toScaleDown := []int{tc.prefillBudget, tc.decodeBudget, tc.encodeBudget}
-			err := scaleDownOldWorkloads(context.TODO(), executor, deployment, grouped, threePhaseNames, toScaleDown)
+			// Convert budget to current/target format for 3 phases
+			current := PhaseReplicaState{
+				grouped.GetTotalReplicasPerPhase("prefill"),
+				grouped.GetTotalReplicasPerPhase("decode"),
+				grouped.GetTotalReplicasPerPhase("encode"), // 0 since it doesn't exist
+			}
+			target := PhaseReplicaState{
+				current[0] - tc.prefillBudget,
+				current[1] - tc.decodeBudget,
+				current[2] - tc.encodeBudget,
+			}
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, threePhaseNames, current, target)
 			require.NoError(t, err)
 
 			// Verify prefill and decode were scaled correctly
@@ -858,13 +876,14 @@ func TestScaleDownOldWorkloadsWithMissingPhase(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for scaleUpNewWorkload
+// Unit Tests for scaleUpNew
 // =============================================================================
 
-func TestScaleUpNewWorkload(t *testing.T) {
+func TestScaleUpNew(t *testing.T) {
 	baseTime := time.Now()
 	namespace := testNamespace
 	phaseNames := testPhaseNames()
+	specPhaseSet := map[string]bool{testPhasePrefill: true, testPhaseDecode: true}
 
 	testCases := []struct {
 		name                            string
@@ -891,7 +910,7 @@ func TestScaleUpNewWorkload(t *testing.T) {
 
 			executor := newTestExecutor(fakeClient)
 
-			disaggregatedSet := &disaggv1alpha1.DisaggregatedSet{
+			ds := &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
 			}
 
@@ -903,8 +922,9 @@ func TestScaleUpNewWorkload(t *testing.T) {
 				},
 			}
 
+			current := PhaseReplicaState{tc.workloadPrefill, tc.workloadDecode}
 			target := PhaseReplicaState{tc.targetPrefill, tc.targetDecode}
-			err := scaleUpNewWorkload(context.TODO(), executor, disaggregatedSet, newWorkload, phaseNames, target)
+			err := executor.scaleUpNew(context.TODO(), ds, newWorkload, phaseNames, specPhaseSet, current, target)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expectedPrefill, getTestLWSReplicas(fakeClient, namespace, "test-newhash-prefill"))
