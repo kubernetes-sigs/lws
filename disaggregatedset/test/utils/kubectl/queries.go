@@ -60,6 +60,11 @@ func Pods(deploymentName string) *Builder {
 	return Get("pods").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
+// PodsByPhase returns a builder for querying pods by deployment and phase.
+func PodsByPhase(deploymentName, phase string) *Builder {
+	return Pods(deploymentName).Label(labelPhase, phase)
+}
+
 // RunningPods returns a builder for querying running pods.
 func RunningPods(deploymentName string) *Builder {
 	return Pods(deploymentName).FieldSelector("status.phase=Running")

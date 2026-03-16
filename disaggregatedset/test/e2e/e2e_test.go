@@ -373,6 +373,40 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("prometheus.io/scrape"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 
+			By("verifying Pods have user labels and annotations propagated")
+			Eventually(func(g Gomega) {
+				// Check prefill pod labels
+				output, err := kubectl.PodsByPhase(deploymentName, "prefill").
+					JSONPath("{.items[0].metadata.labels}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-label"))
+				g.Expect(output).To(ContainSubstring("prefill-value"))
+				g.Expect(output).To(ContainSubstring("env"))
+				g.Expect(output).To(ContainSubstring("production"))
+
+				// Check prefill pod annotations
+				output, err = kubectl.PodsByPhase(deploymentName, "prefill").
+					JSONPath("{.items[0].metadata.annotations}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-annotation"))
+				g.Expect(output).To(ContainSubstring("prefill-annotation"))
+				g.Expect(output).To(ContainSubstring("prometheus.io/scrape"))
+
+				// Check decode pod labels
+				output, err = kubectl.PodsByPhase(deploymentName, "decode").
+					JSONPath("{.items[0].metadata.labels}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-label"))
+				g.Expect(output).To(ContainSubstring("decode-value"))
+
+				// Check decode pod annotations
+				output, err = kubectl.PodsByPhase(deploymentName, "decode").
+					JSONPath("{.items[0].metadata.annotations}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-annotation"))
+				g.Expect(output).To(ContainSubstring("decode-annotation"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+
 			By("verifying Services have standard labels only")
 			Eventually(func(g Gomega) {
 				output, err := kubectl.ServiceByPhase(deploymentName, "prefill").
