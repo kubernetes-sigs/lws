@@ -3,7 +3,6 @@ kind: DisaggregatedSet
 metadata:
   name: test-phases
 spec:
-  phasePolicy: Flexible
   phases:
   - name: prefill
     replicas: 4

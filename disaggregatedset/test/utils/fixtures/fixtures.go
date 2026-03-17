@@ -38,10 +38,9 @@ type Phase struct {
 
 // Config holds configuration for generating DisaggregatedSet YAML.
 type Config struct {
-	Name        string
-	Namespace   string
-	PhasePolicy string // "Strict" or "Flexible", empty means default
-	Phases      []Phase
+	Name      string
+	Namespace string
+	Phases    []Phase
 }
 
 // YAML generates a DisaggregatedSet YAML from config.
@@ -59,10 +58,6 @@ metadata:
   namespace: %s
 spec:
 `, c.Name, ns))
-
-	if c.PhasePolicy != "" {
-		sb.WriteString(fmt.Sprintf("  phasePolicy: %s\n", c.PhasePolicy))
-	}
 
 	sb.WriteString("  phases:\n")
 	for _, p := range c.Phases {

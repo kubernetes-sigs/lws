@@ -38,7 +38,6 @@ const (
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonWorkloadDeleted        = "WorkloadDeleted"
-	EventReasonPhasePolicyViolation   = "PhasePolicyViolation"
 )
 
 // RollingUpdateExecutor handles rolling update plan execution
@@ -66,13 +65,10 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 		return ctrl.Result{}, nil
 	}
 
-	// Detect phase changes and enforce policy
+	// Detect phase changes (always allowed - Flexible behavior is the default)
 	changes := detectPhaseChanges(phaseNames, oldWorkloads)
 	if len(changes.Added) > 0 || len(changes.Removed) > 0 {
-		if getPhasePolicy(disaggregatedSet.Spec) == disaggv1alpha1.PhasePolicyStrict {
-			return ctrl.Result{}, executor.rejectPhaseChanges(disaggregatedSet, changes)
-		}
-		log.Info("Phase changes detected with Flexible policy", "added", changes.Added, "removed", changes.Removed)
+		log.Info("Phase changes detected", "added", changes.Added, "removed", changes.Removed)
 	}
 
 	// If new workload doesn't exist, initialize rolling update
@@ -439,18 +435,4 @@ func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) 
 		}
 	}
 	return phaseChanges{Added: added, Removed: removed}
-}
-
-func getPhasePolicy(spec disaggv1alpha1.DisaggregatedSetSpec) disaggv1alpha1.PhasePolicy {
-	if spec.PhasePolicy == "" {
-		return disaggv1alpha1.PhasePolicyStrict
-	}
-	return spec.PhasePolicy
-}
-
-func (executor *RollingUpdateExecutor) rejectPhaseChanges(ds *disaggv1alpha1.DisaggregatedSet, changes phaseChanges) error {
-	err := fmt.Errorf("phasePolicy is Strict but phases changed: added=%v, removed=%v", changes.Added, changes.Removed)
-	executor.Recorder.Eventf(ds, corev1.EventTypeWarning, EventReasonPhasePolicyViolation,
-		"phasePolicy is Strict but phases changed: added=%v, removed=%v", changes.Added, changes.Removed)
-	return err
 }

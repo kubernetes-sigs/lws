@@ -24,22 +24,6 @@ import (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// PhasePolicy controls whether the set of phases can be modified after creation.
-// +kubebuilder:validation:Enum=Strict;Flexible
-type PhasePolicy string
-
-const (
-	// PhasePolicyStrict requires that the set of phase names remains constant.
-	// Adding, removing, or renaming phases is not allowed.
-	// This is the default policy.
-	PhasePolicyStrict PhasePolicy = "Strict"
-
-	// PhasePolicyFlexible allows adding, removing, or renaming phases.
-	// Removed phases are drained immediately (scaled to 0).
-	// New phases start at 0 and scale up.
-	PhasePolicyFlexible PhasePolicy = "Flexible"
-)
-
 // RolloutStrategy defines the rolling update parameters for a phase.
 type RolloutStrategy struct {
 	// MaxUnavailable is the maximum number of replicas that can be unavailable during the update.
@@ -115,13 +99,6 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +required
 	Phases []DisaggregatedPhaseSpec `json:"phases"`
-
-	// PhasePolicy controls whether the set of phases can be modified after creation.
-	// Strict (default): phase names must remain constant; adding, removing, or renaming phases is rejected.
-	// Flexible: phases can be added, removed, or renamed; removed phases are drained immediately.
-	// +kubebuilder:default=Strict
-	// +optional
-	PhasePolicy PhasePolicy `json:"phasePolicy,omitempty"`
 }
 
 // PhaseStatus defines the observed state of a single phase.

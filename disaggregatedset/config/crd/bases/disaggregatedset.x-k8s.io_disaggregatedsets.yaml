@@ -39,16 +39,6 @@ spec:
           spec:
             description: spec defines the desired state of DisaggregatedSet
             properties:
-              phasePolicy:
-                default: Strict
-                description: |-
-                  PhasePolicy controls whether the set of phases can be modified after creation.
-                  Strict (default): phase names must remain constant; adding, removing, or renaming phases is rejected.
-                  Flexible: phases can be added, removed, or renamed; removed phases are drained immediately.
-                enum:
-                - Strict
-                - Flexible
-                type: string
               phases:
                 description: |-
                   Phases defines the list of phases (at least 2 required).

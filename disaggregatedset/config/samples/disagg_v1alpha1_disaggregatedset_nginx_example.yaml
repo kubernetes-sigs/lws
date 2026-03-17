@@ -6,7 +6,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: disaggdeployment-nginx-example
 spec:
-  phasePolicy: Flexible
   phases:
   # Prefill configuration with 10 nginx replicas
   - name: prefill

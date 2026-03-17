@@ -691,11 +691,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should handle phase rename (remove old phase, add new phase) progressively", func() {
-			By("creating initial 3-phase DisaggregatedSet with phases: prefill, decode, encode and Flexible policy")
+			By("creating initial 3-phase DisaggregatedSet with phases: prefill, decode, encode")
 			initialYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -714,8 +713,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			// This is effectively a phase rename: prefill, decode, encode -> prefill, decode, decode-long-context
 			updatedYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
 					{Name: "decode-long-context", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
@@ -739,7 +737,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Add phase with rolling update (Flexible policy)", func() {
+	Context("Add phase with rolling update ", func() {
 		const deploymentName = "test-add-phase"
 
 		AfterEach(func() {
@@ -747,11 +745,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should add new phase and roll all phases to new revision", func() {
-			By("creating initial 2-phase DisaggregatedSet with Flexible policy")
+			By("creating initial 2-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 				},
@@ -768,8 +765,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("adding new phase 'gamma'")
 			updatedYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "gamma", Replicas: 5, HasRollout: true, MaxSurge: 1},
@@ -788,7 +784,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Add phase with progressive rolling update (Flexible policy)", func() {
+	Context("Add phase with progressive rolling update ", func() {
 		const deploymentName = "test-add-phase-progressive"
 
 		AfterEach(func() {
@@ -796,12 +792,11 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should add new phase with progressive rollout (not brutal drain)", func() {
-			By("creating initial 2-phase DisaggregatedSet with Flexible policy and larger replica counts")
+			By("creating initial 2-phase DisaggregatedSet and larger replica counts")
 			// Use larger replica counts to ensure we can observe intermediate states
 			initialYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 				},
@@ -818,8 +813,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("adding new phase 'encode' - this should trigger progressive rollout")
 			updatedYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -845,7 +839,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Remove phase with progressive rolling update (Flexible policy)", func() {
+	Context("Remove phase with progressive rolling update ", func() {
 		const deploymentName = "test-remove-phase-progressive"
 
 		AfterEach(func() {
@@ -853,11 +847,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should remove phase with progressive rollout for remaining phases", func() {
-			By("creating initial 3-phase DisaggregatedSet with Flexible policy")
+			By("creating initial 3-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -875,8 +868,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("removing 'encode' phase - this should trigger progressive rollout")
 			updatedYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 				},
@@ -903,7 +895,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Rename phase with rolling update (Flexible policy)", func() {
+	Context("Rename phase with rolling update ", func() {
 		const deploymentName = "test-rename-phase"
 
 		AfterEach(func() {
@@ -911,11 +903,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should drain old phase progressively and roll all phases to new revision", func() {
-			By("creating initial 3-phase DisaggregatedSet with Flexible policy")
+			By("creating initial 3-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "zeta", Replicas: 5, HasRollout: true, MaxSurge: 1},
@@ -933,8 +924,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("renaming 'zeta' to 'gamma' (remove zeta, add gamma)")
 			updatedYaml := fixtures.Config{
 				Name:        deploymentName,
-				PhasePolicy: "Flexible",
-				Phases: []fixtures.Phase{
+					Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "gamma", Replicas: 5, HasRollout: true, MaxSurge: 1},
