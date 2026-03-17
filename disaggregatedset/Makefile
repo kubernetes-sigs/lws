@@ -1,6 +1,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# Kind binary - defaults to 'kind' in PATH, can be overridden
+KIND ?= kind
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -69,10 +72,10 @@ E2E_IMG ?= controller:e2e
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
+	@if [ ! -x "$(KIND)" ] && ! command -v $(KIND) >/dev/null 2>&1; then \
+		echo "Kind is not installed at '$(KIND)'. Please install Kind or pass KIND=/path/to/kind."; \
 		exit 1; \
-	}
+	fi
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
