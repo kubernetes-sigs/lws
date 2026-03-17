@@ -65,32 +65,24 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # E2E tests using Kind cluster with LWS controller.
-# The test suite handles LWS installation automatically.
-# Skip LWS installation with: LWS_INSTALL_SKIP=true
-KIND_CLUSTER ?= disaggregatedset-test-e2e
+KIND_CLUSTER_NAME ?= disaggregatedset-test-e2e
+E2E_KIND_VERSION ?= kindest/node:v1.32.2
 E2E_IMG ?= controller:e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@if [ ! -x "$(KIND)" ] && ! command -v $(KIND) >/dev/null 2>&1; then \
-		echo "Kind is not installed at '$(KIND)'. Please install Kind or pass KIND=/path/to/kind."; \
-		exit 1; \
-	fi
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+USE_EXISTING_CLUSTER ?= false
+ARTIFACTS ?= $(LOCALBIN)
+LWS_VERSION ?= v0.8.0
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	IMG=$(E2E_IMG) KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 15m
+test-e2e: manifests generate kustomize ginkgo ## Run e2e tests using Kind cluster.
+	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) \
+		KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) \
+		USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(E2E_IMG) \
+		ARTIFACTS=$(ARTIFACTS) LWS_VERSION=$(LWS_VERSION) \
+		./hack/e2e-test.sh
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@$(KIND) delete cluster --name $(KIND_CLUSTER_NAME)
 
 ##@ Kind Development Helpers
 
@@ -230,11 +222,13 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 HELMIFY ?= $(LOCALBIN)/helmify
+GINKGO ?= $(LOCALBIN)/ginkgo
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 HELMIFY_VERSION ?= v0.4.18
+GINKGO_VERSION ?= v2.27.5
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -279,6 +273,11 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 helmify: $(HELMIFY) ## Download helmify locally if necessary.
 $(HELMIFY): $(LOCALBIN)
 	test -s "$(LOCALBIN)/helmify" || GOBIN="$(LOCALBIN)" go install github.com/arttor/helmify/cmd/helmify@$(HELMIFY_VERSION)
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
+$(GINKGO): $(LOCALBIN)
+	test -s "$(LOCALBIN)/ginkgo" || GOBIN="$(LOCALBIN)" go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

@@ -46,11 +46,20 @@ func applyYAML(yaml string) error {
 }
 
 var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
-	// Deploy the operator before all tests
+	// Deploy the operator before all tests (if not already deployed by hack/e2e-test.sh)
 	BeforeAll(func() {
-		By("creating operator namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace, "--dry-run=client", "-o", "yaml")
+		By("checking if controller-manager is already deployed")
+		cmd := exec.Command("kubectl", "get", "deployment", "disaggregatedset-controller-manager",
+			"-n", namespace, "-o", "name")
 		output, err := utils.Run(cmd)
+		if err == nil && strings.Contains(output, "deployment") {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Controller-manager already deployed, skipping deployment\n")
+			return
+		}
+
+		By("creating operator namespace")
+		cmd = exec.Command("kubectl", "create", "ns", namespace, "--dry-run=client", "-o", "yaml")
+		output, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(output)
@@ -63,12 +72,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
-	// Undeploy the operator after all tests
-	AfterAll(func() {
-		By("undeploying the controller-manager")
-		cmd := exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-	})
+	// Note: We don't undeploy in AfterAll because hack/e2e-test.sh handles cleanup
+	// This allows tests to be run both standalone and via the hack script
 
 	// Collect debug info on test failure
 	AfterEach(func() {
@@ -693,8 +698,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should handle phase rename (remove old phase, add new phase) progressively", func() {
 			By("creating initial 3-phase DisaggregatedSet with phases: prefill, decode, encode")
 			initialYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -712,8 +717,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("applying update that renames 'encode' to 'decode-long-context'")
 			// This is effectively a phase rename: prefill, decode, encode -> prefill, decode, decode-long-context
 			updatedYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
 					{Name: "decode-long-context", Replicas: 2, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
@@ -747,8 +752,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should add new phase and roll all phases to new revision", func() {
 			By("creating initial 2-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 				},
@@ -764,8 +769,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("adding new phase 'gamma'")
 			updatedYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "gamma", Replicas: 5, HasRollout: true, MaxSurge: 1},
@@ -795,8 +800,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("creating initial 2-phase DisaggregatedSet and larger replica counts")
 			// Use larger replica counts to ensure we can observe intermediate states
 			initialYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 				},
@@ -812,8 +817,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("adding new phase 'encode' - this should trigger progressive rollout")
 			updatedYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -849,8 +854,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should remove phase with progressive rollout for remaining phases", func() {
 			By("creating initial 3-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 					{Name: "encode", Replicas: 2, HasRollout: true, MaxSurge: 1},
@@ -867,8 +872,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("removing 'encode' phase - this should trigger progressive rollout")
 			updatedYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "prefill", Replicas: 4, HasRollout: true, MaxSurge: 1},
 					{Name: "decode", Replicas: 6, HasRollout: true, MaxSurge: 1},
 				},
@@ -905,8 +910,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should drain old phase progressively and roll all phases to new revision", func() {
 			By("creating initial 3-phase DisaggregatedSet")
 			initialYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "zeta", Replicas: 5, HasRollout: true, MaxSurge: 1},
@@ -923,8 +928,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("renaming 'zeta' to 'gamma' (remove zeta, add gamma)")
 			updatedYaml := fixtures.Config{
-				Name:        deploymentName,
-					Phases: []fixtures.Phase{
+				Name: deploymentName,
+				Phases: []fixtures.Phase{
 					{Name: "alpha", Replicas: 2, HasRollout: true, MaxSurge: 1},
 					{Name: "beta", Replicas: 3, HasRollout: true, MaxSurge: 1},
 					{Name: "gamma", Replicas: 5, HasRollout: true, MaxSurge: 1},

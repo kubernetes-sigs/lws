@@ -79,17 +79,19 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to switch kubectl context to Kind cluster")
 
-	By("building the operator image")
-	cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator image")
-
-	By("loading the operator image to Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
-
-	// Install LWS if not skipped and not already installed
+	// When run via hack/e2e-test.sh, the image is already built and loaded
+	// and the operator is already deployed. Skip these steps.
 	if !skipLWSInstall {
+		By("building the operator image")
+		cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator image")
+
+		By("loading the operator image to Kind")
+		err = utils.LoadImageToKindClusterWithName(projectImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
+
+		// Install LWS if not already installed
 		By("checking if LWS is already installed")
 		isLWSAlreadyInstalled = utils.IsLWSInstalled()
 		if !isLWSAlreadyInstalled {
@@ -98,24 +100,38 @@ var _ = BeforeSuite(func() {
 		} else {
 			_, _ = fmt.Fprintf(GinkgoWriter, "LWS is already installed, skipping installation\n")
 		}
+
+		By("installing DisaggDeployment CRDs")
+		cmd = exec.Command("make", "install")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "LWS_INSTALL_SKIP=true: skipping image build, load, and CRD install\n")
 	}
 
 	By("waiting for LWS to be ready")
 	Expect(utils.WaitForLWSReady()).To(Succeed(), "LWS is not ready")
-
-	By("installing DisaggDeployment CRDs")
-	cmd = exec.Command("make", "install")
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 })
 
 var _ = AfterSuite(func() {
+	// When run via hack/e2e-test.sh (LWS_INSTALL_SKIP=true), cleanup is handled by the script
+	if skipLWSInstall {
+		_, _ = fmt.Fprintf(GinkgoWriter, "LWS_INSTALL_SKIP=true: skipping cleanup (handled by hack/e2e-test.sh)\n")
+		// Just restore context
+		if originalKubeContext != "" {
+			By("restoring original kubectl context")
+			cmd := exec.Command("kubectl", "config", "use-context", originalKubeContext)
+			_, _ = utils.Run(cmd)
+		}
+		return
+	}
+
 	By("uninstalling CRDs")
 	cmd := exec.Command("make", "uninstall")
 	_, _ = utils.Run(cmd)
 
 	// Only uninstall LWS if we installed it
-	if !skipLWSInstall && !isLWSAlreadyInstalled {
+	if !isLWSAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling LWS controller...\n")
 		utils.UninstallLWS()
 	}
