@@ -7,7 +7,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
-	github.com/open-policy-agent/cert-controller v0.15.0
+	github.com/open-policy-agent/cert-controller v0.16.0
 	github.com/stretchr/testify v1.11.1
 	k8s.io/api v0.35.2
 	k8s.io/apiextensions-apiserver v0.35.2
@@ -19,7 +19,7 @@ require (
 	k8s.io/component-helpers v0.35.2
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
-	sigs.k8s.io/controller-runtime v0.23.1
+	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2
 	volcano.sh/apis v1.12.1
 )
