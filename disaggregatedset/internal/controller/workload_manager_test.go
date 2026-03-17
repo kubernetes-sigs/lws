@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -530,6 +531,35 @@ func TestManagerCreate(t *testing.T) {
 
 		err := manager.Create(context.Background(), params)
 		require.NoError(t, err)
+	})
+
+	t.Run("merges user metadata with system labels taking precedence", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		err := manager.Create(context.Background(), CreateParams{
+			DisaggregatedSet: &disaggv1alpha1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
+			},
+			Phase: "prefill", Revision: "rev1", Replicas: 1,
+			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggPhase: "prefill", "app": "system-app"},
+			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
+				Metadata: &metav1.ObjectMeta{
+					Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
+					Annotations: map[string]string{"note": "val"},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		var lws leaderworkerset.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(),
+			client.ObjectKey{Name: "test-rev1-prefill", Namespace: "default"}, &lws))
+
+		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
+		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
+		require.Equal(t, "val", lws.Annotations["note"])                // user annotation
 	})
 }
 

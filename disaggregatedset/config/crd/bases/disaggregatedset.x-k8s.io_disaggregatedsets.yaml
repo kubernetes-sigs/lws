@@ -17878,6 +17878,32 @@ spec:
                       required:
                       - workerTemplate
                       type: object
+                    metadata:
+                      description: |-
+                        Metadata allows setting labels and annotations on the LWS CR's ObjectMeta.
+                        This is useful for integrations like Kueue (queue assignment via
+                        kueue.x-k8s.io/queue-name label) and LWS exclusive-topology scheduling
+                        (leaderworkerset.sigs.k8s.io/exclusive-topology label).
+                        Only labels and annotations are used; other ObjectMeta fields are ignored.
+                        System labels (disaggregatedset.x-k8s.io/*, app) take precedence over user labels.
+                      properties:
+                        annotations:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        finalizers:
+                          items:
+                            type: string
+                          type: array
+                        labels:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      type: object
                     name:
                       description: Name is the unique identifier for this phase.
                       maxLength: 63

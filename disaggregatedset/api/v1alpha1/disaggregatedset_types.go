@@ -93,6 +93,15 @@ type DisaggregatedPhaseSpec struct {
 	// NetworkConfig defines the network configuration of the group.
 	// +optional
 	NetworkConfig *leaderworkerset.NetworkConfig `json:"networkConfig,omitempty"`
+
+	// Metadata allows setting labels and annotations on the LWS CR's ObjectMeta.
+	// This is useful for integrations like Kueue (queue assignment via
+	// kueue.x-k8s.io/queue-name label) and LWS exclusive-topology scheduling
+	// (leaderworkerset.sigs.k8s.io/exclusive-topology label).
+	// Only labels and annotations are used; other ObjectMeta fields are ignored.
+	// System labels (disaggregatedset.x-k8s.io/*, app) take precedence over user labels.
+	// +optional
+	Metadata *metav1.ObjectMeta `json:"metadata,omitempty"`
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet

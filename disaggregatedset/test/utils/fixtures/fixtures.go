@@ -30,8 +30,10 @@ type Phase struct {
 	MaxSurge       int
 	MaxUnavailable int
 	HasRollout     bool
-	Labels         map[string]string
-	Annotations    map[string]string
+	Labels         map[string]string // workerTemplate labels (propagate to pods)
+	Annotations    map[string]string // workerTemplate annotations (propagate to pods)
+	LWSLabels      map[string]string // LWS CR metadata labels (for Kueue, exclusive-topology)
+	LWSAnnotations map[string]string // LWS CR metadata annotations
 }
 
 // Config holds configuration for generating DisaggregatedSet YAML.
@@ -71,6 +73,23 @@ spec:
 			sb.WriteString("    rolloutStrategy:\n")
 			sb.WriteString(fmt.Sprintf("      maxSurge: %d\n", p.MaxSurge))
 			sb.WriteString(fmt.Sprintf("      maxUnavailable: %d\n", p.MaxUnavailable))
+		}
+
+		// Add LWS CR metadata section if LWSLabels or LWSAnnotations are present
+		if len(p.LWSLabels) > 0 || len(p.LWSAnnotations) > 0 {
+			sb.WriteString("    metadata:\n")
+			if len(p.LWSLabels) > 0 {
+				sb.WriteString("      labels:\n")
+				for k, v := range p.LWSLabels {
+					sb.WriteString(fmt.Sprintf("        %s: %s\n", k, v))
+				}
+			}
+			if len(p.LWSAnnotations) > 0 {
+				sb.WriteString("      annotations:\n")
+				for k, v := range p.LWSAnnotations {
+					sb.WriteString(fmt.Sprintf("        %s: \"%s\"\n", k, v))
+				}
+			}
 		}
 
 		image := p.Image

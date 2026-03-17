@@ -417,6 +417,58 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/revision"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
+
+		It("should propagate LWS CR metadata labels for Kueue integration", func() {
+			By("creating DisaggregatedSet with LWS CR metadata labels")
+			yaml := fixtures.PrefillDecode(deploymentName,
+				fixtures.Phase{
+					Replicas: 1,
+					LWSLabels: map[string]string{
+						"kueue.x-k8s.io/queue-name":                      "prefill-queue",
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "rack",
+					},
+					LWSAnnotations: map[string]string{
+						"custom-lws-annotation": "prefill-value",
+					},
+				},
+				fixtures.Phase{
+					Replicas: 1,
+					LWSLabels: map[string]string{
+						"kueue.x-k8s.io/queue-name": "decode-queue",
+					},
+				},
+			).YAML()
+			Expect(applyYAML(yaml)).To(Succeed())
+
+			By("verifying LWS CR has user-provided metadata labels")
+			Eventually(func(g Gomega) {
+				// Check prefill LWS CR metadata labels
+				output, err := kubectl.LWSByPhase(deploymentName, "prefill").
+					JSONPath("{.items[0].metadata.labels}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("kueue.x-k8s.io/queue-name"))
+				g.Expect(output).To(ContainSubstring("prefill-queue"))
+				g.Expect(output).To(ContainSubstring("leaderworkerset.sigs.k8s.io/exclusive-topology"))
+				g.Expect(output).To(ContainSubstring("rack"))
+				// System labels should also be present
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/phase"))
+
+				// Check prefill LWS CR metadata annotations
+				output, err = kubectl.LWSByPhase(deploymentName, "prefill").
+					JSONPath("{.items[0].metadata.annotations}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("custom-lws-annotation"))
+				g.Expect(output).To(ContainSubstring("prefill-value"))
+
+				// Check decode LWS CR metadata labels
+				output, err = kubectl.LWSByPhase(deploymentName, "decode").
+					JSONPath("{.items[0].metadata.labels}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("kueue.x-k8s.io/queue-name"))
+				g.Expect(output).To(ContainSubstring("decode-queue"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+		})
 	})
 
 	Context("Cleanup and Deletion", func() {

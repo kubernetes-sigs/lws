@@ -143,11 +143,24 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 	// Pass through NetworkConfig directly (already leaderworkerset type)
 	lwsNetworkConfig := config.NetworkConfig
 
+	// Merge user-provided metadata labels/annotations with system labels for LWS CR.
+	// User can set labels like kueue.x-k8s.io/queue-name for Kueue integration.
+	// System labels (params.Labels) take precedence over user labels.
+	var lwsLabels map[string]string
+	var lwsAnnotations map[string]string
+	if config.Metadata != nil {
+		lwsLabels = mergeLabels(config.Metadata.Labels, params.Labels)
+		lwsAnnotations = copyAnnotations(config.Metadata.Annotations)
+	} else {
+		lwsLabels = params.Labels
+	}
+
 	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      workloadName,
-			Namespace: params.DisaggregatedSet.Namespace,
-			Labels:    params.Labels,
+			Name:        workloadName,
+			Namespace:   params.DisaggregatedSet.Namespace,
+			Labels:      lwsLabels,
+			Annotations: lwsAnnotations,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggv1alpha1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",

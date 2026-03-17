@@ -6,4 +6,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: controller
-  newTag: latest
+  newTag: e2e
