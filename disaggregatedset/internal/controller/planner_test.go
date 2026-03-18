@@ -32,14 +32,6 @@ func step(past, new []int) UpdateStep {
 	}
 }
 
-// config is a helper to create RollingUpdateConfig instances for tests
-func config(surge, unavailable []int) RollingUpdateConfig {
-	return RollingUpdateConfig{
-		MaxSurge:       surge,
-		MaxUnavailable: unavailable,
-	}
-}
-
 // completes checks if rollout completes correctly (old=0, new=target)
 func completes(steps []UpdateStep, target []int) bool {
 	if len(steps) == 0 {
@@ -118,7 +110,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		sourcePhase1 int
 		targetPhase0 int
 		targetPhase1 int
-		config       RollingUpdateConfig
+		config       []RollingUpdateConfig
 		expected     []UpdateStep
 	}{
 		// Small symmetric cases (decoupled: scale-up then scale-down alternately)
@@ -182,7 +174,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "medium_6_2_surge2",
 			sourcePhase0: 6, sourcePhase1: 2, targetPhase0: 6, targetPhase1: 2,
-			config: config([]int{2, 2}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
 			expected: []UpdateStep{
 				step([]int{6, 2}, []int{0, 0}),
 				step([]int{6, 2}, []int{2, 1}),
@@ -196,7 +188,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "medium_6_4_surge2",
 			sourcePhase0: 6, sourcePhase1: 4, targetPhase0: 6, targetPhase1: 4,
-			config: config([]int{2, 2}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
 			expected: []UpdateStep{
 				step([]int{6, 4}, []int{0, 0}),
 				step([]int{6, 4}, []int{2, 2}),
@@ -298,7 +290,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			// Interleaves scale-up and scale-down to respect surge
 			name:         "large_10_10_surge3",
 			sourcePhase0: 10, sourcePhase1: 10, targetPhase0: 10, targetPhase1: 10,
-			config: config([]int{3, 3}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 3}, {MaxSurge: 3}},
 			expected: []UpdateStep{
 				step([]int{10, 10}, []int{0, 0}),
 				step([]int{10, 10}, []int{3, 3}), // scale up (10+3=13)
@@ -314,7 +306,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "large_12_6_surge2",
 			sourcePhase0: 12, sourcePhase1: 6, targetPhase0: 12, targetPhase1: 6,
-			config: config([]int{2, 2}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
 			expected: []UpdateStep{
 				step([]int{12, 6}, []int{0, 0}),
 				step([]int{12, 6}, []int{2, 1}),
@@ -429,7 +421,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "medium_4_4_surge2",
 			sourcePhase0: 4, sourcePhase1: 4, targetPhase0: 4, targetPhase1: 4,
-			config: config([]int{2, 2}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
 			expected: []UpdateStep{
 				step([]int{4, 4}, []int{0, 0}),
 				step([]int{4, 4}, []int{2, 2}), // scale up (surge: 4+2<=4+2)
@@ -441,7 +433,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "asymmetric_surge_4_6",
 			sourcePhase0: 4, sourcePhase1: 6, targetPhase0: 4, targetPhase1: 6,
-			config: config([]int{2, 3}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 3}},
 			expected: []UpdateStep{
 				step([]int{4, 6}, []int{0, 0}),
 				step([]int{4, 6}, []int{2, 3}),
@@ -453,7 +445,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			name:         "asymmetric_5_3_surge2",
 			sourcePhase0: 5, sourcePhase1: 3, targetPhase0: 5, targetPhase1: 3,
-			config: config([]int{2, 2}, []int{0, 0}),
+			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
 			expected: []UpdateStep{
 				step([]int{5, 3}, []int{0, 0}),
 				step([]int{5, 3}, []int{2, 1}),
@@ -504,7 +496,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 // =============================================================================
 
 func TestUnavailableBasic_Symmetric4_4(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
 	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
 	// Verify total drops below 8 (unavailable pattern)
@@ -518,7 +510,7 @@ func TestUnavailableBasic_Symmetric4_4(t *testing.T) {
 }
 
 func TestUnavailableBasic_StepSequence(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
 
 	// Verify unavailable pattern: old decreases faster than new increases
 	foundUnavailablePattern := false
@@ -539,10 +531,7 @@ func TestUnavailableBasic_StepSequence(t *testing.T) {
 }
 
 func TestSurgePriority_SurgeTakesPriorityOverUnavailable(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{1, 1},
-		MaxUnavailable: []int{1, 1},
-	}
+	cfg := []RollingUpdateConfig{{MaxSurge: 1, MaxUnavailable: 1}, {MaxSurge: 1, MaxUnavailable: 1}}
 	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
 	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
@@ -554,10 +543,7 @@ func TestSurgePriority_SurgeTakesPriorityOverUnavailable(t *testing.T) {
 }
 
 func TestSurgePriority_UnavailableWhenSurgeZero(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{0, 0},
-		MaxUnavailable: []int{1, 1},
-	}
+	cfg := []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}}
 	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
 	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 
@@ -572,10 +558,7 @@ func TestSurgePriority_UnavailableWhenSurgeZero(t *testing.T) {
 }
 
 func TestSurgePriority_Surge2Behavior(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{2, 2},
-		MaxUnavailable: []int{0, 0},
-	}
+	cfg := []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}}
 	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
 	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
@@ -587,10 +570,7 @@ func TestSurgePriority_Surge2Behavior(t *testing.T) {
 }
 
 func TestSurgePriority_Unavailable2Behavior(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{0, 0},
-		MaxUnavailable: []int{2, 2},
-	}
+	cfg := []RollingUpdateConfig{{MaxUnavailable: 2}, {MaxUnavailable: 2}}
 	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
 	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
@@ -605,10 +585,7 @@ func TestSurgePriority_Unavailable2Behavior(t *testing.T) {
 }
 
 func TestSurgePriority_BothSurgeAndUnavailableUsesSurge(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{2, 2},
-		MaxUnavailable: []int{2, 2},
-	}
+	cfg := []RollingUpdateConfig{{MaxSurge: 2, MaxUnavailable: 2}, {MaxSurge: 2, MaxUnavailable: 2}}
 	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
 	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
 
@@ -620,19 +597,13 @@ func TestSurgePriority_BothSurgeAndUnavailableUsesSurge(t *testing.T) {
 }
 
 func TestMixedSurgeUnavailable_Phase0SurgePhase1Unavailable(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{1, 0},
-		MaxUnavailable: []int{0, 1},
-	}
+	cfg := []RollingUpdateConfig{{MaxSurge: 1}, {MaxUnavailable: 1}}
 	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
 	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 }
 
 func TestMixedSurgeUnavailable_Phase0UnavailablePhase1Surge(t *testing.T) {
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{0, 1},
-		MaxUnavailable: []int{1, 0},
-	}
+	cfg := []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxSurge: 1}}
 	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
 	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
 }
@@ -644,10 +615,7 @@ func TestMixedSurgeUnavailable_Asymmetric(t *testing.T) {
 		{6, 2}, {2, 6}, {8, 4},
 	}
 
-	cfg := RollingUpdateConfig{
-		MaxSurge:       []int{1, 0},
-		MaxUnavailable: []int{0, 1},
-	}
+	cfg := []RollingUpdateConfig{{MaxSurge: 1}, {MaxUnavailable: 1}}
 
 	for _, tc := range testCases {
 		steps := ComputeAllSteps([]int{tc.sp, tc.sd}, []int{tc.sp, tc.sd}, cfg)
@@ -656,21 +624,21 @@ func TestMixedSurgeUnavailable_Asymmetric(t *testing.T) {
 }
 
 func TestUnavailableEdgeCases_ScaleUpWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{2, 2}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	steps := ComputeAllSteps([]int{2, 2}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
 	if !completes(steps, []int{4, 4}) {
 		t.Error("Scale-up with unavailable did not complete")
 	}
 }
 
 func TestUnavailableEdgeCases_ScaleDownWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{2, 2}, config([]int{0, 0}, []int{1, 1}))
+	steps := ComputeAllSteps([]int{4, 4}, []int{2, 2}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
 	if !completes(steps, []int{2, 2}) {
 		t.Error("Scale-down with unavailable did not complete")
 	}
 }
 
 func TestUnavailableEdgeCases_FreshDeployWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{0, 0}, []int{4, 4}, config([]int{0, 0}, []int{1, 1}))
+	steps := ComputeAllSteps([]int{0, 0}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
 	if !completes(steps, []int{4, 4}) {
 		t.Error("Fresh deploy with unavailable did not complete")
 	}
@@ -684,7 +652,7 @@ func TestUnavailableEdgeCases_NoInfiniteLoop(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		steps := ComputeAllSteps([]int{tc.size, tc.size}, []int{tc.size, tc.size}, config([]int{0, 0}, []int{tc.unavailable, tc.unavailable}))
+		steps := ComputeAllSteps([]int{tc.size, tc.size}, []int{tc.size, tc.size}, []RollingUpdateConfig{{MaxUnavailable: tc.unavailable}, {MaxUnavailable: tc.unavailable}})
 		assert.LessOrEqual(t, len(steps), tc.size*4, "size=%d, unavailable=%d: too many steps (%d)", tc.size, tc.unavailable, len(steps))
 		assert.True(t, completes(steps, []int{tc.size, tc.size}), "size=%d, unavailable=%d: rollout should complete", tc.size, tc.unavailable)
 	}
@@ -715,7 +683,7 @@ func TestBatchSize(t *testing.T) {
 func TestComputeTotalSteps(t *testing.T) {
 	testCases := []struct {
 		source, target PhaseReplicaState
-		config         RollingUpdateConfig
+		config         []RollingUpdateConfig
 		expected       int
 	}{
 		{
@@ -728,7 +696,7 @@ func TestComputeTotalSteps(t *testing.T) {
 		},
 		{
 			PhaseReplicaState{4, 4}, PhaseReplicaState{4, 4},
-			config([]int{2, 2}, []int{0, 0}), 2,
+			[]RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}}, 2,
 		},
 		{
 			PhaseReplicaState{0, 0}, PhaseReplicaState{3, 3},
@@ -972,7 +940,11 @@ func TestNPhase_RolloutCompletes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			steps := ComputeAllSteps(tc.source, tc.target, config(tc.surge, tc.unavail))
+			cfg := make([]RollingUpdateConfig, len(tc.source))
+			for i := range cfg {
+				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i], MaxUnavailable: tc.unavail[i]}
+			}
+			steps := ComputeAllSteps(tc.source, tc.target, cfg)
 			require.True(t, completes(steps, tc.target), "rollout should complete")
 		})
 	}
@@ -993,8 +965,11 @@ func TestNPhase_SurgeConstraint(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			unavail := make([]int, len(tc.source))
-			steps := ComputeAllSteps(tc.source, tc.target, config(tc.surge, unavail))
+			cfg := make([]RollingUpdateConfig, len(tc.source))
+			for i := range cfg {
+				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i]}
+			}
+			steps := ComputeAllSteps(tc.source, tc.target, cfg)
 
 			for _, s := range steps {
 				total := totalAtStep(s)
@@ -1008,11 +983,10 @@ func TestNPhase_DefaultConfig(t *testing.T) {
 	for _, numPhases := range []int{3, 4, 5} {
 		t.Run(fmt.Sprintf("%d_phases", numPhases), func(t *testing.T) {
 			cfg := DefaultRollingUpdateConfig(numPhases)
-			assert.Equal(t, numPhases, len(cfg.MaxSurge))
-			assert.Equal(t, numPhases, len(cfg.MaxUnavailable))
+			assert.Equal(t, numPhases, len(cfg))
 			for i := 0; i < numPhases; i++ {
-				assert.Equal(t, 1, cfg.MaxSurge[i], "default surge should be 1")
-				assert.Equal(t, 0, cfg.MaxUnavailable[i], "default unavailable should be 0")
+				assert.Equal(t, 1, cfg[i].MaxSurge, "default surge should be 1")
+				assert.Equal(t, 0, cfg[i].MaxUnavailable, "default unavailable should be 0")
 			}
 		})
 	}

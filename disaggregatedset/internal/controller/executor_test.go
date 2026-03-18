@@ -672,13 +672,12 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			}
 
 			phaseNames := []string{testPhasePrefill, testPhaseDecode}
-			specPhaseSet := map[string]bool{testPhasePrefill: true, testPhaseDecode: true}
-			config := extractRollingUpdateConfig(ds, phaseNames, specPhaseSet)
+			config := extractRollingUpdateConfig(ds, phaseNames)
 
-			assert.Equal(t, tc.expectedPrefillSurge, config.MaxSurge[0])
-			assert.Equal(t, tc.expectedPrefillUnavail, config.MaxUnavailable[0])
-			assert.Equal(t, tc.expectedDecodeSurge, config.MaxSurge[1])
-			assert.Equal(t, tc.expectedDecodeUnavail, config.MaxUnavailable[1])
+			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
+			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
+			assert.Equal(t, tc.expectedDecodeSurge, config[1].MaxSurge)
+			assert.Equal(t, tc.expectedDecodeUnavail, config[1].MaxUnavailable)
 		})
 	}
 }

@@ -122,9 +122,10 @@ func main() {
 
 // computeAllStepsAdapter converts N-phase planner steps to local updateStep type.
 func computeAllStepsAdapter(source, target, surge, unavail []int) []updateStep {
-	config := controller.RollingUpdateConfig{
-		MaxSurge:       surge,
-		MaxUnavailable: unavail,
+	config := make([]controller.RollingUpdateConfig, len(source))
+	for i := range config {
+		config[i].MaxSurge = surge[i]
+		config[i].MaxUnavailable = unavail[i]
 	}
 
 	// Call N-phase planner

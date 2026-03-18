@@ -66,9 +66,9 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	}
 
 	// Detect phase changes (always allowed - Flexible behavior is the default)
-	changes := detectPhaseChanges(phaseNames, oldWorkloads)
-	if len(changes.Added) > 0 || len(changes.Removed) > 0 {
-		log.Info("Phase changes detected", "added", changes.Added, "removed", changes.Removed)
+	addedPhases, removedPhases := detectPhaseChanges(phaseNames, oldWorkloads)
+	if len(addedPhases) > 0 || len(removedPhases) > 0 {
+		log.Info("Phase changes detected", "added", addedPhases, "removed", removedPhases)
 	}
 
 	// If new workload doesn't exist, initialize rolling update
@@ -140,7 +140,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	// Build planner state
 	source, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allPhaseNames, specPhaseSet, oldWorkloads, newWorkload)
-	config := extractRollingUpdateConfig(disaggregatedSet, allPhaseNames, specPhaseSet)
+	config := extractRollingUpdateConfig(disaggregatedSet, allPhaseNames)
 
 	nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
@@ -224,26 +224,23 @@ func getTargetReplicas(ds *disaggv1alpha1.DisaggregatedSet, phaseName string) in
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNames []string, specPhaseSet map[string]bool) RollingUpdateConfig {
+func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNames []string) []RollingUpdateConfig {
 	config := DefaultRollingUpdateConfig(len(allPhaseNames))
 
-	specConfigs := make(map[string][2]int) // [maxSurge, maxUnavailable]
-	for _, phase := range ds.Spec.Phases {
-		surge, unavail := 1, 0
-		if phase.RolloutStrategy.RollingUpdateConfiguration != nil {
-			if phase.RolloutStrategy.RollingUpdateConfiguration.MaxSurge.IntValue() > 0 {
-				surge = phase.RolloutStrategy.RollingUpdateConfiguration.MaxSurge.IntValue()
-			}
-			if phase.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable.IntValue() > 0 {
-				unavail = phase.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable.IntValue()
-			}
-		}
-		specConfigs[phase.Name] = [2]int{surge, unavail}
+	phaseIndex := make(map[string]int, len(allPhaseNames))
+	for i, name := range allPhaseNames {
+		phaseIndex[name] = i
 	}
 
-	for i, name := range allPhaseNames {
-		if cfg, ok := specConfigs[name]; ok && specPhaseSet[name] {
-			config.MaxSurge[i], config.MaxUnavailable[i] = cfg[0], cfg[1]
+	for _, phase := range ds.Spec.Phases {
+		if rc := phase.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
+			i := phaseIndex[phase.Name]
+			if v := rc.MaxSurge.IntValue(); v > 0 {
+				config[i].MaxSurge = v
+			}
+			if v := rc.MaxUnavailable.IntValue(); v > 0 {
+				config[i].MaxUnavailable = v
+			}
 		}
 	}
 	return config
@@ -414,13 +411,8 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 	return true, nil
 }
 
-// --- Phase policy ---
-
-type phaseChanges struct {
-	Added, Removed []string
-}
-
-func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) phaseChanges {
+// --- Phase change utils ---
+func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) ([]string, []string) {
 	specPhases, oldPhases := buildPhaseSets(specPhaseNames, oldWorkloads)
 
 	var added, removed []string
@@ -434,5 +426,5 @@ func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) 
 			added = append(added, name)
 		}
 	}
-	return phaseChanges{Added: added, Removed: removed}
+	return added, removed
 }
