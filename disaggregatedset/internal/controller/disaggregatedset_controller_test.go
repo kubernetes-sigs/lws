@@ -99,19 +99,23 @@ func newTestDisaggregatedSet(name, namespace string, prefillReplicas, decodeRepl
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{
 			Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
 				{
-					Name:     testControllerPhasePrefill,
-					Replicas: ptr.To(prefillReplicas),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(1)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+					Name: testControllerPhasePrefill,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(prefillReplicas),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(1)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+						},
 					},
 				},
 				{
-					Name:     testControllerPhaseDecode,
-					Replicas: ptr.To(decodeReplicas),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(1)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+					Name: testControllerPhaseDecode,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(decodeReplicas),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(1)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
+						},
 					},
 				},
 			},

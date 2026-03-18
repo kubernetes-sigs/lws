@@ -490,8 +490,10 @@ func TestManagerCreate(t *testing.T) {
 				LabelRevision:    "abc123",
 			},
 			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
@@ -523,8 +525,10 @@ func TestManagerCreate(t *testing.T) {
 				LabelRevision:    "abc123",
 			},
 			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
@@ -544,7 +548,9 @@ func TestManagerCreate(t *testing.T) {
 			Phase: "prefill", Revision: "rev1", Replicas: 1,
 			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggPhase: "prefill", "app": "system-app"},
 			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
+				},
 				Metadata: &metav1.ObjectMeta{
 					Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
 					Annotations: map[string]string{"note": "val"},
@@ -568,17 +574,21 @@ func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
 		phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
 			{
-				Name:     "prefill",
-				Replicas: ptr.To(int32(2)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "prefill",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(2)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 			{
-				Name:     "decode",
-				Replicas: ptr.To(int32(3)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "decode",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(3)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
@@ -593,33 +603,41 @@ func TestComputeRevision(t *testing.T) {
 	t.Run("returns different revision for different Size", func(t *testing.T) {
 		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
 			{
-				Name:     "prefill",
-				Replicas: ptr.To(int32(2)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "prefill",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(2)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 			{
-				Name:     "decode",
-				Replicas: ptr.To(int32(3)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "decode",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(3)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
 		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
 			{
-				Name:     "prefill",
-				Replicas: ptr.To(int32(2)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(2)), // Different
+				Name: "prefill",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(2)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(2)), // Different
+					},
 				},
 			},
 			{
-				Name:     "decode",
-				Replicas: ptr.To(int32(3)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "decode",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(3)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
@@ -633,33 +651,41 @@ func TestComputeRevision(t *testing.T) {
 	t.Run("returns different revision for different phase names", func(t *testing.T) {
 		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
 			{
-				Name:     "prefill",
-				Replicas: ptr.To(int32(2)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "prefill",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(2)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 			{
-				Name:     "decode",
-				Replicas: ptr.To(int32(3)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "decode",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(3)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}
 		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
 			{
-				Name:     "other-phase",
-				Replicas: ptr.To(int32(2)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "other-phase",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(2)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 			{
-				Name:     "decode",
-				Replicas: ptr.To(int32(3)),
-				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-					Size: ptr.To(int32(1)),
+				Name: "decode",
+				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+					Replicas: ptr.To(int32(3)),
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
 				},
 			},
 		}

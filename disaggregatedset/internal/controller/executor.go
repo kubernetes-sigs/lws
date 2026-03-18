@@ -230,12 +230,12 @@ func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNam
 	specConfigs := make(map[string][2]int) // [maxSurge, maxUnavailable]
 	for _, phase := range ds.Spec.Phases {
 		surge, unavail := 1, 0
-		if phase.RolloutStrategy != nil {
-			if phase.RolloutStrategy.MaxSurge != nil {
-				surge = phase.RolloutStrategy.MaxSurge.IntValue()
+		if phase.RolloutStrategy.RollingUpdateConfiguration != nil {
+			if phase.RolloutStrategy.RollingUpdateConfiguration.MaxSurge.IntValue() > 0 {
+				surge = phase.RolloutStrategy.RollingUpdateConfiguration.MaxSurge.IntValue()
 			}
-			if phase.RolloutStrategy.MaxUnavailable != nil {
-				unavail = phase.RolloutStrategy.MaxUnavailable.IntValue()
+			if phase.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable.IntValue() > 0 {
+				unavail = phase.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable.IntValue()
 			}
 		}
 		specConfigs[phase.Name] = [2]int{surge, unavail}

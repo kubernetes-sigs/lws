@@ -129,6 +129,19 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
+	Context("Webhook Validation", func() {
+		It("should reject DisaggregatedSet with partition set", func() {
+			By("attempting to create a DisaggregatedSet with partition=1")
+			yaml := fixtures.PrefillDecode("test-invalid-partition",
+				fixtures.Phase{Replicas: 1, Partition: fixtures.Ptr(1)},
+				fixtures.Phase{Replicas: 1},
+			).YAML()
+			err := applyYAML(yaml)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("partition"))
+		})
+	})
+
 	Context("Basic Deployment", func() {
 		const deploymentName = "test-basic"
 

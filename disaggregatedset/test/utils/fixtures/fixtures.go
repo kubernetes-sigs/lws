@@ -29,6 +29,7 @@ type Phase struct {
 	Image          string
 	MaxSurge       int
 	MaxUnavailable int
+	Partition      *int // nil = not set, 0 = valid, >0 = invalid (rejected by webhook)
 	HasRollout     bool
 	Labels         map[string]string // workerTemplate labels (propagate to pods)
 	Annotations    map[string]string // workerTemplate annotations (propagate to pods)
@@ -64,10 +65,16 @@ spec:
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
 		sb.WriteString(fmt.Sprintf("    replicas: %d\n", p.Replicas))
 
-		if p.HasRollout {
+		if p.HasRollout || p.Partition != nil {
 			sb.WriteString("    rolloutStrategy:\n")
-			sb.WriteString(fmt.Sprintf("      maxSurge: %d\n", p.MaxSurge))
-			sb.WriteString(fmt.Sprintf("      maxUnavailable: %d\n", p.MaxUnavailable))
+			sb.WriteString("      rollingUpdateConfiguration:\n")
+			if p.HasRollout {
+				sb.WriteString(fmt.Sprintf("        maxSurge: %d\n", p.MaxSurge))
+				sb.WriteString(fmt.Sprintf("        maxUnavailable: %d\n", p.MaxUnavailable))
+			}
+			if p.Partition != nil {
+				sb.WriteString(fmt.Sprintf("        partition: %d\n", *p.Partition))
+			}
 		}
 
 		// Add LWS CR metadata section if LWSLabels or LWSAnnotations are present
@@ -129,4 +136,9 @@ func PrefillDecode(name string, prefill, decode Phase) Config {
 		Name:   name,
 		Phases: []Phase{prefill, decode},
 	}
+}
+
+// Ptr returns a pointer to v.
+func Ptr[T any](v T) *T {
+	return &v
 }

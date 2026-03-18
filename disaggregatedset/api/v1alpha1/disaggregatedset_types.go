@@ -18,35 +18,15 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// RolloutStrategy defines the rolling update parameters for a phase.
-type RolloutStrategy struct {
-	// MaxUnavailable is the maximum number of replicas that can be unavailable during the update.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas (ex: 10%).
-	// Absolute number is calculated from percentage by rounding down.
-	// Defaults to 0.
-	// +kubebuilder:validation:XIntOrString
-	// +kubebuilder:default=0
-	// +optional
-	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
-
-	// MaxSurge is the maximum number of replicas that can be scheduled above the original number of replicas.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas (ex: 10%).
-	// Absolute number is calculated from percentage by rounding up.
-	// Defaults to 1.
-	// +kubebuilder:validation:XIntOrString
-	// +kubebuilder:default=1
-	// +optional
-	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
-}
-
 // DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
-// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
+// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws, with validation
+// to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
+// RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
 type DisaggregatedPhaseSpec struct {
 	// Name is the unique identifier for this phase.
 	// +kubebuilder:validation:MinLength=1
@@ -55,28 +35,12 @@ type DisaggregatedPhaseSpec struct {
 	// +required
 	Name string `json:"name"`
 
-	// Replicas is the number of leader-worker groups.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=1
-	// +optional
-	Replicas *int32 `json:"replicas,omitempty"`
-
-	// LeaderWorkerTemplate defines the template for leader/worker pods.
-	// +required
-	LeaderWorkerTemplate leaderworkerset.LeaderWorkerTemplate `json:"leaderWorkerTemplate"`
-
-	// RolloutStrategy defines the rolling update parameters.
-	// +optional
-	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
-
-	// StartupPolicy determines when workers should start relative to the leader.
-	// +kubebuilder:default=LeaderCreated
-	// +optional
-	StartupPolicy leaderworkerset.StartupPolicyType `json:"startupPolicy,omitempty"`
-
-	// NetworkConfig defines the network configuration of the group.
-	// +optional
-	NetworkConfig *leaderworkerset.NetworkConfig `json:"networkConfig,omitempty"`
+	// LeaderWorkerSetSpec is embedded inline to inherit all LWS configuration fields.
+	// Note: RolloutStrategy.Type must be RollingUpdate (or empty) and
+	// RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
+	// DisaggregatedSet handles rollouts across phases and does not propagate
+	// RolloutStrategy to the underlying LWS resources.
+	leaderworkerset.LeaderWorkerSetSpec `json:",inline"`
 
 	// Metadata allows setting labels and annotations on the LWS CR's ObjectMeta.
 	// This is useful for integrations like Kueue (queue assignment via

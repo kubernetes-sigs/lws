@@ -218,14 +218,18 @@ func makePhaseSpec(
 	surge, unavail intstr.IntOrString,
 ) disaggv1alpha1.DisaggregatedPhaseSpec {
 	return disaggv1alpha1.DisaggregatedPhaseSpec{
-		Name:     name,
-		Replicas: ptr.To(replicas),
-		LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-			Size:           ptr.To(int32(1)),
-			WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
-		},
-		RolloutStrategy: &disaggv1alpha1.RolloutStrategy{
-			MaxSurge: &surge, MaxUnavailable: &unavail,
+		Name: name,
+		LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+			Replicas: ptr.To(replicas),
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				Size:           ptr.To(int32(1)),
+				WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+			},
+			RolloutStrategy: leaderworkerset.RolloutStrategy{
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					MaxSurge: surge, MaxUnavailable: unavail,
+				},
+			},
 		},
 	}
 }
@@ -382,32 +386,40 @@ func TestReconcilerIntegration(t *testing.T) {
 				Build()
 
 			podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}}
-			var rolloutStrategy *disaggv1alpha1.RolloutStrategy
+			var rolloutConfig *leaderworkerset.RollingUpdateConfiguration
 			if tc.maxSurge != nil {
 				surge, unavail := intstr.FromInt(*tc.maxSurge), intstr.FromInt(*tc.maxUnavailable)
-				rolloutStrategy = &disaggv1alpha1.RolloutStrategy{
-					MaxSurge: &surge, MaxUnavailable: &unavail,
+				rolloutConfig = &leaderworkerset.RollingUpdateConfiguration{
+					MaxSurge: surge, MaxUnavailable: unavail,
 				}
 			}
 
 			phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
 				{
-					Name:     testPhasePrefill,
-					Replicas: ptr.To(tc.targetReplicas),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(2)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+					Name: testPhasePrefill,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(tc.targetReplicas),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(2)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+						},
+						RolloutStrategy: leaderworkerset.RolloutStrategy{
+							RollingUpdateConfiguration: rolloutConfig,
+						},
 					},
-					RolloutStrategy: rolloutStrategy,
 				},
 				{
-					Name:     testPhaseDecode,
-					Replicas: ptr.To(tc.targetReplicas),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(2)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+					Name: testPhaseDecode,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(tc.targetReplicas),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(2)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+						},
+						RolloutStrategy: leaderworkerset.RolloutStrategy{
+							RollingUpdateConfiguration: rolloutConfig,
+						},
 					},
-					RolloutStrategy: rolloutStrategy,
 				},
 			}
 
@@ -579,8 +591,8 @@ func TestIsWorkloadStable(t *testing.T) {
 
 func TestGetPhaseConfigs(t *testing.T) {
 	phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
-		{Name: testPhasePrefill, Replicas: ptr.To(int32(3))},
-		{Name: testPhaseDecode, Replicas: ptr.To(int32(5))},
+		{Name: testPhasePrefill, LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(3))}},
+		{Name: testPhaseDecode, LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(5))}},
 	}
 	deployment := &disaggv1alpha1.DisaggregatedSet{
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{Phases: phases},
@@ -597,46 +609,62 @@ func TestGetPhaseConfigs(t *testing.T) {
 // =============================================================================
 
 func TestExtractRollingUpdateConfig(t *testing.T) {
-	intPtr := func(v int) *intstr.IntOrString { i := intstr.FromInt(v); return &i }
+	intVal := func(v int) intstr.IntOrString { return intstr.FromInt(v) }
 
 	testCases := []struct {
 		name                                                     string
-		prefillSurge, prefillUnavail, decodeSurge, decodeUnavail *intstr.IntOrString
+		prefillSurge, prefillUnavail, decodeSurge, decodeUnavail *int
 		expectedPrefillSurge, expectedPrefillUnavail             int
 		expectedDecodeSurge, expectedDecodeUnavail               int
 	}{
 		{"defaults when nil", nil, nil, nil, nil, 1, 0, 1, 0},
-		{"custom prefill only", intPtr(3), intPtr(1), nil, nil, 3, 1, 1, 0},
-		{"custom decode only", nil, nil, intPtr(2), intPtr(0), 1, 0, 2, 0},
-		{"partial prefill (surge only)", intPtr(5), nil, nil, nil, 5, 0, 1, 0},
-		{"both custom", intPtr(2), intPtr(1), intPtr(3), intPtr(2), 2, 1, 3, 2},
+		{"custom prefill only", ptr.To(3), ptr.To(1), nil, nil, 3, 1, 1, 0},
+		{"custom decode only", nil, nil, ptr.To(2), ptr.To(0), 1, 0, 2, 0},
+		{"partial prefill (surge only)", ptr.To(5), ptr.To(0), nil, nil, 5, 0, 1, 0},
+		{"both custom", ptr.To(2), ptr.To(1), ptr.To(3), ptr.To(2), 2, 1, 3, 2},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var prefillRollout, decodeRollout *disaggv1alpha1.RolloutStrategy
+			var prefillRolloutConfig, decodeRolloutConfig *leaderworkerset.RollingUpdateConfiguration
 			if tc.prefillSurge != nil || tc.prefillUnavail != nil {
-				prefillRollout = &disaggv1alpha1.RolloutStrategy{}
+				prefillRolloutConfig = &leaderworkerset.RollingUpdateConfiguration{}
 				if tc.prefillSurge != nil {
-					prefillRollout.MaxSurge = tc.prefillSurge
+					prefillRolloutConfig.MaxSurge = intVal(*tc.prefillSurge)
 				}
 				if tc.prefillUnavail != nil {
-					prefillRollout.MaxUnavailable = tc.prefillUnavail
+					prefillRolloutConfig.MaxUnavailable = intVal(*tc.prefillUnavail)
 				}
 			}
 			if tc.decodeSurge != nil || tc.decodeUnavail != nil {
-				decodeRollout = &disaggv1alpha1.RolloutStrategy{}
+				decodeRolloutConfig = &leaderworkerset.RollingUpdateConfiguration{}
 				if tc.decodeSurge != nil {
-					decodeRollout.MaxSurge = tc.decodeSurge
+					decodeRolloutConfig.MaxSurge = intVal(*tc.decodeSurge)
 				}
 				if tc.decodeUnavail != nil {
-					decodeRollout.MaxUnavailable = tc.decodeUnavail
+					decodeRolloutConfig.MaxUnavailable = intVal(*tc.decodeUnavail)
 				}
 			}
 
 			phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
-				{Name: testPhasePrefill, Replicas: ptr.To(int32(3)), RolloutStrategy: prefillRollout},
-				{Name: testPhaseDecode, Replicas: ptr.To(int32(2)), RolloutStrategy: decodeRollout},
+				{
+					Name: testPhasePrefill,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(int32(3)),
+						RolloutStrategy: leaderworkerset.RolloutStrategy{
+							RollingUpdateConfiguration: prefillRolloutConfig,
+						},
+					},
+				},
+				{
+					Name: testPhaseDecode,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(int32(2)),
+						RolloutStrategy: leaderworkerset.RolloutStrategy{
+							RollingUpdateConfiguration: decodeRolloutConfig,
+						},
+					},
+				},
 			}
 
 			ds := &disaggv1alpha1.DisaggregatedSet{
@@ -965,19 +993,23 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 			podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}}
 			phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
 				{
-					Name:     testPhasePrefill,
-					Replicas: ptr.To(int32(4)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(1)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+					Name: testPhasePrefill,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(int32(4)),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(1)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+						},
 					},
 				},
 				{
-					Name:     testPhaseDecode,
-					Replicas: ptr.To(int32(4)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(1)),
-						WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+					Name: testPhaseDecode,
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(int32(4)),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(1)),
+							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
+						},
 					},
 				},
 			}
@@ -1059,8 +1091,8 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				Build()
 			executor := newTestExecutor(fakeClient)
 			phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
-				{Name: testPhasePrefill, Replicas: ptr.To(int32(4))},
-				{Name: testPhaseDecode, Replicas: ptr.To(int32(4))},
+				{Name: testPhasePrefill, LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}},
+				{Name: testPhaseDecode, LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}},
 			}
 			deployment := &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},

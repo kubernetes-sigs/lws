@@ -470,20 +470,24 @@ func createTestDeployment(name, namespace string) *disaggv1alpha1.DisaggregatedS
 			Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
 				{
 					Name: testServicePhasePrefill,
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						WorkerTemplate: corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							WorkerTemplate: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
+								},
 							},
 						},
 					},
 				},
 				{
 					Name: testServicePhaseDecode,
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-						WorkerTemplate: corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
+					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							WorkerTemplate: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
+								},
 							},
 						},
 					},

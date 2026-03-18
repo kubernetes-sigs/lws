@@ -11,8 +11,9 @@ spec:
   - name: prefill
     replicas: 10
     rolloutStrategy:
-       maxSurge: 0
-       maxUnavailable: 2
+      rollingUpdateConfiguration:
+        maxSurge: 0
+        maxUnavailable: 2
     leaderWorkerTemplate:
       size: 2
       workerTemplate:
@@ -47,8 +48,9 @@ spec:
   - name: decode
     replicas: 2
     rolloutStrategy:
-       maxSurge: 2
-       maxUnavailable: 1
+      rollingUpdateConfiguration:
+        maxSurge: 2
+        maxUnavailable: 1
     leaderWorkerTemplate:
       size: 1
       workerTemplate:
@@ -80,8 +82,9 @@ spec:
   - name: encode
     replicas: 2
     rolloutStrategy:
-       maxSurge: 2
-       maxUnavailable: 1
+      rollingUpdateConfiguration:
+        maxSurge: 2
+        maxUnavailable: 1
     leaderWorkerTemplate:
       size: 1
       workerTemplate:

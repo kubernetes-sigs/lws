@@ -38,7 +38,13 @@ import (
 
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 	"sigs.k8s.io/disaggregatedset/internal/controller"
+	disaggwebhook "sigs.k8s.io/disaggregatedset/internal/webhook"
+	"sigs.k8s.io/disaggregatedset/pkg/cert"
 	// +kubebuilder:scaffold:imports
+)
+
+const (
+	defaultWebhookCertDir = "/tmp/k8s-webhook-server/serving-certs"
 )
 
 var (
@@ -58,11 +64,15 @@ func init() {
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
+	var webhookCertDir string
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var internalCertManagement bool
+	var webhookServiceName string
+	var webhookSecretName string
+	var namespace string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -72,15 +82,22 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", defaultWebhookCertDir,
+		"The directory that contains the webhook certificate.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&internalCertManagement, "internal-cert-management", true,
+		"Enable internal certificate management for webhooks.")
+	flag.StringVar(&webhookServiceName, "webhook-service-name", "disaggregatedset-webhook-service",
+		"The name of the webhook service.")
+	flag.StringVar(&webhookSecretName, "webhook-secret-name", "disaggregatedset-webhook-server-cert",
+		"The name of the webhook secret.")
+	flag.StringVar(&namespace, "namespace", "disaggregatedset-system",
+		"The namespace the controller runs in.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -104,22 +121,11 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	}
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
+	// Webhook server setup
+	webhookServer := webhook.NewServer(webhook.Options{
+		TLSOpts: tlsOpts,
+		CertDir: webhookCertDir,
+	})
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -180,13 +186,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.DisaggregatedSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DisaggregatedSet")
-		os.Exit(1)
+	// Set up internal cert management if enabled
+	certsReady := make(chan struct{})
+	if internalCertManagement {
+		if err := cert.CertsManager(mgr, namespace, webhookServiceName, webhookSecretName, webhookCertDir, certsReady); err != nil {
+			setupLog.Error(err, "unable to setup cert rotation")
+			os.Exit(1)
+		}
+	} else {
+		close(certsReady)
 	}
+
+	// Start controller and webhook setup in a goroutine that waits for certs
+	go setupControllers(mgr, certsReady)
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -201,6 +214,27 @@ func main() {
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+func setupControllers(mgr ctrl.Manager, certsReady chan struct{}) {
+	// The controllers won't work until the webhooks are operating,
+	// and the webhook won't work until the certs are all in places.
+	setupLog.Info("waiting for the cert generation to complete")
+	<-certsReady
+	setupLog.Info("certs ready")
+
+	if err := (&controller.DisaggregatedSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DisaggregatedSet")
+		os.Exit(1)
+	}
+
+	if err := disaggwebhook.SetupDisaggregatedSetWebhook(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "DisaggregatedSet")
 		os.Exit(1)
 	}
 }

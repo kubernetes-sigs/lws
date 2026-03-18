@@ -46,11 +46,13 @@ spec:
                 items:
                   description: |-
                     DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
-                    This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
+                    This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws, with validation
+                    to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
+                    RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
                   properties:
                     leaderWorkerTemplate:
                       description: LeaderWorkerTemplate defines the template for leader/worker
-                        pods.
+                        pods
                       properties:
                         leaderTemplate:
                           description: LeaderTemplate defines the pod template for
@@ -1958,8 +1960,9 @@ spec:
                                             type: integer
                                         type: object
                                       resizePolicy:
-                                        description: Resources resize policy for the
-                                          container.
+                                        description: |-
+                                          Resources resize policy for the container.
+                                          This field cannot be set on ephemeral containers.
                                         items:
                                           description: ContainerResizePolicy represents
                                             resource resize policy for the container.
@@ -5263,8 +5266,9 @@ spec:
                                             type: integer
                                         type: object
                                       resizePolicy:
-                                        description: Resources resize policy for the
-                                          container.
+                                        description: |-
+                                          Resources resize policy for the container.
+                                          This field cannot be set on ephemeral containers.
                                         items:
                                           description: ContainerResizePolicy represents
                                             resource resize policy for the container.
@@ -6061,8 +6065,8 @@ spec:
                                     will be made available to those containers which consume them
                                     by name.
 
-                                    This is an alpha field and requires enabling the
-                                    DynamicResourceAllocation feature gate.
+                                    This is a stable field but requires that the
+                                    DynamicResourceAllocation feature gate is enabled.
 
                                     This field is immutable.
                                   items:
@@ -6522,9 +6526,10 @@ spec:
                                       operator:
                                         description: |-
                                           Operator represents a key's relationship to the value.
-                                          Valid operators are Exists and Equal. Defaults to Equal.
+                                          Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                                           Exists is equivalent to wildcard for value, so that a pod can
                                           tolerate all taints of a particular category.
+                                          Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                                         type: string
                                       tolerationSeconds:
                                         description: |-
@@ -7349,7 +7354,7 @@ spec:
                                                   resources:
                                                     description: |-
                                                       resources represents the minimum resources the volume should have.
-                                                      If RecoverVolumeExpansionFailure feature is enabled users are allowed to specify resource requirements
+                                                      Users are allowed to specify resource requirements
                                                       that are lower than previous value but must still be higher than capacity recorded in the
                                                       status field of the claim.
                                                       More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#resources
@@ -8263,6 +8268,24 @@ spec:
                                                         CSRs will be addressed to
                                                         this signer.
                                                       type: string
+                                                    userAnnotations:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: |-
+                                                        userAnnotations allow pod authors to pass additional information to
+                                                        the signer implementation.  Kubernetes does not restrict or validate this
+                                                        metadata in any way.
+
+                                                        These values are copied verbatim into the `spec.unverifiedUserAnnotations` field of
+                                                        the PodCertificateRequest objects that Kubelet creates.
+
+                                                        Entries are subject to the same validation as object metadata annotations,
+                                                        with the addition that all keys must be domain-prefixed. No restrictions
+                                                        are placed on values, except an overall size limitation on the entire field.
+
+                                                        Signers should document the keys and values they support. Signers should
+                                                        deny requests that contain keys they do not recognize.
+                                                      type: object
                                                   required:
                                                   - keyType
                                                   - signerName
@@ -8696,6 +8719,42 @@ spec:
                                   x-kubernetes-list-map-keys:
                                   - name
                                   x-kubernetes-list-type: map
+                                workloadRef:
+                                  description: |-
+                                    WorkloadRef provides a reference to the Workload object that this Pod belongs to.
+                                    This field is used by the scheduler to identify the PodGroup and apply the
+                                    correct group scheduling policies. The Workload object referenced
+                                    by this field may not exist at the time the Pod is created.
+                                    This field is immutable, but a Workload object with the same name
+                                    may be recreated with different policies. Doing this during pod scheduling
+                                    may result in the placement not conforming to the expected policies.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name defines the name of the Workload object this Pod belongs to.
+                                        Workload must be in the same namespace as the Pod.
+                                        If it doesn't match any existing Workload, the Pod will remain unschedulable
+                                        until a Workload object is created and observed by the kube-scheduler.
+                                        It must be a DNS subdomain.
+                                      type: string
+                                    podGroup:
+                                      description: |-
+                                        PodGroup is the name of the PodGroup within the Workload that this Pod
+                                        belongs to. If it doesn't match any existing PodGroup within the Workload,
+                                        the Pod will remain unschedulable until the Workload object is recreated
+                                        and observed by the kube-scheduler. It must be a DNS label.
+                                      type: string
+                                    podGroupReplicaKey:
+                                      description: |-
+                                        PodGroupReplicaKey specifies the replica key of the PodGroup to which this
+                                        Pod belongs. It is used to distinguish pods belonging to different replicas
+                                        of the same pod group. The pod group policy is applied separately to each replica.
+                                        When set, it must be a DNS label.
+                                      type: string
+                                  required:
+                                  - name
+                                  - podGroup
+                                  type: object
                               required:
                               - containers
                               type: object
@@ -8909,7 +8968,7 @@ spec:
                                   resources:
                                     description: |-
                                       resources represents the minimum resources the volume should have.
-                                      If RecoverVolumeExpansionFailure feature is enabled users are allowed to specify resource requirements
+                                      Users are allowed to specify resource requirements
                                       that are lower than previous value but must still be higher than capacity recorded in the
                                       status field of the claim.
                                       More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#resources
@@ -9074,9 +9133,7 @@ spec:
                                       For example - a controller that\nonly is responsible
                                       for resizing capacity of the volume, should
                                       ignore PVC updates that change other valid\nresources
-                                      associated with PVC.\n\nThis is an alpha field
-                                      and requires enabling RecoverVolumeExpansionFailure
-                                      feature."
+                                      associated with PVC."
                                     type: object
                                     x-kubernetes-map-type: granular
                                   allocatedResources:
@@ -9112,9 +9169,7 @@ spec:
                                       - a controller that\nonly is responsible for
                                       resizing capacity of the volume, should ignore
                                       PVC updates that change other valid\nresources
-                                      associated with PVC.\n\nThis is an alpha field
-                                      and requires enabling RecoverVolumeExpansionFailure
-                                      feature."
+                                      associated with PVC."
                                     type: object
                                   capacity:
                                     additionalProperties:
@@ -11123,8 +11178,9 @@ spec:
                                             type: integer
                                         type: object
                                       resizePolicy:
-                                        description: Resources resize policy for the
-                                          container.
+                                        description: |-
+                                          Resources resize policy for the container.
+                                          This field cannot be set on ephemeral containers.
                                         items:
                                           description: ContainerResizePolicy represents
                                             resource resize policy for the container.
@@ -14428,8 +14484,9 @@ spec:
                                             type: integer
                                         type: object
                                       resizePolicy:
-                                        description: Resources resize policy for the
-                                          container.
+                                        description: |-
+                                          Resources resize policy for the container.
+                                          This field cannot be set on ephemeral containers.
                                         items:
                                           description: ContainerResizePolicy represents
                                             resource resize policy for the container.
@@ -15226,8 +15283,8 @@ spec:
                                     will be made available to those containers which consume them
                                     by name.
 
-                                    This is an alpha field and requires enabling the
-                                    DynamicResourceAllocation feature gate.
+                                    This is a stable field but requires that the
+                                    DynamicResourceAllocation feature gate is enabled.
 
                                     This field is immutable.
                                   items:
@@ -15687,9 +15744,10 @@ spec:
                                       operator:
                                         description: |-
                                           Operator represents a key's relationship to the value.
-                                          Valid operators are Exists and Equal. Defaults to Equal.
+                                          Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                                           Exists is equivalent to wildcard for value, so that a pod can
                                           tolerate all taints of a particular category.
+                                          Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                                         type: string
                                       tolerationSeconds:
                                         description: |-
@@ -16514,7 +16572,7 @@ spec:
                                                   resources:
                                                     description: |-
                                                       resources represents the minimum resources the volume should have.
-                                                      If RecoverVolumeExpansionFailure feature is enabled users are allowed to specify resource requirements
+                                                      Users are allowed to specify resource requirements
                                                       that are lower than previous value but must still be higher than capacity recorded in the
                                                       status field of the claim.
                                                       More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#resources
@@ -17428,6 +17486,24 @@ spec:
                                                         CSRs will be addressed to
                                                         this signer.
                                                       type: string
+                                                    userAnnotations:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: |-
+                                                        userAnnotations allow pod authors to pass additional information to
+                                                        the signer implementation.  Kubernetes does not restrict or validate this
+                                                        metadata in any way.
+
+                                                        These values are copied verbatim into the `spec.unverifiedUserAnnotations` field of
+                                                        the PodCertificateRequest objects that Kubelet creates.
+
+                                                        Entries are subject to the same validation as object metadata annotations,
+                                                        with the addition that all keys must be domain-prefixed. No restrictions
+                                                        are placed on values, except an overall size limitation on the entire field.
+
+                                                        Signers should document the keys and values they support. Signers should
+                                                        deny requests that contain keys they do not recognize.
+                                                      type: object
                                                   required:
                                                   - keyType
                                                   - signerName
@@ -17861,6 +17937,42 @@ spec:
                                   x-kubernetes-list-map-keys:
                                   - name
                                   x-kubernetes-list-type: map
+                                workloadRef:
+                                  description: |-
+                                    WorkloadRef provides a reference to the Workload object that this Pod belongs to.
+                                    This field is used by the scheduler to identify the PodGroup and apply the
+                                    correct group scheduling policies. The Workload object referenced
+                                    by this field may not exist at the time the Pod is created.
+                                    This field is immutable, but a Workload object with the same name
+                                    may be recreated with different policies. Doing this during pod scheduling
+                                    may result in the placement not conforming to the expected policies.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name defines the name of the Workload object this Pod belongs to.
+                                        Workload must be in the same namespace as the Pod.
+                                        If it doesn't match any existing Workload, the Pod will remain unschedulable
+                                        until a Workload object is created and observed by the kube-scheduler.
+                                        It must be a DNS subdomain.
+                                      type: string
+                                    podGroup:
+                                      description: |-
+                                        PodGroup is the name of the PodGroup within the Workload that this Pod
+                                        belongs to. If it doesn't match any existing PodGroup within the Workload,
+                                        the Pod will remain unschedulable until the Workload object is recreated
+                                        and observed by the kube-scheduler. It must be a DNS label.
+                                      type: string
+                                    podGroupReplicaKey:
+                                      description: |-
+                                        PodGroupReplicaKey specifies the replica key of the PodGroup to which this
+                                        Pod belongs. It is used to distinguish pods belonging to different replicas
+                                        of the same pod group. The pod group policy is applied separately to each replica.
+                                        When set, it must be a DNS label.
+                                      type: string
+                                  required:
+                                  - name
+                                  - podGroup
+                                  type: object
                               required:
                               - containers
                               type: object
@@ -17902,7 +18014,7 @@ spec:
                       type: string
                     networkConfig:
                       description: NetworkConfig defines the network configuration
-                        of the group.
+                        of the group
                       properties:
                         subdomainPolicy:
                           description: |-
@@ -17917,40 +18029,92 @@ spec:
                       type: object
                     replicas:
                       default: 1
-                      description: Replicas is the number of leader-worker groups.
+                      description: |-
+                        Number of leader-workers groups. A scale subresource is available to enable HPA. The
+                        selector for HPA will be that of the leader pod, and so practically HPA will be looking up the
+                        leader pod metrics. Note that the leader pod could aggregate metrics from
+                        the rest of the group and expose them as a summary custom metric representing the whole
+                        group.
+                        On scale down, the leader pod as well as the workers statefulset will be deleted.
+                        Default to 1.
                       format: int32
-                      minimum: 0
                       type: integer
                     rolloutStrategy:
-                      description: RolloutStrategy defines the rolling update parameters.
+                      description: |-
+                        RolloutStrategy defines the strategy that will be applied to update replicas
+                        when a revision is made to the leaderWorkerTemplate.
                       properties:
-                        maxSurge:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          default: 1
-                          description: |-
-                            MaxSurge is the maximum number of replicas that can be scheduled above the original number of replicas.
-                            Value can be an absolute number (ex: 5) or a percentage of total replicas (ex: 10%).
-                            Absolute number is calculated from percentage by rounding up.
-                            Defaults to 1.
-                          x-kubernetes-int-or-string: true
-                        maxUnavailable:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          default: 0
-                          description: |-
-                            MaxUnavailable is the maximum number of replicas that can be unavailable during the update.
-                            Value can be an absolute number (ex: 5) or a percentage of total replicas (ex: 10%).
-                            Absolute number is calculated from percentage by rounding down.
-                            Defaults to 0.
-                          x-kubernetes-int-or-string: true
+                        rollingUpdateConfiguration:
+                          description: RollingUpdateConfiguration defines the parameters
+                            to be used when type is RollingUpdateStrategyType.
+                          properties:
+                            maxSurge:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              default: 0
+                              description: |-
+                                The maximum number of replicas that can be scheduled above the original number of
+                                replicas.
+                                Value can be an absolute number (ex: 5) or a percentage of total replicas at
+                                the start of the update (ex: 10%).
+                                Absolute number is calculated from percentage by rounding up.
+                                By default, a value of 0 is used.
+                                Example: when this is set to 30%, the new replicas can be scaled up by 30%
+                                immediately when the rolling update starts. Once old replicas have been deleted,
+                                new replicas can be scaled up further, ensuring that total number of replicas running
+                                at any time during the update is at most 130% of original replicas.
+                                When rolling update completes, replicas will fall back to the original replicas.
+                              x-kubernetes-int-or-string: true
+                            maxUnavailable:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              default: 1
+                              description: |-
+                                The maximum number of replicas that can be unavailable during the update.
+                                Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+                                Absolute number is calculated from percentage by rounding down.
+                                This can not be 0 if MaxSurge is 0.
+                                By default, a fixed value of 1 is used.
+                                Example: when this is set to 30%, the old replicas can be scaled down by 30%
+                                immediately when the rolling update starts. Once new replicas are ready, old replicas
+                                can be scaled down further, followed by scaling up the new replicas, ensuring
+                                that at least 70% of original number of replicas are available at all times
+                                during the update.
+                              x-kubernetes-int-or-string: true
+                            partition:
+                              default: 0
+                              description: |-
+                                Partition indicates the ordinal at which the lws should be partitioned for updates.
+                                During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
+                                The groups from 0 to Partition-1 will not be updated.
+                                This is helpful in incremental rollout strategies like canary deployments
+                                or interactive rollout strategies for multiple replicas like xPyD deployments.
+                                Once partition field and maxSurge field both set, the bursted replicas will keep remaining
+                                until the rolling update is completely done and the partition field is reset to 0.
+                                This is as expected to reduce the reconciling complexity.
+                                The default value is 0.
+                              format: int32
+                              type: integer
+                          type: object
+                        type:
+                          default: RollingUpdate
+                          description: Type defines the rollout strategy, it can only
+                            be “RollingUpdate” for now.
+                          enum:
+                          - RollingUpdate
+                          type: string
+                      required:
+                      - type
                       type: object
                     startupPolicy:
                       default: LeaderCreated
-                      description: StartupPolicy determines when workers should start
-                        relative to the leader.
+                      description: StartupPolicy determines the startup policy for
+                        the worker statefulset.
+                      enum:
+                      - LeaderCreated
+                      - LeaderReady
                       type: string
                   required:
                   - leaderWorkerTemplate
