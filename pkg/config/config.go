@@ -21,13 +21,14 @@ import (
 	"fmt"
 	"os"
 
+	cryptotls "crypto/tls"
+
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
 )
 
@@ -65,19 +66,31 @@ func addTo(o *ctrl.Options, cfg *configapi.Configuration) {
 		o.LivenessEndpointName = cfg.Health.LivenessEndpointName
 	}
 
-	if o.WebhookServer == nil && cfg.Webhook.Port != nil {
-		wo := webhook.Options{}
-		if cfg.Webhook.Port != nil {
-			wo.Port = *cfg.Webhook.Port
-		}
-		if cfg.Webhook.Host != "" {
-			wo.Host = cfg.Webhook.Host
-		}
-		if cfg.Webhook.CertDir != "" {
-			wo.CertDir = cfg.Webhook.CertDir
-		}
-		o.WebhookServer = webhook.NewServer(wo)
+	// Webhook server is NOT set here anymore.
+	// It is set in AddWebhookSettingsTo() after TLS is parsed.
+}
+
+// AddWebhookSettingsTo builds and sets the WebhookServer on the options,
+// applying TLS configuration if provided.
+// This is separated from addTo() because TLS must be parsed first,
+// and TLS parsing happens after config is loaded.
+func AddWebhookSettingsTo(o *ctrl.Options, cfg *configapi.Configuration, tlsOpts []func(*cryptotls.Config)) {
+	if o.WebhookServer != nil {
+		return
 	}
+	wo := webhook.Options{
+		TLSOpts: tlsOpts,
+	}
+	if cfg.Webhook.Port != nil {
+		wo.Port = *cfg.Webhook.Port
+	}
+	if cfg.Webhook.Host != "" {
+		wo.Host = cfg.Webhook.Host
+	}
+	if cfg.Webhook.CertDir != "" {
+		wo.CertDir = cfg.Webhook.CertDir
+	}
+	o.WebhookServer = webhook.NewServer(wo)
 }
 
 func addLeaderElectionTo(o *ctrl.Options, cfg *configapi.Configuration) {

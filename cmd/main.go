@@ -286,6 +286,16 @@ func apply(configFile string,
 		options.LeaderElectionID = leaderElectionID
 	}
 
+	// 1. LWS Pattern: Parse the TLS config first
+	var parsedTLSConfig *config.TLS
+	if cfg.TLS != nil { // Note: cfg.TLS, not cfg.Webhook.TLS
+		var err error
+		parsedTLSConfig, err = config.ParseTLSOptions(cfg.TLS)
+		if err != nil {
+			return options, cfg, fmt.Errorf("unable to parse TLS options from configuration: %w", err)
+		}
+	}
+
 	// Disabling http/2 to prevent being vulnerable to the HTTP/2 Stream Cancellation and
 	// Rapid Reset CVEs. For more information see:
 	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
@@ -293,6 +303,14 @@ func apply(configFile string,
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("disabling http/2")
 		c.NextProtos = []string{"http/1.1"}
+	}
+
+	serverTLSOpts := []func(*tls.Config){disableHTTP2}
+
+	// 3. LWS Pattern: Build and apply parsed TLS configuration from config
+	if parsedTLSConfig != nil {
+		tlsOpts := config.BuildTLSOptions(parsedTLSConfig)
+		serverTLSOpts = append(serverTLSOpts, tlsOpts...)
 	}
 
 	if !flagsSet["metrics-bind-address"] {
@@ -307,11 +325,18 @@ func apply(configFile string,
 		BindAddress:    metricsAddr,
 		SecureServing:  true,
 		FilterProvider: filters.WithAuthenticationAndAuthorization,
-		TLSOpts:        []func(*tls.Config){disableHTTP2},
+		TLSOpts:        serverTLSOpts,
 	}
 
 	options.Metrics = metricsServerOptions
 	options.LeaderElectionNamespace = namespace
+
+	//// 5. Inject into Webhook Server
+	//options.WebhookServer = webhook.NewServer(webhook.Options{
+	//	TLSOpts: serverTLSOpts,
+	//	CertDir: cfg.Webhook.CertDir,
+	//})
+	config.AddWebhookSettingsTo(&options, &cfg, serverTLSOpts)
 
 	setupLog.Info("Successfully loaded configuration", "config", cfgStr)
 	return options, cfg, nil
