@@ -1,6 +1,6 @@
-# DisaggDeployment Operator Helm Chart
+# DisaggregatedSet Operator Helm Chart
 
-Kubernetes operator for managing disaggregated deployments using LeaderWorkerSets.
+Kubernetes operator for managing disaggregated inference deployments using LeaderWorkerSets.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ Kubernetes operator for managing disaggregated deployments using LeaderWorkerSet
 # Install LeaderWorkerSet first (if not already installed)
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/v0.8.0/manifests.yaml
 
-# Install the DisaggDeployment operator
+# Install the DisaggregatedSet operator
 helm install disaggregatedset charts/disaggregatedset
 ```
 
@@ -48,10 +48,10 @@ helm install disaggregatedset charts/disaggregatedset \
 
 ## CRDs
 
-The chart installs the DisaggDeployment CRD. CRDs are placed in the `crds/` directory and are automatically installed by Helm.
+The chart installs the DisaggregatedSet CRD. CRDs are placed in the `crds/` directory and are automatically installed by Helm.
 
-To upgrade CRDs manually:
+To upgrade CRDs manually (Helm does not upgrade CRDs automatically):
 
 ```bash
-kubectl apply -f charts/disaggregatedset/crds/
+kubectl apply --server-side -f charts/disaggregatedset/crds/
 ```

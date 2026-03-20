@@ -7,8 +7,9 @@ spec:
   - name: prefill
     replicas: 4
     rolloutStrategy:
-       maxSurge: 1
-       maxUnavailable: 0
+      rollingUpdateConfiguration:
+        maxSurge: 1
+        maxUnavailable: 0
     leaderWorkerTemplate:
       size: 1
       workerTemplate:
@@ -35,8 +36,9 @@ spec:
   - name: decode
     replicas: 4
     rolloutStrategy:
-       maxSurge: 1
-       maxUnavailable: 0
+      rollingUpdateConfiguration:
+        maxSurge: 1
+        maxUnavailable: 0
     leaderWorkerTemplate:
       size: 1
       workerTemplate:
