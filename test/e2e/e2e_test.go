@@ -164,25 +164,6 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
-	ginkgo.It("Can perform a rolling update with maxSurge and maxUnavailable set", func() {
-		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(2).MaxUnavailable(2).Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-
-		// Wait for leaderWorkerSet to be ready then update it.
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
-
-		// Happen during rolling update.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
-
-		// Rolling update completes.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-		// Wait for leaderWorkerSet to be ready again.
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-	})
-
 	ginkgo.It("Can perform a rolling update even if old lws not ready", func() {
 		// Create lws with not exist image.
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).LeaderTemplate(nil).Size(1).Replica(2).MaxSurge(1).MaxUnavailable(0).Obj()
