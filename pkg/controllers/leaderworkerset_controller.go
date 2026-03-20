@@ -211,14 +211,29 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-				return []reconcile.Request{
-					{NamespacedName: types.NamespacedName{
-						Name:      a.GetLabels()[leaderworkerset.SetNameLabelKey],
-						Namespace: a.GetNamespace(),
-					}},
+				return enqueueLWSRequests(a)
+			})).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				if a.GetLabels()[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
 				}
+				return enqueueLWSRequests(a)
 			})).
 		Complete(r)
+}
+
+func enqueueLWSRequests(a client.Object) []reconcile.Request {
+	name := a.GetLabels()[leaderworkerset.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{
+			Name:      name,
+			Namespace: a.GetNamespace(),
+		}},
+	}
 }
 
 func SetupIndexes(indexer client.FieldIndexer) error {
