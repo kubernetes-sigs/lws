@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 
 	"sigs.k8s.io/disaggregatedset/internal/controller"
 )
@@ -114,8 +115,12 @@ func main() {
 		data = append(data, row)
 	}
 
-	// Create and render table
-	table := tablewriter.NewTable(os.Stdout, tablewriter.WithHeader(headers))
+	// Create and render table (disable auto-format to preserve phase names like "decode-long-context")
+	// Note: WithHeaderAutoFormat must come BEFORE WithHeader since Header() defaults to AutoFormat=On
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithHeaderAutoFormat(tw.Off),
+		tablewriter.WithHeader(headers),
+	)
 	table.Bulk(data)
 	table.Render()
 }
