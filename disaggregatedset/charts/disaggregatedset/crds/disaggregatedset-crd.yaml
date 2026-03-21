@@ -18126,8 +18126,6 @@ spec:
             - phases
             type: object
             x-kubernetes-validations:
-            - message: at least 2 phases are required
-              rule: size(self.phases) >= 2
             - message: phase names must be unique
               rule: self.phases.all(p, self.phases.filter(q, q.name == p.name).size()
                 == 1)

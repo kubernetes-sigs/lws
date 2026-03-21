@@ -67,11 +67,6 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
-	// Validate phases are configured (API validation ensures at least 2)
-	if len(disaggregatedSet.Spec.Phases) < 2 {
-		return ctrl.Result{}, fmt.Errorf("DisaggregatedSet requires at least 2 phases")
-	}
-
 	// Compute revision from all phase templates (truncated to 8 chars)
 	revision := ComputeRevision(disaggregatedSet.Spec.Phases)
 

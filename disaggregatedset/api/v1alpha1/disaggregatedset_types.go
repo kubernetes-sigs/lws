@@ -53,7 +53,6 @@ type DisaggregatedPhaseSpec struct {
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="size(self.phases) >= 2",message="at least 2 phases are required"
 // +kubebuilder:validation:XValidation:rule="self.phases.all(p, self.phases.filter(q, q.name == p.name).size() == 1)",message="phase names must be unique"
 // +kubebuilder:validation:XValidation:rule="self.phases.all(p, p.replicas == 0) || self.phases.all(p, p.replicas > 0)",message="replicas must be zero for all phases or non-zero for all phases"
 type DisaggregatedSetSpec struct {
