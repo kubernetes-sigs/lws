@@ -7,10 +7,8 @@ description: >
 
 Rolling update is vital to online services with zero downtime. For LLM inference services, this is particularly important, which helps to mitigate stockout. Two different configurations are supported in LWS, `maxUnavailable` and `maxSurge`:
 
-- `MaxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1.
+- `MaxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1. Note that only values >= 1 are supported.
 - `MaxSurge`: Indicates how many extra replicas can be deployed during the update. Defaults to 0.
-
-Note that maxSurge and maxUnavailable can not both be zero at the same time.
 
 Here's a leaderWorkerSet configured with rollout strategy, you can find the example [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/sample/lws-rollout-strategy.yaml):
 
@@ -37,10 +35,10 @@ In the following we'll show how rolling update processes for a leaderWorkerSet w
 | Stage3      | 2 | 6 |  ❎  |  ❎ | ⏳ | ⏳ | ⏳ | ⏳ | Partition changes from 4 to 2 |
 | Stage4      | 2 | 6 |  ❎  |  ❎ | ⏳ | ⏳ | ✅ | ⏳ | Since the last Replica is not ready, Partition will not change |
 | Stage5   | 0 | 6 |  ⏳ | ⏳ | ⏳ | ⏳ | ✅ | ✅ | Partition changes from 2 to 0 |
-| Stage6      | 0 | 6 |  ⏳  |  ⏳ | ⏳ | ✅ | ✅ | ✅ |  |
-| Stage7   | 0 | 5 |  ⏳ | ✅ | ⏳ | ✅ | ✅ | | Reclaim a Replica for the accommodation of unready ones |
-| Stage8     | 0 | 4 |  ✅  | ⏳ |  ✅ | ✅ | | | Release another Replica |
-| Stage9     | 0 | 4 |  ✅  | ✅ |  ✅ | ✅ | | | Rolling update completed |
+| Stage6      | 0 | 6 |  ⏳  |  ⏳ | ✅ | ✅ | ✅ | ✅ | R-2 and R-3 become ready |
+| Stage7   | 0 | 4 |  ⏳ | ⏳ | ✅ | ✅ |  |  | Scale down to 4 immediately, reclaiming both surge replicas |
+| Stage8     | 0 | 4 |  ⏳  | ✅ |  ✅ | ✅ |  |  | R-1 becomes ready |
+| Stage9     | 0 | 4 |  ✅  | ✅ |  ✅ | ✅ |  |  | Rolling update completed |
 
 ## MaxUnavailable Feature
 `MaxUnavailable` was graduated to Beta in Kubernetes [1.35](1.35_release_notes), which means that it is enabled by default.

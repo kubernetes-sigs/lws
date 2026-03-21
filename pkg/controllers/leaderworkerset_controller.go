@@ -211,14 +211,29 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-				return []reconcile.Request{
-					{NamespacedName: types.NamespacedName{
-						Name:      a.GetLabels()[leaderworkerset.SetNameLabelKey],
-						Namespace: a.GetNamespace(),
-					}},
+				return enqueueLWSRequests(a)
+			})).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				if a.GetLabels()[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
 				}
+				return enqueueLWSRequests(a)
 			})).
 		Complete(r)
+}
+
+func enqueueLWSRequests(a client.Object) []reconcile.Request {
+	name := a.GetLabels()[leaderworkerset.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{
+			Name:      name,
+			Namespace: a.GetNamespace(),
+		}},
+	}
 }
 
 func SetupIndexes(indexer client.FieldIndexer) error {
@@ -282,6 +297,10 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if err != nil {
 		return 0, 0, err
 	}
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	if err != nil {
+		return 0, 0, err
+	}
 	// No need to burst more than the replicas.
 	if maxSurge > int(lwsReplicas) {
 		maxSurge = int(lwsReplicas)
@@ -290,22 +309,24 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 	// wantReplicas calculates the final replicas if needed.
 	wantReplicas := func(unreadyReplicas int32) int32 {
-		if unreadyReplicas <= int32(maxSurge) {
-			// When we have n unready replicas and n bursted replicas, we should
-			// start to release the burst replica gradually for the accommodation of
-			// the unready ones.
-			finalReplicas := lwsReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+		finalReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), unreadyReplicas)
+		if finalReplicas == stsReplicas-1 {
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
-			return finalReplicas
+		} else if finalReplicas < stsReplicas {
+			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1))
 		}
-		return burstReplicas
+		return finalReplicas
 	}
 
 	// Case 2:
 	// Indicates a new rolling update here.
 	if leaderWorkerSetUpdated {
 		// Processing scaling up/down first prior to rolling update.
-		return min(lwsReplicas, stsReplicas), wantReplicas(lwsReplicas), nil
+		partition := min(lwsReplicas, stsReplicas)
+		if stsReplicas < lwsReplicas {
+			return partition, lwsReplicas, nil
+		}
+		return partition, wantReplicas(lwsReplicas), nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
@@ -314,6 +335,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
 		return 0, lwsReplicas, nil
+	}
+	if stsReplicas < lwsReplicas {
+		return partition, lwsReplicas, nil
 	}
 
 	states, err := r.getReplicaStates(ctx, lws, stsReplicas, revisionKey)
@@ -330,21 +354,20 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	// Case 4:
 	// Replicas changed during rolling update.
 	if replicasUpdated {
-		return min(partition, burstReplicas), wantReplicas(lwsUnreadyReplicas), nil
+		partition := min(partition, burstReplicas)
+		return partition, wantReplicas(lwsUnreadyReplicas), nil
 	}
 
 	// Case 5:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 
-	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
-	if err != nil {
-		return 0, 0, err
-	}
+	rollingStep := maxUnavailable
 	// Make sure that we always respect the maxUnavailable, or
 	// we'll violate it when reclaiming bursted replicas.
 	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
 
-	return rollingUpdatePartition(states, stsReplicas, int32(rollingStep), partition), wantReplicas(lwsUnreadyReplicas), nil
+	partition = rollingUpdatePartition(states, stsReplicas, int32(rollingStep), partition)
+	return partition, wantReplicas(lwsUnreadyReplicas), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
@@ -650,6 +673,19 @@ func calculateLWSUnreadyReplicas(states []replicaState, lwsReplicas int32) int32
 		}
 	}
 	return unreadyCount
+}
+
+func calculateRollingUpdateReplicas(lwsReplicas int32, maxSurge int32, maxUnavailable int32, unreadyReplicas int32) int32 {
+	burstReplicas := lwsReplicas + maxSurge
+	if unreadyReplicas <= maxSurge {
+		// Keep enough surge replicas to cover any desired replicas that are still
+		// unavailable beyond the configured maxUnavailable budget. Once the
+		// remaining unready desired replicas fit inside the budget, we can reclaim
+		// surge capacity gradually.
+		requiredSurgeReplicas := utils.NonZeroValue(unreadyReplicas - maxUnavailable)
+		return lwsReplicas + requiredSurgeReplicas
+	}
+	return burstReplicas
 }
 
 func calculateContinuousReadyReplicas(states []replicaState) int32 {
