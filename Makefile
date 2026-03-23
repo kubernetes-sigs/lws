@@ -346,9 +346,6 @@ site-server: hugo
 ##@ Release
 .PHONY: artifacts
 artifacts: kustomize helm yq
-ifeq ($(IMAGE_REGISTRY),$(STAGING_IMAGE_REGISTRY)/lws)
-	$(error IMAGE_REGISTRY must be overridden for release artifacts (e.g., IMAGE_REGISTRY=registry.k8s.io/lws))
-endif
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	if [ -d artifacts ]; then rm -rf artifacts; fi
 	mkdir -p artifacts
