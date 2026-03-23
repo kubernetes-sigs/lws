@@ -33,31 +33,31 @@ workload primitive.
 
 ## Summary
 
-This KEP proposes adding `DisaggregatedSet` as a new Custom Resource Definition (CRD) to the LeaderWorkerSet (LWS) project. DisaggregatedSet is a higher-level abstraction that orchestrates multiple LeaderWorkerSets with coordinated lifecycle management, specifically designed for disaggregated inference architectures where multiple phases (e.g., "prefill" and "decode") run on separate infrastructure.
+This KEP proposes adding `DisaggregatedSet` as a new Custom Resource Definition (CRD) to the LeaderWorkerSet (LWS) project. DisaggregatedSet is a higher-level abstraction that orchestrates multiple LeaderWorkerSets with coordinated lifecycle management, specifically designed for disaggregated inference architectures where multiple roles (e.g., "prefill" and "decode") run on separate infrastructure.
 
 Disaggregated serving is an optimization for LLM inference workloads that takes advantage of the fact that the phases of inference (prefill and decode) have different computational characteristics. State-of-the-art LLM serving frameworks such as [vLLM](https://github.com/vllm-project/vllm) and [SGLang](https://github.com/sgl-project/sglang) support this optimization.
 
 DisaggregatedSet simplifies the deployment of disaggregated LLM inference by:
-- Managing multiple LeaderWorkerSets (2-10 phases) as a single logical unit
-- Providing coordinated N-dimensional rolling updates across all phases
+- Managing multiple LeaderWorkerSets (2-10 roles) as a single logical unit
+- Providing coordinated N-dimensional rolling updates across all roles
 
 ## Motivation
 
 Currently, deploying disaggregated inference workloads requires users to manually create and coordinate multiple separate LeaderWorkerSets. This leads to several challenges:
 
-1. **Operational complexity**: Users must manually ensure all phases are updated together and handle failure scenarios across multiple resources.
+1. **Operational complexity**: Users must manually ensure all roles are updated together and handle failure scenarios across multiple resources.
 
-2. **Rolling update coordination**: There is no built-in mechanism to coordinate rolling updates across phases, risking service disruption if one phase is updated without the others.
+2. **Rolling update coordination**: There is no built-in mechanism to coordinate rolling updates across roles, risking service disruption if one role is updated without the others.
 
-3. **Service lifecycle**: Users must manually manage Services and ensure they only route traffic when all phases are ready.
+3. **Service lifecycle**: Users must manually manage Services and ensure they only route traffic when all roles are ready.
 
-4. **Configuration drift**: Without a unified resource, phase configurations can drift apart, leading to subtle incompatibilities.
+4. **Configuration drift**: Without a unified resource, role configurations can drift apart, leading to subtle incompatibilities.
 
 ### Goals
 
-1. **Unified Management**: Provide a single CRD that manages multiple phase LeaderWorkerSets (2-10 phases) as a cohesive unit.
+1. **Unified Management**: Provide a single CRD that manages multiple LeaderWorkerSets (2-10 roles) as a cohesive unit.
 
-2. **Coordinated Rolling Updates**: Implement an N-dimensional rolling update algorithm that updates all phases in lockstep, respecting per-phase surge constraints.
+2. **Coordinated Rolling Updates**: Implement an N-dimensional rolling update algorithm that updates all roles in lockstep, respecting per-role surge constraints.
 
 3. **Stateless Controller**: Design the controller to derive all state from observed resources, enabling safe restarts at any point.
 
@@ -75,15 +75,15 @@ Currently, deploying disaggregated inference workloads requires users to manuall
 
 We propose adding a new CRD called `DisaggregatedSet` that acts as a higher-level controller over LeaderWorkerSet resources. The DisaggregatedSet controller will:
 
-1. Create and manage multiple LeaderWorkerSets (one per phase, 2-10 phases supported)
+1. Create and manage multiple LeaderWorkerSets (one per role, 2-10 roles supported)
 2. Coordinate rolling updates using an N-dimensional algorithm
-3. Automatically create headless Services for each phase per revision
+3. Automatically create headless Services for each role per revision
 
 ### Risks and Mitigations
 
 **Risk**: The N-dimensional rolling update algorithm adds complexity that could lead to stuck rollouts.
 
-**Mitigation**: The algorithm is designed with safety invariants (scale up before scale down, coordinated drain) and the controller is stateless, allowing manual intervention by scaling workloads directly if needed.
+**Mitigation**: The algorithm is designed with safety invariants (scale up before scale down, coordinated drain) and the controller is stateless, allowing manual intervention by scaling replicas directly if needed.
 
 **Risk**: Adding a new CRD increases the API surface and maintenance burden.
 
@@ -104,21 +104,21 @@ type DisaggregatedSet struct {
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="self.phases.all(p, self.phases.filter(q, q.name == p.name).size() == 1)",message="phase names must be unique"
-// +kubebuilder:validation:XValidation:rule="self.phases.all(p, p.replicas == 0) || self.phases.all(p, p.replicas > 0)",message="replicas must be zero for all phases or non-zero for all phases"
+// +kubebuilder:validation:XValidation:rule="self.roles.all(r, self.roles.filter(s, s.name == r.name).size() == 1)",message="role names must be unique"
+// +kubebuilder:validation:XValidation:rule="self.roles.all(r, r.replicas == 0) || self.roles.all(r, r.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
 type DisaggregatedSetSpec struct {
-    // Phases defines the list of phases (at least 2 required, maximum 10).
-    // Each phase has a unique name and its own configuration.
+    // Roles defines the list of roles (at least 2 required, maximum 10).
+    // Each role has a unique name and its own configuration.
     // +kubebuilder:validation:MinItems=2
     // +kubebuilder:validation:MaxItems=10
     // +required
-    Phases []DisaggregatedPhaseSpec `json:"phases"`
+    Roles []DisaggregatedRoleSpec `json:"roles"`
 }
 
-// DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
+// DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
-type DisaggregatedPhaseSpec struct {
-    // Name is the unique identifier for this phase.
+type DisaggregatedRoleSpec struct {
+    // Name is the unique identifier for this role.
     // +kubebuilder:validation:MinLength=1
     // +kubebuilder:validation:MaxLength=63
     // +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
@@ -128,7 +128,7 @@ type DisaggregatedPhaseSpec struct {
     // LeaderWorkerSetSpec is embedded inline to inherit all LWS configuration fields.
     // Note: RolloutStrategy.Type must be RollingUpdate (or empty) and
     // RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
-    // DisaggregatedSet handles rollouts across phases and does not propagate
+    // DisaggregatedSet handles rollouts across roles and does not propagate
     // RolloutStrategy to the underlying LWS resources.
     leaderworkerset.LeaderWorkerSetSpec `json:",inline"`
 
@@ -141,18 +141,18 @@ type DisaggregatedPhaseSpec struct {
 }
 ```
 
-**Naming Convention**: LeaderWorkerSets are named `{disaggregatedset-name}-{revision}-{phase}` where:
-- `revision` is a truncated hash of all phase templates (ensures coordinated updates)
-- `phase` is the phase name (e.g., `prefill`, `decode`)
+**Naming Convention**: LeaderWorkerSets are named `{disaggregatedset-name}-{revision}-{role}` where:
+- `revision` is a truncated hash of all role templates (ensures coordinated updates)
+- `role` is the role name (e.g., `prefill`, `decode`)
 
 **Labels**: The following labels are applied to managed LeaderWorkerSets:
 - `disaggregatedset.x-k8s.io/name`: DisaggregatedSet name
-- `disaggregatedset.x-k8s.io/phase`: Phase name (e.g., `prefill`, `decode`)
+- `disaggregatedset.x-k8s.io/role`: Role name (e.g., `prefill`, `decode`)
 - `disaggregatedset.x-k8s.io/revision`: Template hash
 
 ### N-Dimensional Rolling Update Algorithm
 
-The rolling update algorithm coordinates all phases using a linear interpolation approach:
+The rolling update algorithm coordinates all roles using a linear interpolation approach:
 
 ```
 newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
@@ -164,12 +164,12 @@ oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source �
 1. **Decoupled Steps**: Each step changes EITHER old OR new replicas, not both. This simplifies reasoning about state transitions.
 
 2. **N-Dimensional Coordination**:
-   - Scale-up uses `min(phase[i].step for all i)` to keep phases in sync
-   - Scale-down uses `max(phase[i].step for all i)` to ensure all phases drain together
+   - Scale-up uses `min(role[i].step for all i)` to keep roles in sync
+   - Scale-down uses `max(role[i].step for all i)` to ensure all roles drain together
 
-3. **Coordinated Drain**: If any phase reaches 0 replicas, all phases are forced to 0. This prevents orphaned single-phase workloads from interrupted rollouts.
+3. **Coordinated Drain**: If any role reaches 0 replicas, all roles are forced to 0. This prevents orphaned single-role workloads from interrupted rollouts.
 
-4. **Surge Constraints**: Per-phase `maxSurge` and `maxUnavailable` are respected:
+4. **Surge Constraints**: Per-role `maxSurge` and `maxUnavailable` are respected:
    ```
    old + new <= target + maxSurge
    ```
@@ -178,7 +178,7 @@ oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source �
 
 6. **Stability Check**: The controller waits for `replicas == readyReplicas` before computing the next step.
 
-**Example 1: Two-Phase Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1):
+**Example 1: Two-Role Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1):
 
 ```
 ┌──────┬────────────┬─────────────┬────────────┬─────────────┬───────┬───────────────────────────────┐
@@ -198,14 +198,14 @@ oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source �
 Key observations:
 - Prefill progresses through more steps due to higher replica count
 - Decode only changes when proportionally appropriate
-- Total capacity is maintained throughout: `old + new` stays within surge limits per phase
+- Total capacity is maintained throughout: `old + new` stays within surge limits per role
 
 ### Service Orchestration
 
-Headless Services are automatically created for each phase per revision. This allows load balancers (e.g., llm-d) to count pods per revision across all phases and route traffic proportionally during rolling updates.
+Headless Services are automatically created for each role per revision. This allows load balancers (e.g., llm-d) to count pods per revision across all roles and route traffic proportionally during rolling updates.
 
-- **Naming**: `{disaggregatedset-name}-{revision}-{phase}-prv` (e.g., `my-llm-abc12345-prefill-prv`)
-- **Selector**: Selects pods from the specific revision's LeaderWorkerSet for that phase
+- **Naming**: `{disaggregatedset-name}-{revision}-{role}-prv` (e.g., `my-llm-abc12345-prefill-prv`)
+- **Selector**: Selects pods from the specific revision's LeaderWorkerSet for that role
 - **Cleanup**: Managed via owner references and garbage collected with the DisaggregatedSet
 
 ### Controller Architecture
@@ -223,13 +223,13 @@ to implement this enhancement.
 - Rolling update planner: step computation, edge cases, constraint violations
 - Executor: scale-up/scale-down coordination, stability checks
 - Service manager: creation conditions, cleanup logic
-- API validation: phase count, unique names, replica constraints
+- API validation: role count, unique names, replica constraints
 
 #### Integration tests
 
-- DisaggregatedSet creation creates LeaderWorkerSets for all phases
+- DisaggregatedSet creation creates LeaderWorkerSets for all roles
 - Template update triggers coordinated rolling update
-- Headless Services created for each phase
+- Headless Services created for each role
 - Interrupted rollout resumes correctly after controller restart
 - Deletion cascades to owned resources
 
@@ -254,7 +254,8 @@ to implement this enhancement.
 ## Implementation History
 
 - 2026-03-05: Initial KEP draft
-- 2026-03-22: Updated to reflect N-dimensional phases API
+- 2026-03-22: Updated to reflect N-dimensional roles API
+- 2026-03-23: Renamed "phase" to "role" throughout for semantic clarity
 
 ## Drawbacks
 
@@ -293,18 +294,18 @@ Build an external controller that watches LeaderWorkerSets with specific labels 
 
 ### Alternative 4: Use LWS Partition Field Instead of Multiple LWS per Revision
 
-Instead of creating separate LeaderWorkerSets per revision (resulting in up to 2N LWS during updates for N phases), use the LWS `partition` field to perform in-place updates within a single LWS per phase.
+Instead of creating separate LeaderWorkerSets per revision (resulting in up to 2N LWS during updates for N roles), use the LWS `partition` field to perform in-place updates within a single LWS per role.
 
 **How it would work**:
-- DisaggregatedSet creates exactly N LWS: one per phase
+- DisaggregatedSet creates exactly N LWS: one per role
 - Rolling updates manipulate the `partition` field on each LWS to progressively update groups
 - Groups with ordinal `>= partition` get the new template; groups `< partition` remain on old
 
 **Why we chose multiple LWS per revision instead**:
 
-1. **Revision-aware traffic routing**: DisaggregatedSet is designed for disaggregated inference, where a load balancer must route requests to backends whose counterparts are on the **same revision**. With separate LWS (and Service) per revision, each pod's revision is explicit via labels (`disaggregatedset.x-k8s.io/revision`). The load balancer can count backends per revision across all phase pools and distribute traffic proportionally. With partition-based updates, pods within the same LWS have different templates based on ordinal, making revision-aware routing significantly more complex.
+1. **Revision-aware traffic routing**: DisaggregatedSet is designed for disaggregated inference, where a load balancer must route requests to backends whose counterparts are on the **same revision**. With separate LWS (and Service) per revision, each pod's revision is explicit via labels (`disaggregatedset.x-k8s.io/revision`). The load balancer can count backends per revision across all role pools and distribute traffic proportionally. With partition-based updates, pods within the same LWS have different templates based on ordinal, making revision-aware routing significantly more complex.
 
-2. **LWS as a read-only resource**: Treating LWS as a read-only resource (similar to how Deployment treats ReplicaSet) makes more sense for this use case. During a coordinated rollout, you want to update phases at different paces depending on the step—it's a tied update across N dimensions. This level of control is difficult to achieve with partition, which operates on a single LWS independently.
+2. **LWS as a read-only resource**: Treating LWS as a read-only resource (similar to how Deployment treats ReplicaSet) makes more sense for this use case. During a coordinated rollout, you want to update roles at different paces depending on the step—it's a tied update across N dimensions. This level of control is difficult to achieve with partition, which operates on a single LWS independently.
 
 3. **Ops observability**: Separate LWS per revision is simpler for ops observability. You can see directly at which stage your update is, since you can see the version right away during updates (e.g., "old-prefill: 2 replicas, new-prefill: 3 replicas") rather than inspecting partition boundaries within a single LWS.
 
