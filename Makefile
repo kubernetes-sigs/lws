@@ -360,7 +360,7 @@ endif
 	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
 	# Revert the image changes
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "main" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
+	$(YQ)  e  '.image.manager.repository = "$(STAGING_IMAGE_REGISTRY)/lws/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
 
 
 .PHONY: prepare-release-branch
