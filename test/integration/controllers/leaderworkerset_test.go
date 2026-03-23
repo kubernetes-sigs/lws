@@ -600,8 +600,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						patch := client.MergeFrom(lws.DeepCopy())
 						lws.Status.Conditions = []metav1.Condition{}
-						gomega.Eventually(k8sClient.Status().Update(ctx, lws), testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						gomega.Expect(k8sClient.Status().Patch(ctx, lws, patch)).To(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
