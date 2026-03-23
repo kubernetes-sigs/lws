@@ -248,7 +248,7 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
-clean-manifests = (cd config/manager && $(KUSTOMIZE) edit set image controller=registry.k8s.io/lws/lws:main)
+clean-manifests = (cd config/manager && $(KUSTOMIZE) edit set image controller=registry.k8s.io/lws/lws:$(RELEASE_BRANCH))
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
