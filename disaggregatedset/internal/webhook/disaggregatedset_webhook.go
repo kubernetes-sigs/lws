@@ -43,13 +43,13 @@ var _ admission.Validator[*disaggv1alpha1.DisaggregatedSet] = &DisaggregatedSetW
 
 // ValidateCreate implements admission.Validator for create operations.
 func (w *DisaggregatedSetWebhook) ValidateCreate(ctx context.Context, disagg *disaggv1alpha1.DisaggregatedSet) (admission.Warnings, error) {
-	allErrs := w.validatePhases(disagg)
+	allErrs := w.validateRoles(disagg)
 	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator for update operations.
 func (w *DisaggregatedSetWebhook) ValidateUpdate(ctx context.Context, oldDisagg, newDisagg *disaggv1alpha1.DisaggregatedSet) (admission.Warnings, error) {
-	allErrs := w.validatePhases(newDisagg)
+	allErrs := w.validateRoles(newDisagg)
 	return nil, allErrs.ToAggregate()
 }
 
@@ -58,42 +58,42 @@ func (w *DisaggregatedSetWebhook) ValidateDelete(ctx context.Context, disagg *di
 	return nil, nil
 }
 
-// validatePhases validates all phases in the DisaggregatedSet spec.
-func (w *DisaggregatedSetWebhook) validatePhases(obj *disaggv1alpha1.DisaggregatedSet) field.ErrorList {
+// validateRoles validates all roles in the DisaggregatedSet spec.
+func (w *DisaggregatedSetWebhook) validateRoles(obj *disaggv1alpha1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
-	phasesPath := field.NewPath("spec", "phases")
+	rolesPath := field.NewPath("spec", "roles")
 
-	for i, phase := range obj.Spec.Phases {
-		phasePath := phasesPath.Index(i)
-		allErrs = append(allErrs, w.validatePhaseRolloutStrategy(phase, phasePath)...)
+	for i, role := range obj.Spec.Roles {
+		rolePath := rolesPath.Index(i)
+		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 	}
 
 	return allErrs
 }
 
-// validatePhaseRolloutStrategy validates the RolloutStrategy fields for a phase.
+// validateRoleRolloutStrategy validates the RolloutStrategy fields for a role.
 // DisaggregatedSet handles rolling updates differently from LWS and does not support:
 // - RolloutStrategy.Type other than RollingUpdate (or empty, which defaults to RollingUpdate)
 // - RolloutStrategy.RollingUpdateConfiguration.Partition
-func (w *DisaggregatedSetWebhook) validatePhaseRolloutStrategy(phase disaggv1alpha1.DisaggregatedPhaseSpec, phasePath *field.Path) field.ErrorList {
+func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1alpha1.DisaggregatedRoleSpec, rolePath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
-	rolloutPath := phasePath.Child("rolloutStrategy")
+	rolloutPath := rolePath.Child("rolloutStrategy")
 
 	// Validate Type - must be empty or RollingUpdate
-	if phase.RolloutStrategy.Type != "" && phase.RolloutStrategy.Type != leaderworkerset.RollingUpdateStrategyType {
+	if role.RolloutStrategy.Type != "" && role.RolloutStrategy.Type != leaderworkerset.RollingUpdateStrategyType {
 		allErrs = append(allErrs, field.NotSupported(
 			rolloutPath.Child("type"),
-			phase.RolloutStrategy.Type,
+			role.RolloutStrategy.Type,
 			[]string{string(leaderworkerset.RollingUpdateStrategyType), ""},
 		))
 	}
 
-	// Validate Partition - must not be set (DisaggregatedSet manages rollouts across phases)
-	if phase.RolloutStrategy.RollingUpdateConfiguration != nil {
-		if phase.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *phase.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
+	// Validate Partition - must not be set (DisaggregatedSet manages rollouts across roles)
+	if role.RolloutStrategy.RollingUpdateConfiguration != nil {
+		if role.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *role.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 			allErrs = append(allErrs, field.Forbidden(
 				rolloutPath.Child("rollingUpdateConfiguration", "partition"),
-				"partition is not supported by DisaggregatedSet; rolling updates are managed across phases by the DisaggregatedSet controller",
+				"partition is not supported by DisaggregatedSet; rolling updates are managed across roles by the DisaggregatedSet controller",
 			))
 		}
 	}

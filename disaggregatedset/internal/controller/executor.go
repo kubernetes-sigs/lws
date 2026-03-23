@@ -54,8 +54,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	revision string,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	phaseNames := GetPhaseNames(disaggregatedSet)
-	phaseConfigs := GetPhaseConfigs(disaggregatedSet)
+	roleNames := GetRoleNames(disaggregatedSet)
+	roleConfigs := GetRoleConfigs(disaggregatedSet)
 
 	oldWorkloads, newWorkload, err := executor.WorkloadManager.GetGroupedWorkloads(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
 	if err != nil {
@@ -65,15 +65,15 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 		return ctrl.Result{}, nil
 	}
 
-	// Detect phase changes (always allowed - Flexible behavior is the default)
-	addedPhases, removedPhases := detectPhaseChanges(phaseNames, oldWorkloads)
-	if len(addedPhases) > 0 || len(removedPhases) > 0 {
-		log.Info("Phase changes detected", "added", addedPhases, "removed", removedPhases)
+	// Detect role changes (always allowed - Flexible behavior is the default)
+	addedRoles, removedRoles := detectRoleChanges(roleNames, oldWorkloads)
+	if len(addedRoles) > 0 || len(removedRoles) > 0 {
+		log.Info("Role changes detected", "added", addedRoles, "removed", removedRoles)
 	}
 
 	// If new workload doesn't exist, initialize rolling update
 	if newWorkload == nil {
-		return executor.initRollingUpdate(ctx, disaggregatedSet, revision, phaseNames, phaseConfigs, oldWorkloads)
+		return executor.initRollingUpdate(ctx, disaggregatedSet, revision, roleNames, roleConfigs, oldWorkloads)
 	}
 
 	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldWorkloads, *newWorkload)
@@ -83,8 +83,8 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggv1alpha1.DisaggregatedSet,
 	revision string,
-	phaseNames []string,
-	phaseConfigs map[string]*disaggv1alpha1.DisaggregatedPhaseSpec,
+	roleNames []string,
+	roleConfigs map[string]*disaggv1alpha1.DisaggregatedRoleSpec,
 	oldWorkloads GroupedWorkloads,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -94,25 +94,25 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 
 	// Set initial-replicas annotations on all old workloads
 	for _, oldGrouped := range oldWorkloads {
-		for phaseName, phaseWorkload := range oldGrouped.Phases {
-			workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldGrouped.Revision)
-			if _, err := executor.WorkloadManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, workloadName, phaseWorkload.Replicas); err != nil {
+		for roleName, roleWorkload := range oldGrouped.Roles {
+			workloadName := GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
+			if _, err := executor.WorkloadManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, workloadName, roleWorkload.Replicas); err != nil {
 				log.Error(err, "Failed to set initial-replicas annotation", "workload", workloadName)
 			}
 		}
 	}
 
 	// Create new workloads with 0 replicas
-	for _, phaseName := range phaseNames {
-		created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, phaseName, phaseConfigs[phaseName], 0)
+	for _, roleName := range roleNames {
+		created, err := executor.ensureNewWorkloadExists(ctx, disaggregatedSet, revision, roleName, roleConfigs[roleName], 0)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if created {
-			workloadName := GenerateName(disaggregatedSet.Name, phaseName, revision)
-			log.Info("Created new workload", "phase", phaseName, "revision", revision)
+			workloadName := GenerateName(disaggregatedSet.Name, roleName, revision)
+			log.Info("Created new workload", "role", roleName, "revision", revision)
 			executor.Recorder.Eventf(disaggregatedSet, corev1.EventTypeNormal, EventReasonWorkloadCreated,
-				"Created %s workload %s", phaseName, workloadName)
+				"Created %s workload %s", roleName, workloadName)
 		}
 	}
 
@@ -126,21 +126,21 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	newWorkload GroupedWorkload,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	specPhaseNames := GetPhaseNames(disaggregatedSet)
-	specPhaseSet, oldPhaseSet := buildPhaseSets(specPhaseNames, oldWorkloads)
+	specRoleNames := GetRoleNames(disaggregatedSet)
+	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldWorkloads)
 
-	// allPhaseNames = spec phases + removed phases (for progressive drain)
-	allPhaseNames := append(slices.Clone(specPhaseNames), removedPhases(oldPhaseSet, specPhaseSet)...)
+	// allRoleNames = spec roles + removed roles (for progressive drain)
+	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
 
-	// Wait for new workload stability on spec phases
-	if !isWorkloadStable(newWorkload, specPhaseNames) {
+	// Wait for new workload stability on spec roles
+	if !isWorkloadStable(newWorkload, specRoleNames) {
 		log.V(1).Info("Waiting for new workload to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	// Build planner state
-	source, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allPhaseNames, specPhaseSet, oldWorkloads, newWorkload)
-	config := extractRollingUpdateConfig(disaggregatedSet, allPhaseNames)
+	source, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldWorkloads, newWorkload)
+	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames)
 
 	nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
@@ -150,13 +150,13 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Next step computed", buildStepLogArgs(allPhaseNames, nextStep)...)
+	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
-	// Scale up new (spec phases only), then scale down old (all phases)
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newWorkload, allPhaseNames, specPhaseSet, currentNew, nextStep.New); err != nil {
+	// Scale up new (spec roles only), then scale down old (all roles)
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newWorkload, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldWorkloads, allPhaseNames, currentOld, nextStep.Past); err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldWorkloads, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -165,25 +165,25 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 // --- Helpers ---
 
-func buildPhaseSets(specPhaseNames []string, oldWorkloads GroupedWorkloads) (spec, old map[string]bool) {
-	spec = make(map[string]bool, len(specPhaseNames))
-	for _, name := range specPhaseNames {
+func buildRoleSets(specRoleNames []string, oldWorkloads GroupedWorkloads) (spec, old map[string]bool) {
+	spec = make(map[string]bool, len(specRoleNames))
+	for _, name := range specRoleNames {
 		spec[name] = true
 	}
 	old = make(map[string]bool)
 	for _, wl := range oldWorkloads {
-		for name := range wl.Phases {
+		for name := range wl.Roles {
 			old[name] = true
 		}
 	}
 	return spec, old
 }
 
-func removedPhases(oldPhaseSet, specPhaseSet map[string]bool) []string {
+func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
 	var removed []string
-	for phase := range oldPhaseSet {
-		if !specPhaseSet[phase] {
-			removed = append(removed, phase)
+	for role := range oldRoleSet {
+		if !specRoleSet[role] {
+			removed = append(removed, role)
 		}
 	}
 	return removed
@@ -191,30 +191,30 @@ func removedPhases(oldPhaseSet, specPhaseSet map[string]bool) []string {
 
 func buildPlannerState(
 	ds *disaggv1alpha1.DisaggregatedSet,
-	allPhaseNames []string,
-	specPhaseSet map[string]bool,
+	allRoleNames []string,
+	specRoleSet map[string]bool,
 	oldWorkloads GroupedWorkloads,
 	newWorkload GroupedWorkload,
-) (source, currentOld, currentNew, targetNew PhaseReplicaState) {
-	n := len(allPhaseNames)
-	source, currentOld, currentNew, targetNew = make(PhaseReplicaState, n), make(PhaseReplicaState, n), make(PhaseReplicaState, n), make(PhaseReplicaState, n)
+) (source, currentOld, currentNew, targetNew RoleReplicaState) {
+	n := len(allRoleNames)
+	source, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
 
-	for i, phaseName := range allPhaseNames {
-		source[i] = oldWorkloads.GetTotalInitialReplicasPerPhase(phaseName)
-		currentOld[i] = oldWorkloads.GetTotalReplicasPerPhase(phaseName)
+	for i, roleName := range allRoleNames {
+		source[i] = oldWorkloads.GetTotalInitialReplicasPerRole(roleName)
+		currentOld[i] = oldWorkloads.GetTotalReplicasPerRole(roleName)
 
-		if specPhaseSet[phaseName] {
-			currentNew[i] = newWorkload.Phases[phaseName].Replicas
-			targetNew[i] = getTargetReplicas(ds, phaseName)
+		if specRoleSet[roleName] {
+			currentNew[i] = newWorkload.Roles[roleName].Replicas
+			targetNew[i] = getTargetReplicas(ds, roleName)
 		}
-		// Removed phases: currentNew=0, targetNew=0 (zero values)
+		// Removed roles: currentNew=0, targetNew=0 (zero values)
 	}
 	return
 }
 
-func getTargetReplicas(ds *disaggv1alpha1.DisaggregatedSet, phaseName string) int {
-	for _, p := range ds.Spec.Phases {
-		if p.Name == phaseName {
+func getTargetReplicas(ds *disaggv1alpha1.DisaggregatedSet, roleName string) int {
+	for _, p := range ds.Spec.Roles {
+		if p.Name == roleName {
 			if p.Replicas == nil {
 				return 1
 			}
@@ -224,17 +224,17 @@ func getTargetReplicas(ds *disaggv1alpha1.DisaggregatedSet, phaseName string) in
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNames []string) []RollingUpdateConfig {
-	config := DefaultRollingUpdateConfig(len(allPhaseNames))
+func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
+	config := DefaultRollingUpdateConfig(len(allRoleNames))
 
-	phaseIndex := make(map[string]int, len(allPhaseNames))
-	for i, name := range allPhaseNames {
-		phaseIndex[name] = i
+	roleIndex := make(map[string]int, len(allRoleNames))
+	for i, name := range allRoleNames {
+		roleIndex[name] = i
 	}
 
-	for _, phase := range ds.Spec.Phases {
-		if rc := phase.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
-			i := phaseIndex[phase.Name]
+	for _, role := range ds.Spec.Roles {
+		if rc := role.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
+			i := roleIndex[role.Name]
 			if v := rc.MaxSurge.IntValue(); v > 0 {
 				config[i].MaxSurge = v
 			}
@@ -246,31 +246,31 @@ func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allPhaseNam
 	return config
 }
 
-func buildStepLogArgs(phaseNames []string, step *UpdateStep) []interface{} {
-	args := make([]interface{}, 0, len(phaseNames)*4)
-	for i, name := range phaseNames {
+func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
+	args := make([]interface{}, 0, len(roleNames)*4)
+	for i, name := range roleNames {
 		args = append(args, "past"+name, step.Past[i], "new"+name, step.New[i])
 	}
 	return args
 }
 
-func isWorkloadStable(workload GroupedWorkload, phaseNames []string) bool {
-	for _, name := range phaseNames {
-		if w := workload.Phases[name]; w.Replicas != w.ReadyReplicas {
+func isWorkloadStable(workload GroupedWorkload, roleNames []string) bool {
+	for _, name := range roleNames {
+		if w := workload.Roles[name]; w.Replicas != w.ReadyReplicas {
 			return false
 		}
 	}
 	return true
 }
 
-func sortByOldestTimestamp(workloads GroupedWorkloads, phaseNames []string) GroupedWorkloads {
-	if len(phaseNames) == 0 {
+func sortByOldestTimestamp(workloads GroupedWorkloads, roleNames []string) GroupedWorkloads {
+	if len(roleNames) == 0 {
 		return workloads
 	}
 	sorted := slices.Clone(workloads)
-	firstPhase := phaseNames[0]
+	firstRole := roleNames[0]
 	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
-		return a.Phases[firstPhase].CreationTimestamp.Compare(b.Phases[firstPhase].CreationTimestamp)
+		return a.Roles[firstRole].CreationTimestamp.Compare(b.Roles[firstRole].CreationTimestamp)
 	})
 	return sorted
 }
@@ -281,13 +281,13 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
 	ds *disaggv1alpha1.DisaggregatedSet,
 	newWorkload GroupedWorkload,
-	allPhaseNames []string,
-	specPhaseSet map[string]bool,
-	current, target PhaseReplicaState,
+	allRoleNames []string,
+	specRoleSet map[string]bool,
+	current, target RoleReplicaState,
 ) error {
 	log := logf.FromContext(ctx)
-	for i, name := range allPhaseNames {
-		if !specPhaseSet[name] || current[i] >= target[i] {
+	for i, name := range allRoleNames {
+		if !specRoleSet[name] || current[i] >= target[i] {
 			continue
 		}
 		workloadName := GenerateName(ds.Name, name, newWorkload.Revision)
@@ -305,27 +305,27 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	ctx context.Context,
 	ds *disaggv1alpha1.DisaggregatedSet,
 	oldWorkloads GroupedWorkloads,
-	phaseNames []string,
-	current, target PhaseReplicaState,
+	roleNames []string,
+	current, target RoleReplicaState,
 ) error {
-	budget := make([]int, len(phaseNames))
-	for i := range phaseNames {
+	budget := make([]int, len(roleNames))
+	for i := range roleNames {
 		budget[i] = current[i] - target[i]
 	}
 
 	log := logf.FromContext(ctx)
-	for _, wl := range sortByOldestTimestamp(oldWorkloads, phaseNames) {
+	for _, wl := range sortByOldestTimestamp(oldWorkloads, roleNames) {
 		if allZero(budget) {
 			break
 		}
 
-		// Calculate planned drain and track which phases trigger coordinated drain
+		// Calculate planned drain and track which roles trigger coordinated drain
 		newReplicas := make(map[string]int)
 		plannedDrain := make(map[string]int)
 		triggersCoordinated := make(map[string]bool)
 
-		for i, name := range phaseNames {
-			info, exists := wl.Phases[name]
+		for i, name := range roleNames {
+			info, exists := wl.Roles[name]
 			if !exists {
 				continue
 			}
@@ -337,19 +337,19 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 
-		// Coordinated drain: if any phase reaches 0, force all to 0
+		// Coordinated drain: if any role reaches 0, force all to 0
 		anyTriggered := len(triggersCoordinated) > 0
 		if anyTriggered {
-			for _, name := range phaseNames {
-				if _, exists := wl.Phases[name]; exists {
+			for _, name := range roleNames {
+				if _, exists := wl.Roles[name]; exists {
 					newReplicas[name] = 0
 				}
 			}
 		}
 
 		// Apply scale-downs and update budget
-		for i, name := range phaseNames {
-			info, exists := wl.Phases[name]
+		for i, name := range roleNames {
+			info, exists := wl.Roles[name]
 			if !exists || info.Replicas <= newReplicas[name] {
 				continue
 			}
@@ -361,8 +361,8 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			executor.Recorder.Eventf(ds, corev1.EventTypeNormal, EventReasonScalingDown,
 				"Scaling down %s workload %s from %d to %d replicas", name, workloadName, info.Replicas, newReplicas[name])
 
-			// Only consume budget for phases that triggered coordinated drain.
-			// Phases forced to drain by coordinated drain don't consume budget (budget recycling).
+			// Only consume budget for roles that triggered coordinated drain.
+			// Roles forced to drain by coordinated drain don't consume budget (budget recycling).
 			if triggersCoordinated[name] || !anyTriggered {
 				budget[i] -= plannedDrain[name]
 			}
@@ -385,11 +385,11 @@ func allZero(s []int) bool {
 func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 	ctx context.Context,
 	ds *disaggv1alpha1.DisaggregatedSet,
-	revision, phase string,
-	config *disaggv1alpha1.DisaggregatedPhaseSpec,
+	revision, role string,
+	config *disaggv1alpha1.DisaggregatedRoleSpec,
 	initialReplicas int,
 ) (bool, error) {
-	workloadName := GenerateName(ds.Name, phase, revision)
+	workloadName := GenerateName(ds.Name, role, revision)
 	existing, err := executor.WorkloadManager.Get(ctx, ds.Namespace, workloadName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get workload %s: %w", workloadName, err)
@@ -400,10 +400,10 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 
 	if err := executor.WorkloadManager.Create(ctx, CreateParams{
 		DisaggregatedSet: ds,
-		Phase:            phase,
+		Role:             role,
 		Config:           config,
 		Revision:         revision,
-		Labels:           GenerateLabels(ds.Name, phase, revision),
+		Labels:           GenerateLabels(ds.Name, role, revision),
 		Replicas:         initialReplicas,
 	}); err != nil {
 		return false, fmt.Errorf("failed to create workload %s: %w", workloadName, err)
@@ -411,18 +411,18 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 	return true, nil
 }
 
-// --- Phase change utils ---
-func detectPhaseChanges(specPhaseNames []string, oldWorkloads GroupedWorkloads) ([]string, []string) {
-	specPhases, oldPhases := buildPhaseSets(specPhaseNames, oldWorkloads)
+// --- Role change utils ---
+func detectRoleChanges(specRoleNames []string, oldWorkloads GroupedWorkloads) ([]string, []string) {
+	specRoles, oldRoles := buildRoleSets(specRoleNames, oldWorkloads)
 
 	var added, removed []string
-	for name := range oldPhases {
-		if !specPhases[name] {
+	for name := range oldRoles {
+		if !specRoles[name] {
 			removed = append(removed, name)
 		}
 	}
-	for _, name := range specPhaseNames {
-		if !oldPhases[name] {
+	for _, name := range specRoleNames {
+		if !oldRoles[name] {
 			added = append(added, name)
 		}
 	}

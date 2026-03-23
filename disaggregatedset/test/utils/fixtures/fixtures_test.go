@@ -25,8 +25,8 @@ import (
 
 func TestYAMLGeneratesCorrectRolloutStrategyStructure(t *testing.T) {
 	config := PrefillDecode("test",
-		Phase{Replicas: 2, HasRollout: true, MaxSurge: 1, MaxUnavailable: 0},
-		Phase{Replicas: 3, HasRollout: true, MaxSurge: 2, MaxUnavailable: 1},
+		Role{Replicas: 2, HasRollout: true, MaxSurge: 1, MaxUnavailable: 0},
+		Role{Replicas: 3, HasRollout: true, MaxSurge: 2, MaxUnavailable: 1},
 	)
 	yaml := config.YAML()
 
@@ -51,8 +51,8 @@ func TestYAMLGeneratesCorrectRolloutStrategyStructure(t *testing.T) {
 
 func TestYAMLWithoutRollout(t *testing.T) {
 	config := PrefillDecode("test",
-		Phase{Replicas: 2, HasRollout: false},
-		Phase{Replicas: 3, HasRollout: false},
+		Role{Replicas: 2, HasRollout: false},
+		Role{Replicas: 3, HasRollout: false},
 	)
 	yaml := config.YAML()
 
@@ -65,7 +65,7 @@ func TestYAMLWithMetadata(t *testing.T) {
 	config := Config{
 		Name:      "test",
 		Namespace: "default",
-		Phases: []Phase{
+		Roles: []Role{
 			{
 				Name:           "prefill",
 				Replicas:       2,

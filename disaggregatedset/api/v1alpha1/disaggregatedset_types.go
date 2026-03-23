@@ -23,12 +23,12 @@ import (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
+// DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
 // RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
-type DisaggregatedPhaseSpec struct {
-	// Name is the unique identifier for this phase.
+type DisaggregatedRoleSpec struct {
+	// Name is the unique identifier for this role.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
@@ -38,7 +38,7 @@ type DisaggregatedPhaseSpec struct {
 	// LeaderWorkerSetSpec is embedded inline to inherit all LWS configuration fields.
 	// Note: RolloutStrategy.Type must be RollingUpdate (or empty) and
 	// RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
-	// DisaggregatedSet handles rollouts across phases and does not propagate
+	// DisaggregatedSet handles rollouts across roles and does not propagate
 	// RolloutStrategy to the underlying LWS resources.
 	leaderworkerset.LeaderWorkerSetSpec `json:",inline"`
 
@@ -53,28 +53,28 @@ type DisaggregatedPhaseSpec struct {
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="self.phases.all(p, self.phases.filter(q, q.name == p.name).size() == 1)",message="phase names must be unique"
-// +kubebuilder:validation:XValidation:rule="self.phases.all(p, p.replicas == 0) || self.phases.all(p, p.replicas > 0)",message="replicas must be zero for all phases or non-zero for all phases"
+// +kubebuilder:validation:XValidation:rule="self.roles.all(r, self.roles.filter(s, s.name == r.name).size() == 1)",message="role names must be unique"
+// +kubebuilder:validation:XValidation:rule="self.roles.all(r, r.replicas == 0) || self.roles.all(r, r.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
 type DisaggregatedSetSpec struct {
-	// Phases defines the list of phases (at least 2 required).
-	// Each phase has a unique name and its own configuration.
+	// Roles defines the list of roles (at least 2 required).
+	// Each role has a unique name and its own configuration.
 	// +kubebuilder:validation:MinItems=2
 	// +kubebuilder:validation:MaxItems=10
 	// +required
-	Phases []DisaggregatedPhaseSpec `json:"phases"`
+	Roles []DisaggregatedRoleSpec `json:"roles"`
 }
 
-// PhaseStatus defines the observed state of a single phase.
-type PhaseStatus struct {
-	// Name is the name of the phase (matches spec.phases[].name).
+// RoleStatus defines the observed state of a single role.
+type RoleStatus struct {
+	// Name is the name of the role (matches spec.roles[].name).
 	// +required
 	Name string `json:"name"`
 
-	// Replicas is the total number of replicas for this phase.
+	// Replicas is the total number of replicas for this role.
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// ReadyReplicas is the number of ready replicas for this phase.
+	// ReadyReplicas is the number of ready replicas for this role.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
@@ -88,12 +88,12 @@ type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// PhaseStatuses contains the status for each phase.
-	// The order matches spec.phases.
+	// RoleStatuses contains the status for each role.
+	// The order matches spec.roles.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	PhaseStatuses []PhaseStatus `json:"phaseStatuses,omitempty"`
+	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 
 	// conditions represent the current state of the DisaggregatedSet resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.

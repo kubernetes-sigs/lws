@@ -34,29 +34,29 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// GroupedWorkload groups workloads by revision, containing both prefill and decode phases.
+// GroupedWorkload groups workloads by revision, containing both prefill and decode roles.
 type GroupedWorkload struct {
 	Revision string
-	Phases   map[string]WorkloadInfo
+	Roles    map[string]WorkloadInfo
 }
 
 // GroupedWorkloads is a slice of GroupedWorkload.
 type GroupedWorkloads []GroupedWorkload
 
-// GetTotalReplicasPerPhase returns the sum of current replicas for a given phase across all grouped workloads.
-func (groupedWorkloads GroupedWorkloads) GetTotalReplicasPerPhase(phase string) int {
+// GetTotalReplicasPerRole returns the sum of current replicas for a given role across all grouped workloads.
+func (groupedWorkloads GroupedWorkloads) GetTotalReplicasPerRole(role string) int {
 	total := 0
 	for _, workload := range groupedWorkloads {
-		total += workload.Phases[phase].Replicas
+		total += workload.Roles[role].Replicas
 	}
 	return total
 }
 
-// GetTotalInitialReplicasPerPhase returns the sum of initial replicas for a given phase across all grouped workloads.
-func (groupedWorkloads GroupedWorkloads) GetTotalInitialReplicasPerPhase(phase string) int {
+// GetTotalInitialReplicasPerRole returns the sum of initial replicas for a given role across all grouped workloads.
+func (groupedWorkloads GroupedWorkloads) GetTotalInitialReplicasPerRole(role string) int {
 	total := 0
 	for _, workload := range groupedWorkloads {
-		total += workload.Phases[phase].InitialReplicas
+		total += workload.Roles[role].InitialReplicas
 	}
 	return total
 }
@@ -92,11 +92,11 @@ func copyAnnotations(annotations map[string]string) map[string]string {
 }
 
 // Create creates a new LeaderWorkerSet with the given configuration.
-// All fields from DisaggregatedPhaseSpec are passed through to the LWS spec.
+// All fields from DisaggregatedRoleSpec are passed through to the LWS spec.
 // User-provided labels and annotations from workerTemplate.metadata are merged with
 // auto-populated labels. Auto-populated labels take precedence.
 func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params CreateParams) error {
-	workloadName := GenerateName(params.DisaggregatedSet.Name, params.Phase, params.Revision)
+	workloadName := GenerateName(params.DisaggregatedSet.Name, params.Role, params.Revision)
 	replicas := int32(params.Replicas)
 	config := params.Config
 
@@ -104,7 +104,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 	workerLabels := mergeLabels(config.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
 	workerAnnotations := copyAnnotations(config.LeaderWorkerTemplate.WorkerTemplate.Annotations)
 
-	// Build LWS LeaderWorkerTemplate from DisaggregatedPhaseSpec.LeaderWorkerTemplate
+	// Build LWS LeaderWorkerTemplate from DisaggregatedRoleSpec.LeaderWorkerTemplate
 	lwsTemplate := leaderworkerset.LeaderWorkerTemplate{
 		Size: config.LeaderWorkerTemplate.Size,
 		WorkerTemplate: corev1.PodTemplateSpec{
@@ -138,7 +138,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 
 	// NOTE: We do NOT set RolloutStrategy on the LWS.
 	// Our operator handles rolling updates by creating NEW LWS workloads and scaling them.
-	// The DisaggregatedPhaseSpec.RolloutStrategy is used by our planner/executor, not by the LWS controller.
+	// The DisaggregatedRoleSpec.RolloutStrategy is used by our planner/executor, not by the LWS controller.
 
 	// Pass through NetworkConfig directly (already leaderworkerset type)
 	lwsNetworkConfig := config.NetworkConfig
@@ -251,7 +251,7 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return &WorkloadInfo{
 		Name:                         leaderWorkerSet.Name,
 		Namespace:                    leaderWorkerSet.Namespace,
-		Phase:                        leaderWorkerSet.Labels[LabelDisaggPhase],
+		Role:                         leaderWorkerSet.Labels[LabelDisaggRole],
 		Revision:                     leaderWorkerSet.Labels[LabelRevision],
 		Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 		ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
@@ -262,13 +262,13 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 }
 
 // List returns all LeaderWorkerSets for a DisaggregatedSet.
-// If phase is empty, returns workloads for all phases.
-func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, phase string) ([]WorkloadInfo, error) {
+// If role is empty, returns workloads for all roles.
+func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]WorkloadInfo, error) {
 	workloadList := &leaderworkerset.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{LabelDisaggName: disaggDeploymentName}
-	if phase != "" {
-		labels[LabelDisaggPhase] = phase
+	if role != "" {
+		labels[LabelDisaggRole] = role
 	}
 
 	if err := manager.client.List(ctx, workloadList, client.InNamespace(namespace), labels); err != nil {
@@ -285,7 +285,7 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		result = append(result, WorkloadInfo{
 			Name:                         leaderWorkerSet.Name,
 			Namespace:                    leaderWorkerSet.Namespace,
-			Phase:                        leaderWorkerSet.Labels[LabelDisaggPhase],
+			Role:                         leaderWorkerSet.Labels[LabelDisaggRole],
 			Revision:                     leaderWorkerSet.Labels[LabelRevision],
 			Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 			ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
@@ -332,10 +332,10 @@ func groupWorkloadsByRevision(workloads []WorkloadInfo) GroupedWorkloads {
 		if byRevision[workload.Revision] == nil {
 			byRevision[workload.Revision] = &GroupedWorkload{
 				Revision: workload.Revision,
-				Phases:   make(map[string]WorkloadInfo),
+				Roles:    make(map[string]WorkloadInfo),
 			}
 		}
-		byRevision[workload.Revision].Phases[workload.Phase] = workload
+		byRevision[workload.Revision].Roles[workload.Role] = workload
 	}
 
 	result := make(GroupedWorkloads, 0, len(byRevision))

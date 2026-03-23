@@ -22,8 +22,8 @@ import (
 	"strings"
 )
 
-// Phase holds configuration for a single phase.
-type Phase struct {
+// Role holds configuration for a single role.
+type Role struct {
 	Name           string
 	Replicas       int
 	Image          string
@@ -41,7 +41,7 @@ type Phase struct {
 type Config struct {
 	Name      string
 	Namespace string
-	Phases    []Phase
+	Roles     []Role
 }
 
 // YAML generates a DisaggregatedSet YAML from config.
@@ -60,8 +60,8 @@ metadata:
 spec:
 `, c.Name, ns))
 
-	sb.WriteString("  phases:\n")
-	for _, p := range c.Phases {
+	sb.WriteString("  roles:\n")
+	for _, p := range c.Roles {
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
 		sb.WriteString(fmt.Sprintf("    replicas: %d\n", p.Replicas))
 
@@ -128,13 +128,13 @@ spec:
 	return sb.String()
 }
 
-// PrefillDecode creates a 2-phase config with prefill and decode phases.
-func PrefillDecode(name string, prefill, decode Phase) Config {
+// PrefillDecode creates a 2-role config with prefill and decode roles.
+func PrefillDecode(name string, prefill, decode Role) Config {
 	prefill.Name = "prefill"
 	decode.Name = "decode"
 	return Config{
-		Name:   name,
-		Phases: []Phase{prefill, decode},
+		Name:  name,
+		Roles: []Role{prefill, decode},
 	}
 }
 

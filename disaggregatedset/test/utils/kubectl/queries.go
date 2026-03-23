@@ -23,7 +23,7 @@ import (
 
 const (
 	labelName     = "disaggregatedset.x-k8s.io/name"
-	labelPhase    = "disaggregatedset.x-k8s.io/phase"
+	labelRole     = "disaggregatedset.x-k8s.io/role"
 	labelRevision = "disaggregatedset.x-k8s.io/revision"
 	defaultNS     = "default"
 )
@@ -48,9 +48,9 @@ func LWSNotRevision(deploymentName, revision string) *Builder {
 		Namespace(defaultNS)
 }
 
-// LWSByPhase returns a builder for querying LWS by deployment and phase.
-func LWSByPhase(deploymentName, phase string) *Builder {
-	return LWS(deploymentName).Label(labelPhase, phase)
+// LWSByRole returns a builder for querying LWS by deployment and role.
+func LWSByRole(deploymentName, role string) *Builder {
+	return LWS(deploymentName).Label(labelRole, role)
 }
 
 // --- Pod Queries ---
@@ -60,9 +60,9 @@ func Pods(deploymentName string) *Builder {
 	return Get("pods").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
-// PodsByPhase returns a builder for querying pods by deployment and phase.
-func PodsByPhase(deploymentName, phase string) *Builder {
-	return Pods(deploymentName).Label(labelPhase, phase)
+// PodsByRole returns a builder for querying pods by deployment and role.
+func PodsByRole(deploymentName, role string) *Builder {
+	return Pods(deploymentName).Label(labelRole, role)
 }
 
 // RunningPods returns a builder for querying running pods.
@@ -77,9 +77,9 @@ func Service(deploymentName string) *Builder {
 	return Get("svc").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
-// ServiceByPhase returns a builder for querying services by deployment and phase.
-func ServiceByPhase(deploymentName, phase string) *Builder {
-	return Service(deploymentName).Label(labelPhase, phase)
+// ServiceByRole returns a builder for querying services by deployment and role.
+func ServiceByRole(deploymentName, role string) *Builder {
+	return Service(deploymentName).Label(labelRole, role)
 }
 
 // --- EndpointSlice Queries ---
@@ -89,9 +89,9 @@ func EndpointSlice(deploymentName string) *Builder {
 	return Get("endpointslice").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
-// EndpointSliceByPhase returns a builder for querying endpoint slices by phase.
-func EndpointSliceByPhase(deploymentName, phase string) *Builder {
-	return EndpointSlice(deploymentName).Label(labelPhase, phase)
+// EndpointSliceByRole returns a builder for querying endpoint slices by role.
+func EndpointSliceByRole(deploymentName, role string) *Builder {
+	return EndpointSlice(deploymentName).Label(labelRole, role)
 }
 
 // --- Counting Helpers ---
@@ -123,9 +123,9 @@ func CountLWS(deploymentName string) int {
 	return len(GetNonEmptyLines(output))
 }
 
-// CountLWSByPhase returns the number of LWS for a deployment and phase.
-func CountLWSByPhase(deploymentName, phase string) int {
-	output, err := LWSByPhase(deploymentName, phase).Output("name").RunQuiet()
+// CountLWSByRole returns the number of LWS for a deployment and role.
+func CountLWSByRole(deploymentName, role string) int {
+	output, err := LWSByRole(deploymentName, role).Output("name").RunQuiet()
 	if err != nil {
 		return 0
 	}

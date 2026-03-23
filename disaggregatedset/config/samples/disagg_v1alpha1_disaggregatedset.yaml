@@ -3,7 +3,7 @@ kind: DisaggregatedSet
 metadata:
   name: disaggregatedset-sample
 spec:
-  phases:
+  roles:
   - name: prefill
     replicas: 2
     leaderWorkerTemplate:

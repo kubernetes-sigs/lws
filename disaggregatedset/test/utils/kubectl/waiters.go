@@ -94,11 +94,11 @@ func ForSingleActiveRevision(deploymentName string) {
 	}, 4*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-// ForPhaseReplicas waits until a phase has the expected replica count.
+// ForRoleReplicas waits until a role has the expected replica count.
 // If replicas=0 and the LWS doesn't exist, that counts as 0 replicas.
-func ForPhaseReplicas(deploymentName, phase string, replicas int) {
+func ForRoleReplicas(deploymentName, role string, replicas int) {
 	Eventually(func(g Gomega) {
-		output, err := LWSByPhase(deploymentName, phase).
+		output, err := LWSByRole(deploymentName, role).
 			JSONPath("{.items[*].spec.replicas}").RunQuiet()
 		if err != nil {
 			// If error and expecting 0 replicas, LWS may not exist which is fine
@@ -109,7 +109,7 @@ func ForPhaseReplicas(deploymentName, phase string, replicas int) {
 		}
 		// Empty output means no LWS found
 		if strings.TrimSpace(output) == "" {
-			g.Expect(replicas).To(Equal(0), "Phase LWS not found but expected %d replicas", replicas)
+			g.Expect(replicas).To(Equal(0), "Role LWS not found but expected %d replicas", replicas)
 			return
 		}
 		g.Expect(sumInts(output)).To(Equal(replicas))

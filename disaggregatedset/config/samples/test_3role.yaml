@@ -1,9 +1,9 @@
 apiVersion: disaggregatedset.x-k8s.io/v1alpha1
 kind: DisaggregatedSet
 metadata:
-  name: test-phases
+  name: test-roles
 spec:
-  phases:
+  roles:
   - name: prefill
     replicas: 4
     rolloutStrategy:
@@ -34,6 +34,35 @@ spec:
               periodSeconds: 1
 
   - name: decode
+    replicas: 4
+    rolloutStrategy:
+      rollingUpdateConfiguration:
+        maxSurge: 1
+        maxUnavailable: 0
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.29.3
+            ports:
+            - containerPort: 80
+            resources:
+              limits:
+                cpu: "50m"
+                memory: "32Mi"
+              requests:
+                cpu: "50m"
+                memory: "32Mi"
+            readinessProbe:
+              httpGet:
+                path: /
+                port: 80
+              initialDelaySeconds: 2
+              periodSeconds: 1
+
+  - name: encode
     replicas: 4
     rolloutStrategy:
       rollingUpdateConfiguration:

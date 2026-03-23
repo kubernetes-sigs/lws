@@ -44,7 +44,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -67,7 +67,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -97,7 +97,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -125,7 +125,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -154,7 +154,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -181,7 +181,7 @@ func TestValidateCreate(t *testing.T) {
 			obj: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
 							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -228,7 +228,7 @@ func TestValidateUpdate(t *testing.T) {
 	validObj := &disaggv1alpha1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+			Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 				{
 					Name: "prefill",
 					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -248,7 +248,7 @@ func TestValidateUpdate(t *testing.T) {
 	invalidObj := &disaggv1alpha1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Phases: []disaggv1alpha1.DisaggregatedPhaseSpec{
+			Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
 				{
 					Name: "prefill",
 					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{

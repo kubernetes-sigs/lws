@@ -43,9 +43,9 @@ func createTestLWSWithAnnotation(
 			Namespace:   namespace,
 			Annotations: annotations,
 			Labels: map[string]string{
-				LabelDisaggName:  "test-deployment",
-				LabelDisaggPhase: "prefill",
-				LabelRevision:    "abc123",
+				LabelDisaggName: "test-deployment",
+				LabelDisaggRole: "prefill",
+				LabelRevision:   "abc123",
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -481,15 +481,15 @@ func TestManagerCreate(t *testing.T) {
 					UID:       "test-uid",
 				},
 			},
-			Phase:    "prefill",
+			Role:     "prefill",
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName:  "test-deploy",
-				LabelDisaggPhase: "prefill",
-				LabelRevision:    "abc123",
+				LabelDisaggName: "test-deploy",
+				LabelDisaggRole: "prefill",
+				LabelRevision:   "abc123",
 			},
-			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
+			Config: &disaggv1alpha1.DisaggregatedRoleSpec{
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
@@ -516,15 +516,15 @@ func TestManagerCreate(t *testing.T) {
 					UID:       "test-uid",
 				},
 			},
-			Phase:    "prefill",
+			Role:     "prefill",
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName:  "test-deploy",
-				LabelDisaggPhase: "prefill",
-				LabelRevision:    "abc123",
+				LabelDisaggName: "test-deploy",
+				LabelDisaggRole: "prefill",
+				LabelRevision:   "abc123",
 			},
-			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
+			Config: &disaggv1alpha1.DisaggregatedRoleSpec{
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
@@ -545,9 +545,9 @@ func TestManagerCreate(t *testing.T) {
 			DisaggregatedSet: &disaggv1alpha1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
 			},
-			Phase: "prefill", Revision: "rev1", Replicas: 1,
-			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggPhase: "prefill", "app": "system-app"},
-			Config: &disaggv1alpha1.DisaggregatedPhaseSpec{
+			Role: "prefill", Revision: "rev1", Replicas: 1,
+			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggRole: "prefill", "app": "system-app"},
+			Config: &disaggv1alpha1.DisaggregatedRoleSpec{
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
 				},
@@ -572,7 +572,7 @@ func TestManagerCreate(t *testing.T) {
 // TestComputeRevision tests the ComputeRevision function.
 func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
-		phases := []disaggv1alpha1.DisaggregatedPhaseSpec{
+		roles := []disaggv1alpha1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -593,15 +593,15 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(phases)
-		revision2 := ComputeRevision(phases)
+		revision1 := ComputeRevision(roles)
+		revision2 := ComputeRevision(roles)
 
 		require.Equal(t, revision1, revision2)
 		require.Len(t, revision1, 8) // Truncated to 8 characters
 	})
 
 	t.Run("returns different revision for different Size", func(t *testing.T) {
-		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+		roles1 := []disaggv1alpha1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -621,7 +621,7 @@ func TestComputeRevision(t *testing.T) {
 				},
 			},
 		}
-		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+		roles2 := []disaggv1alpha1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -642,14 +642,14 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(phases1)
-		revision2 := ComputeRevision(phases2)
+		revision1 := ComputeRevision(roles1)
+		revision2 := ComputeRevision(roles2)
 
 		require.NotEqual(t, revision1, revision2)
 	})
 
-	t.Run("returns different revision for different phase names", func(t *testing.T) {
-		phases1 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+	t.Run("returns different revision for different role names", func(t *testing.T) {
+		roles1 := []disaggv1alpha1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
@@ -669,9 +669,9 @@ func TestComputeRevision(t *testing.T) {
 				},
 			},
 		}
-		phases2 := []disaggv1alpha1.DisaggregatedPhaseSpec{
+		roles2 := []disaggv1alpha1.DisaggregatedRoleSpec{
 			{
-				Name: "other-phase",
+				Name: "other-role",
 				LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
@@ -690,16 +690,16 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(phases1)
-		revision2 := ComputeRevision(phases2)
+		revision1 := ComputeRevision(roles1)
+		revision2 := ComputeRevision(roles2)
 
 		require.NotEqual(t, revision1, revision2)
 	})
 
-	t.Run("handles empty phases slice", func(t *testing.T) {
-		phases := []disaggv1alpha1.DisaggregatedPhaseSpec{}
+	t.Run("handles empty roles slice", func(t *testing.T) {
+		roles := []disaggv1alpha1.DisaggregatedRoleSpec{}
 
-		revision := ComputeRevision(phases)
+		revision := ComputeRevision(roles)
 		require.Len(t, revision, 8)
 	})
 }

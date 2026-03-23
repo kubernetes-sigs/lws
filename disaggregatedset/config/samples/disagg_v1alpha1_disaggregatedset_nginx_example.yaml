@@ -6,8 +6,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: disaggdeployment-nginx-example
 spec:
-  phases:
-  # Prefill configuration with 10 nginx replicas
+  roles:
+  # Prefill role configuration with 10 nginx replicas
   - name: prefill
     replicas: 10
     rolloutStrategy:
@@ -44,7 +44,7 @@ spec:
               initialDelaySeconds: 15
               periodSeconds: 2
 
-  # Decode configuration with 2 nginx replicas
+  # Decode role configuration with 2 nginx replicas
   - name: decode
     replicas: 2
     rolloutStrategy:
@@ -78,7 +78,7 @@ spec:
               initialDelaySeconds: 5
               periodSeconds: 2
 
-  # Decode configuration with 2 nginx replicas
+  # Encode role configuration with 2 nginx replicas
   - name: encode
     replicas: 2
     rolloutStrategy:

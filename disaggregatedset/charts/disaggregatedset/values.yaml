@@ -12,7 +12,7 @@ controllerManager:
       readOnlyRootFilesystem: true
     image:
       repository: controller
-      tag: e2e
+      tag: latest
     resources:
       limits:
         cpu: 500m

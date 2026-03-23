@@ -29,15 +29,15 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// NumRequiredPhases is the number of phases required in the DisaggregatedSet spec.
-// The planner currently only supports exactly 2 phases.
-const NumRequiredPhases = 2
+// NumRequiredRoles is the number of roles required in the DisaggregatedSet spec.
+// The planner currently only supports exactly 2 roles.
+const NumRequiredRoles = 2
 
 // Label keys used for workload management
 const (
-	LabelDisaggPhase = "disaggregatedset.x-k8s.io/phase"
-	LabelDisaggName  = "disaggregatedset.x-k8s.io/name"
-	LabelRevision    = "disaggregatedset.x-k8s.io/revision"
+	LabelDisaggRole = "disaggregatedset.x-k8s.io/role"
+	LabelDisaggName = "disaggregatedset.x-k8s.io/name"
+	LabelRevision   = "disaggregatedset.x-k8s.io/revision"
 )
 
 // Annotation keys used for workload management
@@ -78,14 +78,14 @@ func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replic
 // ComputeInitialReplicaState computes the total initial replica counts
 // from a list of LWS resources by summing their initial-replicas annotations.
 // If an annotation is missing or invalid, it falls back to spec.Replicas.
-// Returns a map from phase name to replica count.
+// Returns a map from role name to replica count.
 func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[string]int {
 	state := make(map[string]int)
 
 	for i := range lwsList {
 		lws := &lwsList[i]
-		phase := lws.Labels[LabelDisaggPhase]
-		if phase == "" {
+		role := lws.Labels[LabelDisaggRole]
+		if role == "" {
 			continue
 		}
 
@@ -103,7 +103,7 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[s
 			}
 		}
 
-		state[phase] += replicas
+		state[role] += replicas
 	}
 
 	return state
@@ -115,8 +115,8 @@ type WorkloadInfo struct {
 	Name string
 	// Namespace is the workload namespace
 	Namespace string
-	// Phase is the disaggregated phase (prefill or decode)
-	Phase string
+	// Role is the disaggregated role (prefill or decode)
+	Role string
 	// Revision is the revision identifier for this workload
 	Revision string
 	// Replicas is the desired replica count
@@ -135,10 +135,10 @@ type WorkloadInfo struct {
 type CreateParams struct {
 	// DisaggregatedSet is the parent resource
 	DisaggregatedSet *disaggv1alpha1.DisaggregatedSet
-	// Phase is the disaggregated phase (prefill or decode)
-	Phase string
-	// Config is the phase configuration
-	Config *disaggv1alpha1.DisaggregatedPhaseSpec
+	// Role is the disaggregated role (prefill or decode)
+	Role string
+	// Config is the role configuration
+	Config *disaggv1alpha1.DisaggregatedRoleSpec
 	// Revision is the revision identifier for this workload
 	Revision string
 	// Labels are the labels to apply to the workload
@@ -148,40 +148,40 @@ type CreateParams struct {
 }
 
 // GenerateName generates a unique name for the workload based on revision.
-// Format: {baseName}-{revision}-{phase}
-func GenerateName(baseName, phase, revision string) string {
-	return fmt.Sprintf("%s-%s-%s", baseName, revision, phase)
+// Format: {baseName}-{revision}-{role}
+func GenerateName(baseName, role, revision string) string {
+	return fmt.Sprintf("%s-%s-%s", baseName, revision, role)
 }
 
-// GenerateLabels generates the standard labels for a phase
-func GenerateLabels(baseName, phase, revision string) map[string]string {
+// GenerateLabels generates the standard labels for a role
+func GenerateLabels(baseName, role, revision string) map[string]string {
 	return map[string]string{
-		"app":            fmt.Sprintf("%s-%s", baseName, phase),
-		LabelDisaggPhase: phase,
-		LabelDisaggName:  baseName,
-		LabelRevision:    revision,
+		"app":           fmt.Sprintf("%s-%s", baseName, role),
+		LabelDisaggRole: role,
+		LabelDisaggName: baseName,
+		LabelRevision:   revision,
 	}
 }
 
 // revisionLength is the length of the truncated revision identifier used in resource names
 const revisionLength = 8
 
-// ComputeRevision computes a truncated revision identifier from all phase LeaderWorkerTemplates.
-// This ensures all phases roll together when any field in LeaderWorkerTemplate changes
+// ComputeRevision computes a truncated revision identifier from all role LeaderWorkerTemplates.
+// This ensures all roles roll together when any field in LeaderWorkerTemplate changes
 // (including Size, LeaderTemplate, WorkerTemplate, RestartPolicy, SubGroupPolicy, etc.).
 // Returns an 8-character revision identifier suitable for use in resource names.
-func ComputeRevision(phases []disaggv1alpha1.DisaggregatedPhaseSpec) string {
-	// Create a slice of templates keyed by phase name for deterministic ordering
-	type phaseTemplate struct {
+func ComputeRevision(roles []disaggv1alpha1.DisaggregatedRoleSpec) string {
+	// Create a slice of templates keyed by role name for deterministic ordering
+	type roleTemplate struct {
 		Name     string                               `json:"name"`
 		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
 	}
 
-	templates := make([]phaseTemplate, 0, len(phases))
-	for _, phase := range phases {
-		templates = append(templates, phaseTemplate{
-			Name:     phase.Name,
-			Template: phase.LeaderWorkerTemplate,
+	templates := make([]roleTemplate, 0, len(roles))
+	for _, role := range roles {
+		templates = append(templates, roleTemplate{
+			Name:     role.Name,
+			Template: role.LeaderWorkerTemplate,
 		})
 	}
 
@@ -198,24 +198,24 @@ func ComputeRevision(phases []disaggv1alpha1.DisaggregatedPhaseSpec) string {
 	return fullHash
 }
 
-// GetPhaseConfigs returns a map of phase configurations from the DisaggregatedSet spec.
-// The map is keyed by phase name.
-func GetPhaseConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggregatedPhaseSpec {
-	phaseConfigs := make(map[string]*disaggv1alpha1.DisaggregatedPhaseSpec)
+// GetRoleConfigs returns a map of role configurations from the DisaggregatedSet spec.
+// The map is keyed by role name.
+func GetRoleConfigs(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) map[string]*disaggv1alpha1.DisaggregatedRoleSpec {
+	roleConfigs := make(map[string]*disaggv1alpha1.DisaggregatedRoleSpec)
 
-	for i := range disaggregatedSet.Spec.Phases {
-		phase := &disaggregatedSet.Spec.Phases[i]
-		phaseConfigs[phase.Name] = phase
+	for i := range disaggregatedSet.Spec.Roles {
+		role := &disaggregatedSet.Spec.Roles[i]
+		roleConfigs[role.Name] = role
 	}
 
-	return phaseConfigs
+	return roleConfigs
 }
 
-// GetPhaseNames returns the ordered list of phase names from the spec.
-func GetPhaseNames(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) []string {
-	names := make([]string, len(disaggregatedSet.Spec.Phases))
-	for i, phase := range disaggregatedSet.Spec.Phases {
-		names[i] = phase.Name
+// GetRoleNames returns the ordered list of role names from the spec.
+func GetRoleNames(disaggregatedSet *disaggv1alpha1.DisaggregatedSet) []string {
+	names := make([]string, len(disaggregatedSet.Spec.Roles))
+	for i, role := range disaggregatedSet.Spec.Roles {
+		names[i] = role.Name
 	}
 	return names
 }

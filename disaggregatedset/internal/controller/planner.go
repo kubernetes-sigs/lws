@@ -30,7 +30,7 @@ limitations under the License.
 // The complexity comes from:
 //   - Decoupling: each step changes EITHER old OR new, not both
 //   - Surge constraints: old + new <= target + maxSurge
-//   - N dimensions: all phases must stay coordinated
+//   - N dimensions: all roles must stay coordinated
 package controller
 
 import (
@@ -39,26 +39,26 @@ import (
 
 // UpdateStep represents a single step in the rolling update plan.
 // It tracks the replica counts for both old (past) and new deployments
-// for N phases (slice-based for flexibility).
+// for N roles (slice-based for flexibility).
 type UpdateStep struct {
 	Past []int
 	New  []int
 }
 
-// PhaseReplicaState holds the replica counts for N phases.
+// RoleReplicaState holds the replica counts for N roles.
 // Used for source, current, and target state in rolling update planning.
-type PhaseReplicaState = []int
+type RoleReplicaState = []int
 
-// RollingUpdateConfig holds the rolling update constraints per phase.
+// RollingUpdateConfig holds the rolling update constraints per role.
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
 }
 
-// DefaultRollingUpdateConfig returns the default rolling update config for N phases (maxSurge=1, maxUnavailable=0).
-func DefaultRollingUpdateConfig(numPhases int) []RollingUpdateConfig {
-	configs := make([]RollingUpdateConfig, numPhases)
-	for i := 0; i < numPhases; i++ {
+// DefaultRollingUpdateConfig returns the default rolling update config for N roles (maxSurge=1, maxUnavailable=0).
+func DefaultRollingUpdateConfig(numRoles int) []RollingUpdateConfig {
+	configs := make([]RollingUpdateConfig, numRoles)
+	for i := 0; i < numRoles; i++ {
 		configs[i].MaxSurge = 1
 		configs[i].MaxUnavailable = 0
 	}
@@ -76,14 +76,14 @@ func batchSize(maxSurge, maxUnavailable int) int {
 // computeTotalSteps computes the total number of steps for the rollout.
 // Based on the maximum replicas (source or target) for each dimension,
 // divided by the batch size (surge or unavailable), taking the max across dimensions.
-func computeTotalSteps(source, target PhaseReplicaState, config []RollingUpdateConfig) int {
+func computeTotalSteps(source, target RoleReplicaState, config []RollingUpdateConfig) int {
 	totalSteps := 0
-	numPhases := len(source)
-	for i := 0; i < numPhases; i++ {
+	numRoles := len(source)
+	for i := 0; i < numRoles; i++ {
 		maxReplicas := max(source[i], target[i], 0)
-		phaseBatchSize := batchSize(config[i].MaxSurge, config[i].MaxUnavailable)
-		phaseSteps := (maxReplicas + phaseBatchSize - 1) / phaseBatchSize
-		totalSteps = max(totalSteps, phaseSteps)
+		roleBatchSize := batchSize(config[i].MaxSurge, config[i].MaxUnavailable)
+		roleSteps := (maxReplicas + roleBatchSize - 1) / roleBatchSize
+		totalSteps = max(totalSteps, roleSteps)
 	}
 	return totalSteps
 }
@@ -92,11 +92,11 @@ func computeTotalSteps(source, target PhaseReplicaState, config []RollingUpdateC
 //
 // Linear interpolation: newAtStep(i) = ceil(i * target / totalSteps)
 //
-// Uses min step index across dimensions to keep phases in sync.
-func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int) PhaseReplicaState {
-	numPhases := len(target)
+// Uses min step index across dimensions to keep roles in sync.
+func computeNextNewReplicas(target, currentNew RoleReplicaState, totalSteps int) RoleReplicaState {
+	numRoles := len(target)
 	if totalSteps == 0 {
-		result := make([]int, numPhases)
+		result := make([]int, numRoles)
 		copy(result, target)
 		return result
 	}
@@ -110,7 +110,7 @@ func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int
 	}
 
 	minStepIdx := totalSteps
-	for i := 0; i < numPhases; i++ {
+	for i := 0; i < numRoles; i++ {
 		stepIdx := stepIndex(currentNew[i], target[i])
 		minStepIdx = min(minStepIdx, stepIdx)
 	}
@@ -123,8 +123,8 @@ func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int
 		return max(computed, currentVal) // never decrease
 	}
 
-	result := make([]int, numPhases)
-	for i := 0; i < numPhases; i++ {
+	result := make([]int, numRoles)
+	for i := 0; i < numRoles; i++ {
 		result[i] = computeNew(target[i], currentNew[i])
 	}
 	return result
@@ -134,27 +134,27 @@ func computeNextNewReplicas(target, currentNew PhaseReplicaState, totalSteps int
 //
 // Linear interpolation: oldAtStep(i) = source - floor(i * source / totalSteps)
 //
-// Uses max step index across dimensions to ensure all phases drain together.
-func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int) PhaseReplicaState {
-	numPhases := len(source)
+// Uses max step index across dimensions to ensure all roles drain together.
+func computeNextOldReplicas(source, currentOld RoleReplicaState, totalSteps int) RoleReplicaState {
+	numRoles := len(source)
 	if totalSteps == 0 {
-		return make([]int, numPhases)
+		return make([]int, numRoles)
 	}
 
 	// Step 1: figure out which step we're at based on how many replicas were removed
-	// Skip phases with source=0 (new phases) - they don't affect drain timing
+	// Skip roles with source=0 (new roles) - they don't affect drain timing
 	stepIndex := func(removed, sourceVal int) int {
 		if sourceVal == 0 {
-			return 0 // New phases don't contribute to drain step calculation
+			return 0 // New roles don't contribute to drain step calculation
 		}
 		return int(float64(removed) * float64(totalSteps) / float64(sourceVal))
 	}
 
-	// Find the phase that has drained the most (highest step index).
-	// Using max ensures phases sync up: the most-drained phase sets the pace,
-	// and lagging phases catch up in the next step.
+	// Find the role that has drained the most (highest step index).
+	// Using max ensures roles sync up: the most-drained role sets the pace,
+	// and lagging roles catch up in the next step.
 	maxStepIdx := 0
-	for i := 0; i < numPhases; i++ {
+	for i := 0; i < numRoles; i++ {
 		if source[i] == 0 {
 			continue
 		}
@@ -170,8 +170,8 @@ func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int
 		return min(computed, currentVal) // never increase
 	}
 
-	result := make([]int, numPhases)
-	for i := 0; i < numPhases; i++ {
+	result := make([]int, numRoles)
+	for i := 0; i < numRoles; i++ {
 		result[i] = computeOld(source[i], currentOld[i])
 	}
 	return result
@@ -181,11 +181,11 @@ func computeNextOldReplicas(source, currentOld PhaseReplicaState, totalSteps int
 // This shouldn't happen in normal rollouts (old starts at source and only decreases),
 // but can occur from interrupted rollouts or manual intervention.
 // Returns a correction step if needed, nil otherwise.
-func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *UpdateStep {
-	numPhases := len(source)
-	expectedOld := make([]int, numPhases)
+func correctAbnormalState(currentOld, currentNew, source RoleReplicaState) *UpdateStep {
+	numRoles := len(source)
+	expectedOld := make([]int, numRoles)
 	needsCorrection := false
-	for i := 0; i < numPhases; i++ {
+	for i := 0; i < numRoles; i++ {
 		expectedOld[i] = min(source[i], currentOld[i])
 		if currentOld[i] > expectedOld[i] {
 			needsCorrection = true
@@ -193,7 +193,7 @@ func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *Upd
 	}
 
 	if needsCorrection {
-		newCopy := make([]int, numPhases)
+		newCopy := make([]int, numRoles)
 		copy(newCopy, currentNew)
 		return &UpdateStep{
 			Past: expectedOld,
@@ -204,7 +204,7 @@ func correctAbnormalState(currentOld, currentNew, source PhaseReplicaState) *Upd
 }
 
 // isComplete returns true if the rollout is done (all old=0, all new>=target).
-func isComplete(currentOld, currentNew, targetNew PhaseReplicaState) bool {
+func isComplete(currentOld, currentNew, targetNew RoleReplicaState) bool {
 	for i := range currentOld {
 		if currentOld[i] != 0 || currentNew[i] < targetNew[i] {
 			return false
@@ -214,7 +214,7 @@ func isComplete(currentOld, currentNew, targetNew PhaseReplicaState) bool {
 }
 
 // isNewAtTarget returns true if all new replicas have reached their target.
-func isNewAtTarget(currentNew, targetNew PhaseReplicaState) bool {
+func isNewAtTarget(currentNew, targetNew RoleReplicaState) bool {
 	for i := range currentNew {
 		if currentNew[i] < targetNew[i] {
 			return false
@@ -225,10 +225,10 @@ func isNewAtTarget(currentNew, targetNew PhaseReplicaState) bool {
 
 // canScaleUp checks if scaling to nextNew would violate surge constraints.
 // Constraint: old + new <= target + maxSurge (always relative to target, not source)
-func canScaleUp(currentOld, nextNew, source, targetNew PhaseReplicaState, config []RollingUpdateConfig) bool {
+func canScaleUp(currentOld, nextNew, source, targetNew RoleReplicaState, config []RollingUpdateConfig) bool {
 	for i := range currentOld {
 		if targetNew[i] == 0 {
-			continue // Removed phases just drain, no surge constraint
+			continue // Removed roles just drain, no surge constraint
 		}
 		if currentOld[i]+nextNew[i] > targetNew[i]+config[i].MaxSurge {
 			return false
@@ -237,9 +237,9 @@ func canScaleUp(currentOld, nextNew, source, targetNew PhaseReplicaState, config
 	return true
 }
 
-// computeMinOld computes the minimum old replicas per phase to satisfy maxUnavailable.
+// computeMinOld computes the minimum old replicas per role to satisfy maxUnavailable.
 // Only enforced when source >= target (system had enough replicas to maintain availability).
-func computeMinOld(source, currentNew, targetNew PhaseReplicaState, config []RollingUpdateConfig) []int {
+func computeMinOld(source, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) []int {
 	minOld := make([]int, len(source))
 	for i := range source {
 		if source[i] >= targetNew[i] {
@@ -250,7 +250,7 @@ func computeMinOld(source, currentNew, targetNew PhaseReplicaState, config []Rol
 }
 
 // tryScaleUp attempts to scale up new replicas if surge allows.
-func tryScaleUp(currentOld, currentNew, nextNew PhaseReplicaState, source, targetNew PhaseReplicaState, config []RollingUpdateConfig) *UpdateStep {
+func tryScaleUp(currentOld, currentNew, nextNew RoleReplicaState, source, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	needsScaleUp := false
 	for i := range currentNew {
 		if nextNew[i] > currentNew[i] {
@@ -268,7 +268,7 @@ func tryScaleUp(currentOld, currentNew, nextNew PhaseReplicaState, source, targe
 }
 
 // tryProportionalDrain attempts to drain old replicas using linear interpolation.
-func tryProportionalDrain(source, currentOld, currentNew PhaseReplicaState, minOld []int, totalSteps int) *UpdateStep {
+func tryProportionalDrain(source, currentOld, currentNew RoleReplicaState, minOld []int, totalSteps int) *UpdateStep {
 	nextOld := computeNextOldReplicas(source, currentOld, totalSteps)
 
 	// Apply maxUnavailable floor
@@ -290,7 +290,7 @@ func tryProportionalDrain(source, currentOld, currentNew PhaseReplicaState, minO
 }
 
 // tryForceDrain drains exactly enough old replicas to unblock the next scale-up.
-func tryForceDrain(currentOld, currentNew, nextNew PhaseReplicaState, source, targetNew PhaseReplicaState, config []RollingUpdateConfig, minOld []int) *UpdateStep {
+func tryForceDrain(currentOld, currentNew, nextNew RoleReplicaState, source, targetNew RoleReplicaState, config []RollingUpdateConfig, minOld []int) *UpdateStep {
 	drainedOld := make([]int, len(currentOld))
 	needsDrain := false
 	for i := range currentOld {
@@ -310,7 +310,7 @@ func tryForceDrain(currentOld, currentNew, nextNew PhaseReplicaState, source, ta
 // ComputeNextStep computes the next step in the rolling update.
 // Returns nil when no more steps are needed (current state equals target).
 // Each step changes EITHER old OR new replicas, not both (decoupled steps).
-func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState, config []RollingUpdateConfig) *UpdateStep {
+func ComputeNextStep(source, currentOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	if isComplete(currentOld, currentNew, targetNew) {
 		return nil
 	}
@@ -345,27 +345,27 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew PhaseReplicaState
 	return nil
 }
 
-// ComputeAllSteps generates the full step sequence from source to target for N phases.
+// ComputeAllSteps generates the full step sequence from source to target for N roles.
 // This is useful for testing and visualization.
-func ComputeAllSteps(source, target PhaseReplicaState, config []RollingUpdateConfig) []UpdateStep {
-	numPhases := len(source)
+func ComputeAllSteps(source, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
+	numRoles := len(source)
 
 	// Make copies of source for current state
-	currentOld := make([]int, numPhases)
+	currentOld := make([]int, numRoles)
 	copy(currentOld, source)
-	currentNew := make([]int, numPhases)
+	currentNew := make([]int, numRoles)
 
 	// Safety limit to prevent infinite loops
 	maxReplicas := 0
-	for i := 0; i < numPhases; i++ {
+	for i := 0; i < numRoles; i++ {
 		maxReplicas = max(maxReplicas, source[i], target[i])
 	}
 	maxSteps := maxReplicas*2 + 10
 
 	// Initial step: all old replicas, no new replicas
-	initialPast := make([]int, numPhases)
+	initialPast := make([]int, numRoles)
 	copy(initialPast, source)
-	initialNew := make([]int, numPhases)
+	initialNew := make([]int, numRoles)
 	steps := []UpdateStep{{Past: initialPast, New: initialNew}}
 
 	for i := 0; i < maxSteps; i++ {

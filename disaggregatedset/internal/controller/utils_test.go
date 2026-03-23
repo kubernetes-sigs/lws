@@ -14,10 +14,10 @@ import (
 	disaggv1alpha1 "sigs.k8s.io/disaggregatedset/api/v1alpha1"
 )
 
-// Test-local phase names for utils_test.go
+// Test-local role names for utils_test.go
 const (
-	testUtilsPhasePrefill = "prefill"
-	testUtilsPhaseDecode  = "decode"
+	testUtilsRolePrefill = "prefill"
+	testUtilsRoleDecode  = "decode"
 )
 
 func TestUtilityFunctions(t *testing.T) {
@@ -219,8 +219,8 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 0, state[testUtilsPhasePrefill], "prefill should be 0 for empty list")
-		assert.Equal(t, 0, state[testUtilsPhaseDecode], "decode should be 0 for empty list")
+		assert.Equal(t, 0, state[testUtilsRolePrefill], "prefill should be 0 for empty list")
+		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0 for empty list")
 	})
 
 	t.Run("sums prefill annotations correctly", func(t *testing.T) {
@@ -229,7 +229,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -243,7 +243,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "2",
@@ -257,8 +257,8 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsPhasePrefill], "prefill should be 5 (3+2)")
-		assert.Equal(t, 0, state[testUtilsPhaseDecode], "decode should be 0")
+		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3+2)")
+		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0")
 	})
 
 	t.Run("sums decode annotations correctly", func(t *testing.T) {
@@ -267,7 +267,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhaseDecode,
+						LabelDisaggRole: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "4",
@@ -281,7 +281,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhaseDecode,
+						LabelDisaggRole: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "6",
@@ -295,8 +295,8 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 0, state[testUtilsPhasePrefill], "prefill should be 0")
-		assert.Equal(t, 10, state[testUtilsPhaseDecode], "decode should be 10 (4+6)")
+		assert.Equal(t, 0, state[testUtilsRolePrefill], "prefill should be 0")
+		assert.Equal(t, 10, state[testUtilsRoleDecode], "decode should be 10 (4+6)")
 	})
 
 	t.Run("sums mixed prefill and decode correctly", func(t *testing.T) {
@@ -305,7 +305,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -319,7 +319,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-decode-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhaseDecode,
+						LabelDisaggRole: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "6",
@@ -333,7 +333,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-2",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "2",
@@ -347,8 +347,8 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsPhasePrefill], "prefill should be 5 (3+2)")
-		assert.Equal(t, 6, state[testUtilsPhaseDecode], "decode should be 6")
+		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3+2)")
+		assert.Equal(t, 6, state[testUtilsRoleDecode], "decode should be 6")
 	})
 
 	t.Run("uses spec.Replicas fallback for missing annotation", func(t *testing.T) {
@@ -357,7 +357,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					// No annotations
 				},
@@ -369,7 +369,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 4, state[testUtilsPhasePrefill], "prefill should be 4 (from spec.Replicas fallback)")
+		assert.Equal(t, 4, state[testUtilsRolePrefill], "prefill should be 4 (from spec.Replicas fallback)")
 	})
 
 	t.Run("uses spec.Replicas fallback for invalid annotation", func(t *testing.T) {
@@ -378,7 +378,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhaseDecode,
+						LabelDisaggRole: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "not-a-number",
@@ -392,7 +392,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsPhaseDecode], "decode should be 5 (from spec.Replicas fallback)")
+		assert.Equal(t, 5, state[testUtilsRoleDecode], "decode should be 5 (from spec.Replicas fallback)")
 	})
 
 	t.Run("handles mixed valid and invalid annotations", func(t *testing.T) {
@@ -401,7 +401,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "3",
@@ -415,7 +415,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
 						AnnotationInitialReplicas: "invalid",
@@ -430,7 +430,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		state := ComputeInitialReplicaState(lwsList)
 
 		// 3 from valid annotation + 2 from spec.Replicas fallback
-		assert.Equal(t, 5, state[testUtilsPhasePrefill], "prefill should be 5 (3 from valid annotation + 2 from fallback)")
+		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3 from valid annotation + 2 from fallback)")
 	})
 
 	t.Run("handles nil spec.Replicas with missing annotation", func(t *testing.T) {
@@ -439,7 +439,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggPhase: testUtilsPhasePrefill,
+						LabelDisaggRole: testUtilsRolePrefill,
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -451,6 +451,6 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		state := ComputeInitialReplicaState(lwsList)
 
 		// Default is 1 when Replicas is nil
-		assert.Equal(t, 1, state[testUtilsPhasePrefill], "prefill should be 1 (default when Replicas is nil)")
+		assert.Equal(t, 1, state[testUtilsRolePrefill], "prefill should be 1 (default when Replicas is nil)")
 	})
 }

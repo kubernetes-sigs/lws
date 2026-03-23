@@ -39,13 +39,13 @@ spec:
           spec:
             description: spec defines the desired state of DisaggregatedSet
             properties:
-              phases:
+              roles:
                 description: |-
-                  Phases defines the list of phases (at least 2 required).
-                  Each phase has a unique name and its own configuration.
+                  Roles defines the list of roles (at least 2 required).
+                  Each role has a unique name and its own configuration.
                 items:
                   description: |-
-                    DisaggregatedPhaseSpec defines the configuration for a disaggregated phase.
+                    DisaggregatedRoleSpec defines the configuration for a disaggregated role.
                     This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws, with validation
                     to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
                     RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
@@ -18007,7 +18007,7 @@ spec:
                           type: string
                       type: object
                     name:
-                      description: Name is the unique identifier for this phase.
+                      description: Name is the unique identifier for this role.
                       maxLength: 63
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
@@ -18124,14 +18124,14 @@ spec:
                 minItems: 2
                 type: array
             required:
-            - phases
+            - roles
             type: object
             x-kubernetes-validations:
-            - message: phase names must be unique
-              rule: self.phases.all(p, self.phases.filter(q, q.name == p.name).size()
+            - message: role names must be unique
+              rule: self.roles.all(r, self.roles.filter(s, s.name == r.name).size()
                 == 1)
-            - message: replicas must be zero for all phases or non-zero for all phases
-              rule: self.phases.all(p, p.replicas == 0) || self.phases.all(p, p.replicas
+            - message: replicas must be zero for all roles or non-zero for all roles
+              rule: self.roles.all(r, r.replicas == 0) || self.roles.all(r, r.replicas
                 > 0)
           status:
             description: status defines the observed state of DisaggregatedSet
@@ -18205,25 +18205,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              phaseStatuses:
+              roleStatuses:
                 description: |-
-                  PhaseStatuses contains the status for each phase.
-                  The order matches spec.phases.
+                  RoleStatuses contains the status for each role.
+                  The order matches spec.roles.
                 items:
-                  description: PhaseStatus defines the observed state of a single
-                    phase.
+                  description: RoleStatus defines the observed state of a single role.
                   properties:
                     name:
-                      description: Name is the name of the phase (matches spec.phases[].name).
+                      description: Name is the name of the role (matches spec.roles[].name).
                       type: string
                     readyReplicas:
                       description: ReadyReplicas is the number of ready replicas for
-                        this phase.
+                        this role.
                       format: int32
                       type: integer
                     replicas:
                       description: Replicas is the total number of replicas for this
-                        phase.
+                        role.
                       format: int32
                       type: integer
                     updatedReplicas:

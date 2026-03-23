@@ -4,10 +4,10 @@ metadata:
   labels:
     app.kubernetes.io/name: disaggregatedset
     app.kubernetes.io/managed-by: kustomize
-  name: disaggdeployment-3phase-example
+  name: disaggdeployment-3role-example
 spec:
-  phases:
-  # Prefill phase - initial token generation
+  roles:
+  # Prefill role - initial token generation
   - name: prefill
     replicas: 4
     rolloutStrategy:
@@ -33,7 +33,7 @@ spec:
                 cpu: "100m"
                 memory: "64Mi"
 
-  # Decode phase - token-by-token generation
+  # Decode role - token-by-token generation
   - name: decode
     replicas: 2
     rolloutStrategy:
@@ -59,7 +59,7 @@ spec:
                 cpu: "100m"
                 memory: "64Mi"
 
-  # Encode phase - context encoding
+  # Encode role - context encoding
   - name: encode
     replicas: 2
     rolloutStrategy:

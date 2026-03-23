@@ -67,10 +67,10 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
-	// Compute revision from all phase templates (truncated to 8 chars)
-	revision := ComputeRevision(disaggregatedSet.Spec.Phases)
+	// Compute revision from all role templates (truncated to 8 chars)
+	revision := ComputeRevision(disaggregatedSet.Spec.Roles)
 
-	// Cleanup old workloads with 0 replicas on both phases (housekeeping)
+	// Cleanup old workloads with 0 replicas on both roles (housekeeping)
 	if err := reconciler.cleanupDrainedWorkloads(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -86,10 +86,10 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	// Stateless routing: if old replicas exist → rolling update, else → simple reconcile
 	var result ctrl.Result
-	phaseNames := GetPhaseNames(disaggregatedSet)
+	roleNames := GetRoleNames(disaggregatedSet)
 	totalOldReplicas := 0
-	for _, phaseName := range phaseNames {
-		totalOldReplicas += oldWorkloads.GetTotalReplicasPerPhase(phaseName)
+	for _, roleName := range roleNames {
+		totalOldReplicas += oldWorkloads.GetTotalReplicasPerRole(roleName)
 	}
 	if len(oldWorkloads) > 0 && totalOldReplicas > 0 {
 		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, revision)
@@ -130,11 +130,11 @@ func (reconciler *DisaggregatedSetReconciler) createRollingUpdateExecutor() *Rol
 
 // reconcileSimple handles non-rolling-update reconciliation (fresh deploy or stable state)
 func (reconciler *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) (ctrl.Result, error) {
-	phaseConfigs := GetPhaseConfigs(disaggregatedSet)
+	roleConfigs := GetRoleConfigs(disaggregatedSet)
 
-	for phase, config := range phaseConfigs {
-		if err := reconciler.reconcilePhaseSimple(ctx, disaggregatedSet, phase, config, revision); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s phase: %w", phase, err)
+	for role, config := range roleConfigs {
+		if err := reconciler.reconcileRoleSimple(ctx, disaggregatedSet, role, config, revision); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
 	}
 
@@ -146,12 +146,12 @@ func (reconciler *DisaggregatedSetReconciler) reconcileSimple(ctx context.Contex
 	return ctrl.Result{}, nil
 }
 
-// reconcilePhaseSimple handles simple reconciliation for a single phase
-func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, phase string, config *disaggv1alpha1.DisaggregatedPhaseSpec, revision string) error {
+// reconcileRoleSimple handles simple reconciliation for a single role
+func (reconciler *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, role string, config *disaggv1alpha1.DisaggregatedRoleSpec, revision string) error {
 	log := logf.FromContext(ctx)
 
-	workloadName := GenerateName(disaggregatedSet.Name, phase, revision)
-	labels := GenerateLabels(disaggregatedSet.Name, phase, revision)
+	workloadName := GenerateName(disaggregatedSet.Name, role, revision)
+	labels := GenerateLabels(disaggregatedSet.Name, role, revision)
 
 	// Check if workload exists
 	existing, err := reconciler.WorkloadManager.Get(ctx, disaggregatedSet.Namespace, workloadName)
@@ -166,10 +166,10 @@ func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.C
 
 	if existing == nil {
 		// Create new workload with full replicas
-		log.Info("Creating workload", "phase", phase, "name", workloadName, "replicas", desiredReplicas)
+		log.Info("Creating workload", "role", role, "name", workloadName, "replicas", desiredReplicas)
 		return reconciler.WorkloadManager.Create(ctx, CreateParams{
 			DisaggregatedSet: disaggregatedSet,
-			Phase:            phase,
+			Role:             role,
 			Config:           config,
 			Revision:         revision,
 			Labels:           labels,
@@ -179,7 +179,7 @@ func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.C
 
 	// Update if needed
 	if existing.Replicas != int(desiredReplicas) {
-		log.Info("Scaling workload", "phase", phase, "name", workloadName, "from", existing.Replicas, "to", desiredReplicas)
+		log.Info("Scaling workload", "role", role, "name", workloadName, "from", existing.Replicas, "to", desiredReplicas)
 		if err := reconciler.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale workload %s: %w", workloadName, err)
 		}
@@ -192,9 +192,9 @@ func (reconciler *DisaggregatedSetReconciler) reconcilePhaseSimple(ctx context.C
 func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
-	phaseNames := GetPhaseNames(disaggregatedSet)
-	for _, phaseName := range phaseNames {
-		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, phaseName)
+	roleNames := GetRoleNames(disaggregatedSet)
+	for _, roleName := range roleNames {
+		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
 		if err != nil {
 			return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 		}
@@ -211,8 +211,8 @@ func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Co
 	return nil
 }
 
-// cleanupDrainedWorkloads deletes old workloads where all phases have 0 replicas.
-// This is coordinated cleanup - we only delete when ALL phases are drained.
+// cleanupDrainedWorkloads deletes old workloads where all roles have 0 replicas.
+// This is coordinated cleanup - we only delete when ALL roles are drained.
 func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggv1alpha1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
@@ -229,15 +229,15 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 		if revisionReplicas[workload.Revision] == nil {
 			revisionReplicas[workload.Revision] = make(map[string]int)
 		}
-		revisionReplicas[workload.Revision][workload.Phase] = workload.Replicas
+		revisionReplicas[workload.Revision][workload.Role] = workload.Replicas
 	}
 
-	for oldRevision, phases := range revisionReplicas {
-		// Check if all phases belonging to this old revision are at 0 replicas.
-		// We check the actual phases that exist for this revision, not the current spec phases,
-		// because phases may have been added or removed since this revision was created.
+	for oldRevision, roles := range revisionReplicas {
+		// Check if all roles belonging to this old revision are at 0 replicas.
+		// We check the actual roles that exist for this revision, not the current spec roles,
+		// because roles may have been added or removed since this revision was created.
 		allDrained := true
-		for _, replicas := range phases {
+		for _, replicas := range roles {
 			if replicas != 0 {
 				allDrained = false
 				break
@@ -247,9 +247,9 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 			continue
 		}
 
-		// Delete all phase workloads for this revision (all phases that exist, not just spec phases)
-		for phaseName := range phases {
-			workloadName := GenerateName(disaggregatedSet.Name, phaseName, oldRevision)
+		// Delete all role workloads for this revision (all roles that exist, not just spec roles)
+		for roleName := range roles {
+			workloadName := GenerateName(disaggregatedSet.Name, roleName, oldRevision)
 			log.Info("Deleting drained workload", "name", workloadName)
 			if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {
 				return fmt.Errorf("failed to delete workload %s: %w", workloadName, err)
