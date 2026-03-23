@@ -224,12 +224,13 @@ func isNewAtTarget(currentNew, targetNew PhaseReplicaState) bool {
 }
 
 // canScaleUp checks if scaling to nextNew would violate surge constraints.
+// Constraint: old + new <= target + maxSurge (always relative to target, not source)
 func canScaleUp(currentOld, nextNew, source, targetNew PhaseReplicaState, config []RollingUpdateConfig) bool {
 	for i := range currentOld {
 		if targetNew[i] == 0 {
 			continue // Removed phases just drain, no surge constraint
 		}
-		if currentOld[i]+nextNew[i] > max(source[i], targetNew[i])+config[i].MaxSurge {
+		if currentOld[i]+nextNew[i] > targetNew[i]+config[i].MaxSurge {
 			return false
 		}
 	}
@@ -293,7 +294,7 @@ func tryForceDrain(currentOld, currentNew, nextNew PhaseReplicaState, source, ta
 	drainedOld := make([]int, len(currentOld))
 	needsDrain := false
 	for i := range currentOld {
-		maxOld := max(source[i], targetNew[i]) + config[i].MaxSurge - nextNew[i]
+		maxOld := targetNew[i] + config[i].MaxSurge - nextNew[i]
 		drainedOld[i] = max(0, min(currentOld[i], maxOld))
 		drainedOld[i] = max(drainedOld[i], minOld[i]) // Enforce maxUnavailable
 		if drainedOld[i] < currentOld[i] {

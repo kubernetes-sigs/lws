@@ -357,63 +357,74 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 			},
 		},
 		{
+			// Scale down 5→2: must drain to target+surge=3 before scale-up
 			name:         "scale_down_5_5_to_2_2",
 			sourcePhase0: 5, sourcePhase1: 5, targetPhase0: 2, targetPhase1: 2,
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{5, 5}, []int{0, 0}),
-				step([]int{5, 5}, []int{1, 1}), // scale up (surge uses max(5,2)+1=6: 5+1<=6)
-				step([]int{4, 4}, []int{1, 1}), // scale down
-				step([]int{4, 4}, []int{2, 2}), // scale up (new at target)
+				step([]int{4, 4}, []int{0, 0}), // drain (5 > 2+1=3)
+				step([]int{3, 3}, []int{0, 0}), // drain
+				step([]int{2, 2}, []int{0, 0}), // drain to target
+				step([]int{2, 2}, []int{1, 1}), // scale up (2+1=3 <= 2+1=3)
+				step([]int{1, 1}, []int{1, 1}), // drain
+				step([]int{1, 1}, []int{2, 2}), // scale up (new at target)
 				step([]int{0, 0}, []int{2, 2}), // drain all old
 			},
 		},
 		{
+			// Mixed: phase0 scales up (3→5), phase1 scales down (5→3)
+			// Phase1 must drain to 3+1=4 before scale-up can proceed
 			name:         "mixed_scale_3_5_to_5_3",
 			sourcePhase0: 3, sourcePhase1: 5, targetPhase0: 5, targetPhase1: 3,
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 5}, []int{1, 1}), // scale up (surge uses max(3,5)+1=6: 3+1<=6, 5+1<=6)
-				step([]int{3, 4}, []int{1, 1}), // scale down decode
-				step([]int{3, 4}, []int{2, 2}), // scale up
-				step([]int{3, 4}, []int{3, 2}), // scale up
-				step([]int{2, 3}, []int{3, 2}), // scale down
-				step([]int{2, 3}, []int{4, 3}), // scale up
-				step([]int{2, 2}, []int{4, 3}), // scale down decode
-				step([]int{1, 1}, []int{4, 3}), // scale down
+				step([]int{3, 4}, []int{0, 0}), // drain phase1 (5 > 3+1=4)
+				step([]int{2, 3}, []int{0, 0}), // drain both
+				step([]int{2, 3}, []int{1, 1}), // scale up (2+1<=6, 3+1=4 <= 3+1=4)
+				step([]int{2, 2}, []int{1, 1}), // drain phase1
+				step([]int{2, 2}, []int{2, 2}), // scale up
+				step([]int{2, 2}, []int{3, 2}), // scale up
+				step([]int{1, 1}, []int{3, 2}), // drain
+				step([]int{1, 1}, []int{4, 3}), // scale up
 				step([]int{1, 1}, []int{5, 3}), // scale up (new at target)
 				step([]int{0, 0}, []int{5, 3}), // drain all old
 			},
 		},
 		{
+			// Asymmetric: phase0 scales up (2→4), phase1 scales down (4→2)
+			// Phase1 must drain to 2+1=3 before scale-up
 			name:         "asymmetric_2_4_to_4_2",
 			sourcePhase0: 2, sourcePhase1: 4, targetPhase0: 4, targetPhase1: 2,
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{2, 4}, []int{0, 0}),
-				step([]int{2, 4}, []int{1, 1}), // scale up (surge uses max(2,4)+1=5: 2+1<=5, 4+1<=5)
-				step([]int{2, 4}, []int{2, 1}), // scale up
-				step([]int{2, 3}, []int{2, 1}), // scale down decode
-				step([]int{2, 3}, []int{3, 2}), // scale up
-				step([]int{1, 2}, []int{3, 2}), // scale down
-				step([]int{1, 2}, []int{4, 2}), // scale up (new at target)
+				step([]int{2, 3}, []int{0, 0}), // drain phase1 (4 > 2+1=3)
+				step([]int{1, 2}, []int{0, 0}), // drain both
+				step([]int{1, 2}, []int{1, 1}), // scale up (1+1<=5, 2+1=3 <= 2+1=3)
+				step([]int{1, 2}, []int{2, 1}), // scale up
+				step([]int{1, 1}, []int{2, 1}), // drain phase1
+				step([]int{1, 1}, []int{3, 2}), // scale up
+				step([]int{1, 1}, []int{4, 2}), // scale up (new at target)
 				step([]int{0, 0}, []int{4, 2}), // drain all old
 			},
 		},
 		{
+			// Proportional: phase0 scales up (3→4), phase1 scales down (5→2)
+			// Phase1 must drain to 2+1=3 before scale-up
 			name:         "proportional_3_5_to_4_2",
 			sourcePhase0: 3, sourcePhase1: 5, targetPhase0: 4, targetPhase1: 2,
 			config: DefaultRollingUpdateConfig(2),
 			expected: []UpdateStep{
 				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 5}, []int{1, 1}), // scale up (surge uses max(3,4)+1=5, max(5,2)+1=6: 3+1<=5, 5+1<=6)
-				step([]int{3, 5}, []int{2, 1}), // scale up
-				step([]int{3, 4}, []int{2, 1}), // scale down decode
-				step([]int{2, 3}, []int{2, 1}), // scale down
-				step([]int{2, 3}, []int{3, 2}), // scale up
-				step([]int{2, 2}, []int{3, 2}), // scale down decode
-				step([]int{1, 1}, []int{3, 2}), // scale down
+				step([]int{3, 4}, []int{0, 0}), // drain phase1 (5 > 2+1=3)
+				step([]int{2, 3}, []int{0, 0}), // drain both
+				step([]int{2, 2}, []int{0, 0}), // drain phase1 to target
+				step([]int{2, 2}, []int{1, 1}), // scale up (2+1<=5, 2+1=3 <= 2+1=3)
+				step([]int{2, 2}, []int{2, 1}), // scale up
+				step([]int{1, 1}, []int{2, 1}), // drain
+				step([]int{1, 1}, []int{3, 2}), // scale up
 				step([]int{1, 1}, []int{4, 2}), // scale up (new at target)
 				step([]int{0, 0}, []int{4, 2}), // drain all old
 			},
@@ -936,6 +947,11 @@ func TestNPhase_RolloutCompletes(t *testing.T) {
 		// Phase rename (simultaneous add + remove): a,b,c,d,i -> a,b,c,d,h
 		// Sorted order becomes [a,b,c,d,h,i] with source h=0, target i=0
 		{"rename_phase_5to5", []int{10, 10, 10, 10, 0, 10}, []int{10, 10, 10, 10, 10, 0}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
+
+		// Scale-down scenarios (maxSurge constraint regression tests)
+		{"scale_down_prefill_up_decode", []int{10, 2}, []int{6, 8}, []int{2, 2}, []int{0, 0}},
+		{"scale_down_both", []int{10, 10}, []int{4, 4}, []int{2, 2}, []int{0, 0}},
+		{"scale_down_asymmetric", []int{8, 4}, []int{3, 2}, []int{1, 1}, []int{0, 0}},
 	}
 
 	for _, tc := range testCases {
@@ -952,15 +968,18 @@ func TestNPhase_RolloutCompletes(t *testing.T) {
 
 func TestNPhase_SurgeConstraint(t *testing.T) {
 	testCases := []struct {
-		name     string
-		source   []int
-		target   []int
-		surge    []int
-		maxTotal int // target sum + surge sum
+		name   string
+		source []int
+		target []int
+		surge  []int
 	}{
-		{"3phase", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}, 12},
-		{"4phase", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, 20},
-		{"5phase", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, 30},
+		{"3phase", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}},
+		{"4phase", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}},
+		{"5phase", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}},
+		// Scale-down scenarios (maxSurge constraint regression tests)
+		{"scale_down_prefill_up_decode", []int{10, 2}, []int{6, 8}, []int{2, 2}},
+		{"scale_down_both", []int{10, 10}, []int{4, 4}, []int{2, 2}},
+		{"scale_down_asymmetric", []int{8, 4}, []int{3, 2}, []int{1, 1}},
 	}
 
 	for _, tc := range testCases {
@@ -971,9 +990,21 @@ func TestNPhase_SurgeConstraint(t *testing.T) {
 			}
 			steps := ComputeAllSteps(tc.source, tc.target, cfg)
 
-			for _, s := range steps {
-				total := totalAtStep(s)
-				assert.LessOrEqual(t, total, tc.maxTotal, "total should not exceed target + surge")
+			// Verify per-phase maxSurge constraint: old[i] + new[i] <= target[i] + surge[i]
+			// Only check when new[i] > 0 (scale-up has started for this phase).
+			// Drain-only steps (new=0) may exceed constraint while removing old pods.
+			for stepIdx, s := range steps {
+				for phaseIdx := range tc.target {
+					if s.New[phaseIdx] == 0 {
+						continue // Drain-only step, surge constraint doesn't apply
+					}
+					maxAllowed := tc.target[phaseIdx] + tc.surge[phaseIdx]
+					actual := s.Past[phaseIdx] + s.New[phaseIdx]
+					assert.LessOrEqual(t, actual, maxAllowed,
+						"step %d, phase %d: old(%d) + new(%d) = %d exceeds target(%d) + surge(%d) = %d",
+						stepIdx, phaseIdx, s.Past[phaseIdx], s.New[phaseIdx], actual,
+						tc.target[phaseIdx], tc.surge[phaseIdx], maxAllowed)
+				}
 			}
 		})
 	}
