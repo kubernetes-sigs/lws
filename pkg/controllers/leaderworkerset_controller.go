@@ -166,7 +166,14 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
 	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
 		// An event is logged to track update progress.
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, fmt.Sprintf("Updating replicas %d to %d", *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, partition))
+		oldPartition := *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition
+		var updateMsg string
+		if oldPartition-1 == partition {
+			updateMsg = fmt.Sprintf("Updating replica %d", partition)
+		} else {
+			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
+		}
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
 	}
 
 	// Create headless service if it does not exist.
@@ -782,6 +789,27 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
+	lwsReplicas := int(*lws.Spec.Replicas)
+	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
+	if err != nil {
+		return nil, err
+	}
+	lwsMaxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
+	if err != nil {
+		return nil, err
+	}
+	if lwsMaxSurge > lwsReplicas {
+		lwsMaxSurge = lwsReplicas
+	}
+	stsMaxUnavailableInt := int32(lwsMaxUnavailable + lwsMaxSurge)
+	// lwsMaxUnavailable=0 and lwsMaxSurge=0 together should be blocked by webhook,
+	// but just in case, we'll make sure that stsMaxUnavailable is at least 1.
+	// This also handles the case when lws.Spec.Replicas is 0.
+	if stsMaxUnavailableInt < 1 {
+		stsMaxUnavailableInt = 1
+	}
+	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
+
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
@@ -790,7 +818,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
-				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).WithPartition(partition),
+				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(stsMaxUnavailable).WithPartition(partition),
 			)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(map[string]string{

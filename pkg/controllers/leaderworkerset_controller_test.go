@@ -69,6 +69,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 		revisionKey     string
 		lws             *leaderworkerset.LeaderWorkerSet
 		wantApplyConfig *appsapplyv1.StatefulSetApplyConfiguration
+		stsReplicas     *int32
 	}{
 		{
 			name:        "1 replica, size 1, with empty leader template, exclusive placement disabled",
@@ -336,7 +337,76 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
 					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
 						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
-						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(2))),
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(3))),
+				},
+			},
+		},
+		{
+			name:        "0 maxUnavailable, 2 maxSurge, with empty leader template, exclusive placement disabled",
+			revisionKey: revisionKey2,
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(0),
+						MaxSurge:       intstr.FromInt32(2),
+					},
+				}).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(1).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+					},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](1),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size": "1",
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("worker"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						// maxSurge is capped at 1 (the value of lwsReplicas),
+						// so stsMaxUnavailableInt = 0 (lwsMaxUnavailable) + 1 (capped maxSurge) = 1.
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
 				},
 			},
 		},
@@ -526,11 +596,155 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:        "0 replica, 0 maxUnavailable, 0 maxSurge, with empty leader template, exclusive placement disabled",
+			revisionKey: revisionKey2,
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(0).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(0),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(1).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+					},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "0"},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](0),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size": "1",
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("worker"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						// Sts maxUnavailable is forced to be at least 1,
+						// even if lws maxUnavailable=0 and lws maxSurge=0.
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
+				},
+			},
+		},
+		{
+			// Validates maxSurge uses lws replicas, not sts replicas.
+			name:        "1 maxUnavailable, 50% maxSurge, 2 lws replicas, 3 sts replicas currently",
+			revisionKey: revisionKey2,
+			stsReplicas: ptr.To[int32](3),
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(2).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromString("50%"),
+					},
+				}).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(1).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+					},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "2"},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](3), // using stsReplicas
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size": "1",
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("worker"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+									Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						// maxUnavailable=1, maxSurge=50% of 2 replicas (lwsReplicas) = 1.
+						// So stsMaxUnavailableInt = 1 + 1 = 2
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(2))),
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0, *tc.lws.Spec.Replicas, tc.revisionKey)
+			stsReplicas := *tc.lws.Spec.Replicas
+			if tc.stsReplicas != nil {
+				stsReplicas = *tc.stsReplicas
+			}
+			stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(tc.lws, 0, stsReplicas, tc.revisionKey)
 			if err != nil {
 				t.Errorf("failed with error: %s", err.Error())
 			}
