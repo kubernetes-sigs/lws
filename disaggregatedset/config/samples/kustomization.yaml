@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- disagg_v1alpha1_disaggregatedset.yaml
+- disagg_v1alpha1_disaggregatedset_3role_example.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
