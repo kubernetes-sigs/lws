@@ -116,7 +116,6 @@ type DisaggregatedSetSpec struct {
 }
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
-// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws.
 type DisaggregatedRoleSpec struct {
     // Name is the unique identifier for this role.
     // +kubebuilder:validation:MinLength=1
@@ -125,19 +124,26 @@ type DisaggregatedRoleSpec struct {
     // +required
     Name string `json:"name"`
 
-    // LeaderWorkerSetSpec is embedded inline to inherit all LWS configuration fields.
+    // LeaderWorkerSetTemplateSpec is embedded inline to inherit LWS template fields.
     // Note: RolloutStrategy.Type must be RollingUpdate (or empty) and
     // RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
     // DisaggregatedSet handles rollouts across roles and does not propagate
     // RolloutStrategy to the underlying LWS resources.
-    leaderworkerset.LeaderWorkerSetSpec `json:",inline"`
+    leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
+}
 
-    // Metadata allows setting labels and annotations on the LWS CR's ObjectMeta.
-    // This is useful for integrations like Kueue (queue assignment via
-    // kueue.x-k8s.io/queue-name label) and LWS exclusive-topology scheduling
-    // (leaderworkerset.sigs.k8s.io/exclusive-topology label).
+// LeaderWorkerSetTemplateSpec describes the data a LeaderWorkerSet should have when created
+// from a template. This type needs to be added to the LWS API (similar to PodTemplateSpec).
+type LeaderWorkerSetTemplateSpec struct {
+    // Metadata for the LWS CR. Labels and annotations are propagated to the LWS ObjectMeta.
+    // Useful for Kueue integration (kueue.x-k8s.io/queue-name) and exclusive-topology
+    // scheduling (leaderworkerset.sigs.k8s.io/exclusive-topology).
     // +optional
-    Metadata *metav1.ObjectMeta `json:"metadata,omitempty"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+
+    // Spec defines the LeaderWorkerSet configuration.
+    // +optional
+    Spec leaderworkerset.LeaderWorkerSetSpec `json:"spec,omitempty"`
 }
 ```
 
