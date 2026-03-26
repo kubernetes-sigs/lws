@@ -102,6 +102,14 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 	Context("Operator Deployment", func() {
 		It("should have the controller-manager running", func() {
+			By("checking if controller-manager is already deployed")
+			cmd := exec.Command("kubectl", "get", "deployment",
+				"disaggregatedset-controller-manager", "-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			if err == nil && strings.Contains(output, "deployment") {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Controller-manager already deployed, skipping deployment\n")
+			}
+
 			By("validating that the controller-manager pod is running")
 			verifyControllerUp := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
@@ -126,6 +134,29 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(output).To(Equal("Running"))
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
+
+			By("waiting for webhook to be ready")
+			// The webhook needs time for certificate provisioning and endpoint registration.
+			// We verify readiness by attempting a dry-run create that triggers the webhook.
+			verifyWebhookReady := func(g Gomega) {
+				yaml := fixtures.PrefillDecode("webhook-test",
+					fixtures.Role{Replicas: 1},
+					fixtures.Role{Replicas: 1},
+				).YAML()
+				cmd := exec.Command("kubectl", "apply", "--dry-run=server", "-f", "-")
+				cmd.Stdin = strings.NewReader(yaml)
+				_, err := utils.Run(cmd)
+				// We just need the webhook to respond, not necessarily succeed.
+				// Connection errors indicate webhook not ready, validation errors are fine.
+				if err != nil {
+					errStr := err.Error()
+					// These errors mean webhook is not ready yet
+					g.Expect(errStr).NotTo(ContainSubstring("connection refused"), "webhook not ready")
+					g.Expect(errStr).NotTo(ContainSubstring("no endpoints available"), "webhook not ready")
+					g.Expect(errStr).NotTo(ContainSubstring("connection reset"), "webhook not ready")
+				}
+			}
+			Eventually(verifyWebhookReady, 2*time.Minute, 2*time.Second).Should(Succeed())
 		})
 	})
 
