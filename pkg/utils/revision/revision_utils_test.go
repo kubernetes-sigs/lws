@@ -22,7 +22,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/lru"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -174,6 +176,49 @@ func TestEqualRevision(t *testing.T) {
 				t.Errorf("Expected equality between controller revisions to be %t, but was %t", tc.equal, equal)
 			}
 		})
+	}
+}
+
+func TestSetMatchesRevision(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.UID = types.UID("test-uid")
+	lws.Generation = 1
+
+	revision, err := NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.ResourceVersion = "100"
+
+	// Build proposed revision from the same LWS (should match).
+	proposed, err := NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := lru.New(10)
+
+	// First call: cache miss, should match via patch comparison and populate the cache.
+	if !SetMatchesRevision(lws, proposed, revision, cache) {
+		t.Fatal("expected SetMatchesRevision to return true on first call (cache miss path)")
+	}
+	if cache.Len() != 1 {
+		t.Fatalf("expected cache to have 1 entry after first call, got %d", cache.Len())
+	}
+
+	// Second call with the same inputs: should hit the cache and return true immediately.
+	proposed.Data.Raw = []byte(`{"spec":{"leaderWorkerTemplate":{"$patch":"replace"}}}`)
+	if !SetMatchesRevision(lws, proposed, revision, cache) {
+		t.Fatal("expected SetMatchesRevision to return true on second call (cache hit path)")
+	}
+
+	// Verify a different LWS generation produces a cache miss, and the mutated proposed
+	// revision correctly causes a mismatch.
+	lws.Generation = 2
+	if SetMatchesRevision(lws, proposed, revision, cache) {
+		t.Fatal("expected SetMatchesRevision to return false for different generation with mismatched proposed data")
 	}
 }
 

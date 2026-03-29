@@ -31,9 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/lru"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -188,6 +190,47 @@ func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevisio
 	}
 
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
+}
+
+// revisionEqualityCacheKey is the cache key for remembering that a particular
+// revision ResourceVersion is semantically equal to the revision produced from
+// a particular LWS UID at a particular generation.
+type revisionEqualityCacheKey struct {
+	lwsUID                  types.UID
+	lwsGeneration           int64
+	revisionResourceVersion string
+}
+
+// SetMatchesRevision returns true if the proposedRevision (generated from the current LWS spec)
+// semantically matches the existingRevision, even when their raw bytes differ due to serialization
+// changes across LWS or client-go versions (e.g., "creationTimestamp": null vs omitted).
+// It works by applying the existing revision back to the LWS, re-generating a patch with the
+// current serialization format, and comparing the raw bytes.
+// Results are cached in the provided LRU cache to avoid expensive reconstruction on every reconcile.
+// This function adapts the approach in https://github.com/kubernetes/kubernetes/pull/135017.
+func SetMatchesRevision(lws *leaderworkerset.LeaderWorkerSet, proposedRevision *appsv1.ControllerRevision, existingRevision *appsv1.ControllerRevision, cache *lru.Cache) bool {
+	cacheKey := revisionEqualityCacheKey{
+		lwsUID:                  lws.UID,
+		lwsGeneration:           lws.Generation,
+		revisionResourceVersion: existingRevision.ResourceVersion,
+	}
+	if _, ok := cache.Get(cacheKey); ok {
+		return true
+	}
+
+	latestLws, err := ApplyRevision(lws, existingRevision)
+	if err != nil {
+		return false
+	}
+	reconstructedPatch, err := getPatch(latestLws)
+	if err != nil {
+		return false
+	}
+	if bytes.Equal(proposedRevision.Data.Raw, reconstructedPatch) {
+		cache.Add(cacheKey, struct{}{})
+		return true
+	}
+	return false
 }
 
 // TruncateRevisions cleans up all other controller revisions except the currentRevision.

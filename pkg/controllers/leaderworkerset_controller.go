@@ -35,6 +35,7 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +55,8 @@ type LeaderWorkerSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Record events.EventRecorder
+
+	revisionEqualityCache *lru.Cache
 }
 
 var (
@@ -79,11 +82,15 @@ const (
 	Delete = "Delete"
 )
 
+// maxRevisionEqualityCacheEntries is the cache size for semantic revision equality results.
+const maxRevisionEqualityCacheEntries = 10_000
+
 func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record events.EventRecorder) *LeaderWorkerSetReconciler {
 	return &LeaderWorkerSetReconciler{
-		Client: client,
-		Scheme: scheme,
-		Record: record,
+		Client:                client,
+		Scheme:                scheme,
+		Record:                record,
+		revisionEqualityCache: lru.New(maxRevisionEqualityCacheEntries),
 	}
 }
 
@@ -740,6 +747,10 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts 
 	}
 
 	if !revisionutils.EqualRevision(currentRevision, revision) {
+		// If raw bytes differ but the revision is semantically equivalent, avoid triggering a spurious rolling update.
+		if revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
+			return nil, nil
+		}
 		return currentRevision, nil
 	}
 
