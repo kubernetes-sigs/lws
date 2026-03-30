@@ -8,35 +8,35 @@ Disaggregated serving separates the phases of LLM inference—such as **prefill*
 
 DisaggregatedSet simplifies deploying these workloads by:
 
-- **Unified Management**: Manage multiple phases (prefill, decode, etc.) as a single resource
-- **Coordinated Rolling Updates**: N-dimensional rollout algorithm updates all phases in lockstep
-- **Automatic Service Discovery**: Headless service auto-created for each phase
-- **Flexible Phase Configuration**: Support for 2-10 phases with arbitrary names
+- **Unified Management**: Manage multiple roles (prefill, decode, etc.) as a single resource
+- **Coordinated Rolling Updates**: N-dimensional rollout algorithm updates all roles in lockstep
+- **Automatic Service Discovery**: Headless service auto-created for each role
+- **Flexible Role Configuration**: Support for 2-10 roles with arbitrary names
 - **Stateless Operator**: Safe to restart at any point during operations
 
 ## Features
 
 ### N-Dimensional Rolling Updates
 
-Disaggregated deployments often use specific phase ratios (e.g., 5P2D means 5 prefill and 2 decode replicas). During rolling updates, the operator maintains this ratio as closely as possible using a **linear interpolation algorithm**.
+Disaggregated deployments often use specific role ratios (e.g., 5P2D means 5 prefill and 2 decode replicas). During rolling updates, the operator maintains this ratio as closely as possible using a **linear interpolation algorithm**.
 
 **How it works:**
 
-1. **Compute total steps** based on the largest phase: `totalSteps = max(phase[i].replicas for all i)`
+1. **Compute total steps** based on the largest role: `totalSteps = max(role[i].replicas for all i)`
 2. **Linear interpolation** determines target replicas at each step:
    - New replicas: `ceil(step * target / totalSteps)` — scales up from 0 to target
    - Old replicas: `source - floor(step * source / totalSteps)` — scales down from source to 0
-3. **N-dimensional coordination** keeps phases in sync:
-   - Scale-up uses `min(phase[i].step)` — all phases progress together
-   - Scale-down uses `max(phase[i].step)` — all phases drain together
+3. **N-dimensional coordination** keeps roles in sync:
+   - Scale-up uses `min(role[i].step)` — all roles progress together
+   - Scale-down uses `max(role[i].step)` — all roles drain together
 4. **Decoupled steps**: each reconciliation changes EITHER old OR new replicas, not both
 
 **Key properties:**
 
 - **Ratio preservation**: A 5P2D deployment stays approximately 5:2 throughout the rollout
 - **Scale-up before scale-down**: New replicas are created before old ones are removed (ensures capacity)
-- **Per-phase surge constraints**: Respects `maxSurge` and `maxUnavailable` independently per phase
-- **Coordinated drain**: If any phase reaches 0 replicas, all phases are forced to 0 (prevents orphaned workloads)
+- **Per-role surge constraints**: Respects `maxSurge` and `maxUnavailable` independently per role
+- **Coordinated drain**: If any role reaches 0 replicas, all roles are forced to 0 (prevents orphaned workloads)
 - **Stability check**: Waits for `replicas == readyReplicas` before proceeding to next step
 
 Visualize the rollout plan with the `plan-steps` CLI:
@@ -50,7 +50,7 @@ go run ./hack/plan-steps \
 ```
 
 ```
-Phases: [decode prefill]
+Roles: [decode prefill]
 Source: decode=2, prefill=5
 Target: decode=2, prefill=5
 Config: decode(surge=2, unavail=1), prefill(surge=2, unavail=1)
@@ -71,7 +71,7 @@ Config: decode(surge=2, unavail=1), prefill(surge=2, unavail=1)
 
 ### Automatic Service Discovery
 
-A headless service is automatically created for each phase, enabling direct pod-to-pod communication. Services are named `{disaggregatedset-name}-{phase-name}` (e.g., `my-llm-prefill`, `my-llm-decode`).
+A headless service is automatically created for each role, enabling direct pod-to-pod communication. Services are named `{disaggregatedset-name}-{role-name}` (e.g., `my-llm-prefill`, `my-llm-decode`).
 
 ## Installation
 
@@ -107,7 +107,7 @@ kind: DisaggregatedSet
 metadata:
   name: my-llm
 spec:
-  phases:
+  roles:
   - name: prefill
     replicas: 3
     leaderWorkerTemplate:
@@ -136,7 +136,7 @@ kind: DisaggregatedSet
 metadata:
   name: my-llm
 spec:
-  phases:
+  roles:
   - name: prefill
     replicas: 5
     rolloutStrategy:
@@ -177,21 +177,21 @@ See [`config/samples/`](config/samples/) for more examples.
 
 | Field | Description |
 |-------|-------------|
-| `spec.phases` | Array of phase configurations (minimum 2, maximum 10) |
-| `spec.phases[].name` | Unique name for the phase (e.g., "prefill", "decode") |
-| `spec.phases[].replicas` | Number of leader-worker groups |
-| `spec.phases[].leaderWorkerTemplate` | Pod template (inherited from LWS) |
-| `spec.phases[].rolloutStrategy` | Rolling update configuration |
-| `spec.phases[].networkConfig` | Network configuration (inherited from LWS) |
-| `spec.phases[].startupPolicy` | Startup policy for pods (inherited from LWS) |
-| `spec.phases[].metadata` | Labels/annotations for the LWS CR (for Kueue, exclusive-topology) |
+| `spec.roles` | Array of role configurations (minimum 2, maximum 10) |
+| `spec.roles[].name` | Unique name for the role (e.g., "prefill", "decode") |
+| `spec.roles[].replicas` | Number of leader-worker groups |
+| `spec.roles[].leaderWorkerTemplate` | Pod template (inherited from LWS) |
+| `spec.roles[].rolloutStrategy` | Rolling update configuration |
+| `spec.roles[].networkConfig` | Network configuration (inherited from LWS) |
+| `spec.roles[].startupPolicy` | Startup policy for pods (inherited from LWS) |
+| `spec.roles[].metadata` | Labels/annotations for the LWS CR (for Kueue, exclusive-topology) |
 
 ### Validation Rules
 
 The API enforces these validation rules:
-- **Minimum 2 phases** required (maximum 10)
-- **Phase names must be unique**
-- **Replicas must be consistent**: Either all phases have 0 replicas, or all have >0 replicas
+- **Minimum 2 roles** required (maximum 10)
+- **Role names must be unique**
+- **Replicas must be consistent**: Either all roles have 0 replicas, or all have >0 replicas
 
 ### Metadata Field (Kueue/Topology Integration)
 
@@ -199,7 +199,7 @@ The `metadata` field allows setting labels/annotations on the generated LWS CRs:
 
 ```yaml
 spec:
-  phases:
+  roles:
   - name: prefill
     replicas: 2
     metadata:
@@ -214,10 +214,10 @@ spec:
 
 | Field | Description |
 |-------|-------------|
-| `status.phaseStatuses[].name` | Phase name |
-| `status.phaseStatuses[].replicas` | Total replicas for the phase |
-| `status.phaseStatuses[].readyReplicas` | Ready replicas |
-| `status.phaseStatuses[].updatedReplicas` | Replicas at current revision |
+| `status.roleStatuses[].name` | Role name |
+| `status.roleStatuses[].replicas` | Total replicas for the role |
+| `status.roleStatuses[].readyReplicas` | Ready replicas |
+| `status.roleStatuses[].updatedReplicas` | Replicas at current revision |
 | `status.conditions` | Standard Kubernetes conditions (Available, Progressing, Degraded) |
 
 ### Labels and Revision Hash
@@ -227,13 +227,13 @@ The operator applies these labels to managed resources:
 | Label | Description |
 |-------|-------------|
 | `disaggregatedset.x-k8s.io/name` | DisaggregatedSet name |
-| `disaggregatedset.x-k8s.io/phase` | Phase name (e.g., `prefill`, `decode`) |
+| `disaggregatedset.x-k8s.io/role` | Role name (e.g., `prefill`, `decode`) |
 | `disaggregatedset.x-k8s.io/revision` | Revision hash for rollout tracking |
 
-**Revision hash**: The revision is a truncated SHA256 hash computed from **all** phase `leaderWorkerTemplate` fields (serialized as JSON). This means:
-- Changing any phase's template triggers a new revision
-- All phases always roll out together with the same revision
-- LeaderWorkerSets are named `{name}-{revision}-{phase}` (e.g., `my-llm-a1b2c3d4-prefill`)
+**Revision hash**: The revision is a truncated SHA256 hash computed from **all** role `leaderWorkerTemplate` fields (serialized as JSON). This means:
+- Changing any role's template triggers a new revision
+- All roles always roll out together with the same revision
+- LeaderWorkerSets are named `{name}-{revision}-{role}` (e.g., `my-llm-a1b2c3d4-prefill`)
 
 ## Architecture
 
@@ -251,10 +251,10 @@ DisaggregatedSet
 ```
 
 The operator:
-1. Computes a revision hash from all phase pod templates (SHA256 of JSON-serialized leaderWorkerTemplates)
-2. Creates/updates LeaderWorkerSets for each phase
+1. Computes a revision hash from all role pod templates (SHA256 of JSON-serialized leaderWorkerTemplates)
+2. Creates/updates LeaderWorkerSets for each role
 3. Coordinates rolling updates using the N-dimensional linear interpolation algorithm
-4. Creates headless Services for each phase
+4. Creates headless Services for each role
 5. Cleans up old resources when fully drained
 
 ## Development
