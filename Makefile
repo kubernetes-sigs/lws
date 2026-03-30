@@ -250,7 +250,7 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
-clean-manifests = (cd config/manager && $(KUSTOMIZE) edit set image controller=us-central1-docker.pkg.dev/k8s-staging-images/lws/lws:$(RELEASE_BRANCH))
+clean-manifests = (cd config/manager && $(KUSTOMIZE) edit set image controller=$(STAGING_IMAGE_REGISTRY)/lws/$(IMAGE_NAME):$(RELEASE_BRANCH))
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
@@ -359,8 +359,7 @@ artifacts: kustomize helm yq
 	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
 	# Revert the image changes
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "main" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml
-
+	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
 
 .PHONY: prepare-release-branch
 prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
