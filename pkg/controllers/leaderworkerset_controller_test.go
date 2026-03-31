@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -31,6 +32,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -1066,6 +1068,86 @@ func TestSetCondition(t *testing.T) {
 			shouldUpdate := setCondition(tc.lws, tc.condition)
 			if shouldUpdate != tc.expectedShouldUpdate {
 				t.Errorf("Expected value %t, got %t", tc.expectedShouldUpdate, shouldUpdate)
+			}
+		})
+	}
+}
+
+func TestGetUpdatedRevision(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	tests := []struct {
+		name           string
+		sts            *appsv1.StatefulSet
+		lws            *leaderworkerset.LeaderWorkerSet
+		modifyRevision func(*appsv1.ControllerRevision)
+		expectUpdate   bool
+	}{
+		{
+			name:         "sts is nil, should return nil",
+			sts:          nil,
+			lws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
+			expectUpdate: false,
+		},
+		{
+			name: "revision matches current spec, no update",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+			},
+			lws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
+			expectUpdate: false,
+		},
+		{
+			name: "revision has old serialization with creationTimestamp null, semantic match, no update",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+			},
+			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
+			modifyRevision: func(rev *appsv1.ControllerRevision) {
+				// Simulate old (before v1.34) client-go serialization that includes "creationTimestamp":null
+				rev.Data.Raw = []byte(strings.ReplaceAll(string(rev.Data.Raw), `"metadata":{}`, `"metadata":{"creationTimestamp":null}`))
+			},
+			expectUpdate: false,
+		},
+		{
+			name: "revision has different spec, should trigger update",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+			},
+			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
+			modifyRevision: func(rev *appsv1.ControllerRevision) {
+				// Simulate a real spec change by modifying the container name
+				rev.Data.Raw = []byte(strings.ReplaceAll(string(rev.Data.Raw), `"name":"leader"`, `"name":"changed"`))
+			},
+			expectUpdate: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reconciler := &LeaderWorkerSetReconciler{
+				Client:                client,
+				Record:                fakeEventRecorder{},
+				revisionEqualityCache: lru.New(100),
+			}
+
+			revision, err := revisionutils.NewRevision(context.TODO(), client, tc.lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.modifyRevision != nil {
+				tc.modifyRevision(revision)
+			}
+
+			updatedRevision, err := reconciler.getUpdatedRevision(context.TODO(), tc.sts, tc.lws, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			gotUpdate := updatedRevision != nil
+			if gotUpdate != tc.expectUpdate {
+				t.Errorf("expected update=%t, got update=%t", tc.expectUpdate, gotUpdate)
 			}
 		})
 	}
