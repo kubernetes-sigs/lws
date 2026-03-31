@@ -167,6 +167,8 @@ webhook:
 		t.Fatal(err)
 	}
 
+	// defaultControlOptions no longer includes WebhookServer because Load() does not
+	// set it anymore. WebhookServer is now set by AddWebhookSettingsTo() after TLS parsing.
 	defaultControlOptions := ctrl.Options{
 		HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
 		ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
@@ -180,12 +182,6 @@ webhook:
 		LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 		RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 		RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-		WebhookServer: &webhook.DefaultServer{
-			Options: webhook.Options{
-				Port:    configapi.DefaultWebhookPort,
-				CertDir: configapi.DefaultWebhookCertDir,
-			},
-		},
 	}
 
 	enableDefaultInternalCertManagement := &configapi.InternalCertManagement{
@@ -241,12 +237,8 @@ webhook:
 				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    configapi.DefaultWebhookPort,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -282,12 +274,8 @@ webhook:
 				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    9444,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -346,12 +334,8 @@ webhook:
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 				LeaderElection:             false,
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    configapi.DefaultWebhookPort,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -396,6 +380,80 @@ webhook:
 				if diff := cmp.Diff(tc.wantError.Error(), err.Error()); diff != "" {
 					t.Errorf("Unexpected error (-want +got):\n%s", diff)
 				}
+			}
+		})
+	}
+}
+
+func TestAddWebhookSettingsTo(t *testing.T) {
+	testcases := []struct {
+		name        string
+		cfg         configapi.Configuration
+		tlsOpts     []func(c interface{})
+		wantServer  bool
+		wantPort    int
+		wantCertDir string
+	}{
+		{
+			name: "default webhook settings",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port:    ptr.To(configapi.DefaultWebhookPort),
+						CertDir: configapi.DefaultWebhookCertDir,
+					},
+				},
+			},
+			wantServer:  true,
+			wantPort:    configapi.DefaultWebhookPort,
+			wantCertDir: configapi.DefaultWebhookCertDir,
+		},
+		{
+			name: "custom port and certDir",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port:    ptr.To(9444),
+						CertDir: "/custom/cert/dir",
+					},
+				},
+			},
+			wantServer:  true,
+			wantPort:    9444,
+			wantCertDir: "/custom/cert/dir",
+		},
+		{
+			name: "does not overwrite existing WebhookServer",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port: ptr.To(9444),
+					},
+				},
+			},
+			wantServer: true,
+			wantPort:   configapi.DefaultWebhookPort, // pre-set server port wins
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := ctrl.Options{}
+
+			// For the "does not overwrite" case, pre-set a WebhookServer
+			if tc.name == "does not overwrite existing WebhookServer" {
+				opts.WebhookServer = &webhook.DefaultServer{
+					Options: webhook.Options{Port: configapi.DefaultWebhookPort},
+				}
+			}
+
+			AddWebhookSettingsTo(&opts, &tc.cfg, nil)
+
+			if tc.wantServer && opts.WebhookServer == nil {
+				t.Errorf("Expected WebhookServer to be set, got nil")
+			}
+			if !tc.wantServer && opts.WebhookServer != nil {
+				t.Errorf("Expected WebhookServer to be nil, got %v", opts.WebhookServer)
 			}
 		})
 	}
