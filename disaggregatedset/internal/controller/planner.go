@@ -268,13 +268,15 @@ func tryScaleUp(currentOld, currentNew, nextNew RoleReplicaState, source, target
 }
 
 // tryProportionalDrain attempts to drain old replicas using linear interpolation.
-func tryProportionalDrain(source, currentOld, currentNew RoleReplicaState, minOld []int, totalSteps int) *UpdateStep {
+func tryProportionalDrain(source, currentOld, currentNew, targetNew RoleReplicaState, minOld []int, totalSteps int, config []RollingUpdateConfig) *UpdateStep {
 	nextOld := computeNextOldReplicas(source, currentOld, totalSteps)
 
 	// Apply maxUnavailable floor
 	for i := range nextOld {
 		nextOld[i] = max(nextOld[i], minOld[i])
 	}
+
+	applyOrphanPrevention(nextOld, currentNew, source, targetNew, config)
 
 	needsScaleDown := false
 	for i := range nextOld {
@@ -289,14 +291,73 @@ func tryProportionalDrain(source, currentOld, currentNew RoleReplicaState, minOl
 	return &UpdateStep{Past: nextOld, New: currentNew}
 }
 
-// tryForceDrain drains exactly enough old replicas to unblock the next scale-up.
-func tryForceDrain(currentOld, currentNew, nextNew RoleReplicaState, source, targetNew RoleReplicaState, config []RollingUpdateConfig, minOld []int) *UpdateStep {
+// canDrainAllToZero checks if all roles have sufficient new replicas to satisfy
+// maxUnavailable after draining all old replicas to 0.
+func canDrainAllToZero(nextNew, source, target RoleReplicaState, config []RollingUpdateConfig) bool {
+	for i := range target {
+		if source[i] >= target[i] {
+			minRequired := target[i] - config[i].MaxUnavailable
+			if nextNew[i] < minRequired {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// applyOrphanPrevention adjusts nextOld to prevent orphan situations where one role
+// drains to 0 while others still have old replicas. If any role would drain to 0:
+//   - If all roles can safely drain (satisfy maxUnavailable): drain all to 0
+//   - Otherwise: keep would-be-zero roles at 1 until safe to drain together
+func applyOrphanPrevention(nextOld, currentNew, source, target RoleReplicaState, config []RollingUpdateConfig) {
+	anyDrainsToZero := false
+	allDrainToZero := true
+	for i := range nextOld {
+		if source[i] == 0 {
+			continue
+		}
+		if nextOld[i] == 0 {
+			anyDrainsToZero = true
+		} else {
+			allDrainToZero = false
+		}
+	}
+
+	// No orphan situation
+	if !anyDrainsToZero || allDrainToZero {
+		return
+	}
+
+	// Orphan detected: some roles drain to 0 but not all
+	if canDrainAllToZero(currentNew, source, target, config) {
+		for i := range nextOld {
+			nextOld[i] = 0
+		}
+		return
+	}
+
+	// Can't drain all yet - keep would-be-zero roles at 1
+	for i := range nextOld {
+		if nextOld[i] == 0 && source[i] > 0 {
+			nextOld[i] = 1
+		}
+	}
+}
+
+// tryForceDrain drains exactly enough old replicas to unblock the next scale-up,
+// and performs the scale-up in the same step to avoid capacity dips.
+func tryForceDrain(currentOld, currentNew, nextNew RoleReplicaState, source, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	drainedOld := make([]int, len(currentOld))
 	needsDrain := false
+
 	for i := range currentOld {
 		maxOld := targetNew[i] + config[i].MaxSurge - nextNew[i]
 		drainedOld[i] = max(0, min(currentOld[i], maxOld))
-		drainedOld[i] = max(drainedOld[i], minOld[i]) // Enforce maxUnavailable
+		// Compute minOld using nextNew to ensure maxUnavailable is respected
+		if source[i] >= targetNew[i] {
+			minOldForRole := max(0, targetNew[i]-config[i].MaxUnavailable-nextNew[i])
+			drainedOld[i] = max(drainedOld[i], minOldForRole)
+		}
 		if drainedOld[i] < currentOld[i] {
 			needsDrain = true
 		}
@@ -304,12 +365,16 @@ func tryForceDrain(currentOld, currentNew, nextNew RoleReplicaState, source, tar
 	if !needsDrain {
 		return nil
 	}
-	return &UpdateStep{Past: drainedOld, New: currentNew}
+
+	applyOrphanPrevention(drainedOld, nextNew, source, targetNew, config)
+
+	return &UpdateStep{Past: drainedOld, New: nextNew}
 }
 
 // ComputeNextStep computes the next step in the rolling update.
 // Returns nil when no more steps are needed (current state equals target).
-// Each step changes EITHER old OR new replicas, not both (decoupled steps).
+// Steps are generally decoupled (change old OR new), but when maxSurge=0 forces
+// a drain before scale-up, both are combined to avoid capacity dips.
 func ComputeNextStep(source, currentOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	if isComplete(currentOld, currentNew, targetNew) {
 		return nil
@@ -335,10 +400,10 @@ func ComputeNextStep(source, currentOld, currentNew, targetNew RoleReplicaState,
 	if step := tryScaleUp(currentOld, currentNew, nextNew, source, targetNew, config); step != nil {
 		return step
 	}
-	if step := tryProportionalDrain(source, currentOld, currentNew, minOld, totalSteps); step != nil {
+	if step := tryProportionalDrain(source, currentOld, currentNew, targetNew, minOld, totalSteps, config); step != nil {
 		return step
 	}
-	if step := tryForceDrain(currentOld, currentNew, nextNew, source, targetNew, config, minOld); step != nil {
+	if step := tryForceDrain(currentOld, currentNew, nextNew, source, targetNew, config); step != nil {
 		return step
 	}
 
