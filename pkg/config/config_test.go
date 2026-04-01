@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"io/fs"
 	"net"
@@ -456,6 +457,57 @@ func TestAddWebhookSettingsTo(t *testing.T) {
 				t.Errorf("Expected WebhookServer to be nil, got %v", opts.WebhookServer)
 			}
 		})
+	}
+}
+
+func TestAddWebhookSettingsTo_TLSFuncsAreApplied(t *testing.T) {
+	port := 9443
+	opts := ctrl.Options{}
+	cfg := configapi.Configuration{
+		ControllerManager: configapi.ControllerManager{
+			Webhook: configapi.ControllerWebhook{Port: &port},
+			TLS: &configapi.TLSOptions{
+				MinVersion: "VersionTLS13",
+			},
+		},
+	}
+
+	// Step 1: parse config (Adjust to cfg.ControllerManager.Webhook.TLS if needed)
+	parsedTLS, err := ParseTLSOptions(cfg.ControllerManager.TLS)
+	if err != nil {
+		t.Fatalf("ParseTLSOptions: unexpected error: %v", err)
+	}
+
+	tlsOpts := BuildTLSOptions(parsedTLS)
+
+	AddWebhookSettingsTo(&opts, &cfg, tlsOpts)
+
+	if opts.WebhookServer == nil {
+		t.Fatal("opts.WebhookServer must not be nil after AddWebhookSettingsTo")
+	}
+
+	server, ok := opts.WebhookServer.(*webhook.DefaultServer)
+	if !ok {
+		t.Fatalf(
+			"expected opts.WebhookServer to be *webhook.DefaultServer, got %T",
+			opts.WebhookServer,
+		)
+	}
+
+	if len(server.Options.TLSOpts) == 0 {
+		t.Fatal("server.Options.TLSOpts is empty; TLS options were not wired into the WebhookServer")
+	}
+
+	gotTLS := &tls.Config{}
+	for _, fn := range server.Options.TLSOpts {
+		fn(gotTLS)
+	}
+
+	if gotTLS.MinVersion != tls.VersionTLS13 {
+		t.Errorf(
+			"tls.Config.MinVersion after applying TLSOpts: got 0x%04x, want 0x%04x (VersionTLS13)",
+			gotTLS.MinVersion, tls.VersionTLS13,
+		)
 	}
 }
 
