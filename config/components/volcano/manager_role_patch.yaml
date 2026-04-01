@@ -1,14 +1,12 @@
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: manager-role
-rules:
-- apiGroups:
-  - scheduling.volcano.sh
-  resources:
-  - podgroups
-  verbs:
-  - create
-  - get
-  - list
-  - watch
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - scheduling.volcano.sh
+    resources:
+    - podgroups
+    verbs:
+    - create
+    - get
+    - list
+    - watch

@@ -52,9 +52,15 @@ To enable gang scheduling, you must enable the feature flag and specify `volcano
            schedulerProvider: volcano
      ```
 
-  2. **Apply the Volcano RBAC component** to grant the LWS controller permission to manage Volcano PodGroups:
+  2. **Enable the Volcano RBAC component** to grant the LWS controller permission to manage Volcano PodGroups. In `config/default/kustomization.yaml`, uncomment the `components` section:
+     ```yaml
+     # [VOLCANO] To enable Volcano gang scheduling RBAC, uncomment the following.
+     components:
+     - ../components/volcano
+     ```
+     Then re-apply the manifests:
      ```sh
-     kubectl apply -k config/components/volcano
+     kubectl apply -k config/default
      ```
 
   3. **Restart the lws-controller-manager** to apply the new configuration:

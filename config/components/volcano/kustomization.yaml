@@ -4,5 +4,7 @@ kind: Component
 patches:
 - path: manager_role_patch.yaml
   target:
+    group: rbac.authorization.k8s.io
+    version: v1
     kind: ClusterRole
     name: manager-role
