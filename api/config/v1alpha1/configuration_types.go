@@ -58,6 +58,11 @@ type ControllerManager struct {
 	// Health contains the controller health configuration
 	// +optional
 	Health ControllerHealth `json:"health,omitempty"`
+
+	// TLS contains TLS security settings for all LWS API servers
+	// (webhooks and metrics).
+	// +optional
+	TLS *TLSOptions `json:"tls,omitempty"`
 }
 
 // ControllerWebhook defines the webhook server for the controller.
@@ -136,4 +141,21 @@ type ClientConnection struct {
 type GangSchedulingManagement struct {
 	// SchedulerProvider is the name of the scheduler that provides gang-scheduling capabilities.
 	SchedulerProvider *string `json:"schedulerProvider,omitempty"`
+}
+
+// TLSOptions defines TLS security settings for LWS servers
+type TLSOptions struct {
+	// MinVersion is the minimum TLS version supported.
+	// Values are from tls package constants (https://golang.org/pkg/crypto/tls/#pkg-constants).
+	// This field is only valid when TLSOptions is set to true.
+	// The default would be to not set this value and inherit golang settings.
+	// +optional
+	MinVersion string `json:"minVersion,omitempty"`
+
+	// CipherSuites is the list of allowed cipher suites for the server.
+	// Note that TLS 1.3 ciphersuites are not configurable.
+	// Values are from tls package constants (https://golang.org/pkg/crypto/tls/#pkg-constants).
+	// The default would be to not set this value and inherit golang settings.
+	// +optional
+	CipherSuites []string `json:"cipherSuites,omitempty"`
 }

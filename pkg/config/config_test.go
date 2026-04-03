@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"io/fs"
 	"net"
@@ -167,6 +168,8 @@ webhook:
 		t.Fatal(err)
 	}
 
+	// defaultControlOptions no longer includes WebhookServer because Load() does not
+	// set it anymore. WebhookServer is now set by AddWebhookSettingsTo() after TLS parsing.
 	defaultControlOptions := ctrl.Options{
 		HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
 		ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
@@ -180,12 +183,6 @@ webhook:
 		LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 		RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 		RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-		WebhookServer: &webhook.DefaultServer{
-			Options: webhook.Options{
-				Port:    configapi.DefaultWebhookPort,
-				CertDir: configapi.DefaultWebhookCertDir,
-			},
-		},
 	}
 
 	enableDefaultInternalCertManagement := &configapi.InternalCertManagement{
@@ -241,12 +238,8 @@ webhook:
 				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    configapi.DefaultWebhookPort,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -282,12 +275,8 @@ webhook:
 				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    9444,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -346,12 +335,8 @@ webhook:
 				RenewDeadline:              ptr.To(defaultLeaderElectionRenewDeadline),
 				RetryPeriod:                ptr.To(defaultLeaderElectionRetryPeriod),
 				LeaderElection:             false,
-				WebhookServer: &webhook.DefaultServer{
-					Options: webhook.Options{
-						Port:    configapi.DefaultWebhookPort,
-						CertDir: configapi.DefaultWebhookCertDir,
-					},
-				},
+				// WebhookServer is intentionally nil here.
+				// It is set later by AddWebhookSettingsTo() after TLS options are parsed.
 			},
 		},
 		{
@@ -398,6 +383,131 @@ webhook:
 				}
 			}
 		})
+	}
+}
+
+func TestAddWebhookSettingsTo(t *testing.T) {
+	testcases := []struct {
+		name        string
+		cfg         configapi.Configuration
+		tlsOpts     []func(c interface{})
+		wantServer  bool
+		wantPort    int
+		wantCertDir string
+	}{
+		{
+			name: "default webhook settings",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port:    ptr.To(configapi.DefaultWebhookPort),
+						CertDir: configapi.DefaultWebhookCertDir,
+					},
+				},
+			},
+			wantServer:  true,
+			wantPort:    configapi.DefaultWebhookPort,
+			wantCertDir: configapi.DefaultWebhookCertDir,
+		},
+		{
+			name: "custom port and certDir",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port:    ptr.To(9444),
+						CertDir: "/custom/cert/dir",
+					},
+				},
+			},
+			wantServer:  true,
+			wantPort:    9444,
+			wantCertDir: "/custom/cert/dir",
+		},
+		{
+			name: "does not overwrite existing WebhookServer",
+			cfg: configapi.Configuration{
+				ControllerManager: configapi.ControllerManager{
+					Webhook: configapi.ControllerWebhook{
+						Port: ptr.To(9444),
+					},
+				},
+			},
+			wantServer: true,
+			wantPort:   configapi.DefaultWebhookPort, // pre-set server port wins
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := ctrl.Options{}
+
+			// For the "does not overwrite" case, pre-set a WebhookServer
+			if tc.name == "does not overwrite existing WebhookServer" {
+				opts.WebhookServer = &webhook.DefaultServer{
+					Options: webhook.Options{Port: configapi.DefaultWebhookPort},
+				}
+			}
+
+			AddWebhookSettingsTo(&opts, &tc.cfg, nil)
+
+			if tc.wantServer && opts.WebhookServer == nil {
+				t.Errorf("Expected WebhookServer to be set, got nil")
+			}
+			if !tc.wantServer && opts.WebhookServer != nil {
+				t.Errorf("Expected WebhookServer to be nil, got %v", opts.WebhookServer)
+			}
+		})
+	}
+}
+
+func TestAddWebhookSettingsTo_TLSFuncsAreApplied(t *testing.T) {
+	port := 9443
+	opts := ctrl.Options{}
+	cfg := configapi.Configuration{
+		ControllerManager: configapi.ControllerManager{
+			Webhook: configapi.ControllerWebhook{Port: &port},
+			TLS: &configapi.TLSOptions{
+				MinVersion: "VersionTLS13",
+			},
+		},
+	}
+
+	// Step 1: parse config (Adjust to cfg.ControllerManager.Webhook.TLS if needed)
+	parsedTLS, err := ParseTLSOptions(cfg.ControllerManager.TLS)
+	if err != nil {
+		t.Fatalf("ParseTLSOptions: unexpected error: %v", err)
+	}
+
+	tlsOpts := BuildTLSOptions(parsedTLS)
+
+	AddWebhookSettingsTo(&opts, &cfg, tlsOpts)
+
+	if opts.WebhookServer == nil {
+		t.Fatal("opts.WebhookServer must not be nil after AddWebhookSettingsTo")
+	}
+
+	server, ok := opts.WebhookServer.(*webhook.DefaultServer)
+	if !ok {
+		t.Fatalf(
+			"expected opts.WebhookServer to be *webhook.DefaultServer, got %T",
+			opts.WebhookServer,
+		)
+	}
+
+	if len(server.Options.TLSOpts) == 0 {
+		t.Fatal("server.Options.TLSOpts is empty; TLS options were not wired into the WebhookServer")
+	}
+
+	gotTLS := &tls.Config{}
+	for _, fn := range server.Options.TLSOpts {
+		fn(gotTLS)
+	}
+
+	if gotTLS.MinVersion != tls.VersionTLS13 {
+		t.Errorf(
+			"tls.Config.MinVersion after applying TLSOpts: got 0x%04x, want 0x%04x (VersionTLS13)",
+			gotTLS.MinVersion, tls.VersionTLS13,
+		)
 	}
 }
 
