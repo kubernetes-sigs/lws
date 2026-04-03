@@ -1,0 +1,12 @@
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - scheduling.volcano.sh
+    resources:
+    - podgroups
+    verbs:
+    - create
+    - get
+    - list
+    - watch

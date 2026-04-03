@@ -28,6 +28,10 @@ resources:
 # [METRICS] Expose the controller manager metrics service.
 - manager_metrics_service.yaml
 
+# [VOLCANO] To enable Volcano gang scheduling RBAC, uncomment the following.
+# components:
+# - ../components/volcano
+
 patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
