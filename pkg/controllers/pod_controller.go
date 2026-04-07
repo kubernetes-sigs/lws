@@ -239,6 +239,15 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
 			return false, nil
 		}
+		// Ignore worker pods from a stale worker StatefulSet (or test-owned direct pod) so
+		// background deletion of the previous group does not recreate the replacement leader again.
+		currentGroupWorkerPod, err := r.workerPodBelongsToLeader(ctx, pod, leader)
+		if err != nil {
+			return false, err
+		}
+		if !currentGroupWorkerPod {
+			return false, nil
+		}
 	} else {
 		leader = pod
 	}
@@ -254,6 +263,35 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
+}
+
+func (r *PodReconciler) workerPodBelongsToLeader(ctx context.Context, pod corev1.Pod, leader corev1.Pod) (bool, error) {
+	owner := metav1.GetControllerOf(&pod)
+	if owner == nil {
+		return false, nil
+	}
+
+	if owner.Kind == "Pod" {
+		return owner.Name == leader.Name && owner.UID == leader.UID, nil
+	}
+
+	if owner.Kind != "StatefulSet" {
+		return false, nil
+	}
+
+	var workerSts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: owner.Name, Namespace: pod.Namespace}, &workerSts); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if workerSts.UID != owner.UID {
+		return false, nil
+	}
+
+	stsOwner := metav1.GetControllerOf(&workerSts)
+	if stsOwner == nil {
+		return false, nil
+	}
+	return stsOwner.Kind == "Pod" && stsOwner.Name == leader.Name && stsOwner.UID == leader.UID, nil
 }
 
 func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *corev1.Pod, sts *appsapplyv1.StatefulSetApplyConfiguration, topologyKey string) error {
