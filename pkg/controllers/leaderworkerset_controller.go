@@ -486,12 +486,12 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress))
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
 	} else if readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount {
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
 	} else {
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing))
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
 	}
 
 	// updateDone is true when all replicas are updated and ready
@@ -521,6 +521,11 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	replicas := int(sts.Status.Replicas)
 	if lws.Status.Replicas != int32(replicas) {
 		lws.Status.Replicas = int32(replicas)
+		updateStatus = true
+	}
+
+	if lws.Status.ObservedGeneration != lws.Generation {
+		lws.Status.ObservedGeneration = lws.Generation
 		updateStatus = true
 	}
 
@@ -859,7 +864,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	return statefulSetConfig, nil
 }
 
-func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) metav1.Condition {
+func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet) metav1.Condition {
 	var condtype, reason, message string
 	switch conditionType {
 	case leaderworkerset.LeaderWorkerSetAvailable:
@@ -880,6 +885,7 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType) m
 		Type:               condtype,
 		Status:             metav1.ConditionStatus(corev1.ConditionTrue),
 		LastTransitionTime: metav1.Now(),
+		ObservedGeneration: lws.Generation,
 		Reason:             reason,
 		Message:            message,
 	}
@@ -903,7 +909,8 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 	// Precondition: newCondition has status true.
 	for i, curCondition := range lws.Status.Conditions {
 		if newCondition.Type == curCondition.Type {
-			if newCondition.Status != curCondition.Status {
+			if newCondition.Status != curCondition.Status ||
+				newCondition.ObservedGeneration != curCondition.ObservedGeneration {
 				// the conditions match but one is true and one is false. Update the stored condition
 				// with the new condition.
 				lws.Status.Conditions[i] = newCondition
@@ -918,6 +925,12 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 				(newCondition.Status == metav1.ConditionTrue) && (curCondition.Status == metav1.ConditionTrue) {
 				// Progressing is true and Available is true. Prevent this.
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
+
+				lws.Status.Conditions[i].LastTransitionTime = metav1.Now()
+				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				lws.Status.Conditions[i].Reason = newCondition.Reason
+				lws.Status.Conditions[i].Message = newCondition.Message
+
 				shouldUpdate = true
 			}
 		}

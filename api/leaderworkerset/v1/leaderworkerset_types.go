@@ -383,6 +383,10 @@ type LeaderWorkerSetStatus struct {
 	// we only select the leader pods.
 	// +optional
 	HPAPodSelector string `json:"hpaPodSelector,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 type LeaderWorkerSetConditionType string
