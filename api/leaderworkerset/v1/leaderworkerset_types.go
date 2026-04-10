@@ -384,8 +384,8 @@ type LeaderWorkerSetStatus struct {
 	// +optional
 	HPAPodSelector string `json:"hpaPodSelector,omitempty"`
 
+	// observedGeneration is the most recent generation observed for this LeaderWorkerSet.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
