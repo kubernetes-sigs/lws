@@ -38,6 +38,8 @@ type LeaderWorkerSetStatusApplyConfiguration struct {
 	// needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
 	// we only select the leader pods.
 	HPAPodSelector *string `json:"hpaPodSelector,omitempty"`
+	// observedGeneration is the most recent generation observed for this LeaderWorkerSet.
+	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 }
 
 // LeaderWorkerSetStatusApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetStatus type for use with
@@ -88,5 +90,13 @@ func (b *LeaderWorkerSetStatusApplyConfiguration) WithReplicas(value int32) *Lea
 // If called multiple times, the HPAPodSelector field is set to the value of the last call.
 func (b *LeaderWorkerSetStatusApplyConfiguration) WithHPAPodSelector(value string) *LeaderWorkerSetStatusApplyConfiguration {
 	b.HPAPodSelector = &value
+	return b
+}
+
+// WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ObservedGeneration field is set to the value of the last call.
+func (b *LeaderWorkerSetStatusApplyConfiguration) WithObservedGeneration(value int64) *LeaderWorkerSetStatusApplyConfiguration {
+	b.ObservedGeneration = &value
 	return b
 }
