@@ -50,7 +50,6 @@ import (
 // ControllerRevision is valid. LeaderWorkerSet revisions are stored as patches that re-apply the current state of set
 // to a new LeaderWorkerSet using a strategic merge patch to replace the saved state of the new LeaderWorkerSet.
 func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsv1.ControllerRevision, error) {
-	var controllerKind = leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}})
@@ -76,8 +75,10 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 			Labels: map[string]string{
 				leaderworkerset.SetNameLabelKey: lws.Name,
 			},
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, controllerKind)},
-			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind(lws.Kind)),
+			},
+			Namespace: lws.Namespace,
 		},
 		Data:     runtime.RawExtension{Raw: patch},
 		Revision: revision,
