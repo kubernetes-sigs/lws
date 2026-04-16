@@ -898,6 +898,13 @@ func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Con
 		shouldUpdate = shouldUpdate || setCondition(lws, condition)
 	}
 
+	for i := range lws.Status.Conditions {
+		if lws.Status.Conditions[i].ObservedGeneration != lws.Generation {
+			lws.Status.Conditions[i].ObservedGeneration = lws.Generation
+			shouldUpdate = true
+		}
+	}
+
 	return shouldUpdate
 }
 
@@ -923,14 +930,9 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 			// Available and both are true. Must be mutually exclusive.
 			if exclusiveConditionTypes(curCondition, newCondition) &&
 				(newCondition.Status == metav1.ConditionTrue) && (curCondition.Status == metav1.ConditionTrue) {
-				// Progressing is true and Available is true. Prevent this.
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
-
 				lws.Status.Conditions[i].LastTransitionTime = metav1.Now()
 				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-				lws.Status.Conditions[i].Reason = newCondition.Reason
-				lws.Status.Conditions[i].Message = newCondition.Message
-
 				shouldUpdate = true
 			}
 		}
