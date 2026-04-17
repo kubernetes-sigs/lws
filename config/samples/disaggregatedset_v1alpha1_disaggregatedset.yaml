@@ -1,0 +1,35 @@
+apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+kind: DisaggregatedSet
+metadata:
+  name: disaggregatedset-sample
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      leaderWorkerTemplate:
+        size: 1
+        leaderTemplate:
+          metadata:
+            labels:
+              role: prefill
+          spec:
+            containers:
+              - name: worker
+                image: nginx:latest
+                ports:
+                  - containerPort: 80
+    - name: decode
+      replicas: 2
+      leaderWorkerTemplate:
+        size: 1
+        leaderTemplate:
+          metadata:
+            labels:
+              role: decode
+          spec:
+            containers:
+              - name: worker
+                image: nginx:latest
+                ports:
+                  - containerPort: 80

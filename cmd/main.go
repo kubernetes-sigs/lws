@@ -38,15 +38,18 @@ import (
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	disaggregatedsetv1alpha1 "sigs.k8s.io/lws/api/disaggregatedset/v1alpha1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
+	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
 	"sigs.k8s.io/lws/pkg/version"
 	"sigs.k8s.io/lws/pkg/webhooks"
+	disaggregatedsetwebhook "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -60,6 +63,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(leaderworkersetv1.AddToScheme(scheme))
+	utilruntime.Must(disaggregatedsetv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
@@ -200,6 +204,15 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)
 	}
+	// Set up DisaggregatedSet controller
+	if err := (&disaggregatedsetcontroller.DisaggregatedSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Record: mgr.GetEventRecorder("disaggregatedset"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DisaggregatedSet")
+		os.Exit(1)
+	}
 	// Set up scheduler provider
 	var sp schedulerprovider.SchedulerProvider
 	if cfg.GangSchedulingManagement != nil {
@@ -226,6 +239,10 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		pw := webhooks.NewPodWebhook(sp)
 		if err := pw.Setup(mgr); err != nil {
 			setupLog.Error(err, "unable to create pod webhook", "webhook", "LeaderWorkerSet")
+			os.Exit(1)
+		}
+		if err := disaggregatedsetwebhook.SetupDisaggregatedSetWebhook(mgr); err != nil {
+			setupLog.Error(err, "unable to create disaggregatedset webhook", "webhook", "DisaggregatedSet")
 			os.Exit(1)
 		}
 	}
