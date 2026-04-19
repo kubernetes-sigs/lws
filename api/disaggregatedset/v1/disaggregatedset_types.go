@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package v1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,7 +24,7 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
-// This structure embeds LeaderWorkerSetSpec from sigs.k8s.io/lws, with validation
+// This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
 // RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
 type DisaggregatedRoleSpec struct {
@@ -35,29 +35,21 @@ type DisaggregatedRoleSpec struct {
 	// +required
 	Name string `json:"name"`
 
-	// LeaderWorkerSetSpec is embedded inline to inherit all LWS configuration fields.
-	// Note: RolloutStrategy.Type must be RollingUpdate (or empty) and
-	// RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
-	// DisaggregatedSet handles rollouts across roles and does not propagate
-	// RolloutStrategy to the underlying LWS resources.
-	leaderworkerset.LeaderWorkerSetSpec `json:",inline"`
-
-	// Metadata allows setting labels and annotations on the LWS CR's ObjectMeta.
-	// This is useful for integrations like Kueue (queue assignment via
-	// kueue.x-k8s.io/queue-name label) and LWS exclusive-topology scheduling
-	// (leaderworkerset.sigs.k8s.io/exclusive-topology label).
-	// Only labels and annotations are used; other ObjectMeta fields are ignored.
-	// System labels (disaggregatedset.x-k8s.io/*, app) take precedence over user labels.
-	// +optional
-	Metadata *metav1.ObjectMeta `json:"metadata,omitempty"`
+	// LeaderWorkerSetTemplateSpec defines the LWS template for this role.
+	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
+	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
+	// DisaggregatedSet handles rollouts across roles.
+	// +required
+	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 
 // DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="self.roles.all(r, self.roles.filter(s, s.name == r.name).size() == 1)",message="role names must be unique"
-// +kubebuilder:validation:XValidation:rule="self.roles.all(r, r.replicas == 0) || self.roles.all(r, r.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
+// +kubebuilder:validation:XValidation:rule="self.roles.all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
 type DisaggregatedSetSpec struct {
 	// Roles defines the list of roles (at least 2 required).
 	// Each role has a unique name and its own configuration.
+	// +listType=map
+	// +listMapKey=name
 	// +kubebuilder:validation:MinItems=2
 	// +kubebuilder:validation:MaxItems=10
 	// +required

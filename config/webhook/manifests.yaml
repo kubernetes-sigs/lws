@@ -95,14 +95,14 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-disaggregatedset-x-k8s-io-v1alpha1-disaggregatedset
+      path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
   failurePolicy: Fail
   name: vdisaggregatedset.kb.io
   rules:
   - apiGroups:
     - disaggregatedset.x-k8s.io
     apiVersions:
-    - v1alpha1
+    - v1
     operations:
     - CREATE
     - UPDATE

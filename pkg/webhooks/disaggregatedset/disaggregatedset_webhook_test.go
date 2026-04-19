@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	disaggv1alpha1 "sigs.k8s.io/lws/api/disaggregatedset/v1alpha1"
+	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
@@ -35,26 +35,30 @@ func TestValidateCreate(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		obj         *disaggv1alpha1.DisaggregatedSet
+		obj         *disaggv1.DisaggregatedSet
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "valid DisaggregatedSet with no rolloutStrategy",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -64,27 +68,31 @@ func TestValidateCreate(t *testing.T) {
 		},
 		{
 			name: "valid DisaggregatedSet with RollingUpdate type",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
-								RolloutStrategy: leaderworkerset.RolloutStrategy{
-									Type: leaderworkerset.RollingUpdateStrategyType,
-									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-										MaxSurge:       intstr.FromInt32(1),
-										MaxUnavailable: intstr.FromInt32(0),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										Type: leaderworkerset.RollingUpdateStrategyType,
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											MaxSurge:       intstr.FromInt32(1),
+											MaxUnavailable: intstr.FromInt32(0),
+										},
 									},
 								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -94,25 +102,29 @@ func TestValidateCreate(t *testing.T) {
 		},
 		{
 			name: "valid DisaggregatedSet with partition set to 0",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
-								RolloutStrategy: leaderworkerset.RolloutStrategy{
-									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-										Partition: ptr.To(int32(0)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											Partition: ptr.To(int32(0)),
+										},
 									},
 								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -122,25 +134,29 @@ func TestValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid DisaggregatedSet with partition set to non-zero",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
-								RolloutStrategy: leaderworkerset.RolloutStrategy{
-									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-										Partition: ptr.To(int32(1)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											Partition: ptr.To(int32(1)),
+										},
 									},
 								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -151,23 +167,27 @@ func TestValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid DisaggregatedSet with unsupported rollout type",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
-								RolloutStrategy: leaderworkerset.RolloutStrategy{
-									Type: "SomeOtherType",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										Type: "SomeOtherType",
+									},
 								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -178,26 +198,30 @@ func TestValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid DisaggregatedSet with multiple validation errors",
-			obj: &disaggv1alpha1.DisaggregatedSet{
+			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Spec: disaggv1alpha1.DisaggregatedSetSpec{
-					Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
 						{
 							Name: "prefill",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
-								RolloutStrategy: leaderworkerset.RolloutStrategy{
-									Type: "InvalidType",
-									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-										Partition: ptr.To(int32(5)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										Type: "InvalidType",
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											Partition: ptr.To(int32(5)),
+										},
 									},
 								},
 							},
 						},
 						{
 							Name: "decode",
-							LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-								Replicas: ptr.To(int32(2)),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
 							},
 						},
 					},
@@ -225,45 +249,53 @@ func TestValidateUpdate(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()
 
-	validObj := &disaggv1alpha1.DisaggregatedSet{
+	validObj := &disaggv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+		Spec: disaggv1.DisaggregatedSetSpec{
+			Roles: []disaggv1.DisaggregatedRoleSpec{
 				{
 					Name: "prefill",
-					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-						Replicas: ptr.To(int32(2)),
+					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+						Spec: leaderworkerset.LeaderWorkerSetSpec{
+							Replicas: ptr.To(int32(2)),
+						},
 					},
 				},
 				{
 					Name: "decode",
-					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-						Replicas: ptr.To(int32(2)),
+					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+						Spec: leaderworkerset.LeaderWorkerSetSpec{
+							Replicas: ptr.To(int32(2)),
+						},
 					},
 				},
 			},
 		},
 	}
 
-	invalidObj := &disaggv1alpha1.DisaggregatedSet{
+	invalidObj := &disaggv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-		Spec: disaggv1alpha1.DisaggregatedSetSpec{
-			Roles: []disaggv1alpha1.DisaggregatedRoleSpec{
+		Spec: disaggv1.DisaggregatedSetSpec{
+			Roles: []disaggv1.DisaggregatedRoleSpec{
 				{
 					Name: "prefill",
-					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-						Replicas: ptr.To(int32(2)),
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
-							RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-								Partition: ptr.To(int32(1)),
+					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+						Spec: leaderworkerset.LeaderWorkerSetSpec{
+							Replicas: ptr.To(int32(2)),
+							RolloutStrategy: leaderworkerset.RolloutStrategy{
+								RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+									Partition: ptr.To(int32(1)),
+								},
 							},
 						},
 					},
 				},
 				{
 					Name: "decode",
-					LeaderWorkerSetSpec: leaderworkerset.LeaderWorkerSetSpec{
-						Replicas: ptr.To(int32(2)),
+					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+						Spec: leaderworkerset.LeaderWorkerSetSpec{
+							Replicas: ptr.To(int32(2)),
+						},
 					},
 				},
 			},
@@ -286,7 +318,7 @@ func TestValidateDelete(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()
 
-	obj := &disaggv1alpha1.DisaggregatedSet{
+	obj := &disaggv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 	}
 

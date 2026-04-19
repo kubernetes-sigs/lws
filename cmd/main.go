@@ -38,7 +38,7 @@ import (
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
-	disaggregatedsetv1alpha1 "sigs.k8s.io/lws/api/disaggregatedset/v1alpha1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
 	"sigs.k8s.io/lws/pkg/config"
@@ -63,7 +63,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(leaderworkersetv1.AddToScheme(scheme))
-	utilruntime.Must(disaggregatedsetv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(disaggregatedsetv1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme

@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	disaggregatedsetv1alpha1 "sigs.k8s.io/lws/api/disaggregatedset/v1alpha1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
@@ -57,7 +57,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // SetupWithManager sets up the controller with the Manager.
 func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&disaggregatedsetv1alpha1.DisaggregatedSet{}).
+		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Complete(r)
 }

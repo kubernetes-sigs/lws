@@ -437,6 +437,17 @@ type LeaderWorkerSetList struct {
 	Items           []LeaderWorkerSet `json:"items"`
 }
 
+// LeaderWorkerSetTemplateSpec describes the data an LWS should have when created from a template.
+type LeaderWorkerSetTemplateSpec struct {
+	// Metadata of the LWS created from this template.
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec defines the behavior of an LWS.
+	// +optional
+	Spec LeaderWorkerSetSpec `json:"spec,omitempty"`
+}
+
 func init() {
 	SchemeBuilder.Register(&LeaderWorkerSet{}, &LeaderWorkerSetList{})
 }
