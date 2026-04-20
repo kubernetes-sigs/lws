@@ -56,6 +56,7 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 - [LeaderWorkerSet](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSet)
 
 
+
 <p>One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).</p>
 <p>Each group has a unique index between 0 and N-1. We call this the leaderIndex.
