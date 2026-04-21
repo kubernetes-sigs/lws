@@ -8,8 +8,8 @@ jobs:
     name: Check for spelling errors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@19bb51245e9c80abacb2e91cc42b33fa478b8639  # v4.3.0
-      - uses: codespell-project/actions-codespell@master
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: codespell-project/actions-codespell@406322ec52dd7b488e48c1c4b82e2a8b3a1bf630   #v2.2
         with:
           check_filenames: true
           skip: ./.git,./.github/workflows/codespell.yaml,.git,*.png,*.jpg,*.svg,*.sum,./vendor,go.sum
