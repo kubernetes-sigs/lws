@@ -1,6 +1,6 @@
 module sigs.k8s.io/lws/docs/examples/llamacpp/tools/clichat
 
-go 1.25
+go 1.26
 
 require k8s.io/klog/v2 v2.110.1
 
