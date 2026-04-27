@@ -1,0 +1,10 @@
+apiVersion: scheduling.k8s.io/v1alpha2
+kind: Workload
+metadata:
+  name: lws-workload
+spec:
+  podGroupTemplates:
+  - name: lws-pg
+    schedulingPolicy:
+      gang:
+        minCount: 4
