@@ -4,6 +4,10 @@ metadata:
   name: lws-workload-pg
   namespace: default
 spec:
+  podGroupTemplateRef:
+    workload:
+      workloadName: lws-workload
+      podGroupTemplateName: lws-pg
   schedulingPolicy:
     gang:
       minCount: 4

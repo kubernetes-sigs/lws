@@ -1,0 +1,15 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      spec:
+        schedulingGroup:
+          podGroupName: lws-workload-pg
+        containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27
