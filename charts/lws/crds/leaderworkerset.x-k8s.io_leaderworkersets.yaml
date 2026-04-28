@@ -16892,6 +16892,10 @@ spec:
                     needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
                     we only select the leader pods.
                   type: string
+                observedGeneration:
+                  description: observedGeneration is the most recent generation observed for this LeaderWorkerSet.
+                  format: int64
+                  type: integer
                 readyReplicas:
                   description: readyReplicas track the number of groups that are in ready state (updated or not).
                   format: int32
