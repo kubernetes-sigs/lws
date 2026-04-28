@@ -70,6 +70,7 @@ ARTIFACTS ?= $(PROJECT_DIR)/bin
 INTEGRATION_TARGET ?= ./test/integration/...
 
 E2E_KIND_VERSION ?= kindest/node:v1.35.0
+E2E_KIND_BUILD_NODE_IMAGE_VERSION ?=
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
 
@@ -168,19 +169,29 @@ kind-image-build: PLATFORMS=linux/amd64
 kind-image-build: IMAGE_BUILD_EXTRA_OPTS=--load
 kind-image-build: kind image-build
 
+.PHONY: kind-node-image-build
+kind-node-image-build: kind
+	@if [ -n "$(E2E_KIND_BUILD_NODE_IMAGE_VERSION)" ]; then \
+		if docker image inspect "$(E2E_KIND_VERSION)" >/dev/null 2>&1; then \
+			echo "Kind node image $(E2E_KIND_VERSION) already exists locally; skipping build."; \
+		else \
+			$(KIND) build node-image "$(E2E_KIND_BUILD_NODE_IMAGE_VERSION)" --image "$(E2E_KIND_VERSION)"; \
+		fi; \
+	fi
+
 .PHONY: test-integration
 test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 .PHONY: test-e2e
-test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
-	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
-	$(MAKE) -C disaggregatedset test-e2e KIND=$(KIND) KUBECTL=$(KUBECTL) E2E_KIND_VERSION=$(E2E_KIND_VERSION) ARTIFACTS=$(ARTIFACTS)
+test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build kind-node-image-build
+	E2E_KIND_VERSION=$(E2E_KIND_VERSION) E2E_KIND_BUILD_NODE_IMAGE_VERSION=$(E2E_KIND_BUILD_NODE_IMAGE_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+	$(MAKE) -C disaggregatedset test-e2e KIND=$(KIND) KUBECTL=$(KUBECTL) E2E_KIND_VERSION=$(E2E_KIND_VERSION) E2E_KIND_BUILD_NODE_IMAGE_VERSION=$(E2E_KIND_BUILD_NODE_IMAGE_VERSION) ARTIFACTS=$(ARTIFACTS)
 
 .PHONY: test-e2e-cert-manager
-test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
-	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build kind-node-image-build
+	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) E2E_KIND_BUILD_NODE_IMAGE_VERSION=$(E2E_KIND_BUILD_NODE_IMAGE_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 # Gang scheduling E2E tests with different schedulers
 VOLCANO_VERSION ?= v1.12.1
@@ -189,8 +200,8 @@ VOLCANO_VERSION ?= v1.12.1
 test-e2e-gang-scheduling: test-e2e-gang-scheduling-volcano ## Run all gang scheduling E2E tests
 
 .PHONY: test-e2e-gang-scheduling-volcano
-test-e2e-gang-scheduling-volcano: kustomize manifests fmt vet envtest ginkgo kind-image-build ## Run gang scheduling E2E tests with Volcano
-	SCHEDULER_PROVIDER=volcano VOLCANO_VERSION=$(VOLCANO_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+test-e2e-gang-scheduling-volcano: kustomize manifests fmt vet envtest ginkgo kind-image-build kind-node-image-build ## Run gang scheduling E2E tests with Volcano
+	SCHEDULER_PROVIDER=volcano VOLCANO_VERSION=$(VOLCANO_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) E2E_KIND_BUILD_NODE_IMAGE_VERSION=$(E2E_KIND_BUILD_NODE_IMAGE_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
