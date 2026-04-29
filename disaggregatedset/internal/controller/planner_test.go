@@ -288,6 +288,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			// Surge constraint: old + new <= 10 + 3 = 13
 			// Interleaves scale-up and scale-down to respect surge
+			// When surge blocks scale-up, drain+scale-up are combined to avoid capacity dips
 			name:        "large_10_10_surge3",
 			sourceRole0: 10, sourceRole1: 10, targetRole0: 10, targetRole1: 10,
 			config: []RollingUpdateConfig{{MaxSurge: 3}, {MaxSurge: 3}},
@@ -296,8 +297,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 				step([]int{10, 10}, []int{3, 3}), // scale up (10+3=13)
 				step([]int{8, 8}, []int{3, 3}),   // scale down
 				step([]int{8, 8}, []int{5, 5}),   // scale up (8+5=13)
-				step([]int{5, 5}, []int{5, 5}),   // scale down (to allow 8)
-				step([]int{5, 5}, []int{8, 8}),   // scale up (5+8=13)
+				step([]int{5, 5}, []int{8, 8}),   // drain+scale combined (5+8=13)
 				step([]int{3, 3}, []int{8, 8}),   // scale down (to allow 10)
 				step([]int{3, 3}, []int{10, 10}), // scale up (3+10=13)
 				step([]int{0, 0}, []int{10, 10}), // final drain
@@ -339,6 +339,7 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 		{
 			// Scale up 4→6 with surge=1: max total = 6+1 = 7
 			// Interleaves scale-up and scale-down to respect surge
+			// When surge blocks scale-up, drain+scale-up are combined to avoid capacity dips
 			name:        "scale_up_4_4_to_6_6",
 			sourceRole0: 4, sourceRole1: 4, targetRole0: 6, targetRole1: 6,
 			config: DefaultRollingUpdateConfig(2),
@@ -347,12 +348,9 @@ func TestComputeAllSteps_ExactSequence(t *testing.T) {
 				step([]int{4, 4}, []int{1, 1}), // scale up (4+1=5)
 				step([]int{4, 4}, []int{2, 2}), // scale up (4+2=6)
 				step([]int{4, 4}, []int{3, 3}), // scale up (4+3=7)
-				step([]int{3, 3}, []int{3, 3}), // scale down (to allow 4)
-				step([]int{3, 3}, []int{4, 4}), // scale up (3+4=7)
-				step([]int{2, 2}, []int{4, 4}), // scale down (to allow 5)
-				step([]int{2, 2}, []int{5, 5}), // scale up (2+5=7)
-				step([]int{1, 1}, []int{5, 5}), // scale down (to allow 6)
-				step([]int{1, 1}, []int{6, 6}), // scale up (1+6=7)
+				step([]int{3, 3}, []int{4, 4}), // drain+scale combined (3+4=7)
+				step([]int{2, 2}, []int{5, 5}), // drain+scale combined (2+5=7)
+				step([]int{1, 1}, []int{6, 6}), // drain+scale combined (1+6=7)
 				step([]int{0, 0}, []int{6, 6}), // final drain
 			},
 		},
@@ -952,6 +950,9 @@ func TestNRole_RolloutCompletes(t *testing.T) {
 		{"scale_down_prefill_up_decode", []int{10, 2}, []int{6, 8}, []int{2, 2}, []int{0, 0}},
 		{"scale_down_both", []int{10, 10}, []int{4, 4}, []int{2, 2}, []int{0, 0}},
 		{"scale_down_asymmetric", []int{8, 4}, []int{3, 2}, []int{1, 1}, []int{0, 0}},
+
+		// maxUnavailable constraint regression test (asymmetric roles)
+		{"unavail_asymmetric_5_2", []int{5, 2}, []int{5, 2}, []int{0, 0}, []int{1, 1}},
 	}
 
 	for _, tc := range testCases {
@@ -1004,6 +1005,49 @@ func TestNRole_SurgeConstraint(t *testing.T) {
 						"step %d, role %d: old(%d) + new(%d) = %d exceeds target(%d) + surge(%d) = %d",
 						stepIdx, roleIdx, s.Past[roleIdx], s.New[roleIdx], actual,
 						tc.target[roleIdx], tc.surge[roleIdx], maxAllowed)
+				}
+			}
+		})
+	}
+}
+
+func TestNRole_UnavailableConstraint(t *testing.T) {
+	testCases := []struct {
+		name    string
+		source  []int
+		target  []int
+		unavail []int
+	}{
+		{"symmetric_4_4", []int{4, 4}, []int{4, 4}, []int{1, 1}},
+		{"asymmetric_5_2", []int{5, 2}, []int{5, 2}, []int{1, 1}},
+		{"asymmetric_2_5", []int{2, 5}, []int{2, 5}, []int{1, 1}},
+		{"3role_symmetric", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := make([]RollingUpdateConfig, len(tc.source))
+			for i := range cfg {
+				cfg[i] = RollingUpdateConfig{MaxUnavailable: tc.unavail[i]}
+			}
+			steps := ComputeAllSteps(tc.source, tc.target, cfg)
+
+			// Verify rollout completes
+			require.True(t, completes(steps, tc.target), "rollout should complete")
+
+			// Verify per-role maxUnavailable constraint: old[i] + new[i] >= target[i] - unavail[i]
+			// Only enforced when source[i] >= target[i] (system had enough replicas)
+			for stepIdx, s := range steps {
+				for roleIdx := range tc.target {
+					if tc.source[roleIdx] < tc.target[roleIdx] {
+						continue // Scale-up scenario, maxUnavailable not enforced
+					}
+					minRequired := tc.target[roleIdx] - tc.unavail[roleIdx]
+					actual := s.Past[roleIdx] + s.New[roleIdx]
+					assert.GreaterOrEqual(t, actual, minRequired,
+						"step %d, role %d: old(%d) + new(%d) = %d below target(%d) - unavail(%d) = %d",
+						stepIdx, roleIdx, s.Past[roleIdx], s.New[roleIdx], actual,
+						tc.target[roleIdx], tc.unavail[roleIdx], minRequired)
 				}
 			}
 		})

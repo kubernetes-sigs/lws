@@ -501,10 +501,10 @@ func TestReconcilerIntegration(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for sortByOldestTimestamp
+// Unit Tests for sortByNewestTimestamp
 // =============================================================================
 
-func TestSortByOldestTimestamp(t *testing.T) {
+func TestSortByNewestTimestamp(t *testing.T) {
 	baseTime := time.Now()
 	roleNames := testRoleNames()
 
@@ -522,14 +522,14 @@ func TestSortByOldestTimestamp(t *testing.T) {
 
 	testCases := []struct {
 		name          string
-		inputHashes   []string // hash names with implicit order by offset (0, 60, 120, ...)
-		inputOffsets  []int    // offset in minutes from baseTime
+		inputHashes   []string
+		inputOffsets  []int
 		expectedOrder []string
 	}{
 		{"empty list", nil, nil, nil},
 		{"single workload", []string{"hash1"}, []int{0}, []string{"hash1"}},
-		{"three workloads unsorted", []string{"newest", "oldest", "middle"}, []int{120, 0, 60}, []string{"oldest", "middle", "newest"}},
-		{"four workloads unsorted", []string{"d", "a", "c", "b"}, []int{30, 0, 20, 10}, []string{"a", "b", "c", "d"}},
+		{"three workloads unsorted", []string{"newest", "oldest", "middle"}, []int{120, 0, 60}, []string{"newest", "middle", "oldest"}},
+		{"four workloads unsorted", []string{"d", "a", "c", "b"}, []int{30, 0, 20, 10}, []string{"d", "c", "b", "a"}},
 	}
 
 	for _, tc := range testCases {
@@ -538,7 +538,7 @@ func TestSortByOldestTimestamp(t *testing.T) {
 			for i, hash := range tc.inputHashes {
 				workloads = append(workloads, makeWorkload(hash, tc.inputOffsets[i]))
 			}
-			result := sortByOldestTimestamp(workloads, roleNames)
+			result := sortByNewestTimestamp(workloads, roleNames)
 			require.Len(t, result, len(tc.expectedOrder))
 			for i, expected := range tc.expectedOrder {
 				assert.Equal(t, expected, result[i].Revision)
@@ -548,8 +548,27 @@ func TestSortByOldestTimestamp(t *testing.T) {
 
 	t.Run("does not modify original slice", func(t *testing.T) {
 		workloads := GroupedWorkloads{makeWorkload("second", 60), makeWorkload("first", 0)}
-		_ = sortByOldestTimestamp(workloads, roleNames)
+		_ = sortByNewestTimestamp(workloads, roleNames)
 		assert.Equal(t, "second", workloads[0].Revision, "original slice should not be modified")
+	})
+
+	t.Run("uses max timestamp across roles", func(t *testing.T) {
+		ts1 := baseTime
+		ts2 := baseTime.Add(10 * time.Minute)
+		ts3 := baseTime.Add(20 * time.Minute)
+		workloads := GroupedWorkloads{
+			{Revision: "A", Roles: map[string]WorkloadInfo{
+				testRolePrefill: {CreationTimestamp: ts1},
+				testRoleDecode:  {CreationTimestamp: ts3},
+			}},
+			{Revision: "B", Roles: map[string]WorkloadInfo{
+				testRolePrefill: {CreationTimestamp: ts2},
+				testRoleDecode:  {CreationTimestamp: ts2},
+			}},
+		}
+		result := sortByNewestTimestamp(workloads, roleNames)
+		assert.Equal(t, "A", result[0].Revision, "A has max ts=20min, should come first (newest)")
+		assert.Equal(t, "B", result[1].Revision, "B has max ts=10min, should come second")
 	})
 }
 
@@ -622,6 +641,8 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 		{"custom decode only", nil, nil, ptr.To(2), ptr.To(0), 1, 0, 2, 0},
 		{"partial prefill (surge only)", ptr.To(5), ptr.To(0), nil, nil, 5, 0, 1, 0},
 		{"both custom", ptr.To(2), ptr.To(1), ptr.To(3), ptr.To(2), 2, 1, 3, 2},
+		{"surge=0 with unavail allows zero surge", ptr.To(0), ptr.To(4), ptr.To(0), ptr.To(2), 0, 4, 0, 2},
+		{"surge=0 without unavail keeps default", ptr.To(0), ptr.To(0), ptr.To(0), ptr.To(0), 1, 0, 1, 0},
 	}
 
 	for _, tc := range testCases {
@@ -709,10 +730,10 @@ func TestScaleDownOld(t *testing.T) {
 			prefillBudget: 2, decodeBudget: 2,
 		},
 		{
-			name: "multiple workloads drain oldest first",
+			name: "multiple workloads drain newest first",
 			workloads: []workloadDef{
-				{revision: "oldest", prefill: 2, decode: 2, ageHours: 0, expectedPrefill: 0, expectedDecode: 0},
-				{revision: "newer", prefill: 2, decode: 2, ageHours: 1, expectedPrefill: 2, expectedDecode: 2},
+				{revision: "oldest", prefill: 2, decode: 2, ageHours: 0, expectedPrefill: 2, expectedDecode: 2},
+				{revision: "newer", prefill: 2, decode: 2, ageHours: 1, expectedPrefill: 0, expectedDecode: 0},
 			},
 			prefillBudget: 2, decodeBudget: 2,
 		},
@@ -727,27 +748,27 @@ func TestScaleDownOld(t *testing.T) {
 			prefillBudget: 2, decodeBudget: 2,
 		},
 		{
-			name: "three workloads drain oldest then middle",
+			name: "three workloads drain newest then middle",
 			workloads: []workloadDef{
-				{revision: "oldest", prefill: 2, decode: 2, ageHours: 0, expectedPrefill: 0, expectedDecode: 0},
+				{revision: "oldest", prefill: 2, decode: 2, ageHours: 0, expectedPrefill: 2, expectedDecode: 2},
 				{revision: "middle", prefill: 2, decode: 2, ageHours: 1, expectedPrefill: 0, expectedDecode: 0},
-				{revision: "newest", prefill: 2, decode: 2, ageHours: 2, expectedPrefill: 2, expectedDecode: 2},
+				{revision: "newest", prefill: 2, decode: 2, ageHours: 2, expectedPrefill: 0, expectedDecode: 0},
 			},
 			prefillBudget: 4, decodeBudget: 4,
 		},
 		{
-			name: "coordinated drain with budget recycling",
+			name: "partial drain of newest without coordinated trigger",
 			workloads: []workloadDef{
-				{revision: "hashA", prefill: 1, decode: 2, ageHours: 0, expectedPrefill: 0, expectedDecode: 0},
-				{revision: "hashB", prefill: 3, decode: 3, ageHours: 1, expectedPrefill: 3, expectedDecode: 2},
+				{revision: "hashA", prefill: 1, decode: 2, ageHours: 0, expectedPrefill: 1, expectedDecode: 2},
+				{revision: "hashB", prefill: 3, decode: 3, ageHours: 1, expectedPrefill: 2, expectedDecode: 2},
 			},
 			prefillBudget: 1, decodeBudget: 1,
 		},
 		{
-			name: "drain oldest then spill to newer",
+			name: "drains newest without spilling to older",
 			workloads: []workloadDef{
-				{revision: "oldest", prefill: 1, decode: 1, ageHours: 0, expectedPrefill: 0, expectedDecode: 0},
-				{revision: "newer", prefill: 3, decode: 3, ageHours: 1, expectedPrefill: 2, expectedDecode: 2},
+				{revision: "oldest", prefill: 1, decode: 1, ageHours: 0, expectedPrefill: 1, expectedDecode: 1},
+				{revision: "newer", prefill: 3, decode: 3, ageHours: 1, expectedPrefill: 1, expectedDecode: 1},
 			},
 			prefillBudget: 2, decodeBudget: 2,
 		},
@@ -1045,12 +1066,16 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 
 	testCases := []abcExecutorScenario{
 		{
-			name: "drains oldest first", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 0, cDecode: 0,
+			name: "first step scales up C without drain", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 0, cDecode: 0,
 			expectedA: [2]int32{2, 2}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{1, 1},
 		},
 		{
 			name: "C scales up while B stays", aPrefill: 0, aDecode: 0, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
 			expectedA: [2]int32{0, 0}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{3, 3},
+		},
+		{
+			name: "drains newest old workload first", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
+			expectedA: [2]int32{2, 2}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{2, 2},
 		},
 	}
 
