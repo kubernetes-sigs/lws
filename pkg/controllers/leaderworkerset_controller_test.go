@@ -1018,41 +1018,28 @@ func TestSetCondition(t *testing.T) {
 		expectedShouldUpdate bool
 	}{
 		{
-			name:      "Different condition type, same condition status",
-			condition: metav1.Condition{Type: "Progressing", Status: "True"},
-			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
-				Conditions([]metav1.Condition{{Type: "Available", Status: "True"}}).
-				Obj(),
-			expectedShouldUpdate: true,
-		},
-		{
 			name:      "Same condition type, different condition status",
-			condition: metav1.Condition{Type: "Progressing", Status: "True"},
+			condition: metav1.Condition{Type: "Progressing", Status: "True", ObservedGeneration: 1},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
-				Conditions([]metav1.Condition{{Type: "Progressing", Status: "False"}}).
+				Generation(1).
+				Conditions([]metav1.Condition{{Type: "Progressing", Status: "False", ObservedGeneration: 1}}).
 				Obj(),
 			expectedShouldUpdate: true,
 		},
 		{
-			name:      "Different conditio type, new condition status is true",
-			condition: metav1.Condition{Type: "Progressing", Status: "True"},
+			name:      "Different condition type, new condition status is true",
+			condition: metav1.Condition{Type: "Progressing", Status: "True", ObservedGeneration: 1},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
-				Conditions([]metav1.Condition{{Type: "Available", Status: "False"}}).
+				Generation(1).
+				Conditions([]metav1.Condition{{Type: "Available", Status: "False", ObservedGeneration: 1}}).
 				Obj(),
 			expectedShouldUpdate: true,
 		},
 		{
 			name:                 "No initial condition",
-			condition:            metav1.Condition{Type: "Progressing", Status: "True"},
-			lws:                  wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Obj(),
+			condition:            metav1.Condition{Type: "Progressing", Status: "True", ObservedGeneration: 1},
+			lws:                  wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Generation(1).Obj(),
 			expectedShouldUpdate: true,
-		},
-		{
-			name:      "Different condition type, new condition status is false",
-			condition: metav1.Condition{Type: "Progressing", Status: "False"},
-			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
-				Conditions([]metav1.Condition{{Type: "Available", Status: "True"}}).
-				Obj(),
 		},
 		{
 			name:      "Same condition type, Same condition status",
@@ -1060,6 +1047,15 @@ func TestSetCondition(t *testing.T) {
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Conditions([]metav1.Condition{{Type: "Progressing", Status: "False"}}).
 				Obj(),
+		},
+		{
+			name:      "Same condition type, same status, but generation advanced",
+			condition: metav1.Condition{Type: "Available", Status: "True", ObservedGeneration: 2},
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Generation(2).
+				Conditions([]metav1.Condition{{Type: "Available", Status: "True", ObservedGeneration: 1}}).
+				Obj(),
+			expectedShouldUpdate: true,
 		},
 	}
 

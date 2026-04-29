@@ -383,6 +383,10 @@ type LeaderWorkerSetStatus struct {
 	// we only select the leader pods.
 	// +optional
 	HPAPodSelector string `json:"hpaPodSelector,omitempty"`
+
+	// observedGeneration is the most recent generation observed for this LeaderWorkerSet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 type LeaderWorkerSetConditionType string

@@ -170,6 +170,13 @@ needed for HPA to know what pods belong to the LeaderWorkerSet object. Here
 we only select the leader pods.</p>
 </td>
 </tr>
+<tr><td><code>observedGeneration</code><br/>
+<code>int64</code>
+</td>
+<td>
+   <p>observedGeneration is the most recent generation observed for this LeaderWorkerSet.</p>
+</td>
+</tr>
 </tbody>
 </table>
 

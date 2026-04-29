@@ -173,6 +173,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) PersistentVolumeClaimRetentionPolicy(p
 	return lwsWrapper
 }
 
+func (b *LeaderWorkerSetWrapper) Generation(generation int64) *LeaderWorkerSetWrapper {
+	b.LeaderWorkerSet.Generation = generation
+	return b
+}
+
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {
 	return &LeaderWorkerSetWrapper{
 		leaderworkerset.LeaderWorkerSet{
