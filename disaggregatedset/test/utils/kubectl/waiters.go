@@ -65,32 +65,63 @@ func ForRevisionDrained(deploymentName, revision string) {
 	}, 4*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-// ForSingleActiveRevision waits until only one revision has replicas > 0.
+// ForSingleActiveRevision waits until exactly one revision is active and all
+// its roles have replicas > 0, while every other revision is fully drained
+// (replicas == 0 for all of its roles).
+//
+// Checking only the per-revision total (sum across roles) is racy: during a
+// coordinated rolling update there is an intermediate state where the old
+// revision is fully drained but the new revision has only one role scaled up
+// (e.g. prefill=1, decode=0). A total-only check would treat that as a single
+// active revision and return, after which subsequent assertions can observe
+// the orphaned single-role state and fail. Requiring every role of the active
+// revision to be > 0 ensures the coordinated scale-up has completed.
 func ForSingleActiveRevision(deploymentName string) {
 	Eventually(func(g Gomega) {
 		output, err := LWS(deploymentName).
-			JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision} {.spec.replicas}{"\n"}{end}`).
+			JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision} {.metadata.labels.disaggregatedset\.x-k8s\.io/role} {.spec.replicas}{"\n"}{end}`).
 			RunQuiet()
 		g.Expect(err).NotTo(HaveOccurred())
 
-		revisionReplicas := make(map[string]int)
+		// revision -> role -> replicas
+		revisionRoles := make(map[string]map[string]int)
 		for _, line := range GetNonEmptyLines(output) {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				rev := fields[0]
-				if n, err := strconv.Atoi(fields[1]); err == nil {
-					revisionReplicas[rev] += n
-				}
+			if len(fields) < 3 {
+				continue
 			}
+			rev, role := fields[0], fields[1]
+			n, err := strconv.Atoi(fields[2])
+			if err != nil {
+				continue
+			}
+			if revisionRoles[rev] == nil {
+				revisionRoles[rev] = make(map[string]int)
+			}
+			revisionRoles[rev][role] += n
 		}
 
 		activeRevisions := 0
-		for _, replicas := range revisionReplicas {
-			if replicas > 0 {
-				activeRevisions++
+		for rev, roles := range revisionRoles {
+			total := 0
+			minReplicas := -1
+			for _, n := range roles {
+				total += n
+				if minReplicas == -1 || n < minReplicas {
+					minReplicas = n
+				}
 			}
+			if total == 0 {
+				// Fully drained, not active.
+				continue
+			}
+			// Any non-drained revision must have all roles scaled up;
+			// otherwise we are in an intermediate (orphaned) state.
+			g.Expect(minReplicas).To(BeNumerically(">", 0),
+				"Revision %s has a role with 0 replicas while others are > 0 (orphaned)", rev)
+			activeRevisions++
 		}
-		g.Expect(activeRevisions).To(Equal(1), "Expected only one active revision")
+		g.Expect(activeRevisions).To(Equal(1), "Expected exactly one active revision")
 	}, 4*time.Minute, 2*time.Second).Should(Succeed())
 }
 
