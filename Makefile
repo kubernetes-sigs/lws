@@ -322,7 +322,7 @@ ginkgo: ## Download ginkgo locally if necessary.
 GOLANGCI_LINT_KAL = $(shell pwd)/bin/golangci-lint-kube-api-linter
 .PHONY: golangci-lint-kal
 golangci-lint-kal: golangci-lint ## Build golangci-lint-kal from custom configuration.
-	cd $(PROJECT_DIR)/hack; $(GOLANGCI_LINT) custom; mv bin/golangci-lint-kube-api-linter $(PROJECT_DIR)/bin/
+	cd $(PROJECT_DIR)/hack; GOTOOLCHAIN=go1.26.0 $(GOLANGCI_LINT) custom; mv bin/golangci-lint-kube-api-linter $(PROJECT_DIR)/bin/
 
 GOTESTSUM = $(shell pwd)/bin/gotestsum
 .PHONY: gotestsum
