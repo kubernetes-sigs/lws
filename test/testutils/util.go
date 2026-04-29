@@ -402,9 +402,12 @@ func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulse
 
 // SetStatefulsetToUnReady set statefulset to unready.
 func SetStatefulsetToUnReady(ctx context.Context, k8sClient client.Client, sts *appsv1.StatefulSet) {
-	sts.Status.CurrentRevision = "fuz"
-	sts.Status.UpdateRevision = "bar"
-	gomega.Expect(k8sClient.Status().Update(ctx, sts)).Should(gomega.Succeed())
+	gomega.Eventually(func(g gomega.Gomega) {
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(gomega.Succeed())
+		sts.Status.CurrentRevision = "fuz"
+		sts.Status.UpdateRevision = "bar"
+		g.Expect(k8sClient.Status().Update(ctx, sts)).To(gomega.Succeed())
+	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
 func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, condition metav1.Condition) (bool, error) {
