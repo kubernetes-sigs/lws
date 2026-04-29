@@ -106,23 +106,23 @@ func GetEnvVarValueIfInContainer(c *corev1.Container, envVarName string) (bool, 
 // ensuring that the 'firstEnv' and 'e' env vars maintain their order at the front.
 // The function then adds any existing env vars from 'c.Env' that are not in 'e' to the newEnvVars slice.
 func addEnvVarsIfNotExists(c *corev1.Container, firstEnv corev1.EnvVar, e ...corev1.EnvVar) {
-	newEnvVars := make([]corev1.EnvVar, 0)
+	envMap := make(map[string]struct{})
+	newEnvVars := make([]corev1.EnvVar, 0, len(c.Env)+len(e)+1)
 
 	// Add firstEnv to the beginning of the newEnvVars slice
 	newEnvVars = append(newEnvVars, firstEnv)
-	newEnvVars = append(newEnvVars, e...)
+	envMap[firstEnv.Name] = struct{}{}
 
-	// Add existing env vars from c.Env that are not in e to newEnvVars
+	for _, env := range e {
+		newEnvVars = append(newEnvVars, env)
+		envMap[env.Name] = struct{}{}
+	}
+
+	// Add existing env vars from c.Env that are not already added
 	for _, env := range c.Env {
-		exists := false
-		for _, newEnv := range newEnvVars {
-			if newEnv.Name == env.Name {
-				exists = true
-				break
-			}
-		}
-		if !exists {
+		if _, exists := envMap[env.Name]; !exists {
 			newEnvVars = append(newEnvVars, env)
+			envMap[env.Name] = struct{}{}
 		}
 	}
 	c.Env = newEnvVars
