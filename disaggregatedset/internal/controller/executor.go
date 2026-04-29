@@ -235,11 +235,13 @@ func extractRollingUpdateConfig(ds *disaggv1alpha1.DisaggregatedSet, allRoleName
 	for _, role := range ds.Spec.Roles {
 		if rc := role.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
 			i := roleIndex[role.Name]
-			if v := rc.MaxSurge.IntValue(); v > 0 {
-				config[i].MaxSurge = v
-			}
-			if v := rc.MaxUnavailable.IntValue(); v > 0 {
-				config[i].MaxUnavailable = v
+			surge := rc.MaxSurge.IntValue()
+			unavail := rc.MaxUnavailable.IntValue()
+			if unavail > 0 {
+				config[i].MaxUnavailable = unavail
+				config[i].MaxSurge = surge
+			} else if surge > 0 {
+				config[i].MaxSurge = surge
 			}
 		}
 	}

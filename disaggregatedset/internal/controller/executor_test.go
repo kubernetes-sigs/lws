@@ -622,6 +622,8 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 		{"custom decode only", nil, nil, ptr.To(2), ptr.To(0), 1, 0, 2, 0},
 		{"partial prefill (surge only)", ptr.To(5), ptr.To(0), nil, nil, 5, 0, 1, 0},
 		{"both custom", ptr.To(2), ptr.To(1), ptr.To(3), ptr.To(2), 2, 1, 3, 2},
+		{"surge=0 with unavail allows zero surge", ptr.To(0), ptr.To(4), ptr.To(0), ptr.To(2), 0, 4, 0, 2},
+		{"surge=0 without unavail keeps default", ptr.To(0), ptr.To(0), ptr.To(0), ptr.To(0), 1, 0, 1, 0},
 	}
 
 	for _, tc := range testCases {

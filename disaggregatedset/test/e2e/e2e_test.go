@@ -568,7 +568,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				TargetDecode:  8,
 				PrefillSurge:  2,
 				DecodeSurge:   2,
-				// Expected steps from: go run ./cmd/plan-steps --source-role0 10 --source-role1 2 --target-role0 6 --target-role1 8 --role0-surge 2 --role1-surge 2
+				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":10,"decode":2}' --target '{"prefill":6,"decode":8}' --surge '{"prefill":2,"decode":2}'
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
 					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old role0 -2
@@ -581,6 +581,25 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new role0 +1, new role1 +2
 					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new role0 +1, new role1 +1
 					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old role0 -2, old role1 -1
+				},
+			},
+			{
+				Name:           "surge-0-unavail-2-batches-by-unavailable",
+				SourcePrefill:  4,
+				SourceDecode:   4,
+				TargetPrefill:  4,
+				TargetDecode:   4,
+				PrefillSurge:   0,
+				DecodeSurge:    0,
+				PrefillUnavail: 2,
+				DecodeUnavail:  2,
+				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":4,"decode":4}' --target '{"prefill":4,"decode":4}' --surge '{"prefill":0,"decode":0}' --unavailable '{"prefill":2,"decode":2}'
+				ExpectedSteps: []rolloutState{
+					{OldPrefill: 4, OldDecode: 4, NewPrefill: 0, NewDecode: 0}, // step 0: initial
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1: drain 2 each
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2: scale up 2 each
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3: drain 2 each
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4: scale up 2 each
 				},
 			},
 		}
@@ -597,8 +616,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			It(fmt.Sprintf("should track rollout steps for %s", tc.Name), func() {
 				By("creating initial DisaggregatedSet with source replicas")
 				initialYaml := fixtures.PrefillDecode(deploymentName,
-					fixtures.Role{Replicas: tc.SourcePrefill, HasRollout: true, MaxSurge: tc.PrefillSurge},
-					fixtures.Role{Replicas: tc.SourceDecode, HasRollout: true, MaxSurge: tc.DecodeSurge},
+					fixtures.Role{Replicas: tc.SourcePrefill, HasRollout: true, MaxSurge: tc.PrefillSurge, MaxUnavailable: tc.PrefillUnavail},
+					fixtures.Role{Replicas: tc.SourceDecode, HasRollout: true, MaxSurge: tc.DecodeSurge, MaxUnavailable: tc.DecodeUnavail},
 				).YAML()
 				Expect(applyYAML(initialYaml)).To(Succeed())
 
@@ -617,8 +636,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 				By("triggering rolling update by changing image and target replicas")
 				updatedYaml := fixtures.PrefillDecode(deploymentName,
-					fixtures.Role{Replicas: tc.TargetPrefill, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.PrefillSurge},
-					fixtures.Role{Replicas: tc.TargetDecode, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.DecodeSurge},
+					fixtures.Role{Replicas: tc.TargetPrefill, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.PrefillSurge, MaxUnavailable: tc.PrefillUnavail},
+					fixtures.Role{Replicas: tc.TargetDecode, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.DecodeSurge, MaxUnavailable: tc.DecodeUnavail},
 				).YAML()
 				Expect(applyYAML(updatedYaml)).To(Succeed())
 
@@ -1017,14 +1036,16 @@ func (s rolloutState) Equals(other rolloutState) bool {
 
 // rolloutTestCase defines a rolling update scenario to test
 type rolloutTestCase struct {
-	Name          string
-	SourcePrefill int
-	SourceDecode  int
-	TargetPrefill int
-	TargetDecode  int
-	PrefillSurge  int
-	DecodeSurge   int
-	ExpectedSteps []rolloutState
+	Name            string
+	SourcePrefill   int
+	SourceDecode    int
+	TargetPrefill   int
+	TargetDecode    int
+	PrefillSurge    int
+	DecodeSurge     int
+	PrefillUnavail  int
+	DecodeUnavail   int
+	ExpectedSteps   []rolloutState
 }
 
 // getCurrentRolloutState queries the cluster for current LWS replica counts
