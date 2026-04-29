@@ -265,14 +265,23 @@ func isWorkloadStable(workload GroupedWorkload, roleNames []string) bool {
 	return true
 }
 
-func sortByOldestTimestamp(workloads GroupedWorkloads, roleNames []string) GroupedWorkloads {
+func maxTimestamp(wl GroupedWorkload) time.Time {
+	var maxTS time.Time
+	for _, info := range wl.Roles {
+		if info.CreationTimestamp.After(maxTS) {
+			maxTS = info.CreationTimestamp
+		}
+	}
+	return maxTS
+}
+
+func sortByNewestTimestamp(workloads GroupedWorkloads, roleNames []string) GroupedWorkloads {
 	if len(roleNames) == 0 {
 		return workloads
 	}
 	sorted := slices.Clone(workloads)
-	firstRole := roleNames[0]
 	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
-		return a.Roles[firstRole].CreationTimestamp.Compare(b.Roles[firstRole].CreationTimestamp)
+		return maxTimestamp(b).Compare(maxTimestamp(a))
 	})
 	return sorted
 }
@@ -316,7 +325,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	}
 
 	log := logf.FromContext(ctx)
-	for _, wl := range sortByOldestTimestamp(oldWorkloads, roleNames) {
+	for _, wl := range sortByNewestTimestamp(oldWorkloads, roleNames) {
 		if allZero(budget) {
 			break
 		}

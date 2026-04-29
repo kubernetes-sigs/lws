@@ -963,6 +963,122 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
+	Context("Mid-rollout A→B→C (newest-first drain)", func() {
+		const deploymentName = "test-abc-drain"
+
+		AfterEach(func() {
+			kubectl.CleanupDeployment(deploymentName)
+		})
+
+		It("should drain B (broken intermediate) before A (stable original)", func() {
+			By("creating initial deployment A (6 replicas per role)")
+			yamlA := fixtures.PrefillDecode(deploymentName,
+				fixtures.Role{Replicas: 6, HasRollout: true, MaxSurge: 1},
+				fixtures.Role{Replicas: 6, HasRollout: true, MaxSurge: 1},
+			).YAML()
+			Expect(applyYAML(yamlA)).To(Succeed())
+			kubectl.ForRunningPodCountWithTimeout(deploymentName, 12, 3*time.Minute)
+			revisionA := kubectl.GetRevision(deploymentName)
+			Expect(revisionA).NotTo(BeEmpty())
+			_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Revision A (stable original): %s ===\n", revisionA)
+
+			By("triggering update B (simulates bad deploy)")
+			yamlB := fixtures.PrefillDecode(deploymentName,
+				fixtures.Role{Replicas: 6, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+				fixtures.Role{Replicas: 6, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: 1},
+			).YAML()
+			Expect(applyYAML(yamlB)).To(Succeed())
+
+			By("waiting for B rollout to start (new LWS created)")
+			Eventually(func() int {
+				return kubectl.CountLWS(deploymentName)
+			}, 30*time.Second, time.Second).Should(BeNumerically(">", 2))
+
+			// Find revision B
+			revisionB := ""
+			Eventually(func(g Gomega) {
+				output, err := kubectl.LWS(deploymentName).
+					JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision}{"\n"}{end}`).
+					RunQuiet()
+				g.Expect(err).NotTo(HaveOccurred())
+				for _, rev := range kubectl.GetNonEmptyLines(output) {
+					if rev != revisionA {
+						revisionB = rev
+					}
+				}
+				g.Expect(revisionB).NotTo(BeEmpty())
+			}, 30*time.Second, time.Second).Should(Succeed())
+			_, _ = fmt.Fprintf(GinkgoWriter, "=== Revision B (bad intermediate): %s ===\n", revisionB)
+
+			By("waiting for B to partially roll out (at least 3 prefill ready)")
+			Eventually(func() int {
+				output, _ := kubectl.LWSByRevision(deploymentName, revisionB).
+					JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/role} {.status.readyReplicas}{"\n"}{end}`).
+					RunQuiet()
+				for _, line := range kubectl.GetNonEmptyLines(output) {
+					parts := strings.Fields(line)
+					if len(parts) == 2 && parts[0] == "prefill" {
+						n, _ := strconv.Atoi(parts[1])
+						return n
+					}
+				}
+				return 0
+			}, 3*time.Minute, time.Second).Should(BeNumerically(">=", 3), "B prefill should have at least 3 ready replicas")
+
+			By("triggering update C (the fix) mid-rollout")
+			yamlC := fixtures.PrefillDecode(deploymentName,
+				fixtures.Role{Replicas: 6, Image: "registry.k8s.io/pause:3.8", HasRollout: true, MaxSurge: 1},
+				fixtures.Role{Replicas: 6, Image: "registry.k8s.io/pause:3.8", HasRollout: true, MaxSurge: 1},
+			).YAML()
+			Expect(applyYAML(yamlC)).To(Succeed())
+
+			// Find revision C
+			revisionC := ""
+			Eventually(func(g Gomega) {
+				output, err := kubectl.LWS(deploymentName).
+					JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision}{"\n"}{end}`).
+					RunQuiet()
+				g.Expect(err).NotTo(HaveOccurred())
+				for _, rev := range kubectl.GetNonEmptyLines(output) {
+					if rev != revisionA && rev != revisionB {
+						revisionC = rev
+					}
+				}
+				g.Expect(revisionC).NotTo(BeEmpty())
+			}, 30*time.Second, time.Second).Should(Succeed())
+			_, _ = fmt.Fprintf(GinkgoWriter, "=== Revision C (the fix / target): %s ===\n\n", revisionC)
+
+			By("tracking drain order: B must drain to 0 before A")
+			bDrainedFirst := false
+			aDrainedBeforeB := false
+
+			Eventually(func(g Gomega) bool {
+				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
+				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
+				cTotal := kubectl.GetTotalReplicas(deploymentName, revisionC)
+
+				_, _ = fmt.Fprintf(GinkgoWriter, "A(%s)=%d  B(%s)=%d  C(%s)=%d\n",
+					revisionA[:8], aTotal, revisionB[:8], bTotal, revisionC[:8], cTotal)
+
+				if bTotal == 0 && aTotal > 0 {
+					bDrainedFirst = true
+				}
+				if aTotal == 0 && bTotal > 0 {
+					aDrainedBeforeB = true
+				}
+
+				return aTotal == 0 && bTotal == 0
+			}, 5*time.Minute, 500*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
+
+			Expect(bDrainedFirst).To(BeTrue(), "B (newer intermediate) should drain to 0 before A (stable original)")
+			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")
+
+			By("verifying final state: only C at target replicas")
+			kubectl.ForSingleActiveRevision(deploymentName)
+			kubectl.ForRunningPodCount(deploymentName, 12)
+		})
+	})
+
 	Context("Rename role with rolling update ", func() {
 		const deploymentName = "test-rename-role"
 

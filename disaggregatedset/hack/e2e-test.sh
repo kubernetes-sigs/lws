@@ -86,7 +86,7 @@ function run_tests {
     # Set LWS_INSTALL_SKIP since we already installed LWS
     # Set KIND_CLUSTER for the test code (it expects KIND_CLUSTER, not KIND_CLUSTER_NAME)
     # Use --tags=e2e to include files with //go:build e2e constraint
-    LWS_INSTALL_SKIP=true KIND_CLUSTER="$KIND_CLUSTER_NAME" $GINKGO --tags=e2e --junit-report=junit.xml --output-dir="$ARTIFACTS" -v "$CWD/test/e2e/..."
+    LWS_INSTALL_SKIP=true KIND_CLUSTER="$KIND_CLUSTER_NAME" $GINKGO --tags=e2e --junit-report=junit.xml --output-dir="$ARTIFACTS" -v ${GINKGO_FOCUS:+--focus="$GINKGO_FOCUS"} "$CWD/test/e2e/..."
 }
 
 trap cleanup EXIT
