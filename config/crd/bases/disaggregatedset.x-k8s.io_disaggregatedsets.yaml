@@ -51,7 +51,7 @@ spec:
                     RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
                   properties:
                     metadata:
-                      description: Metadata of the LWS created from this template.
+                      description: metadata of the LWS created from this template.
                       properties:
                         annotations:
                           additionalProperties:
@@ -77,7 +77,7 @@ spec:
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     spec:
-                      description: Spec defines the behavior of an LWS.
+                      description: spec defines the behavior of an LWS.
                       properties:
                         leaderWorkerTemplate:
                           description: leaderWorkerTemplate defines the template for
@@ -18313,7 +18313,6 @@ spec:
                       - leaderWorkerTemplate
                       type: object
                   required:
-                  - ""
                   - name
                   type: object
                 maxItems: 10
