@@ -24,6 +24,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1schedulingalpha2 "k8s.io/api/scheduling/v1alpha2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -106,6 +107,8 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/finalizers,verbs=update
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=workloads,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=podgroups,verbs=get;list;watch;create;update;patch;delete
 
 func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Get leaderworkerset object
@@ -116,6 +119,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if lws.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
+	}
+
+	if err := r.reconcileWorkload(ctx, lws); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
@@ -223,6 +230,8 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&v1schedulingalpha2.Workload{}).
+		Owns(&v1schedulingalpha2.PodGroup{}).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 				return []reconcile.Request{
@@ -797,6 +806,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
+	if lws.Annotations[leaderworkerset.GangSchedulingAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.GangSchedulingAnnotationKey] = lws.Annotations[leaderworkerset.GangSchedulingAnnotationKey]
+	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
@@ -942,4 +954,42 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	}
 
 	return false
+}
+
+func (r *LeaderWorkerSetReconciler) reconcileWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Annotations[leaderworkerset.GangSchedulingAnnotationKey] != "true" {
+		return nil
+	}
+
+	var workload v1schedulingalpha2.Workload
+	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &workload); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		workload = v1schedulingalpha2.Workload{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      lws.Name,
+				Namespace: lws.Namespace,
+			},
+			Spec: v1schedulingalpha2.WorkloadSpec{
+				PodGroupTemplates: []v1schedulingalpha2.PodGroupTemplate{
+					{
+						Name: fmt.Sprintf("%s-pg-template", lws.Name),
+						SchedulingPolicy: v1schedulingalpha2.PodGroupSchedulingPolicy{
+							Gang: &v1schedulingalpha2.GangSchedulingPolicy{
+								MinCount: *lws.Spec.LeaderWorkerTemplate.Size,
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := ctrl.SetControllerReference(lws, &workload, r.Scheme); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, &workload); err != nil {
+			return err
+		}
+	}
+	return nil
 }

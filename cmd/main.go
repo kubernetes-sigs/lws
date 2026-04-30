@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	v1schedulingalpha2 "k8s.io/api/scheduling/v1alpha2"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -66,6 +67,7 @@ func init() {
 	utilruntime.Must(disaggregatedsetv1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
+	utilruntime.Must(v1schedulingalpha2.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

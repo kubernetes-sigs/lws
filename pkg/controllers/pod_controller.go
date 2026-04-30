@@ -25,6 +25,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1schedulingalpha2 "k8s.io/api/scheduling/v1alpha2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -65,6 +67,8 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=workloads,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=podgroups,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var pod corev1.Pod
@@ -99,6 +103,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// worker pods' reconciliation is only done to handle restart policy
 	if !podutils.LeaderPod(pod) {
 		return ctrl.Result{}, nil
+	}
+
+	if err := r.reconcilePodGroup(ctx, &leaderWorkerSet, &pod); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// validate leader's annotations to prevent infinite StatefulSet creation loops
@@ -426,6 +434,11 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+	if lws.Annotations[leaderworkerset.GangSchedulingAnnotationKey] == "true" {
+		podTemplateApplyConfiguration.Spec.WithSchedulingGroup(&coreapplyv1.PodSchedulingGroupApplyConfiguration{
+			PodGroupName: &leaderPod.Name,
+		})
+	}
 	serviceName := leaderPod.Name
 	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		serviceName = lws.Name
@@ -460,6 +473,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
+		Owns(&v1schedulingalpha2.PodGroup{}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			if pod, ok := object.(*corev1.Pod); ok {
 				_, exist := pod.Labels[leaderworkerset.SetNameLabelKey]
@@ -471,4 +485,43 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return false
 		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+}
+
+func (r *PodReconciler) reconcilePodGroup(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
+	if lws.Annotations[leaderworkerset.GangSchedulingAnnotationKey] != "true" {
+		return nil
+	}
+
+	var podGroup v1schedulingalpha2.PodGroup
+	if err := r.Get(ctx, types.NamespacedName{Name: leaderPod.Name, Namespace: leaderPod.Namespace}, &podGroup); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		podGroup = v1schedulingalpha2.PodGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      leaderPod.Name,
+				Namespace: leaderPod.Namespace,
+			},
+			Spec: v1schedulingalpha2.PodGroupSpec{
+				PodGroupTemplateRef: &v1schedulingalpha2.PodGroupTemplateReference{
+					Workload: &v1schedulingalpha2.WorkloadPodGroupTemplateReference{
+						WorkloadName:         lws.Name,
+						PodGroupTemplateName: fmt.Sprintf("%s-pg-template", lws.Name),
+					},
+				},
+				SchedulingPolicy: v1schedulingalpha2.PodGroupSchedulingPolicy{
+					Gang: &v1schedulingalpha2.GangSchedulingPolicy{
+						MinCount: *lws.Spec.LeaderWorkerTemplate.Size,
+					},
+				},
+			},
+		}
+		if err := ctrl.SetControllerReference(leaderPod, &podGroup, r.Scheme); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, &podGroup); err != nil {
+			return err
+		}
+	}
+	return nil
 }

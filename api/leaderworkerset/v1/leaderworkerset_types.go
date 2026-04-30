@@ -93,6 +93,9 @@ const (
 	// will be injected. Corresponds to LeaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy
 	SubdomainPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subdomainPolicy"
 
+	// Enables native Kubernetes gang scheduling via the Workload and PodGroup APIs.
+	GangSchedulingAnnotationKey string = "leaderworkerset.sigs.k8s.io/gang-scheduling"
+
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"

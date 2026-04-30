@@ -133,6 +133,12 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
 			}
 		}
+		if pod.Annotations[leaderworkerset.GangSchedulingAnnotationKey] == "true" {
+			podGroupName := pod.Name
+			pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+				PodGroupName: &podGroupName,
+			}
+		}
 	} else {
 		_, workerIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		if workerIndex == -1 {
