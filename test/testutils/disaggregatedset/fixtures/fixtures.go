@@ -52,7 +52,7 @@ func (c Config) YAML() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+	sb.WriteString(fmt.Sprintf(`apiVersion: disaggregatedset.x-k8s.io/v1
 kind: DisaggregatedSet
 metadata:
   name: %s
@@ -63,21 +63,8 @@ spec:
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
-		sb.WriteString(fmt.Sprintf("    replicas: %d\n", p.Replicas))
 
-		if p.HasRollout || p.Partition != nil {
-			sb.WriteString("    rolloutStrategy:\n")
-			sb.WriteString("      rollingUpdateConfiguration:\n")
-			if p.HasRollout {
-				sb.WriteString(fmt.Sprintf("        maxSurge: %d\n", p.MaxSurge))
-				sb.WriteString(fmt.Sprintf("        maxUnavailable: %d\n", p.MaxUnavailable))
-			}
-			if p.Partition != nil {
-				sb.WriteString(fmt.Sprintf("        partition: %d\n", *p.Partition))
-			}
-		}
-
-		// Add LWS CR metadata section if LWSLabels or LWSAnnotations are present
+		// LWS CR metadata (labels/annotations on the LWS ObjectMeta) — at role level
 		if len(p.LWSLabels) > 0 || len(p.LWSAnnotations) > 0 {
 			sb.WriteString("    metadata:\n")
 			if len(p.LWSLabels) > 0 {
@@ -94,35 +81,51 @@ spec:
 			}
 		}
 
+		// spec: wraps LeaderWorkerSetSpec fields
+		sb.WriteString("    spec:\n")
+		sb.WriteString(fmt.Sprintf("      replicas: %d\n", p.Replicas))
+
+		if p.HasRollout || p.Partition != nil {
+			sb.WriteString("      rolloutStrategy:\n")
+			sb.WriteString("        rollingUpdateConfiguration:\n")
+			if p.HasRollout {
+				sb.WriteString(fmt.Sprintf("          maxSurge: %d\n", p.MaxSurge))
+				sb.WriteString(fmt.Sprintf("          maxUnavailable: %d\n", p.MaxUnavailable))
+			}
+			if p.Partition != nil {
+				sb.WriteString(fmt.Sprintf("          partition: %d\n", *p.Partition))
+			}
+		}
+
 		image := p.Image
 		if image == "" {
 			image = "registry.k8s.io/pause:3.9"
 		}
-		sb.WriteString("    leaderWorkerTemplate:\n")
-		sb.WriteString("      size: 1\n")
-		sb.WriteString("      workerTemplate:\n")
+		sb.WriteString("      leaderWorkerTemplate:\n")
+		sb.WriteString("        size: 1\n")
+		sb.WriteString("        workerTemplate:\n")
 
-		// Add metadata section if labels or annotations are present
+		// Pod template metadata (labels/annotations propagated to pods)
 		if len(p.Labels) > 0 || len(p.Annotations) > 0 {
-			sb.WriteString("        metadata:\n")
+			sb.WriteString("          metadata:\n")
 			if len(p.Labels) > 0 {
-				sb.WriteString("          labels:\n")
+				sb.WriteString("            labels:\n")
 				for k, v := range p.Labels {
-					sb.WriteString(fmt.Sprintf("            %s: %s\n", k, v))
+					sb.WriteString(fmt.Sprintf("              %s: %s\n", k, v))
 				}
 			}
 			if len(p.Annotations) > 0 {
-				sb.WriteString("          annotations:\n")
+				sb.WriteString("            annotations:\n")
 				for k, v := range p.Annotations {
-					sb.WriteString(fmt.Sprintf("            %s: \"%s\"\n", k, v))
+					sb.WriteString(fmt.Sprintf("              %s: \"%s\"\n", k, v))
 				}
 			}
 		}
 
-		sb.WriteString("        spec:\n")
-		sb.WriteString("          containers:\n")
-		sb.WriteString("          - name: main\n")
-		sb.WriteString(fmt.Sprintf("            image: %s\n", image))
+		sb.WriteString("          spec:\n")
+		sb.WriteString("            containers:\n")
+		sb.WriteString("            - name: main\n")
+		sb.WriteString(fmt.Sprintf("              image: %s\n", image))
 	}
 
 	return sb.String()

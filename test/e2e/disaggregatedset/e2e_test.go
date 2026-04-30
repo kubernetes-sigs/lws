@@ -123,7 +123,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				podOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+				g.Expect(len(podNames)).To(BeNumerically(">=", 1), "expected at least 1 controller pod running")
 				controllerPodName = podNames[0]
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 

@@ -39,7 +39,6 @@ type DisaggregatedRoleSpec struct {
 	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
 	// DisaggregatedSet handles rollouts across roles.
-	// +required
 	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 
