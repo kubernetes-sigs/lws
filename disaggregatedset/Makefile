@@ -67,18 +67,29 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # E2E tests using Kind cluster with LWS controller.
 KIND_CLUSTER_NAME ?= disaggregatedset-test-e2e
 E2E_KIND_VERSION ?= kindest/node:v1.32.2
+E2E_KIND_BUILD_NODE_IMAGE_VERSION ?=
 E2E_IMG ?= controller:e2e
 USE_EXISTING_CLUSTER ?= false
 ARTIFACTS ?= $(LOCALBIN)
 LWS_VERSION ?= v0.8.0
 
 .PHONY: test-e2e
-test-e2e: manifests generate kustomize ginkgo ## Run e2e tests using Kind cluster.
-	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) \
+test-e2e: manifests generate kustomize ginkgo kind-node-image-build ## Run e2e tests using Kind cluster.
+	E2E_KIND_VERSION=$(E2E_KIND_VERSION) E2E_KIND_BUILD_NODE_IMAGE_VERSION=$(E2E_KIND_BUILD_NODE_IMAGE_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) \
 		KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) \
 		USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(E2E_IMG) \
 		ARTIFACTS=$(ARTIFACTS) LWS_VERSION=$(LWS_VERSION) \
 		./hack/e2e-test.sh
+
+.PHONY: kind-node-image-build
+kind-node-image-build:
+	@if [ -n "$(E2E_KIND_BUILD_NODE_IMAGE_VERSION)" ]; then \
+		if docker image inspect "$(E2E_KIND_VERSION)" >/dev/null 2>&1; then \
+			echo "Kind node image $(E2E_KIND_VERSION) already exists locally; skipping build."; \
+		else \
+			$(KIND) build node-image "$(E2E_KIND_BUILD_NODE_IMAGE_VERSION)" --image "$(E2E_KIND_VERSION)"; \
+		fi; \
+	fi
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
