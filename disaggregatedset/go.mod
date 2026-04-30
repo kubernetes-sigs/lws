@@ -1,6 +1,6 @@
 module sigs.k8s.io/disaggregatedset
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/olekukonko/tablewriter v1.1.3
