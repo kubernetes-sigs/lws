@@ -156,7 +156,6 @@ vet: ## Run go vet against code.
 test: manifests fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- ./api/... ./pkg/... ./cmd/... -coverprofile  $(ARTIFACTS)/cover.out
-	$(MAKE) -C disaggregatedset test
 
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
@@ -176,7 +175,6 @@ test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 .PHONY: test-e2e
 test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
-	$(MAKE) -C disaggregatedset test-e2e KIND=$(KIND) KUBECTL=$(KUBECTL) E2E_KIND_VERSION=$(E2E_KIND_VERSION) ARTIFACTS=$(ARTIFACTS)
 
 .PHONY: test-e2e-cert-manager
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
