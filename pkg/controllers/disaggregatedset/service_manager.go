@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 type ServiceManager struct {
@@ -46,7 +46,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
+	deployment *disaggregatedset.DisaggregatedSet,
 	groupedWorkloads GroupedWorkloads,
 	targetRevision string,
 ) error {
@@ -102,7 +102,7 @@ func (manager *ServiceManager) ReconcileServices(
 
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
+	deployment *disaggregatedset.DisaggregatedSet,
 	roleName string,
 	revision string,
 ) error {
@@ -123,7 +123,7 @@ func (manager *ServiceManager) ensureService(
 }
 
 func (manager *ServiceManager) buildService(
-	deployment *disaggregatedsetv1.DisaggregatedSet,
+	deployment *disaggregatedset.DisaggregatedSet,
 	roleName string,
 	revision string,
 ) *corev1.Service {
@@ -147,7 +147,7 @@ func (manager *ServiceManager) buildService(
 			Namespace: deployment.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				APIVersion: disaggregatedset.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
 				Name:       deployment.Name,
 				UID:        deployment.UID,
@@ -163,7 +163,7 @@ func (manager *ServiceManager) buildService(
 
 func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
+	deployment *disaggregatedset.DisaggregatedSet,
 	groupedWorkloads GroupedWorkloads,
 	targetRevision string,
 	roleNames []string,

@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 // createTestLWSWithAnnotation creates a LeaderWorkerSet for testing with optional annotations.
@@ -464,7 +464,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 func TestManagerCreate(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
-	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
+	require.NoError(t, disaggregatedset.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation("test-deploy-abc123-prefill", "default", 3, nil)
@@ -476,7 +476,7 @@ func TestManagerCreate(t *testing.T) {
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
 		params := CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+			DisaggregatedSet: &disaggregatedset.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-deploy",
 					Namespace: "default",
@@ -491,7 +491,7 @@ func TestManagerCreate(t *testing.T) {
 				LabelDisaggRole: "prefill",
 				LabelRevision:   "abc123",
 			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
@@ -511,7 +511,7 @@ func TestManagerCreate(t *testing.T) {
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
 		params := CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+			DisaggregatedSet: &disaggregatedset.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-deploy",
 					Namespace: "default",
@@ -526,7 +526,7 @@ func TestManagerCreate(t *testing.T) {
 				LabelDisaggRole: "prefill",
 				LabelRevision:   "abc123",
 			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
@@ -544,12 +544,12 @@ func TestManagerCreate(t *testing.T) {
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
 		err := manager.Create(context.Background(), CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+			DisaggregatedSet: &disaggregatedset.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
 			},
 			Role: "prefill", Revision: "rev1", Replicas: 1,
 			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggRole: "prefill", "app": "system-app"},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
@@ -576,7 +576,7 @@ func TestManagerCreate(t *testing.T) {
 // TestComputeRevision tests the ComputeRevision function.
 func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
-		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roles := []disaggregatedset.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -605,7 +605,7 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("returns different revision for different Size", func(t *testing.T) {
-		roles1 := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roles1 := []disaggregatedset.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -625,7 +625,7 @@ func TestComputeRevision(t *testing.T) {
 				}},
 			},
 		}
-		roles2 := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roles2 := []disaggregatedset.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -653,7 +653,7 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("returns different revision for different role names", func(t *testing.T) {
-		roles1 := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roles1 := []disaggregatedset.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -673,7 +673,7 @@ func TestComputeRevision(t *testing.T) {
 				}},
 			},
 		}
-		roles2 := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roles2 := []disaggregatedset.DisaggregatedRoleSpec{
 			{
 				Name: "other-role",
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -701,7 +701,7 @@ func TestComputeRevision(t *testing.T) {
 	})
 
 	t.Run("handles empty roles slice", func(t *testing.T) {
-		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{}
+		roles := []disaggregatedset.DisaggregatedRoleSpec{}
 
 		revision := ComputeRevision(roles)
 		require.Len(t, revision, 8)

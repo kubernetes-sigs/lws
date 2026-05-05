@@ -11,7 +11,7 @@ import (
 	"k8s.io/utils/ptr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 // Test-local role names for utils_test.go
@@ -25,7 +25,7 @@ func TestUtilityFunctions(t *testing.T) {
 
 	// Test setOwnerReference
 	t.Run("setOwnerReference", func(t *testing.T) {
-		disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{
+		disaggregatedSet := &disaggregatedset.DisaggregatedSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-deployment",
 				UID:  types.UID("test-uid-123"),

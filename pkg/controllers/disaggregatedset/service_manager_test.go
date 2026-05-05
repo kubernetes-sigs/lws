@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 // Test-local role names
@@ -461,15 +461,15 @@ func TestGenerateServiceName(t *testing.T) {
 // createTestDeployment creates a test deployment without ServiceTemplate
 //
 //nolint:unparam // namespace is always "default" in tests but kept for clarity
-func createTestDeployment(name, namespace string) *disaggregatedsetv1.DisaggregatedSet {
-	return &disaggregatedsetv1.DisaggregatedSet{
+func createTestDeployment(name, namespace string) *disaggregatedset.DisaggregatedSet {
+	return &disaggregatedset.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 			UID:       "test-uid",
 		},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
-			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
+		Spec: disaggregatedset.DisaggregatedSetSpec{
+			Roles: []disaggregatedset.DisaggregatedRoleSpec{
 				{
 					Name: testServiceRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{

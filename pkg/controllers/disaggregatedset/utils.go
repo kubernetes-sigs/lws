@@ -26,7 +26,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 const NumRequiredRoles = 2
@@ -104,9 +104,9 @@ type WorkloadInfo struct {
 }
 
 type CreateParams struct {
-	DisaggregatedSet *disaggregatedsetv1.DisaggregatedSet
+	DisaggregatedSet *disaggregatedset.DisaggregatedSet
 	Role             string
-	Config           *disaggregatedsetv1.DisaggregatedRoleSpec
+	Config           *disaggregatedset.DisaggregatedRoleSpec
 	Revision         string
 	Labels           map[string]string
 	Replicas         int
@@ -127,7 +127,7 @@ func GenerateLabels(baseName, role, revision string) map[string]string {
 
 const revisionLength = 8
 
-func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
+func ComputeRevision(roles []disaggregatedset.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
 		Name     string                               `json:"name"`
 		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
@@ -154,8 +154,8 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	return fullHash
 }
 
-func GetRoleConfigs(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) map[string]*disaggregatedsetv1.DisaggregatedRoleSpec {
-	roleConfigs := make(map[string]*disaggregatedsetv1.DisaggregatedRoleSpec)
+func GetRoleConfigs(disaggregatedSet *disaggregatedset.DisaggregatedSet) map[string]*disaggregatedset.DisaggregatedRoleSpec {
+	roleConfigs := make(map[string]*disaggregatedset.DisaggregatedRoleSpec)
 
 	for i := range disaggregatedSet.Spec.Roles {
 		role := &disaggregatedSet.Spec.Roles[i]
@@ -165,7 +165,7 @@ func GetRoleConfigs(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) map[s
 	return roleConfigs
 }
 
-func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []string {
+func GetRoleNames(disaggregatedSet *disaggregatedset.DisaggregatedSet) []string {
 	names := make([]string, len(disaggregatedSet.Spec.Roles))
 	for i, role := range disaggregatedSet.Spec.Roles {
 		names[i] = role.Name

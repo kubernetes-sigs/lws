@@ -31,7 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 type GroupedWorkload struct {
@@ -127,7 +127,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 			Labels:      lwsLabels,
 			Annotations: lwsAnnotations,
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				APIVersion: disaggregatedset.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
 				Name:       params.DisaggregatedSet.Name,
 				UID:        params.DisaggregatedSet.UID,
