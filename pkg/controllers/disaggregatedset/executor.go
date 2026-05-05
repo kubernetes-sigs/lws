@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 const (
@@ -49,7 +49,7 @@ type RollingUpdateExecutor struct {
 
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	ctx context.Context,
-	disaggregatedSet *disaggregatedset.DisaggregatedSet,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	revision string,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -78,10 +78,10 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 
 func (executor *RollingUpdateExecutor) initRollingUpdate(
 	ctx context.Context,
-	disaggregatedSet *disaggregatedset.DisaggregatedSet,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	revision string,
 	roleNames []string,
-	roleConfigs map[string]*disaggregatedset.DisaggregatedRoleSpec,
+	roleConfigs map[string]*disaggregatedsetv1.DisaggregatedRoleSpec,
 	oldWorkloads GroupedWorkloads,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -116,7 +116,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	ctx context.Context,
-	disaggregatedSet *disaggregatedset.DisaggregatedSet,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	oldWorkloads GroupedWorkloads,
 	newWorkload GroupedWorkload,
 ) (ctrl.Result, error) {
@@ -181,7 +181,7 @@ func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
 }
 
 func buildPlannerState(
-	ds *disaggregatedset.DisaggregatedSet,
+	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
 	oldWorkloads GroupedWorkloads,
@@ -202,7 +202,7 @@ func buildPlannerState(
 	return
 }
 
-func getTargetReplicas(ds *disaggregatedset.DisaggregatedSet, roleName string) int {
+func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) int {
 	for _, p := range ds.Spec.Roles {
 		if p.Name == roleName {
 			if p.Spec.Replicas == nil {
@@ -214,7 +214,7 @@ func getTargetReplicas(ds *disaggregatedset.DisaggregatedSet, roleName string) i
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggregatedset.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
+func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
 	config := DefaultRollingUpdateConfig(len(allRoleNames))
 
 	roleIndex := make(map[string]int, len(allRoleNames))
@@ -283,7 +283,7 @@ func sortByNewestTimestamp(workloads GroupedWorkloads, roleNames []string) Group
 
 func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
-	ds *disaggregatedset.DisaggregatedSet,
+	ds *disaggregatedsetv1.DisaggregatedSet,
 	newWorkload GroupedWorkload,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
@@ -307,7 +307,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 
 func (executor *RollingUpdateExecutor) scaleDownOld(
 	ctx context.Context,
-	ds *disaggregatedset.DisaggregatedSet,
+	ds *disaggregatedsetv1.DisaggregatedSet,
 	oldWorkloads GroupedWorkloads,
 	roleNames []string,
 	current, target RoleReplicaState,
@@ -383,9 +383,9 @@ func allZero(s []int) bool {
 
 func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 	ctx context.Context,
-	ds *disaggregatedset.DisaggregatedSet,
+	ds *disaggregatedsetv1.DisaggregatedSet,
 	revision, role string,
-	config *disaggregatedset.DisaggregatedRoleSpec,
+	config *disaggregatedsetv1.DisaggregatedRoleSpec,
 	initialReplicas int,
 ) (bool, error) {
 	workloadName := GenerateName(ds.Name, role, revision)

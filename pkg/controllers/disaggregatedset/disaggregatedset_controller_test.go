@@ -33,7 +33,7 @@ import (
 
 	"k8s.io/utils/ptr"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	controller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
 )
 
@@ -45,7 +45,7 @@ const (
 
 func testScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	_ = disaggregatedset.AddToScheme(scheme)
+	_ = disaggregatedsetv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = leaderworkerset.AddToScheme(scheme)
 	return scheme
@@ -53,11 +53,11 @@ func testScheme() *runtime.Scheme {
 
 // createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing workload with the given revision.
 // Useful for simulating pre-existing workloads in rolling update tests.
-func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedset.DisaggregatedSet, role, revision string, replicas int32) *leaderworkerset.LeaderWorkerSet {
+func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas int32) *leaderworkerset.LeaderWorkerSet {
 	labels := map[string]string{
-		disaggregatedset.SetNameLabelKey: disaggregatedSet.Name,
-		disaggregatedset.RoleLabelKey: role,
-		disaggregatedset.RevisionLabelKey:   revision,
+		disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name,
+		disaggregatedsetv1.RoleLabelKey: role,
+		disaggregatedsetv1.RevisionLabelKey:   revision,
 	}
 
 	return &leaderworkerset.LeaderWorkerSet{
@@ -66,7 +66,7 @@ func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedset.DisaggregatedSe
 			Namespace: disaggregatedSet.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedset.GroupVersion.String(),
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
 				Name:       disaggregatedSet.Name,
 				UID:        disaggregatedSet.UID,
@@ -89,15 +89,15 @@ func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedset.DisaggregatedSe
 	}
 }
 
-func newTestDisaggregatedSet(name, namespace string, prefillReplicas, decodeReplicas int32, image string) *disaggregatedset.DisaggregatedSet {
-	return &disaggregatedset.DisaggregatedSet{
+func newTestDisaggregatedSet(name, namespace string, prefillReplicas, decodeReplicas int32, image string) *disaggregatedsetv1.DisaggregatedSet {
+	return &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 			UID:       types.UID(name + "-uid"),
 		},
-		Spec: disaggregatedset.DisaggregatedSetSpec{
-			Roles: []disaggregatedset.DisaggregatedRoleSpec{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testControllerRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -130,7 +130,7 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	disaggregatedSet := newTestDisaggregatedSet("fresh-deploy", "default", 3, 2, "nginx:1.0")
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
-		WithStatusSubresource(&disaggregatedset.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:          fakeClient,
 		Scheme:          scheme,
@@ -165,7 +165,7 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	decodeRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
-		WithStatusSubresource(&disaggregatedset.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:          fakeClient,
 		Scheme:          scheme,

@@ -26,7 +26,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 const NumRequiredRoles = 2
@@ -35,7 +35,7 @@ func GetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) (int32
 	if leaderWorkerSet.Annotations == nil {
 		return 0, false
 	}
-	value, exists := leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey]
+	value, exists := leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
 	if !exists || value == "" {
 		return 0, false
 	}
@@ -50,7 +50,7 @@ func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replic
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
-	leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey] = strconv.FormatInt(int64(replicas), 10)
+	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.FormatInt(int64(replicas), 10)
 }
 
 func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[string]int {
@@ -58,7 +58,7 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[s
 
 	for i := range lwsList {
 		lws := &lwsList[i]
-		role := lws.Labels[disaggregatedset.RoleLabelKey]
+		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
 		if role == "" {
 			continue
 		}
@@ -94,9 +94,9 @@ type WorkloadInfo struct {
 }
 
 type CreateParams struct {
-	DisaggregatedSet *disaggregatedset.DisaggregatedSet
+	DisaggregatedSet *disaggregatedsetv1.DisaggregatedSet
 	Role             string
-	Config           *disaggregatedset.DisaggregatedRoleSpec
+	Config           *disaggregatedsetv1.DisaggregatedRoleSpec
 	Revision         string
 	Labels           map[string]string
 	Replicas         int
@@ -109,15 +109,15 @@ func GenerateName(baseName, role, revision string) string {
 func GenerateLabels(baseName, role, revision string) map[string]string {
 	return map[string]string{
 		"app":           fmt.Sprintf("%s-%s", baseName, role),
-		disaggregatedset.RoleLabelKey: role,
-		disaggregatedset.SetNameLabelKey: baseName,
-		disaggregatedset.RevisionLabelKey:   revision,
+		disaggregatedsetv1.RoleLabelKey: role,
+		disaggregatedsetv1.SetNameLabelKey: baseName,
+		disaggregatedsetv1.RevisionLabelKey:   revision,
 	}
 }
 
 const revisionLength = 8
 
-func ComputeRevision(roles []disaggregatedset.DisaggregatedRoleSpec) string {
+func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
 		Name     string                               `json:"name"`
 		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
@@ -144,8 +144,8 @@ func ComputeRevision(roles []disaggregatedset.DisaggregatedRoleSpec) string {
 	return fullHash
 }
 
-func GetRoleConfigs(disaggregatedSet *disaggregatedset.DisaggregatedSet) map[string]*disaggregatedset.DisaggregatedRoleSpec {
-	roleConfigs := make(map[string]*disaggregatedset.DisaggregatedRoleSpec)
+func GetRoleConfigs(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) map[string]*disaggregatedsetv1.DisaggregatedRoleSpec {
+	roleConfigs := make(map[string]*disaggregatedsetv1.DisaggregatedRoleSpec)
 
 	for i := range disaggregatedSet.Spec.Roles {
 		role := &disaggregatedSet.Spec.Roles[i]
@@ -155,7 +155,7 @@ func GetRoleConfigs(disaggregatedSet *disaggregatedset.DisaggregatedSet) map[str
 	return roleConfigs
 }
 
-func GetRoleNames(disaggregatedSet *disaggregatedset.DisaggregatedSet) []string {
+func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []string {
 	names := make([]string, len(disaggregatedSet.Spec.Roles))
 	for i, role := range disaggregatedSet.Spec.Roles {
 		names[i] = role.Name

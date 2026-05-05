@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 // Test-local role names
@@ -223,9 +223,9 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify standard labels are present
-		assert.Equal(t, "test-deploy", decodeService.Labels[disaggregatedset.SetNameLabelKey], "name label should be set")
-		assert.Equal(t, "abc12345", decodeService.Labels[disaggregatedset.RevisionLabelKey], "revision label should be set")
-		assert.Equal(t, testServiceRoleDecode, decodeService.Labels[disaggregatedset.RoleLabelKey], "role label should be set")
+		assert.Equal(t, "test-deploy", decodeService.Labels[disaggregatedsetv1.SetNameLabelKey], "name label should be set")
+		assert.Equal(t, "abc12345", decodeService.Labels[disaggregatedsetv1.RevisionLabelKey], "revision label should be set")
+		assert.Equal(t, testServiceRoleDecode, decodeService.Labels[disaggregatedsetv1.RoleLabelKey], "role label should be set")
 	})
 
 	t.Run("selector matches pod labels for role and revision", func(t *testing.T) {
@@ -255,9 +255,9 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify selector matches expected pod labels
-		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[disaggregatedset.SetNameLabelKey])
-		assert.Equal(t, "abc12345", decodeService.Spec.Selector[disaggregatedset.RevisionLabelKey])
-		assert.Equal(t, testServiceRoleDecode, decodeService.Spec.Selector[disaggregatedset.RoleLabelKey])
+		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[disaggregatedsetv1.SetNameLabelKey])
+		assert.Equal(t, "abc12345", decodeService.Spec.Selector[disaggregatedsetv1.RevisionLabelKey])
+		assert.Equal(t, testServiceRoleDecode, decodeService.Spec.Selector[disaggregatedsetv1.RoleLabelKey])
 	})
 
 	t.Run("old services deleted when revision is drained", func(t *testing.T) {
@@ -269,9 +269,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedset.SetNameLabelKey: deployment.Name,
-					disaggregatedset.RoleLabelKey: testServiceRoleDecode,
-					disaggregatedset.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+					disaggregatedsetv1.RoleLabelKey: testServiceRoleDecode,
+					disaggregatedsetv1.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -322,9 +322,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRolePrefill, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedset.SetNameLabelKey: deployment.Name,
-					disaggregatedset.RoleLabelKey: testServiceRolePrefill,
-					disaggregatedset.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+					disaggregatedsetv1.RoleLabelKey: testServiceRolePrefill,
+					disaggregatedsetv1.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -336,9 +336,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedset.SetNameLabelKey: deployment.Name,
-					disaggregatedset.RoleLabelKey: testServiceRoleDecode,
-					disaggregatedset.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+					disaggregatedsetv1.RoleLabelKey: testServiceRoleDecode,
+					disaggregatedsetv1.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -461,15 +461,15 @@ func TestGenerateServiceName(t *testing.T) {
 // createTestDeployment creates a test deployment without ServiceTemplate
 //
 //nolint:unparam // namespace is always "default" in tests but kept for clarity
-func createTestDeployment(name, namespace string) *disaggregatedset.DisaggregatedSet {
-	return &disaggregatedset.DisaggregatedSet{
+func createTestDeployment(name, namespace string) *disaggregatedsetv1.DisaggregatedSet {
+	return &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 			UID:       "test-uid",
 		},
-		Spec: disaggregatedset.DisaggregatedSetSpec{
-			Roles: []disaggregatedset.DisaggregatedRoleSpec{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testServiceRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{

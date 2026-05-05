@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 type ServiceManager struct {
@@ -46,7 +46,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
-	deployment *disaggregatedset.DisaggregatedSet,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
 	groupedWorkloads GroupedWorkloads,
 	targetRevision string,
 ) error {
@@ -102,7 +102,7 @@ func (manager *ServiceManager) ReconcileServices(
 
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
-	deployment *disaggregatedset.DisaggregatedSet,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
 	roleName string,
 	revision string,
 ) error {
@@ -123,22 +123,22 @@ func (manager *ServiceManager) ensureService(
 }
 
 func (manager *ServiceManager) buildService(
-	deployment *disaggregatedset.DisaggregatedSet,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
 	roleName string,
 	revision string,
 ) *corev1.Service {
 	serviceName := GenerateServiceName(deployment.Name, roleName, revision)
 
 	labels := map[string]string{
-		disaggregatedset.SetNameLabelKey: deployment.Name,
-		disaggregatedset.RoleLabelKey: roleName,
-		disaggregatedset.RevisionLabelKey:   revision,
+		disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+		disaggregatedsetv1.RoleLabelKey: roleName,
+		disaggregatedsetv1.RevisionLabelKey:   revision,
 	}
 
 	selector := map[string]string{
-		disaggregatedset.SetNameLabelKey: deployment.Name,
-		disaggregatedset.RoleLabelKey: roleName,
-		disaggregatedset.RevisionLabelKey:   revision,
+		disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+		disaggregatedsetv1.RoleLabelKey: roleName,
+		disaggregatedsetv1.RevisionLabelKey:   revision,
 	}
 
 	return &corev1.Service{
@@ -147,7 +147,7 @@ func (manager *ServiceManager) buildService(
 			Namespace: deployment.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedset.GroupVersion.String(),
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
 				Name:       deployment.Name,
 				UID:        deployment.UID,
@@ -163,7 +163,7 @@ func (manager *ServiceManager) buildService(
 
 func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
-	deployment *disaggregatedset.DisaggregatedSet,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
 	groupedWorkloads GroupedWorkloads,
 	targetRevision string,
 	roleNames []string,
@@ -190,14 +190,14 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	serviceList := &corev1.ServiceList{}
 	if err := manager.client.List(ctx, serviceList,
 		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{disaggregatedset.SetNameLabelKey: deployment.Name},
+		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
 	); err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for i := range serviceList.Items {
 		service := &serviceList.Items[i]
-		serviceRevision := service.Labels[disaggregatedset.RevisionLabelKey]
+		serviceRevision := service.Labels[disaggregatedsetv1.RevisionLabelKey]
 
 		if !readyRevisionSet[serviceRevision] {
 			log.Info("Deleting drained Service", "service", service.Name, "revision", serviceRevision, "targetRevision", targetRevision)

@@ -31,7 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 // DisaggregatedSetReconciler reconciles a DisaggregatedSet object
@@ -54,7 +54,7 @@ type DisaggregatedSetReconciler struct {
 func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	disaggregatedSet := &disaggregatedset.DisaggregatedSet{}
+	disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{}
 	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -117,7 +117,7 @@ func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdat
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) (ctrl.Result, error) {
 	roleConfigs := GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
@@ -133,7 +133,7 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, role string, config *disaggregatedset.DisaggregatedRoleSpec, revision string) error {
+func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string) error {
 	log := logf.FromContext(ctx)
 
 	workloadName := GenerateName(disaggregatedSet.Name, role, revision)
@@ -171,7 +171,7 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	return nil
 }
 
-func (r *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
+func (r *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
 	roleNames := GetRoleNames(disaggregatedSet)
@@ -193,7 +193,7 @@ func (r *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, di
 	return nil
 }
 
-func (r *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
+func (r *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
 	workloads, err := r.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
@@ -242,7 +242,7 @@ func (r *DisaggregatedSetReconciler) setOwnerReference(obj metav1.Object, owner 
 	ownerRefs := obj.GetOwnerReferences()
 
 	newRef := metav1.OwnerReference{
-		APIVersion: disaggregatedset.GroupVersion.String(),
+		APIVersion: disaggregatedsetv1.GroupVersion.String(),
 		Kind:       "DisaggregatedSet",
 		Name:       owner.GetName(),
 		UID:        owner.GetUID(),
@@ -269,7 +269,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&disaggregatedset.DisaggregatedSet{}).
+		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkerset.LeaderWorkerSet{}).
 		Named("disaggregatedset").
 		Complete(r)

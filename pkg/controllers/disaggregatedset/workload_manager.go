@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 type GroupedWorkload struct {
@@ -105,7 +105,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 			Labels:      lwsLabels,
 			Annotations: lwsAnnotations,
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedset.GroupVersion.String(),
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
 				Name:       params.DisaggregatedSet.Name,
 				UID:        params.DisaggregatedSet.UID,
@@ -188,8 +188,8 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return &WorkloadInfo{
 		Name:                         leaderWorkerSet.Name,
 		Namespace:                    leaderWorkerSet.Namespace,
-		Role:                         leaderWorkerSet.Labels[disaggregatedset.RoleLabelKey],
-		Revision:                     leaderWorkerSet.Labels[disaggregatedset.RevisionLabelKey],
+		Role:                         leaderWorkerSet.Labels[disaggregatedsetv1.RoleLabelKey],
+		Revision:                     leaderWorkerSet.Labels[disaggregatedsetv1.RevisionLabelKey],
 		Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 		ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
 		InitialReplicas:              int(initialReplicas),
@@ -201,9 +201,9 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]WorkloadInfo, error) {
 	workloadList := &leaderworkerset.LeaderWorkerSetList{}
 
-	labels := client.MatchingLabels{disaggregatedset.SetNameLabelKey: disaggDeploymentName}
+	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
 	if role != "" {
-		labels[disaggregatedset.RoleLabelKey] = role
+		labels[disaggregatedsetv1.RoleLabelKey] = role
 	}
 
 	if err := manager.client.List(ctx, workloadList, client.InNamespace(namespace), labels); err != nil {
@@ -220,8 +220,8 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		result = append(result, WorkloadInfo{
 			Name:                         leaderWorkerSet.Name,
 			Namespace:                    leaderWorkerSet.Namespace,
-			Role:                         leaderWorkerSet.Labels[disaggregatedset.RoleLabelKey],
-			Revision:                     leaderWorkerSet.Labels[disaggregatedset.RevisionLabelKey],
+			Role:                         leaderWorkerSet.Labels[disaggregatedsetv1.RoleLabelKey],
+			Revision:                     leaderWorkerSet.Labels[disaggregatedsetv1.RevisionLabelKey],
 			Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 			ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
 			InitialReplicas:              int(initialReplicas),
@@ -311,7 +311,7 @@ func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkerset.LeaderWorke
 	if leaderWorkerSet.Annotations == nil {
 		return nil
 	}
-	valueStr, ok := leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey]
+	valueStr, ok := leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
 	if !ok {
 		return nil
 	}
@@ -331,7 +331,7 @@ func (manager *LeaderWorkerSetManager) patchInitialReplicasAnnotation(
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
-	leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey] = strconv.Itoa(value)
+	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.Itoa(value)
 	return manager.client.Patch(ctx, leaderWorkerSet, patch)
 }
 

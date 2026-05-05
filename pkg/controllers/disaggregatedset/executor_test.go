@@ -36,7 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 const testNamespace = "default"
@@ -55,7 +55,7 @@ func testRoleNames() []string {
 // testSchemeForUnit creates a scheme with all required types registered.
 func testSchemeForUnit() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	_ = disaggregatedset.AddToScheme(scheme)
+	_ = disaggregatedsetv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = leaderworkerset.AddToScheme(scheme)
 	return scheme
@@ -93,9 +93,9 @@ func createTestLWS(
 			Namespace:         namespace,
 			CreationTimestamp: metav1.Time{Time: creationTime},
 			Labels: map[string]string{
-				disaggregatedset.RoleLabelKey: role,
-				disaggregatedset.SetNameLabelKey: "test",
-				disaggregatedset.RevisionLabelKey:   revision,
+				disaggregatedsetv1.RoleLabelKey: role,
+				disaggregatedsetv1.SetNameLabelKey: "test",
+				disaggregatedsetv1.RevisionLabelKey:   revision,
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -172,7 +172,7 @@ func createWorkloadForTest(
 
 // statusSubresourceObjects returns the objects that need status subresource support in the fake client.
 func statusSubresourceObjects() []client.Object {
-	return []client.Object{&disaggregatedset.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}}
+	return []client.Object{&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}}
 }
 
 // getWorkloadReplicas fetches a workload by name and returns its spec replica count.
@@ -218,8 +218,8 @@ func makeRoleSpec(
 	replicas int32,
 	podSpec corev1.PodSpec,
 	surge, unavail intstr.IntOrString,
-) disaggregatedset.DisaggregatedRoleSpec {
-	return disaggregatedset.DisaggregatedRoleSpec{
+) disaggregatedsetv1.DisaggregatedRoleSpec {
+	return disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: name,
 		LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
 			Replicas: ptr.To(replicas),
@@ -242,7 +242,7 @@ func setupABCScenario(
 	targetPrefill, targetDecode int32,
 	aPrefill, aDecode, bPrefill, bDecode int32,
 	prefillSurge, prefillUnavail, decodeSurge, decodeUnavail int,
-) (client.Client, *disaggregatedset.DisaggregatedSet, abcScenarioRevisions) {
+) (client.Client, *disaggregatedsetv1.DisaggregatedSet, abcScenarioRevisions) {
 	podSpecA := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img:a"}}}
 	podSpecB := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img:b"}}}
 	podSpecC := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img:c"}}}
@@ -250,15 +250,15 @@ func setupABCScenario(
 	pSurge, pUnavail := intstr.FromInt(prefillSurge), intstr.FromInt(prefillUnavail)
 	dSurge, dUnavail := intstr.FromInt(decodeSurge), intstr.FromInt(decodeUnavail)
 
-	rolesA := []disaggregatedset.DisaggregatedRoleSpec{
+	rolesA := []disaggregatedsetv1.DisaggregatedRoleSpec{
 		makeRoleSpec(testRolePrefill, targetPrefill, podSpecA, pSurge, pUnavail),
 		makeRoleSpec(testRoleDecode, targetDecode, podSpecA, dSurge, dUnavail),
 	}
-	rolesB := []disaggregatedset.DisaggregatedRoleSpec{
+	rolesB := []disaggregatedsetv1.DisaggregatedRoleSpec{
 		makeRoleSpec(testRolePrefill, targetPrefill, podSpecB, pSurge, pUnavail),
 		makeRoleSpec(testRoleDecode, targetDecode, podSpecB, dSurge, dUnavail),
 	}
-	rolesC := []disaggregatedset.DisaggregatedRoleSpec{
+	rolesC := []disaggregatedsetv1.DisaggregatedRoleSpec{
 		makeRoleSpec(testRolePrefill, targetPrefill, podSpecC, pSurge, pUnavail),
 		makeRoleSpec(testRoleDecode, targetDecode, podSpecC, dSurge, dUnavail),
 	}
@@ -267,19 +267,19 @@ func setupABCScenario(
 	revisionB := ComputeRevision(rolesB)
 	revisionC := ComputeRevision(rolesC)
 
-	deployment := &disaggregatedset.DisaggregatedSet{
+	deployment := &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
-		Spec:       disaggregatedset.DisaggregatedSetSpec{Roles: rolesC},
+		Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: rolesC},
 	}
 
 	ownerRef := metav1.OwnerReference{
-		APIVersion: disaggregatedset.GroupVersion.String(),
+		APIVersion: disaggregatedsetv1.GroupVersion.String(),
 		Kind:       "DisaggregatedSet",
 		Name:       "test",
 		UID:        "uid",
 	}
 	makeLabels := func(role, revision string) map[string]string {
-		return map[string]string{disaggregatedset.RoleLabelKey: role, disaggregatedset.SetNameLabelKey: "test", disaggregatedset.RevisionLabelKey: revision}
+		return map[string]string{disaggregatedsetv1.RoleLabelKey: role, disaggregatedsetv1.SetNameLabelKey: "test", disaggregatedsetv1.RevisionLabelKey: revision}
 	}
 
 	var objects []client.Object
@@ -317,7 +317,7 @@ func setupABCScenario(
 func runReconcileUntilStable(
 	t *testing.T,
 	fakeClient client.Client,
-	deployment *disaggregatedset.DisaggregatedSet,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
 	maxIterations int,
 ) {
 	reconciler := newTestReconciler(fakeClient)
@@ -396,7 +396,7 @@ func TestReconcilerIntegration(t *testing.T) {
 				}
 			}
 
-			roles := []disaggregatedset.DisaggregatedRoleSpec{
+			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -425,22 +425,22 @@ func TestReconcilerIntegration(t *testing.T) {
 				},
 			}
 
-			deployment := &disaggregatedset.DisaggregatedSet{
+			deployment := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.deployName, Namespace: "default", UID: "uid"},
-				Spec:       disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 			require.NoError(t, fakeClient.Create(context.TODO(), deployment))
 
 			newRevision := ComputeRevision(roles)
 			oldRevision := "oldhash"
 			ownerRef := metav1.OwnerReference{
-				APIVersion: disaggregatedset.GroupVersion.String(),
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet", Name: tc.deployName, UID: "uid",
 			}
 			makeLabels := func(role, revision string) map[string]string {
 				return map[string]string{
-					disaggregatedset.RoleLabelKey: role, disaggregatedset.SetNameLabelKey: tc.deployName,
-					disaggregatedset.RevisionLabelKey: revision,
+					disaggregatedsetv1.RoleLabelKey: role, disaggregatedsetv1.SetNameLabelKey: tc.deployName,
+					disaggregatedsetv1.RevisionLabelKey: revision,
 				}
 			}
 
@@ -611,12 +611,12 @@ func TestIsWorkloadStable(t *testing.T) {
 // =============================================================================
 
 func TestGetRoleConfigs(t *testing.T) {
-	roles := []disaggregatedset.DisaggregatedRoleSpec{
+	roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 		{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(3))}}},
 		{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(5))}}},
 	}
-	deployment := &disaggregatedset.DisaggregatedSet{
-		Spec: disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+	deployment := &disaggregatedsetv1.DisaggregatedSet{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 	}
 
 	configs := GetRoleConfigs(deployment)
@@ -669,7 +669,7 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 				}
 			}
 
-			roles := []disaggregatedset.DisaggregatedRoleSpec{
+			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -690,8 +690,8 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 				},
 			}
 
-			ds := &disaggregatedset.DisaggregatedSet{
-				Spec: disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+			ds := &disaggregatedsetv1.DisaggregatedSet{
+				Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
@@ -772,7 +772,7 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			roles := []disaggregatedset.DisaggregatedRoleSpec{
+			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -799,8 +799,8 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 				},
 			}
 
-			ds := &disaggregatedset.DisaggregatedSet{
-				Spec: disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+			ds := &disaggregatedsetv1.DisaggregatedSet{
+				Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
@@ -911,7 +911,7 @@ func TestScaleDownOld(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedset.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
 			// Convert budget to current/target format
 			current := RoleReplicaState{
@@ -1007,7 +1007,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedset.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
 			// Convert budget to current/target format for 3 roles
 			current := RoleReplicaState{
@@ -1069,7 +1069,7 @@ func TestScaleUpNew(t *testing.T) {
 
 			executor := newTestExecutor(fakeClient)
 
-			ds := &disaggregatedset.DisaggregatedSet{
+			ds := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
 			}
 
@@ -1122,7 +1122,7 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 
 			executor := newTestExecutor(fakeClient)
 			podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}}
-			roles := []disaggregatedset.DisaggregatedRoleSpec{
+			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
 					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -1144,9 +1144,9 @@ func TestEnsureNewWorkloadExists(t *testing.T) {
 					}},
 				},
 			}
-			deployment := &disaggregatedset.DisaggregatedSet{
+			deployment := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "test-uid"},
-				Spec:       disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
 			created, err := executor.ensureNewWorkloadExists(
@@ -1190,7 +1190,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 		},
 	}
 
-	initAnnot := map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "2"}
+	initAnnot := map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "2"}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1225,13 +1225,13 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
 				Build()
 			executor := newTestExecutor(fakeClient)
-			roles := []disaggregatedset.DisaggregatedRoleSpec{
+			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
 				{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
 			}
-			deployment := &disaggregatedset.DisaggregatedSet{
+			deployment := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
-				Spec:       disaggregatedset.DisaggregatedSetSpec{Roles: roles},
+				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
 			oldWorkloads := GroupedWorkloads{
