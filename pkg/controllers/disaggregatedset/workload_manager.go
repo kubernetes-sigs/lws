@@ -61,27 +61,28 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 	replicas := int32(params.Replicas)
 	config := params.Config
 
-	lwsTemplate := config.Spec.LeaderWorkerTemplate
-	lwsTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
-	lwsTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+	// Copy the spec and override replicas.
+	lwsSpec := config.Spec
+	lwsSpec.Replicas = &replicas
 
-	if lwsTemplate.LeaderTemplate != nil {
-		lwsTemplate.LeaderTemplate = lwsTemplate.LeaderTemplate.DeepCopy()
-		lwsTemplate.LeaderTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
-		lwsTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
+	// Inject system labels (role, name, revision) into pod templates.
+	// These don't come from the user's spec — services select pods by them.
+	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
+	// Defensive copy: struct copy is shallow, so maps are shared with the original config.
+	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+
+	if lwsSpec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		lwsSpec.LeaderWorkerTemplate.LeaderTemplate = lwsSpec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
+		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
 	}
-
-	lwsNetworkConfig := config.Spec.NetworkConfig
-
-	lwsLabels := mergeLabels(config.ObjectMeta.Labels, params.Labels)
-	lwsAnnotations := copyAnnotations(config.ObjectMeta.Annotations)
 
 	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        workloadName,
 			Namespace:   params.DisaggregatedSet.Namespace,
-			Labels:      lwsLabels,
-			Annotations: lwsAnnotations,
+			Labels:      mergeLabels(config.ObjectMeta.Labels, params.Labels),
+			Annotations: copyAnnotations(config.ObjectMeta.Annotations),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
@@ -90,12 +91,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 				Controller: ptr.To(true),
 			}},
 		},
-		Spec: leaderworkerset.LeaderWorkerSetSpec{
-			Replicas:             &replicas,
-			StartupPolicy:        config.Spec.StartupPolicy,
-			LeaderWorkerTemplate: lwsTemplate,
-			NetworkConfig:        lwsNetworkConfig,
-		},
+		Spec: lwsSpec,
 	}
 
 	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
