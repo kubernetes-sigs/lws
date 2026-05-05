@@ -38,6 +38,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 const testNamespace = "default"
@@ -55,11 +56,7 @@ func testRoleNames() []string {
 
 // testSchemeForUnit creates a scheme with all required types registered.
 func testSchemeForUnit() *runtime.Scheme {
-	scheme := runtime.NewScheme()
-	_ = disaggregatedsetv1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = leaderworkerset.AddToScheme(scheme)
-	return scheme
+	return wrappers.DisaggregatedSetTestScheme()
 }
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
@@ -88,25 +85,17 @@ func createTestLWS(
 	replicas, readyReplicas int32,
 	creationTime time.Time,
 ) *leaderworkerset.LeaderWorkerSet {
-	return &leaderworkerset.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              name,
-			Namespace:         namespace,
-			CreationTimestamp: metav1.Time{Time: creationTime},
-			Labels: map[string]string{
-				disaggregatedsetv1.RoleLabelKey: role,
-				disaggregatedsetv1.SetNameLabelKey: "test",
-				disaggregatedsetv1.RevisionLabelKey:   revision,
-			},
-		},
-		Spec: leaderworkerset.LeaderWorkerSetSpec{
-			Replicas: ptr.To(replicas),
-		},
-		Status: leaderworkerset.LeaderWorkerSetStatus{
-			Replicas:      replicas,
-			ReadyReplicas: readyReplicas,
-		},
-	}
+	return wrappers.BuildDisaggregatedSetLWS(name, namespace, role, revision).
+		Labels(map[string]string{
+			disaggregatedsetv1.RoleLabelKey:     role,
+			disaggregatedsetv1.SetNameLabelKey:  "test",
+			disaggregatedsetv1.RevisionLabelKey: revision,
+		}).
+		Replica(int(replicas)).
+		StatusReplicas(replicas).
+		ReadyReplicas(readyReplicas).
+		CreationTimestamp(creationTime).
+		Obj()
 }
 
 // createTestLWSWithAnnotations creates a LeaderWorkerSet with custom annotations.
@@ -148,27 +137,16 @@ func createWorkloadForTest(
 	podSpec corev1.PodSpec,
 	ownerRef metav1.OwnerReference,
 ) client.Object {
-	return &leaderworkerset.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       "default",
-			Labels:          labels,
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
-		},
-		Spec: leaderworkerset.LeaderWorkerSetSpec{
-			Replicas: ptr.To(specReplicas),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				WorkerTemplate: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: labels},
-					Spec:       podSpec,
-				},
-			},
-		},
-		Status: leaderworkerset.LeaderWorkerSetStatus{
-			Replicas:      specReplicas,
-			ReadyReplicas: readyReplicas,
-		},
-	}
+	role := labels[disaggregatedsetv1.RoleLabelKey]
+	revision := labels[disaggregatedsetv1.RevisionLabelKey]
+	return wrappers.BuildDisaggregatedSetLWS(name, "default", role, revision).
+		Labels(labels).
+		Replica(int(specReplicas)).
+		StatusReplicas(specReplicas).
+		ReadyReplicas(readyReplicas).
+		OwnerReference(ownerRef).
+		WorkerTemplateSpec(podSpec).
+		Obj()
 }
 
 // statusSubresourceObjects returns the objects that need status subresource support in the fake client.
@@ -220,21 +198,7 @@ func makeRoleSpec(
 	podSpec corev1.PodSpec,
 	surge, unavail intstr.IntOrString,
 ) disaggregatedsetv1.DisaggregatedRoleSpec {
-	return disaggregatedsetv1.DisaggregatedRoleSpec{
-		Name: name,
-		LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-			Replicas: ptr.To(replicas),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-				Size:           ptr.To(int32(1)),
-				WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
-			},
-			RolloutStrategy: leaderworkerset.RolloutStrategy{
-				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-					MaxSurge: surge, MaxUnavailable: unavail,
-				},
-			},
-		}},
-	}
+	return wrappers.MakeRoleSpec(name, replicas, podSpec, surge, unavail)
 }
 
 // setupABCScenario creates a multi-workload test scenario with workloads A, B, and C.

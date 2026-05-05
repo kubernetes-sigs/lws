@@ -30,6 +30,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 // createTestLWSWithAnnotation creates a LeaderWorkerSet for testing with optional annotations.
@@ -40,21 +41,16 @@ func createTestLWSWithAnnotation(
 	replicas int32,
 	annotations map[string]string,
 ) *leaderworkerset.LeaderWorkerSet {
-	return &leaderworkerset.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Annotations: annotations,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey: "test-deployment",
-				disaggregatedsetv1.RoleLabelKey: "prefill",
-				disaggregatedsetv1.RevisionLabelKey:   "abc123",
-			},
-		},
-		Spec: leaderworkerset.LeaderWorkerSetSpec{
-			Replicas: ptr.To(replicas),
-		},
-	}
+	lws := wrappers.BuildDisaggregatedSetLWS(name, namespace, "prefill", "abc123").
+		Labels(map[string]string{
+			disaggregatedsetv1.SetNameLabelKey:  "test-deployment",
+			disaggregatedsetv1.RoleLabelKey:     "prefill",
+			disaggregatedsetv1.RevisionLabelKey: "abc123",
+		}).
+		Replica(int(replicas)).
+		Annotation(annotations).
+		Obj()
+	return lws
 }
 
 // TestParseInitialReplicasAnnotation tests the parseInitialReplicasAnnotation function.

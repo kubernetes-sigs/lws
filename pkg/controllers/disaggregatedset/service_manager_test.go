@@ -26,10 +26,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 // Test-local role names
@@ -463,39 +463,9 @@ func TestGenerateServiceName(t *testing.T) {
 //
 //nolint:unparam // namespace is always "default" in tests but kept for clarity
 func createTestDeployment(name, namespace string) *disaggregatedsetv1.DisaggregatedSet {
-	return &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       "test-uid",
-		},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
-			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
-				{
-					Name: testServiceRolePrefill,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-							WorkerTemplate: corev1.PodTemplateSpec{
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
-								},
-							},
-						},
-					}},
-				},
-				{
-					Name: testServiceRoleDecode,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
-							WorkerTemplate: corev1.PodTemplateSpec{
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}},
-								},
-							},
-						},
-					}},
-				},
-			},
-		},
-	}
+	return wrappers.BuildDisaggregatedSet(name, namespace).
+		UID("test-uid").
+		WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+		WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").
+		Obj()
 }
