@@ -55,9 +55,9 @@ func testScheme() *runtime.Scheme {
 // Useful for simulating pre-existing workloads in rolling update tests.
 func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedset.DisaggregatedSet, role, revision string, replicas int32) *leaderworkerset.LeaderWorkerSet {
 	labels := map[string]string{
-		controller.LabelDisaggName: disaggregatedSet.Name,
-		controller.LabelDisaggRole: role,
-		controller.LabelRevision:   revision,
+		disaggregatedset.SetNameLabelKey: disaggregatedSet.Name,
+		disaggregatedset.RoleLabelKey: role,
+		disaggregatedset.RevisionLabelKey:   revision,
 	}
 
 	return &leaderworkerset.LeaderWorkerSet{

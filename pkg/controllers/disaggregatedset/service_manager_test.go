@@ -223,9 +223,9 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify standard labels are present
-		assert.Equal(t, "test-deploy", decodeService.Labels[LabelDisaggName], "name label should be set")
-		assert.Equal(t, "abc12345", decodeService.Labels[LabelRevision], "revision label should be set")
-		assert.Equal(t, testServiceRoleDecode, decodeService.Labels[LabelDisaggRole], "role label should be set")
+		assert.Equal(t, "test-deploy", decodeService.Labels[disaggregatedset.SetNameLabelKey], "name label should be set")
+		assert.Equal(t, "abc12345", decodeService.Labels[disaggregatedset.RevisionLabelKey], "revision label should be set")
+		assert.Equal(t, testServiceRoleDecode, decodeService.Labels[disaggregatedset.RoleLabelKey], "role label should be set")
 	})
 
 	t.Run("selector matches pod labels for role and revision", func(t *testing.T) {
@@ -255,9 +255,9 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify selector matches expected pod labels
-		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[LabelDisaggName])
-		assert.Equal(t, "abc12345", decodeService.Spec.Selector[LabelRevision])
-		assert.Equal(t, testServiceRoleDecode, decodeService.Spec.Selector[LabelDisaggRole])
+		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[disaggregatedset.SetNameLabelKey])
+		assert.Equal(t, "abc12345", decodeService.Spec.Selector[disaggregatedset.RevisionLabelKey])
+		assert.Equal(t, testServiceRoleDecode, decodeService.Spec.Selector[disaggregatedset.RoleLabelKey])
 	})
 
 	t.Run("old services deleted when revision is drained", func(t *testing.T) {
@@ -269,9 +269,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggRole: testServiceRoleDecode,
-					LabelRevision:   "old12345",
+					disaggregatedset.SetNameLabelKey: deployment.Name,
+					disaggregatedset.RoleLabelKey: testServiceRoleDecode,
+					disaggregatedset.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -322,9 +322,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRolePrefill, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggRole: testServiceRolePrefill,
-					LabelRevision:   "old12345",
+					disaggregatedset.SetNameLabelKey: deployment.Name,
+					disaggregatedset.RoleLabelKey: testServiceRolePrefill,
+					disaggregatedset.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -336,9 +336,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					LabelDisaggName: deployment.Name,
-					LabelDisaggRole: testServiceRoleDecode,
-					LabelRevision:   "old12345",
+					disaggregatedset.SetNameLabelKey: deployment.Name,
+					disaggregatedset.RoleLabelKey: testServiceRoleDecode,
+					disaggregatedset.RevisionLabelKey:   "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{

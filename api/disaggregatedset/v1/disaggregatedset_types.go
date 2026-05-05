@@ -21,6 +21,20 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
+const (
+	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
+	SetNameLabelKey string = "disaggregatedset.x-k8s.io/name"
+
+	// RoleLabelKey records which role the resource belongs to.
+	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
+
+	// RevisionLabelKey records the revision hash for the resource.
+	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
+
+	// InitialReplicasAnnotationKey stores the initial replica count at rollout start.
+	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
+)
+
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.

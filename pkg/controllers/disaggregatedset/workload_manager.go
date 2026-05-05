@@ -188,8 +188,8 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return &WorkloadInfo{
 		Name:                         leaderWorkerSet.Name,
 		Namespace:                    leaderWorkerSet.Namespace,
-		Role:                         leaderWorkerSet.Labels[LabelDisaggRole],
-		Revision:                     leaderWorkerSet.Labels[LabelRevision],
+		Role:                         leaderWorkerSet.Labels[disaggregatedset.RoleLabelKey],
+		Revision:                     leaderWorkerSet.Labels[disaggregatedset.RevisionLabelKey],
 		Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 		ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
 		InitialReplicas:              int(initialReplicas),
@@ -201,9 +201,9 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]WorkloadInfo, error) {
 	workloadList := &leaderworkerset.LeaderWorkerSetList{}
 
-	labels := client.MatchingLabels{LabelDisaggName: disaggDeploymentName}
+	labels := client.MatchingLabels{disaggregatedset.SetNameLabelKey: disaggDeploymentName}
 	if role != "" {
-		labels[LabelDisaggRole] = role
+		labels[disaggregatedset.RoleLabelKey] = role
 	}
 
 	if err := manager.client.List(ctx, workloadList, client.InNamespace(namespace), labels); err != nil {
@@ -220,8 +220,8 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		result = append(result, WorkloadInfo{
 			Name:                         leaderWorkerSet.Name,
 			Namespace:                    leaderWorkerSet.Namespace,
-			Role:                         leaderWorkerSet.Labels[LabelDisaggRole],
-			Revision:                     leaderWorkerSet.Labels[LabelRevision],
+			Role:                         leaderWorkerSet.Labels[disaggregatedset.RoleLabelKey],
+			Revision:                     leaderWorkerSet.Labels[disaggregatedset.RevisionLabelKey],
 			Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
 			ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
 			InitialReplicas:              int(initialReplicas),
@@ -311,7 +311,7 @@ func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkerset.LeaderWorke
 	if leaderWorkerSet.Annotations == nil {
 		return nil
 	}
-	valueStr, ok := leaderWorkerSet.Annotations[AnnotationInitialReplicas]
+	valueStr, ok := leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey]
 	if !ok {
 		return nil
 	}
@@ -331,7 +331,7 @@ func (manager *LeaderWorkerSetManager) patchInitialReplicasAnnotation(
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
-	leaderWorkerSet.Annotations[AnnotationInitialReplicas] = strconv.Itoa(value)
+	leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey] = strconv.Itoa(value)
 	return manager.client.Patch(ctx, leaderWorkerSet, patch)
 }
 

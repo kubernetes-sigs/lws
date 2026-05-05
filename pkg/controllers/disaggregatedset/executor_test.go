@@ -93,9 +93,9 @@ func createTestLWS(
 			Namespace:         namespace,
 			CreationTimestamp: metav1.Time{Time: creationTime},
 			Labels: map[string]string{
-				LabelDisaggRole: role,
-				LabelDisaggName: "test",
-				LabelRevision:   revision,
+				disaggregatedset.RoleLabelKey: role,
+				disaggregatedset.SetNameLabelKey: "test",
+				disaggregatedset.RevisionLabelKey:   revision,
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -279,7 +279,7 @@ func setupABCScenario(
 		UID:        "uid",
 	}
 	makeLabels := func(role, revision string) map[string]string {
-		return map[string]string{LabelDisaggRole: role, LabelDisaggName: "test", LabelRevision: revision}
+		return map[string]string{disaggregatedset.RoleLabelKey: role, disaggregatedset.SetNameLabelKey: "test", disaggregatedset.RevisionLabelKey: revision}
 	}
 
 	var objects []client.Object
@@ -439,8 +439,8 @@ func TestReconcilerIntegration(t *testing.T) {
 			}
 			makeLabels := func(role, revision string) map[string]string {
 				return map[string]string{
-					LabelDisaggRole: role, LabelDisaggName: tc.deployName,
-					LabelRevision: revision,
+					disaggregatedset.RoleLabelKey: role, disaggregatedset.SetNameLabelKey: tc.deployName,
+					disaggregatedset.RevisionLabelKey: revision,
 				}
 			}
 
@@ -1190,7 +1190,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 		},
 	}
 
-	initAnnot := map[string]string{AnnotationInitialReplicas: "2"}
+	initAnnot := map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "2"}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

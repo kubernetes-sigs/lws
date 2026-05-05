@@ -45,9 +45,9 @@ func createTestLWSWithAnnotation(
 			Namespace:   namespace,
 			Annotations: annotations,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deployment",
-				LabelDisaggRole: "prefill",
-				LabelRevision:   "abc123",
+				disaggregatedset.SetNameLabelKey: "test-deployment",
+				disaggregatedset.RoleLabelKey: "prefill",
+				disaggregatedset.RevisionLabelKey:   "abc123",
 			},
 		},
 		Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -75,17 +75,17 @@ func TestParseInitialReplicasAnnotation(t *testing.T) {
 		},
 		{
 			name:        "invalid non-numeric annotation returns nil",
-			annotations: map[string]string{AnnotationInitialReplicas: "not-a-number"},
+			annotations: map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "not-a-number"},
 			expected:    nil,
 		},
 		{
 			name:        "valid annotation returns correct value",
-			annotations: map[string]string{AnnotationInitialReplicas: "5"},
+			annotations: map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 			expected:    ptr.To(5),
 		},
 		{
 			name:        "zero value annotation returns zero",
-			annotations: map[string]string{AnnotationInitialReplicas: "0"},
+			annotations: map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "0"},
 			expected:    ptr.To(0),
 		},
 	}
@@ -168,7 +168,7 @@ func TestManagerGetInitialReplicas(t *testing.T) {
 			name: "returns value when annotation is set",
 			existingLWS: createTestLWSWithAnnotation(
 				"test-lws", "default", 3,
-				map[string]string{AnnotationInitialReplicas: "5"},
+				map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 			),
 			expectError:   false,
 			expectedValue: ptr.To(5),
@@ -219,7 +219,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 	t.Run("returns existing value without modifying when annotation exists", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation(
 			"test-lws", "default", 3,
-			map[string]string{AnnotationInitialReplicas: "5"},
+			map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 		)
 
 		fakeClient := fake.NewClientBuilder().
@@ -271,7 +271,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 	t.Run("updates annotation when value differs", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation(
 			"test-lws", "default", 3,
-			map[string]string{AnnotationInitialReplicas: "5"},
+			map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 		)
 
 		fakeClient := fake.NewClientBuilder().
@@ -288,7 +288,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 	t.Run("skips update when annotation already has correct value", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation(
 			"test-lws", "default", 3,
-			map[string]string{AnnotationInitialReplicas: "5"},
+			map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 		)
 
 		fakeClient := fake.NewClientBuilder().
@@ -398,7 +398,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	t.Run("skips update when value already correct", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation(
 			"test-lws", "default", 3,
-			map[string]string{AnnotationInitialReplicas: "5"},
+			map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 		)
 
 		fakeClient := fake.NewClientBuilder().
@@ -417,7 +417,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	t.Run("updates when overwriting different value", func(t *testing.T) {
 		existingLWS := createTestLWSWithAnnotation(
 			"test-lws", "default", 3,
-			map[string]string{AnnotationInitialReplicas: "5"},
+			map[string]string{disaggregatedset.InitialReplicasAnnotationKey: "5"},
 		)
 
 		fakeClient := fake.NewClientBuilder().
@@ -487,9 +487,9 @@ func TestManagerCreate(t *testing.T) {
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deploy",
-				LabelDisaggRole: "prefill",
-				LabelRevision:   "abc123",
+				disaggregatedset.SetNameLabelKey: "test-deploy",
+				disaggregatedset.RoleLabelKey: "prefill",
+				disaggregatedset.RevisionLabelKey:   "abc123",
 			},
 			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -522,9 +522,9 @@ func TestManagerCreate(t *testing.T) {
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				LabelDisaggName: "test-deploy",
-				LabelDisaggRole: "prefill",
-				LabelRevision:   "abc123",
+				disaggregatedset.SetNameLabelKey: "test-deploy",
+				disaggregatedset.RoleLabelKey: "prefill",
+				disaggregatedset.RevisionLabelKey:   "abc123",
 			},
 			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -548,7 +548,7 @@ func TestManagerCreate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
 			},
 			Role: "prefill", Revision: "rev1", Replicas: 1,
-			Labels: map[string]string{LabelDisaggName: "test", LabelDisaggRole: "prefill", "app": "system-app"},
+			Labels: map[string]string{disaggregatedset.SetNameLabelKey: "test", disaggregatedset.RoleLabelKey: "prefill", "app": "system-app"},
 			Config: &disaggregatedset.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{

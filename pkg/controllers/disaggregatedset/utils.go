@@ -31,21 +31,11 @@ import (
 
 const NumRequiredRoles = 2
 
-const (
-	LabelDisaggRole = "disaggregatedset.x-k8s.io/role"
-	LabelDisaggName = "disaggregatedset.x-k8s.io/name"
-	LabelRevision   = "disaggregatedset.x-k8s.io/revision"
-)
-
-const (
-	AnnotationInitialReplicas = "disaggregatedset.x-k8s.io/initial-replicas"
-)
-
 func GetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) (int32, bool) {
 	if leaderWorkerSet.Annotations == nil {
 		return 0, false
 	}
-	value, exists := leaderWorkerSet.Annotations[AnnotationInitialReplicas]
+	value, exists := leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey]
 	if !exists || value == "" {
 		return 0, false
 	}
@@ -60,7 +50,7 @@ func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replic
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
-	leaderWorkerSet.Annotations[AnnotationInitialReplicas] = strconv.FormatInt(int64(replicas), 10)
+	leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey] = strconv.FormatInt(int64(replicas), 10)
 }
 
 func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[string]int {
@@ -68,7 +58,7 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[s
 
 	for i := range lwsList {
 		lws := &lwsList[i]
-		role := lws.Labels[LabelDisaggRole]
+		role := lws.Labels[disaggregatedset.RoleLabelKey]
 		if role == "" {
 			continue
 		}
@@ -119,9 +109,9 @@ func GenerateName(baseName, role, revision string) string {
 func GenerateLabels(baseName, role, revision string) map[string]string {
 	return map[string]string{
 		"app":           fmt.Sprintf("%s-%s", baseName, role),
-		LabelDisaggRole: role,
-		LabelDisaggName: baseName,
-		LabelRevision:   revision,
+		disaggregatedset.RoleLabelKey: role,
+		disaggregatedset.SetNameLabelKey: baseName,
+		disaggregatedset.RevisionLabelKey:   revision,
 	}
 }
 

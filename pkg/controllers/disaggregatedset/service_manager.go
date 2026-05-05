@@ -130,15 +130,15 @@ func (manager *ServiceManager) buildService(
 	serviceName := GenerateServiceName(deployment.Name, roleName, revision)
 
 	labels := map[string]string{
-		LabelDisaggName: deployment.Name,
-		LabelDisaggRole: roleName,
-		LabelRevision:   revision,
+		disaggregatedset.SetNameLabelKey: deployment.Name,
+		disaggregatedset.RoleLabelKey: roleName,
+		disaggregatedset.RevisionLabelKey:   revision,
 	}
 
 	selector := map[string]string{
-		LabelDisaggName: deployment.Name,
-		LabelDisaggRole: roleName,
-		LabelRevision:   revision,
+		disaggregatedset.SetNameLabelKey: deployment.Name,
+		disaggregatedset.RoleLabelKey: roleName,
+		disaggregatedset.RevisionLabelKey:   revision,
 	}
 
 	return &corev1.Service{
@@ -190,14 +190,14 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	serviceList := &corev1.ServiceList{}
 	if err := manager.client.List(ctx, serviceList,
 		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{LabelDisaggName: deployment.Name},
+		client.MatchingLabels{disaggregatedset.SetNameLabelKey: deployment.Name},
 	); err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for i := range serviceList.Items {
 		service := &serviceList.Items[i]
-		serviceRevision := service.Labels[LabelRevision]
+		serviceRevision := service.Labels[disaggregatedset.RevisionLabelKey]
 
 		if !readyRevisionSet[serviceRevision] {
 			log.Info("Deleting drained Service", "service", service.Name, "revision", serviceRevision, "targetRevision", targetRevision)

@@ -62,7 +62,7 @@ func TestGetInitialReplicas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
-					AnnotationInitialReplicas: "5",
+					disaggregatedset.InitialReplicasAnnotationKey: "5",
 				},
 			},
 		}
@@ -102,7 +102,7 @@ func TestGetInitialReplicas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
-					AnnotationInitialReplicas: "not-a-number",
+					disaggregatedset.InitialReplicasAnnotationKey: "not-a-number",
 				},
 			},
 		}
@@ -117,7 +117,7 @@ func TestGetInitialReplicas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
-					AnnotationInitialReplicas: "",
+					disaggregatedset.InitialReplicasAnnotationKey: "",
 				},
 			},
 		}
@@ -132,7 +132,7 @@ func TestGetInitialReplicas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
-					AnnotationInitialReplicas: "0",
+					disaggregatedset.InitialReplicasAnnotationKey: "0",
 				},
 			},
 		}
@@ -157,7 +157,7 @@ func TestSetInitialReplicas(t *testing.T) {
 		SetInitialReplicas(leaderWorkerSet, 3)
 
 		require.NotNil(t, leaderWorkerSet.Annotations, "annotations should be initialized")
-		assert.Equal(t, "3", leaderWorkerSet.Annotations[AnnotationInitialReplicas], "annotation should be '3'")
+		assert.Equal(t, "3", leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey], "annotation should be '3'")
 	})
 
 	t.Run("sets annotation as string on LWS with existing annotations", func(t *testing.T) {
@@ -175,7 +175,7 @@ func TestSetInitialReplicas(t *testing.T) {
 
 		SetInitialReplicas(leaderWorkerSet, 5)
 
-		assert.Equal(t, "5", leaderWorkerSet.Annotations[AnnotationInitialReplicas], "annotation should be '5'")
+		assert.Equal(t, "5", leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey], "annotation should be '5'")
 		assert.Equal(t, "other-value", leaderWorkerSet.Annotations["other-key"], "other annotations should be preserved")
 	})
 
@@ -184,7 +184,7 @@ func TestSetInitialReplicas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
-					AnnotationInitialReplicas: "10",
+					disaggregatedset.InitialReplicasAnnotationKey: "10",
 				},
 			},
 			Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -194,7 +194,7 @@ func TestSetInitialReplicas(t *testing.T) {
 
 		SetInitialReplicas(leaderWorkerSet, 7)
 
-		assert.Equal(t, "7", leaderWorkerSet.Annotations[AnnotationInitialReplicas], "annotation should be '7'")
+		assert.Equal(t, "7", leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey], "annotation should be '7'")
 	})
 
 	t.Run("handles zero replicas", func(t *testing.T) {
@@ -209,7 +209,7 @@ func TestSetInitialReplicas(t *testing.T) {
 
 		SetInitialReplicas(leaderWorkerSet, 0)
 
-		assert.Equal(t, "0", leaderWorkerSet.Annotations[AnnotationInitialReplicas], "annotation should be '0'")
+		assert.Equal(t, "0", leaderWorkerSet.Annotations[disaggregatedset.InitialReplicasAnnotationKey], "annotation should be '0'")
 	})
 }
 
@@ -229,10 +229,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "3",
+						disaggregatedset.InitialReplicasAnnotationKey: "3",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -243,10 +243,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "2",
+						disaggregatedset.InitialReplicasAnnotationKey: "2",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -267,10 +267,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRoleDecode,
+						disaggregatedset.RoleLabelKey: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "4",
+						disaggregatedset.InitialReplicasAnnotationKey: "4",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -281,10 +281,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRoleDecode,
+						disaggregatedset.RoleLabelKey: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "6",
+						disaggregatedset.InitialReplicasAnnotationKey: "6",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -305,10 +305,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "3",
+						disaggregatedset.InitialReplicasAnnotationKey: "3",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -319,10 +319,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-decode-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRoleDecode,
+						disaggregatedset.RoleLabelKey: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "6",
+						disaggregatedset.InitialReplicasAnnotationKey: "6",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -333,10 +333,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-2",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "2",
+						disaggregatedset.InitialReplicasAnnotationKey: "2",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -357,7 +357,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					// No annotations
 				},
@@ -378,10 +378,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRoleDecode,
+						disaggregatedset.RoleLabelKey: testUtilsRoleDecode,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "not-a-number",
+						disaggregatedset.InitialReplicasAnnotationKey: "not-a-number",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -401,10 +401,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "3",
+						disaggregatedset.InitialReplicasAnnotationKey: "3",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -415,10 +415,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-2",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 					Annotations: map[string]string{
-						AnnotationInitialReplicas: "invalid",
+						disaggregatedset.InitialReplicasAnnotationKey: "invalid",
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -439,7 +439,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
 					Labels: map[string]string{
-						LabelDisaggRole: testUtilsRolePrefill,
+						disaggregatedset.RoleLabelKey: testUtilsRolePrefill,
 					},
 				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
