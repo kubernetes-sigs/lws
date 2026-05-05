@@ -51,11 +51,11 @@ type DisaggregatedSetReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	disaggregatedSet := &disaggregatedset.DisaggregatedSet{}
-	if err := reconciler.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -66,11 +66,11 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 
 	revision := ComputeRevision(disaggregatedSet.Spec.Roles)
 
-	if err := reconciler.cleanupDrainedWorkloads(ctx, disaggregatedSet, revision); err != nil {
+	if err := r.cleanupDrainedWorkloads(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	executor := reconciler.createRollingUpdateExecutor()
+	executor := r.createRollingUpdateExecutor()
 
 	oldWorkloads, _, err := executor.WorkloadManager.GetGroupedWorkloads(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
 	if err != nil {
@@ -89,57 +89,57 @@ func (reconciler *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req
 			return result, err
 		}
 	} else {
-		result, err = reconciler.reconcileSimple(ctx, disaggregatedSet, revision)
+		result, err = r.reconcileSimple(ctx, disaggregatedSet, revision)
 		if err != nil {
 			return result, err
 		}
 	}
 
-	allWorkloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
+	allWorkloads, err := r.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list workloads for service reconciliation: %w", err)
 	}
 	groupedWorkloads := groupWorkloadsByRevision(allWorkloads)
 
-	if err := reconciler.ServiceManager.ReconcileServices(ctx, disaggregatedSet, groupedWorkloads, revision); err != nil {
+	if err := r.ServiceManager.ReconcileServices(ctx, disaggregatedSet, groupedWorkloads, revision); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile services: %w", err)
 	}
 
 	return result, nil
 }
 
-func (reconciler *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
+func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		Client:          reconciler.Client,
-		Record:          reconciler.Record,
-		WorkloadManager: reconciler.WorkloadManager,
+		Client:          r.Client,
+		Record:          r.Record,
+		WorkloadManager: r.WorkloadManager,
 	}
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (reconciler *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) (ctrl.Result, error) {
 	roleConfigs := GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
-		if err := reconciler.reconcileRoleSimple(ctx, disaggregatedSet, role, config, revision); err != nil {
+		if err := r.reconcileRoleSimple(ctx, disaggregatedSet, role, config, revision); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
 	}
 
-	if err := reconciler.cleanupOldWorkloads(ctx, disaggregatedSet, revision); err != nil {
+	if err := r.cleanupOldWorkloads(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (reconciler *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, role string, config *disaggregatedset.DisaggregatedRoleSpec, revision string) error {
+func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, role string, config *disaggregatedset.DisaggregatedRoleSpec, revision string) error {
 	log := logf.FromContext(ctx)
 
 	workloadName := GenerateName(disaggregatedSet.Name, role, revision)
 	labels := GenerateLabels(disaggregatedSet.Name, role, revision)
 
-	existing, err := reconciler.WorkloadManager.Get(ctx, disaggregatedSet.Namespace, workloadName)
+	existing, err := r.WorkloadManager.Get(ctx, disaggregatedSet.Namespace, workloadName)
 	if err != nil {
 		return fmt.Errorf("failed to get workload %s: %w", workloadName, err)
 	}
@@ -151,7 +151,7 @@ func (reconciler *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Co
 
 	if existing == nil {
 		log.Info("Creating workload", "role", role, "name", workloadName, "replicas", desiredReplicas)
-		return reconciler.WorkloadManager.Create(ctx, CreateParams{
+		return r.WorkloadManager.Create(ctx, CreateParams{
 			DisaggregatedSet: disaggregatedSet,
 			Role:             role,
 			Config:           config,
@@ -163,7 +163,7 @@ func (reconciler *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Co
 
 	if existing.Replicas != int(desiredReplicas) {
 		log.Info("Scaling workload", "role", role, "name", workloadName, "from", existing.Replicas, "to", desiredReplicas)
-		if err := reconciler.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, int(desiredReplicas)); err != nil {
+		if err := r.WorkloadManager.Scale(ctx, disaggregatedSet.Namespace, workloadName, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale workload %s: %w", workloadName, err)
 		}
 	}
@@ -171,19 +171,19 @@ func (reconciler *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Co
 	return nil
 }
 
-func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
+func (r *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
 	roleNames := GetRoleNames(disaggregatedSet)
 	for _, roleName := range roleNames {
-		workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
+		workloads, err := r.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
 		if err != nil {
 			return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 		}
 		for _, workloadInfo := range workloads {
 			if workloadInfo.Revision != revision && workloadInfo.Replicas == 0 {
 				log.Info("Deleting old workload", "name", workloadInfo.Name)
-				if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadInfo.Name); err != nil {
+				if err := r.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadInfo.Name); err != nil {
 					return fmt.Errorf("failed to delete old workload %s: %w", workloadInfo.Name, err)
 				}
 			}
@@ -193,10 +193,10 @@ func (reconciler *DisaggregatedSetReconciler) cleanupOldWorkloads(ctx context.Co
 	return nil
 }
 
-func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
+func (r *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx context.Context, disaggregatedSet *disaggregatedset.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
-	workloads, err := reconciler.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
+	workloads, err := r.WorkloadManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
 	if err != nil {
 		return fmt.Errorf("failed to list workloads for cleanup: %w", err)
 	}
@@ -227,10 +227,10 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 		for roleName := range roles {
 			workloadName := GenerateName(disaggregatedSet.Name, roleName, oldRevision)
 			log.Info("Deleting drained workload", "name", workloadName)
-			if err := reconciler.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {
+			if err := r.WorkloadManager.Delete(ctx, disaggregatedSet.Namespace, workloadName); err != nil {
 				return fmt.Errorf("failed to delete workload %s: %w", workloadName, err)
 			}
-			reconciler.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonWorkloadDeleted,
+			r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonWorkloadDeleted,
 				"Delete", "Deleted drained workload %s", workloadName)
 		}
 	}
@@ -238,7 +238,7 @@ func (reconciler *DisaggregatedSetReconciler) cleanupDrainedWorkloads(ctx contex
 	return nil
 }
 
-func (reconciler *DisaggregatedSetReconciler) setOwnerReference(obj metav1.Object, owner metav1.Object) {
+func (r *DisaggregatedSetReconciler) setOwnerReference(obj metav1.Object, owner metav1.Object) {
 	ownerRefs := obj.GetOwnerReferences()
 
 	newRef := metav1.OwnerReference{
@@ -259,18 +259,18 @@ func (reconciler *DisaggregatedSetReconciler) setOwnerReference(obj metav1.Objec
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (reconciler *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if reconciler.WorkloadManager == nil {
-		reconciler.WorkloadManager = NewLeaderWorkerSetManager(mgr.GetClient())
+func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.WorkloadManager == nil {
+		r.WorkloadManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}
 
-	if reconciler.ServiceManager == nil {
-		reconciler.ServiceManager = NewServiceManager(mgr.GetClient(), mgr.GetScheme())
+	if r.ServiceManager == nil {
+		r.ServiceManager = NewServiceManager(mgr.GetClient(), mgr.GetScheme())
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedset.DisaggregatedSet{}).
 		Owns(&leaderworkerset.LeaderWorkerSet{}).
 		Named("disaggregatedset").
-		Complete(reconciler)
+		Complete(r)
 }
