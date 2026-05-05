@@ -29,6 +29,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 // createTestLWSWithAnnotation creates a LeaderWorkerSet for testing with optional annotations.
@@ -145,7 +146,7 @@ func TestGetLWSReplicas(t *testing.T) {
 	}
 }
 
-// TestManagerGetInitialReplicas tests the manager's GetInitialReplicas method.
+// TestManagerGetInitialReplicas tests the manager's disaggregatedsetutils.GetInitialReplicas method.
 func TestManagerGetInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
@@ -390,7 +391,7 @@ func TestManagerScale(t *testing.T) {
 	})
 }
 
-// TestManagerSetInitialReplicas tests the manager's SetInitialReplicas method.
+// TestManagerSetInitialReplicas tests the manager's disaggregatedsetutils.SetInitialReplicas method.
 func TestManagerSetInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
@@ -475,7 +476,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		params := CreateParams{
+		params := disaggregatedsetutils.CreateParams{
 			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-deploy",
@@ -510,7 +511,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		params := CreateParams{
+		params := disaggregatedsetutils.CreateParams{
 			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-deploy",
@@ -543,7 +544,7 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		err := manager.Create(context.Background(), CreateParams{
+		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
 			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
 			},
@@ -573,7 +574,7 @@ func TestManagerCreate(t *testing.T) {
 	})
 }
 
-// TestComputeRevision tests the ComputeRevision function.
+// TestComputeRevision tests the disaggregatedsetutils.ComputeRevision function.
 func TestComputeRevision(t *testing.T) {
 	t.Run("returns consistent revision for same inputs", func(t *testing.T) {
 		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
@@ -597,8 +598,8 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(roles)
-		revision2 := ComputeRevision(roles)
+		revision1 := disaggregatedsetutils.ComputeRevision(roles)
+		revision2 := disaggregatedsetutils.ComputeRevision(roles)
 
 		require.Equal(t, revision1, revision2)
 		require.Len(t, revision1, 8) // Truncated to 8 characters
@@ -646,8 +647,8 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(roles1)
-		revision2 := ComputeRevision(roles2)
+		revision1 := disaggregatedsetutils.ComputeRevision(roles1)
+		revision2 := disaggregatedsetutils.ComputeRevision(roles2)
 
 		require.NotEqual(t, revision1, revision2)
 	})
@@ -694,8 +695,8 @@ func TestComputeRevision(t *testing.T) {
 			},
 		}
 
-		revision1 := ComputeRevision(roles1)
-		revision2 := ComputeRevision(roles2)
+		revision1 := disaggregatedsetutils.ComputeRevision(roles1)
+		revision2 := disaggregatedsetutils.ComputeRevision(roles2)
 
 		require.NotEqual(t, revision1, revision2)
 	})
@@ -703,7 +704,7 @@ func TestComputeRevision(t *testing.T) {
 	t.Run("handles empty roles slice", func(t *testing.T) {
 		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{}
 
-		revision := ComputeRevision(roles)
+		revision := disaggregatedsetutils.ComputeRevision(roles)
 		require.Len(t, revision, 8)
 	})
 }

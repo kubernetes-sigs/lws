@@ -35,6 +35,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	controller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 // Test-local role names
@@ -142,14 +143,14 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
 
-	newRevision := controller.ComputeRevision(disaggregatedSet.Spec.Roles)
+	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
+	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
 	require.NotNil(t, prefillInfo, "prefill workload should exist")
 	assert.Equal(t, 3, prefillInfo.Replicas, "prefill replicas")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
+	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
 	require.NotNil(t, decodeInfo, "decode workload should exist")
 	assert.Equal(t, 2, decodeInfo.Replicas, "decode replicas")
 }
@@ -159,7 +160,7 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	scheme := testScheme()
 
 	disaggregatedSet := newTestDisaggregatedSet("scale-test", "default", 5, 4, "nginx:1.0")
-	revision := controller.ComputeRevision(disaggregatedSet.Spec.Roles)
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
 	prefillRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 3)
 	decodeRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2)
@@ -179,11 +180,11 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 
 	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
+	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
 	require.NotNil(t, prefillInfo, "prefill workload should exist")
 	assert.Equal(t, 5, prefillInfo.Replicas, "prefill replicas should be scaled to 5")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, controller.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
+	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
 	require.NotNil(t, decodeInfo, "decode workload should exist")
 	assert.Equal(t, 4, decodeInfo.Replicas, "decode replicas should be scaled to 4")
 }

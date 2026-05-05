@@ -29,6 +29,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 // Test-local role names
@@ -48,10 +49,10 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Only prefill is ready
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 2},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 0}, // not ready
 				},
@@ -75,10 +76,10 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Both roles ready
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
@@ -110,10 +111,10 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
@@ -140,10 +141,10 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
@@ -170,10 +171,10 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "ef53f2d7",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "my-app-ef53f2d7-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "my-app-ef53f2d7-decode", ReadyReplicas: 1},
 				},
@@ -202,10 +203,10 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
@@ -234,10 +235,10 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "abc12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-abc12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-abc12345-decode", ReadyReplicas: 1},
 				},
@@ -283,10 +284,10 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// New revision is ready, old is drained
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "new12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
 				},
@@ -350,17 +351,17 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Both old and new revisions are ready (rolling update in progress)
-		groupedWorkloads := GroupedWorkloads{
+		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "old12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 2},
 					testServiceRoleDecode:  {Name: "test-old12345-decode", ReadyReplicas: 2},
 				},
 			},
 			{
 				Revision: "new12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 1},
 					testServiceRoleDecode:  {Name: "test-new12345-decode", ReadyReplicas: 1},
 				},
@@ -390,17 +391,17 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err, "old prefill service should still exist during rolling update")
 
 		// Now simulate old revision being fully drained
-		drainedWorkloads := GroupedWorkloads{
+		drainedWorkloads := disaggregatedsetutils.GroupedWorkloads{
 			{
 				Revision: "old12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-old12345-prefill", ReadyReplicas: 0},
 					testServiceRoleDecode:  {Name: "test-old12345-decode", ReadyReplicas: 0},
 				},
 			},
 			{
 				Revision: "new12345",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testServiceRolePrefill: {Name: "test-new12345-prefill", ReadyReplicas: 2},
 					testServiceRoleDecode:  {Name: "test-new12345-decode", ReadyReplicas: 2},
 				},

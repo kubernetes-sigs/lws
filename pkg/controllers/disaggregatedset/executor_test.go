@@ -37,6 +37,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 const testNamespace = "default"
@@ -263,9 +264,9 @@ func setupABCScenario(
 		makeRoleSpec(testRoleDecode, targetDecode, podSpecC, dSurge, dUnavail),
 	}
 
-	revisionA := ComputeRevision(rolesA)
-	revisionB := ComputeRevision(rolesB)
-	revisionC := ComputeRevision(rolesC)
+	revisionA := disaggregatedsetutils.ComputeRevision(rolesA)
+	revisionB := disaggregatedsetutils.ComputeRevision(rolesB)
+	revisionC := disaggregatedsetutils.ComputeRevision(rolesC)
 
 	deployment := &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
@@ -431,7 +432,7 @@ func TestReconcilerIntegration(t *testing.T) {
 			}
 			require.NoError(t, fakeClient.Create(context.TODO(), deployment))
 
-			newRevision := ComputeRevision(roles)
+			newRevision := disaggregatedsetutils.ComputeRevision(roles)
 			oldRevision := "oldhash"
 			ownerRef := metav1.OwnerReference{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
@@ -511,11 +512,11 @@ func TestSortByNewestTimestamp(t *testing.T) {
 	roleNames := testRoleNames()
 
 	// Helper to create workload with offset from baseTime
-	makeWorkload := func(hash string, offsetMinutes int) GroupedWorkload {
+	makeWorkload := func(hash string, offsetMinutes int) disaggregatedsetutils.GroupedWorkload {
 		ts := baseTime.Add(time.Duration(offsetMinutes) * time.Minute)
-		return GroupedWorkload{
+		return disaggregatedsetutils.GroupedWorkload{
 			Revision: hash,
-			Roles: map[string]WorkloadInfo{
+			Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 				testRolePrefill: {CreationTimestamp: ts},
 				testRoleDecode:  {CreationTimestamp: ts},
 			},
@@ -536,7 +537,7 @@ func TestSortByNewestTimestamp(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var workloads GroupedWorkloads
+			var workloads disaggregatedsetutils.GroupedWorkloads
 			for i, hash := range tc.inputHashes {
 				workloads = append(workloads, makeWorkload(hash, tc.inputOffsets[i]))
 			}
@@ -549,7 +550,7 @@ func TestSortByNewestTimestamp(t *testing.T) {
 	}
 
 	t.Run("does not modify original slice", func(t *testing.T) {
-		workloads := GroupedWorkloads{makeWorkload("second", 60), makeWorkload("first", 0)}
+		workloads := disaggregatedsetutils.GroupedWorkloads{makeWorkload("second", 60), makeWorkload("first", 0)}
 		_ = sortByNewestTimestamp(workloads, roleNames)
 		assert.Equal(t, "second", workloads[0].Revision, "original slice should not be modified")
 	})
@@ -558,12 +559,12 @@ func TestSortByNewestTimestamp(t *testing.T) {
 		ts1 := baseTime
 		ts2 := baseTime.Add(10 * time.Minute)
 		ts3 := baseTime.Add(20 * time.Minute)
-		workloads := GroupedWorkloads{
-			{Revision: "A", Roles: map[string]WorkloadInfo{
+		workloads := disaggregatedsetutils.GroupedWorkloads{
+			{Revision: "A", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 				testRolePrefill: {CreationTimestamp: ts1},
 				testRoleDecode:  {CreationTimestamp: ts3},
 			}},
-			{Revision: "B", Roles: map[string]WorkloadInfo{
+			{Revision: "B", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 				testRolePrefill: {CreationTimestamp: ts2},
 				testRoleDecode:  {CreationTimestamp: ts2},
 			}},
@@ -594,9 +595,9 @@ func TestIsWorkloadStable(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			workload := GroupedWorkload{
+			workload := disaggregatedsetutils.GroupedWorkload{
 				Revision: "hash1",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testRolePrefill: {Replicas: tc.prefillReplicas, ReadyReplicas: tc.prefillReady},
 					testRoleDecode:  {Replicas: tc.decodeReplicas, ReadyReplicas: tc.decodeReady},
 				},
@@ -607,7 +608,7 @@ func TestIsWorkloadStable(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for GetRoleConfigs
+// Unit Tests for disaggregatedsetutils.GetRoleConfigs
 // =============================================================================
 
 func TestGetRoleConfigs(t *testing.T) {
@@ -619,7 +620,7 @@ func TestGetRoleConfigs(t *testing.T) {
 		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 	}
 
-	configs := GetRoleConfigs(deployment)
+	configs := disaggregatedsetutils.GetRoleConfigs(deployment)
 
 	assert.Equal(t, int32(3), *configs[testRolePrefill].Spec.Replicas)
 	assert.Equal(t, int32(5), *configs[testRoleDecode].Spec.Replicas)
@@ -888,7 +889,7 @@ func TestScaleDownOld(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var objects []client.Object
-			var grouped GroupedWorkloads
+			var grouped disaggregatedsetutils.GroupedWorkloads
 			for _, workload := range tc.workloads {
 				creationTime := baseTime.Add(time.Duration(workload.ageHours) * time.Hour)
 				baseName := fmt.Sprintf("test-%s", workload.revision)
@@ -899,9 +900,9 @@ func TestScaleDownOld(t *testing.T) {
 					createTestLWS(
 						baseName+"-decode", testNamespace, testRoleDecode, workload.revision,
 						workload.decode, workload.decode, creationTime))
-				grouped = append(grouped, GroupedWorkload{
+				grouped = append(grouped, disaggregatedsetutils.GroupedWorkload{
 					Revision: workload.revision,
-					Roles: map[string]WorkloadInfo{
+					Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 						testRolePrefill: {Replicas: int(workload.prefill), CreationTimestamp: creationTime},
 						testRoleDecode:  {Replicas: int(workload.decode), CreationTimestamp: creationTime},
 					},
@@ -992,11 +993,11 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 				// Note: NO encode LWS exists in old workload
 			}
 
-			// GroupedWorkload only has prefill and decode
-			grouped := GroupedWorkloads{
+			// disaggregatedsetutils.GroupedWorkload only has prefill and decode
+			grouped := disaggregatedsetutils.GroupedWorkloads{
 				{
 					Revision: "oldhash",
-					Roles: map[string]WorkloadInfo{
+					Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 						"prefill": {Replicas: 4, CreationTimestamp: baseTime},
 						"decode":  {Replicas: 4, CreationTimestamp: baseTime},
 						// Note: encode is NOT in this map
@@ -1073,9 +1074,9 @@ func TestScaleUpNew(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
 			}
 
-			newWorkload := GroupedWorkload{
+			newWorkload := disaggregatedsetutils.GroupedWorkload{
 				Revision: "newhash",
-				Roles: map[string]WorkloadInfo{
+				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testRolePrefill: {Replicas: tc.workloadPrefill},
 					testRoleDecode:  {Replicas: tc.workloadDecode},
 				},
@@ -1234,15 +1235,15 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
-			oldWorkloads := GroupedWorkloads{
-				{Revision: "hashA", Roles: map[string]WorkloadInfo{
+			oldWorkloads := disaggregatedsetutils.GroupedWorkloads{
+				{Revision: "hashA", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testRolePrefill: {
 						Replicas: int(tc.aPrefill), ReadyReplicas: int(tc.aPrefill),
 						InitialReplicas: 2, CreationTimestamp: baseTime},
 					testRoleDecode: {
 						Replicas: int(tc.aDecode), ReadyReplicas: int(tc.aDecode),
 						InitialReplicas: 2, CreationTimestamp: baseTime}}},
-				{Revision: "hashB", Roles: map[string]WorkloadInfo{
+				{Revision: "hashB", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 					testRolePrefill: {
 						Replicas: int(tc.bPrefill), ReadyReplicas: int(tc.bPrefill),
 						InitialReplicas: 2, CreationTimestamp: bTime},
@@ -1250,7 +1251,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 						Replicas: int(tc.bDecode), ReadyReplicas: int(tc.bDecode),
 						InitialReplicas: 2, CreationTimestamp: bTime}}},
 			}
-			newWorkload := GroupedWorkload{Revision: "hashC", Roles: map[string]WorkloadInfo{
+			newWorkload := disaggregatedsetutils.GroupedWorkload{Revision: "hashC", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
 				testRolePrefill: {Replicas: int(tc.cPrefill), ReadyReplicas: int(tc.cPrefill)},
 				testRoleDecode:  {Replicas: int(tc.cDecode), ReadyReplicas: int(tc.cDecode)}}}
 

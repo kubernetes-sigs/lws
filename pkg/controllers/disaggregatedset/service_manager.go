@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 type ServiceManager struct {
@@ -47,11 +48,11 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	groupedWorkloads GroupedWorkloads,
+	groupedWorkloads disaggregatedsetutils.GroupedWorkloads,
 	targetRevision string,
 ) error {
 	log := logf.FromContext(ctx)
-	roleNames := GetRoleNames(deployment)
+	roleNames := disaggregatedsetutils.GetRoleNames(deployment)
 
 	var readyRevisions []string
 	for _, group := range groupedWorkloads {
@@ -164,7 +165,7 @@ func (manager *ServiceManager) buildService(
 func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	groupedWorkloads GroupedWorkloads,
+	groupedWorkloads disaggregatedsetutils.GroupedWorkloads,
 	targetRevision string,
 	roleNames []string,
 ) error {

@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 const (
@@ -53,8 +54,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	revision string,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	roleNames := GetRoleNames(disaggregatedSet)
-	roleConfigs := GetRoleConfigs(disaggregatedSet)
+	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
+	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	oldWorkloads, newWorkload, err := executor.WorkloadManager.GetGroupedWorkloads(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
 	if err != nil {
@@ -82,7 +83,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	revision string,
 	roleNames []string,
 	roleConfigs map[string]*disaggregatedsetv1.DisaggregatedRoleSpec,
-	oldWorkloads GroupedWorkloads,
+	oldWorkloads disaggregatedsetutils.GroupedWorkloads,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Initiating new rolling update", "revision", revision)
@@ -91,7 +92,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 
 	for _, oldGrouped := range oldWorkloads {
 		for roleName, roleWorkload := range oldGrouped.Roles {
-			workloadName := GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
+			workloadName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
 			if _, err := executor.WorkloadManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, workloadName, roleWorkload.Replicas); err != nil {
 				log.Error(err, "Failed to set initial-replicas annotation", "workload", workloadName)
 			}
@@ -104,7 +105,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 			return ctrl.Result{}, err
 		}
 		if created {
-			workloadName := GenerateName(disaggregatedSet.Name, roleName, revision)
+			workloadName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, revision)
 			log.Info("Created new workload", "role", roleName, "revision", revision)
 			executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonWorkloadCreated,
 				"Create", "Created %s workload %s", roleName, workloadName)
@@ -117,11 +118,11 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
-	oldWorkloads GroupedWorkloads,
-	newWorkload GroupedWorkload,
+	oldWorkloads disaggregatedsetutils.GroupedWorkloads,
+	newWorkload disaggregatedsetutils.GroupedWorkload,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	specRoleNames := GetRoleNames(disaggregatedSet)
+	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldWorkloads)
 
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
@@ -156,7 +157,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 // --- Helpers ---
 
-func buildRoleSets(specRoleNames []string, oldWorkloads GroupedWorkloads) (spec, old map[string]bool) {
+func buildRoleSets(specRoleNames []string, oldWorkloads disaggregatedsetutils.GroupedWorkloads) (spec, old map[string]bool) {
 	spec = make(map[string]bool, len(specRoleNames))
 	for _, name := range specRoleNames {
 		spec[name] = true
@@ -184,8 +185,8 @@ func buildPlannerState(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
-	oldWorkloads GroupedWorkloads,
-	newWorkload GroupedWorkload,
+	oldWorkloads disaggregatedsetutils.GroupedWorkloads,
+	newWorkload disaggregatedsetutils.GroupedWorkload,
 ) (source, currentOld, currentNew, targetNew RoleReplicaState) {
 	n := len(allRoleNames)
 	source, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
@@ -249,7 +250,7 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	return args
 }
 
-func isWorkloadStable(workload GroupedWorkload, roleNames []string) bool {
+func isWorkloadStable(workload disaggregatedsetutils.GroupedWorkload, roleNames []string) bool {
 	for _, name := range roleNames {
 		if w := workload.Roles[name]; w.Replicas != w.ReadyReplicas {
 			return false
@@ -258,7 +259,7 @@ func isWorkloadStable(workload GroupedWorkload, roleNames []string) bool {
 	return true
 }
 
-func maxTimestamp(wl GroupedWorkload) time.Time {
+func maxTimestamp(wl disaggregatedsetutils.GroupedWorkload) time.Time {
 	var maxTS time.Time
 	for _, info := range wl.Roles {
 		if info.CreationTimestamp.After(maxTS) {
@@ -268,12 +269,12 @@ func maxTimestamp(wl GroupedWorkload) time.Time {
 	return maxTS
 }
 
-func sortByNewestTimestamp(workloads GroupedWorkloads, roleNames []string) GroupedWorkloads {
+func sortByNewestTimestamp(workloads disaggregatedsetutils.GroupedWorkloads, roleNames []string) disaggregatedsetutils.GroupedWorkloads {
 	if len(roleNames) == 0 {
 		return workloads
 	}
 	sorted := slices.Clone(workloads)
-	slices.SortFunc(sorted, func(a, b GroupedWorkload) int {
+	slices.SortFunc(sorted, func(a, b disaggregatedsetutils.GroupedWorkload) int {
 		return maxTimestamp(b).Compare(maxTimestamp(a))
 	})
 	return sorted
@@ -284,7 +285,7 @@ func sortByNewestTimestamp(workloads GroupedWorkloads, roleNames []string) Group
 func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	newWorkload GroupedWorkload,
+	newWorkload disaggregatedsetutils.GroupedWorkload,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
 	current, target RoleReplicaState,
@@ -294,7 +295,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		if !specRoleSet[name] || current[i] >= target[i] {
 			continue
 		}
-		workloadName := GenerateName(ds.Name, name, newWorkload.Revision)
+		workloadName := disaggregatedsetutils.GenerateName(ds.Name, name, newWorkload.Revision)
 		log.Info("Scaling up", "workload", workloadName, "from", current[i], "to", target[i])
 		if err := executor.WorkloadManager.Scale(ctx, ds.Namespace, workloadName, target[i]); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", workloadName, err)
@@ -308,7 +309,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 func (executor *RollingUpdateExecutor) scaleDownOld(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	oldWorkloads GroupedWorkloads,
+	oldWorkloads disaggregatedsetutils.GroupedWorkloads,
 	roleNames []string,
 	current, target RoleReplicaState,
 ) error {
@@ -354,7 +355,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			if !exists || info.Replicas <= newReplicas[name] {
 				continue
 			}
-			workloadName := GenerateName(ds.Name, name, wl.Revision)
+			workloadName := disaggregatedsetutils.GenerateName(ds.Name, name, wl.Revision)
 			log.Info("Scaling down", "workload", workloadName, "from", info.Replicas, "to", newReplicas[name])
 			if err := executor.WorkloadManager.Scale(ctx, ds.Namespace, workloadName, newReplicas[name]); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", workloadName, err)
@@ -388,7 +389,7 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 	config *disaggregatedsetv1.DisaggregatedRoleSpec,
 	initialReplicas int,
 ) (bool, error) {
-	workloadName := GenerateName(ds.Name, role, revision)
+	workloadName := disaggregatedsetutils.GenerateName(ds.Name, role, revision)
 	existing, err := executor.WorkloadManager.Get(ctx, ds.Namespace, workloadName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get workload %s: %w", workloadName, err)
@@ -397,12 +398,12 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 		return false, nil
 	}
 
-	if err := executor.WorkloadManager.Create(ctx, CreateParams{
+	if err := executor.WorkloadManager.Create(ctx, disaggregatedsetutils.CreateParams{
 		DisaggregatedSet: ds,
 		Role:             role,
 		Config:           config,
 		Revision:         revision,
-		Labels:           GenerateLabels(ds.Name, role, revision),
+		Labels:           disaggregatedsetutils.GenerateLabels(ds.Name, role, revision),
 		Replicas:         initialReplicas,
 	}); err != nil {
 		return false, fmt.Errorf("failed to create workload %s: %w", workloadName, err)
@@ -411,7 +412,7 @@ func (executor *RollingUpdateExecutor) ensureNewWorkloadExists(
 }
 
 // --- Role change utils ---
-func detectRoleChanges(specRoleNames []string, oldWorkloads GroupedWorkloads) ([]string, []string) {
+func detectRoleChanges(specRoleNames []string, oldWorkloads disaggregatedsetutils.GroupedWorkloads) ([]string, []string) {
 	specRoles, oldRoles := buildRoleSets(specRoleNames, oldWorkloads)
 
 	var added, removed []string

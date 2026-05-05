@@ -90,7 +90,7 @@ type WorkloadInfo struct {
 	ReadyReplicas                int
 	InitialReplicas              int
 	HasInitialReplicasAnnotation bool
-	CreationTimestamp            time.Time
+	CreationTimestamp             time.Time
 }
 
 type CreateParams struct {
@@ -108,10 +108,10 @@ func GenerateName(baseName, role, revision string) string {
 
 func GenerateLabels(baseName, role, revision string) map[string]string {
 	return map[string]string{
-		"app":           fmt.Sprintf("%s-%s", baseName, role),
-		disaggregatedsetv1.RoleLabelKey: role,
+		"app":                          fmt.Sprintf("%s-%s", baseName, role),
+		disaggregatedsetv1.RoleLabelKey:    role,
 		disaggregatedsetv1.SetNameLabelKey: baseName,
-		disaggregatedsetv1.RevisionLabelKey:   revision,
+		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 }
 
@@ -119,7 +119,7 @@ const revisionLength = 8
 
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
-		Name     string                               `json:"name"`
+		Name     string                              `json:"name"`
 		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
 	}
 
@@ -161,4 +161,46 @@ func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []strin
 		names[i] = role.Name
 	}
 	return names
+}
+
+type GroupedWorkload struct {
+	Revision string
+	Roles    map[string]WorkloadInfo
+}
+
+type GroupedWorkloads []GroupedWorkload
+
+func (groupedWorkloads GroupedWorkloads) GetTotalReplicasPerRole(role string) int {
+	total := 0
+	for _, workload := range groupedWorkloads {
+		total += workload.Roles[role].Replicas
+	}
+	return total
+}
+
+func (groupedWorkloads GroupedWorkloads) GetTotalInitialReplicasPerRole(role string) int {
+	total := 0
+	for _, workload := range groupedWorkloads {
+		total += workload.Roles[role].InitialReplicas
+	}
+	return total
+}
+
+func GroupWorkloadsByRevision(workloads []WorkloadInfo) GroupedWorkloads {
+	byRevision := make(map[string]*GroupedWorkload)
+	for _, workload := range workloads {
+		if byRevision[workload.Revision] == nil {
+			byRevision[workload.Revision] = &GroupedWorkload{
+				Revision: workload.Revision,
+				Roles:    make(map[string]WorkloadInfo),
+			}
+		}
+		byRevision[workload.Revision].Roles[workload.Role] = workload
+	}
+
+	result := make(GroupedWorkloads, 0, len(byRevision))
+	for _, grouped := range byRevision {
+		result = append(result, *grouped)
+	}
+	return result
 }
