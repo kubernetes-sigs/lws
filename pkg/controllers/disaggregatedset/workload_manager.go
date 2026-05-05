@@ -22,7 +22,6 @@ import (
 	"maps"
 	"strconv"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -84,36 +83,15 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params Create
 	replicas := int32(params.Replicas)
 	config := params.Config
 
-	workerLabels := mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
-	workerAnnotations := copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+	lwsTemplate := config.Spec.LeaderWorkerTemplate
+	lwsTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
+	lwsTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
 
-	lwsTemplate := leaderworkerset.LeaderWorkerTemplate{
-		Size: config.Spec.LeaderWorkerTemplate.Size,
-		WorkerTemplate: corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Labels:      workerLabels,
-				Annotations: workerAnnotations,
-			},
-			Spec: config.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec,
-		},
-		RestartPolicy:                        config.Spec.LeaderWorkerTemplate.RestartPolicy,
-		VolumeClaimTemplates:                 config.Spec.LeaderWorkerTemplate.VolumeClaimTemplates,
-		PersistentVolumeClaimRetentionPolicy: config.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy,
+	if lwsTemplate.LeaderTemplate != nil {
+		lwsTemplate.LeaderTemplate = lwsTemplate.LeaderTemplate.DeepCopy()
+		lwsTemplate.LeaderTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
+		lwsTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
 	}
-
-	if config.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-		leaderLabels := mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
-		leaderAnnotations := copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
-		lwsTemplate.LeaderTemplate = &corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Labels:      leaderLabels,
-				Annotations: leaderAnnotations,
-			},
-			Spec: config.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec,
-		}
-	}
-
-	lwsTemplate.SubGroupPolicy = config.Spec.LeaderWorkerTemplate.SubGroupPolicy
 
 	lwsNetworkConfig := config.Spec.NetworkConfig
 
