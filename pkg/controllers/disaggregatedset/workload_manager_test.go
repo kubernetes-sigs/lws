@@ -484,9 +484,9 @@ func TestManagerCreate(t *testing.T) {
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey: "test-deploy",
-				disaggregatedsetv1.RoleLabelKey: "prefill",
-				disaggregatedsetv1.RevisionLabelKey:   "abc123",
+				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
+				disaggregatedsetv1.RoleLabelKey:     "prefill",
+				disaggregatedsetv1.RevisionLabelKey: "abc123",
 			},
 			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
@@ -519,9 +519,9 @@ func TestManagerCreate(t *testing.T) {
 			Revision: "abc123",
 			Replicas: 3,
 			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey: "test-deploy",
-				disaggregatedsetv1.RoleLabelKey: "prefill",
-				disaggregatedsetv1.RevisionLabelKey:   "abc123",
+				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
+				disaggregatedsetv1.RoleLabelKey:     "prefill",
+				disaggregatedsetv1.RevisionLabelKey: "abc123",
 			},
 			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
 				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{

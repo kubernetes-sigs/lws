@@ -270,9 +270,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-					disaggregatedsetv1.RoleLabelKey: testServiceRoleDecode,
-					disaggregatedsetv1.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+					disaggregatedsetv1.RoleLabelKey:     testServiceRoleDecode,
+					disaggregatedsetv1.RevisionLabelKey: "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -323,9 +323,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRolePrefill, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-					disaggregatedsetv1.RoleLabelKey: testServiceRolePrefill,
-					disaggregatedsetv1.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+					disaggregatedsetv1.RoleLabelKey:     testServiceRolePrefill,
+					disaggregatedsetv1.RevisionLabelKey: "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -337,9 +337,9 @@ func TestServiceManager(t *testing.T) {
 				Name:      GenerateServiceName(deployment.Name, testServiceRoleDecode, "old12345"),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-					disaggregatedsetv1.RoleLabelKey: testServiceRoleDecode,
-					disaggregatedsetv1.RevisionLabelKey:   "old12345",
+					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+					disaggregatedsetv1.RoleLabelKey:     testServiceRoleDecode,
+					disaggregatedsetv1.RevisionLabelKey: "old12345",
 				},
 			},
 			Spec: corev1.ServiceSpec{

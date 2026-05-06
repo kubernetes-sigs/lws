@@ -131,15 +131,15 @@ func (manager *ServiceManager) buildService(
 	serviceName := GenerateServiceName(deployment.Name, roleName, revision)
 
 	labels := map[string]string{
-		disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-		disaggregatedsetv1.RoleLabelKey: roleName,
-		disaggregatedsetv1.RevisionLabelKey:   revision,
+		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+		disaggregatedsetv1.RoleLabelKey:     roleName,
+		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
 	selector := map[string]string{
-		disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-		disaggregatedsetv1.RoleLabelKey: roleName,
-		disaggregatedsetv1.RevisionLabelKey:   revision,
+		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+		disaggregatedsetv1.RoleLabelKey:     roleName,
+		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
 	return &corev1.Service{

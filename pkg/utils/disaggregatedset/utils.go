@@ -90,7 +90,7 @@ type WorkloadInfo struct {
 	ReadyReplicas                int
 	InitialReplicas              int
 	HasInitialReplicasAnnotation bool
-	CreationTimestamp             time.Time
+	CreationTimestamp            time.Time
 }
 
 type CreateParams struct {
@@ -108,9 +108,9 @@ func GenerateName(baseName, role, revision string) string {
 
 func GenerateLabels(baseName, role, revision string) map[string]string {
 	return map[string]string{
-		"app":                          fmt.Sprintf("%s-%s", baseName, role),
-		disaggregatedsetv1.RoleLabelKey:    role,
-		disaggregatedsetv1.SetNameLabelKey: baseName,
+		"app":                               fmt.Sprintf("%s-%s", baseName, role),
+		disaggregatedsetv1.RoleLabelKey:     role,
+		disaggregatedsetv1.SetNameLabelKey:  baseName,
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 }
@@ -119,7 +119,7 @@ const revisionLength = 8
 
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
-		Name     string                              `json:"name"`
+		Name     string                               `json:"name"`
 		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
 	}
 
