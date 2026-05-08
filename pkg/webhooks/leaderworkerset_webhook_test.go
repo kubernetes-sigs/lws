@@ -670,3 +670,112 @@ func TestPodTerminationPolicyDefaultAndValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateUpdateSubGroupPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		lws     *v1.LeaderWorkerSet
+		wantErr string
+	}{
+		{
+			name: "subgroup placement and subgroup size are mutually exclusive",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupSize(2).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement and subGroupSize are mutually exclusive",
+		},
+		{
+			name: "subgroup placement requires LeaderExcluded",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderWorker).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement only supports LeaderExcluded",
+		},
+		{
+			name: "subgroup placement must cover all workers once",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "workerIndexes must cover every worker exactly once",
+		},
+		{
+			name: "subgroup placement does not support leader requesting TPUs",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				LeaderTemplateSpec(wrappers.MakeLeaderPodSpecWithTPUResource()).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement does not support leader requesting TPUs",
+		},
+		{
+			name: "valid subgroup placement",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+		},
+		{
+			name: "legacy subgroup size still valid",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupSize(2).
+				Obj(),
+			wantErr: "size-1 must be divisible by subGroupSize when using LeaderExcluded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.lws.Spec.Replicas == nil {
+				tc.lws.Spec.Replicas = ptr.To[int32](1)
+			}
+			if tc.lws.Spec.LeaderWorkerTemplate.Size == nil {
+				tc.lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+			}
+			errList := ValidateSubGroupPolicy(field.NewPath("spec"), &tc.lws.Spec)
+			if tc.wantErr == "" {
+				if len(errList) != 0 {
+					t.Fatalf("unexpected errors: %v", errList)
+				}
+				return
+			}
+			if len(errList) == 0 {
+				t.Fatalf("expected error containing %q, got none", tc.wantErr)
+			}
+			found := false
+			for _, err := range errList {
+				if err != nil && err.Detail != "" && strings.Contains(err.Detail, tc.wantErr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, errList)
+			}
+		})
+	}
+}
