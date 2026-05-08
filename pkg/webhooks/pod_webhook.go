@@ -18,6 +18,7 @@ package webhooks
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -123,8 +124,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+		_, foundSubGroupPlacement := pod.Annotations[leaderworkerset.SubGroupPlacementAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
-		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
+		if foundSubGroupSize && !foundSubGroupPlacement && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
 			// The leader pod always lands on SubGroup 0.
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
 			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
@@ -139,19 +141,40 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
-		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
-			subGroupSizeInt, err := strconv.Atoi(subGroupSize)
+		placement, err := getSubGroupPlacementFromPod(pod)
+		if err != nil {
+			return err
+		}
+		if len(placement) > 0 && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
+			placementIndex, members, matchLabels, found := findPlacementForWorker(placement, int32(workerIndex))
+			if !found {
+				return fmt.Errorf("worker %d is missing from subGroupPlacement for pod %s", workerIndex, pod.Name)
+			}
+			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = strconv.Itoa(placementIndex)
+			subGroupUniqueKey := genGroupUniqueKey(leaderName, strconv.Itoa(placementIndex))
+			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+			encodedMembers, err := leaderworkerset.EncodeSubGroupMembers(members)
 			if err != nil {
 				return err
 			}
-			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
-			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
-			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
-			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+			pod.Annotations[leaderworkerset.SubGroupMembersAnnotationKey] = encodedMembers
+			applyPlacementNodeAffinity(pod, matchLabels)
+		} else {
+			subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+			if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
+				subGroupSizeInt, err := strconv.Atoi(subGroupSize)
+				if err != nil {
+					return err
+				}
+				leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+				subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
+				subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
+				pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+				if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+					SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				}
 			}
 		}
 	}
@@ -252,4 +275,64 @@ func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)
 	}
 	return fmt.Sprint(workerIndex / subGroupSize)
+}
+
+func getSubGroupPlacementFromPod(pod *corev1.Pod) ([]leaderworkerset.SubGroupPlacement, error) {
+	value, found := pod.Annotations[leaderworkerset.SubGroupPlacementAnnotationKey]
+	if !found || value == "" {
+		return nil, nil
+	}
+	return leaderworkerset.DecodeSubGroupPlacement(value)
+}
+
+func findPlacementForWorker(placement []leaderworkerset.SubGroupPlacement, workerIndex int32) (int, []int32, map[string]string, bool) {
+	for placementIndex, subgroup := range placement {
+		for _, member := range subgroup.WorkerIndexes {
+			if member == workerIndex {
+				members := append([]int32(nil), subgroup.WorkerIndexes...)
+				sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+				matchLabels := make(map[string]string, len(subgroup.MatchLabels))
+				for key, value := range subgroup.MatchLabels {
+					matchLabels[key] = value
+				}
+				return placementIndex, members, matchLabels, true
+			}
+		}
+	}
+	return 0, nil, nil, false
+}
+
+func applyPlacementNodeAffinity(pod *corev1.Pod, matchLabels map[string]string) {
+	if len(matchLabels) == 0 {
+		return
+	}
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &corev1.Affinity{}
+	}
+	if pod.Spec.Affinity.NodeAffinity == nil {
+		pod.Spec.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	requirements := make([]corev1.NodeSelectorRequirement, 0, len(matchLabels))
+	keys := make([]string, 0, len(matchLabels))
+	for key := range matchLabels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		requirements = append(requirements, corev1.NodeSelectorRequirement{
+			Key:      key,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{matchLabels[key]},
+		})
+	}
+	required := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil || len(required.NodeSelectorTerms) == 0 {
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: requirements}},
+		}
+		return
+	}
+	for i := range required.NodeSelectorTerms {
+		required.NodeSelectorTerms[i].MatchExpressions = append(required.NodeSelectorTerms[i].MatchExpressions, requirements...)
+	}
 }

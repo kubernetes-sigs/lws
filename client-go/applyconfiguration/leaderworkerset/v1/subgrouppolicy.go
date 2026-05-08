@@ -36,6 +36,15 @@ type SubGroupPolicyApplyConfiguration struct {
 	// by subGroupSize, in which case the leader is considered as
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
+	// subGroupPlacement explicitly assigns workers to subgroups and constrains
+	// each subgroup to nodes matching the given labels.
+	SubGroupPlacement []SubGroupPlacementApplyConfiguration `json:"subGroupPlacement,omitempty"`
+}
+
+// SubGroupPlacementApplyConfiguration represents a declarative configuration of the SubGroupPlacement type for use with apply.
+type SubGroupPlacementApplyConfiguration struct {
+	WorkerIndexes []int32           `json:"workerIndexes,omitempty"`
+	MatchLabels   map[string]string `json:"matchLabels,omitempty"`
 }
 
 // SubGroupPolicyApplyConfiguration constructs a declarative configuration of the SubGroupPolicy type for use with
@@ -57,5 +66,41 @@ func (b *SubGroupPolicyApplyConfiguration) WithType(value leaderworkersetv1.SubG
 // If called multiple times, the SubGroupSize field is set to the value of the last call.
 func (b *SubGroupPolicyApplyConfiguration) WithSubGroupSize(value int32) *SubGroupPolicyApplyConfiguration {
 	b.SubGroupSize = &value
+	return b
+}
+
+// WithSubGroupPlacement adds the given values to the SubGroupPlacement field in the declarative configuration
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+func (b *SubGroupPolicyApplyConfiguration) WithSubGroupPlacement(values ...*SubGroupPlacementApplyConfiguration) *SubGroupPolicyApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithSubGroupPlacement")
+		}
+		b.SubGroupPlacement = append(b.SubGroupPlacement, *values[i])
+	}
+	return b
+}
+
+// SubGroupPlacement constructs a declarative configuration of the SubGroupPlacement type for use with apply.
+func SubGroupPlacement() *SubGroupPlacementApplyConfiguration {
+	return &SubGroupPlacementApplyConfiguration{}
+}
+
+// WithWorkerIndexes adds the given values to the WorkerIndexes field in the declarative configuration
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+func (b *SubGroupPlacementApplyConfiguration) WithWorkerIndexes(values ...int32) *SubGroupPlacementApplyConfiguration {
+	b.WorkerIndexes = append(b.WorkerIndexes, values...)
+	return b
+}
+
+// WithMatchLabels puts the entries into the MatchLabels field in the declarative configuration
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+func (b *SubGroupPlacementApplyConfiguration) WithMatchLabels(entries map[string]string) *SubGroupPlacementApplyConfiguration {
+	if b.MatchLabels == nil && len(entries) > 0 {
+		b.MatchLabels = make(map[string]string, len(entries))
+	}
+	for key, value := range entries {
+		b.MatchLabels[key] = value
+	}
 	return b
 }

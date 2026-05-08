@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
 type LeaderWorkerSetWebhook struct{}
@@ -100,13 +102,22 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	specPath := field.NewPath("spec")
 
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"))...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(
+			newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize,
+			oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize,
+			field.NewPath("spec", "leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"),
+		)...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(
+			newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement,
+			oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement,
+			field.NewPath("spec", "leaderWorkerTemplate", "subGroupPolicy", "subGroupPlacement"),
+		)...)
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot enable subGroupSize after the lws is already created"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy"), newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy, "cannot enable subgroup policy after the lws is already created"))
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy, "cannot remove subgroup policy after enabled"))
 	}
 	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
@@ -236,21 +247,89 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 
 func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	allErrs := field.ErrorList{}
+	policyPath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy")
+	policy := lws.Spec.LeaderWorkerTemplate.SubGroupPolicy
 	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
-	subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
+	hasSubGroupSize := policy.SubGroupSize != nil
+	hasSubGroupPlacement := len(policy.SubGroupPlacement) > 0
+	if hasSubGroupSize && hasSubGroupPlacement {
+		allErrs = append(allErrs, field.Invalid(policyPath, policy, "subGroupPlacement and subGroupSize are mutually exclusive"))
+		return allErrs
+	}
+	if hasSubGroupPlacement {
+		return append(allErrs, validateSubGroupPlacement(policyPath, lws)...)
+	}
+	if !hasSubGroupSize {
+		allErrs = append(allErrs, field.Invalid(policyPath, policy, "one of subGroupSize or subGroupPlacement must be set"))
+		return allErrs
+	}
+	subGroupSize := int32(*policy.SubGroupSize)
 	if subGroupSize < 1 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
 	}
 	if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
 	}
 	if size < subGroupSize {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil &&
 		(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+	}
+	return allErrs
+}
+
+func validateSubGroupPlacement(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	allErrs := field.ErrorList{}
+	policy := lws.Spec.LeaderWorkerTemplate.SubGroupPolicy
+	workerCount := int32(*lws.Spec.LeaderWorkerTemplate.Size) - 1
+	if workerCount < 1 {
+		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPlacement"), policy.SubGroupPlacement, "subGroupPlacement requires at least one worker"))
+		return allErrs
+	}
+	if policy.Type == nil || *policy.Type != v1.SubGroupPolicyTypeLeaderExcluded {
+		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPolicyType"), policy.Type, "subGroupPlacement only supports LeaderExcluded"))
+	}
+	leaderSpec := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		leaderSpec = lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec
+	}
+	if acceleratorutils.PodRequestsTPUs(leaderSpec) {
+		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPlacement"), policy.SubGroupPlacement, "subGroupPlacement does not support leader requesting TPUs"))
+	}
+	seen := make(map[int32]int)
+	for placementIndex, placement := range policy.SubGroupPlacement {
+		placementPath := policyPath.Child("subGroupPlacement").Index(placementIndex)
+		if len(placement.WorkerIndexes) == 0 {
+			allErrs = append(allErrs, field.Required(placementPath.Child("workerIndexes"), "workerIndexes must not be empty"))
+		}
+		if len(placement.MatchLabels) == 0 {
+			allErrs = append(allErrs, field.Required(placementPath.Child("matchLabels"), "matchLabels must not be empty"))
+		}
+		for workerIndexPos, workerIndex := range placement.WorkerIndexes {
+			workerIndexPath := placementPath.Child("workerIndexes").Index(workerIndexPos)
+			if workerIndex < 1 || workerIndex > workerCount {
+				allErrs = append(allErrs, field.Invalid(workerIndexPath, workerIndex, fmt.Sprintf("workerIndex must be in range [1, %d]", workerCount)))
+				continue
+			}
+			if prevPlacementIndex, found := seen[workerIndex]; found {
+				allErrs = append(allErrs, field.Duplicate(workerIndexPath, fmt.Sprintf("workerIndex %d is already used by subGroupPlacement[%d]", workerIndex, prevPlacementIndex)))
+				continue
+			}
+			seen[workerIndex] = placementIndex
+		}
+	}
+	if len(seen) != int(workerCount) {
+		missing := make([]int, 0)
+		for workerIndex := int32(1); workerIndex <= workerCount; workerIndex++ {
+			if _, found := seen[workerIndex]; !found {
+				missing = append(missing, int(workerIndex))
+			}
+		}
+		sort.Ints(missing)
+		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPlacement"), policy.SubGroupPlacement, fmt.Sprintf("workerIndexes must cover every worker exactly once, missing %v", missing)))
 	}
 	return allErrs
 }

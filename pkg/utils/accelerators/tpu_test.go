@@ -587,6 +587,47 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 	}
 }
 
+func TestAddTPUVariablesPlacement(t *testing.T) {
+	members, err := leaderworkerset.EncodeSubGroupMembers([]int32{1, 2})
+	if err != nil {
+		t.Fatalf("failed to encode subgroup members: %v", err)
+	}
+	pod := &corev1.Pod{
+		Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-sample-1-2",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.WorkerIndexLabelKey:   "2",
+				leaderworkerset.SubGroupIndexLabelKey: "0",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.SubGroupMembersAnnotationKey: members,
+			},
+		},
+	}
+	if err := AddTPUVariables(pod, 4); err != nil {
+		t.Fatalf("AddTPUVariables failed: %v", err)
+	}
+	container := getContainerRequestingTPUs(&pod.Spec)
+	if container == nil {
+		t.Fatal("expected TPU container")
+	}
+	got := map[string]string{}
+	for _, env := range container.Env {
+		got[env.Name] = env.Value
+	}
+	if diff := cmp.Diff("test-sample-1-1.default,test-sample-1-2.default", got[TpuWorkerHostNames]); diff != "" {
+		t.Fatalf("unexpected worker hostnames: %s", diff)
+	}
+	if diff := cmp.Diff("1", got[TpuWorkerId]); diff != "" {
+		t.Fatalf("unexpected worker id: %s", diff)
+	}
+	if diff := cmp.Diff("test-sample-1", got[TpuName]); diff != "" {
+		t.Fatalf("unexpected TPU name: %s", diff)
+	}
+}
+
 func TestGetContainersRequestingTPUs(t *testing.T) {
 	tests := []struct {
 		name                 string

@@ -303,3 +303,42 @@ func TestGetSubGroupIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestFindPlacementForWorker(t *testing.T) {
+	placement := []leaderworkerset.SubGroupPlacement{
+		{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+		{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+	}
+
+	placementIndex, members, matchLabels, found := findPlacementForWorker(placement, 2)
+	if !found {
+		t.Fatal("expected placement to be found")
+	}
+	if diff := cmp.Diff(0, placementIndex); diff != "" {
+		t.Fatalf("unexpected placement index: %s", diff)
+	}
+	if diff := cmp.Diff([]int32{1, 2}, members); diff != "" {
+		t.Fatalf("unexpected members: %s", diff)
+	}
+	if diff := cmp.Diff(map[string]string{"local": "schedule_zone"}, matchLabels); diff != "" {
+		t.Fatalf("unexpected matchLabels: %s", diff)
+	}
+}
+
+func TestApplyPlacementNodeAffinity(t *testing.T) {
+	pod := &corev1.Pod{}
+	applyPlacementNodeAffinity(pod, map[string]string{"local": "schedule_zone"})
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil || pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatal("expected required node affinity to be configured")
+	}
+	want := []corev1.NodeSelectorTerm{{
+		MatchExpressions: []corev1.NodeSelectorRequirement{{
+			Key:      "local",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"schedule_zone"},
+		}},
+	}}
+	if diff := cmp.Diff(want, pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms); diff != "" {
+		t.Fatalf("unexpected node affinity: %s", diff)
+	}
+}
