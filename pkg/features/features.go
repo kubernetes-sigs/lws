@@ -1,0 +1,58 @@
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package features
+
+import (
+	"fmt"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/component-base/featuregate"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+)
+
+func init() {
+	runtime.Must(utilfeature.DefaultMutableFeatureGate.Add(defaultFeatureGates))
+}
+
+// defaultFeatureGates consists of all known LWS-specific feature keys.
+// To add a new feature, define a key for it above and add it here. The features will be
+// available throughout LWS binaries.
+//
+// Entries are separated from each other with blank lines to avoid sweeping gofmt changes
+// when adding or removing one entry.
+var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
+	// Example: {Default: false, PreRelease: featuregate.Alpha},
+}
+
+// SetFeatureGateDuringTest is a helper for setting a feature gate value
+// for the duration of a test.
+func SetFeatureGateDuringTest(tb testing.TB, f featuregate.Feature, value bool) {
+	featuregatetesting.SetFeatureGateDuringTest(tb, utilfeature.DefaultFeatureGate, f, value)
+}
+
+// Enabled is a helper for utilfeature.DefaultFeatureGate.Enabled().
+func Enabled(f featuregate.Feature) bool {
+	return utilfeature.DefaultFeatureGate.Enabled(f)
+}
+
+// SetEnable is a helper to flip a feature gate from code paths such as
+// integration tests. Prefer SetFeatureGateDuringTest for unit tests.
+func SetEnable(f featuregate.Feature, v bool) error {
+	return utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=%v", f, v))
+}
