@@ -368,7 +368,7 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 	})
 }
 
-func TestValidateUpdateSubGroupPolicy(t *testing.T) {
+func TestValidateSubGroupPolicy(t *testing.T) {
 	tests := []struct {
 		name    string
 		lws     *v1.LeaderWorkerSet
@@ -467,7 +467,7 @@ func TestValidateUpdateSubGroupPolicy(t *testing.T) {
 			if tc.lws.Spec.LeaderWorkerTemplate.Size == nil {
 				tc.lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
 			}
-			errList := validateUpdateSubGroupPolicy(field.NewPath("spec"), tc.lws)
+			errList := validateSubGroupPolicy(field.NewPath("spec"), tc.lws)
 			if tc.wantErr == "" {
 				if len(errList) != 0 {
 					t.Fatalf("unexpected errors: %v", errList)
