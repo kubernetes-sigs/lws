@@ -197,6 +197,30 @@ func TestValidateSubGroupPolicy(t *testing.T) {
 		wantErr string
 	}{
 		{
+			name: "subgroup placement rejects invalid label key",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"bad/key/": "schedule-zone"}},
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+				).
+				Obj(),
+			wantErr: "must be a valid label key",
+		},
+		{
+			name: "subgroup placement rejects invalid label value",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "bad value"}},
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+				).
+				Obj(),
+			wantErr: "must be a valid label value",
+		},
+		{
 			name: "subgroup placement and subgroup size are mutually exclusive",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				Size(4).
