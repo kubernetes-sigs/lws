@@ -160,6 +160,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			}
 			pod.Annotations[leaderworkerset.SubGroupMembersAnnotationKey] = encodedMembers
 			applyPlacementNodeAffinity(pod, matchLabels)
+			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+			}
 		} else {
 			subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 			if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
