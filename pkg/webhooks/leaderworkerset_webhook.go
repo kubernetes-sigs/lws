@@ -291,6 +291,7 @@ func validateSubGroupPlacement(policyPath *field.Path, lws *v1.LeaderWorkerSet) 
 	}
 	if policy.Type == nil || *policy.Type != v1.SubGroupPolicyTypeLeaderExcluded {
 		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPolicyType"), policy.Type, "subGroupPlacement only supports LeaderExcluded"))
+		return allErrs
 	}
 	leaderSpec := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
