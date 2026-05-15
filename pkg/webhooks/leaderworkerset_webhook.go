@@ -580,7 +580,6 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 	}
 	return allErrs
 }
-
 // ValidateReplicaCount checks the physical LWS replica count and total Pod count.
 // An int64 count also supports sums of DisaggregatedSet sub-role targets.
 func ValidateReplicaCount(path *field.Path, replicas int64, size int32) field.ErrorList {

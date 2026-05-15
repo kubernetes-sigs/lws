@@ -671,7 +671,7 @@ func TestPodTerminationPolicyDefaultAndValidation(t *testing.T) {
 	})
 }
 
-func TestValidateUpdateSubGroupPolicy(t *testing.T) {
+func TestValidateSubGroupPolicy(t *testing.T) {
 	tests := []struct {
 		name    string
 		lws     *v1.LeaderWorkerSet
@@ -730,12 +730,12 @@ func TestValidateUpdateSubGroupPolicy(t *testing.T) {
 			name: "subgroup placement rejects TPU-requesting effective leader when leader template is omitted",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				Size(4).
-				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
 				LeaderTemplate(nil).
 				WorkerTemplateSpec(wrappers.MakeWorkerPodSpecWithTPUResource()).
 				SubGroupPlacement(
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
 				).
 				Obj(),
 			wantErr: "subGroupPlacement does not support TPU-requesting leader pods",
