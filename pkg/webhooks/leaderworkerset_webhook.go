@@ -185,7 +185,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, validateUpdateSubGroupPolicy(specPath, lws)...)
+		allErrs = append(allErrs, validateSubGroupPolicy(specPath, lws)...)
 	} else {
 		if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
@@ -245,7 +245,7 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 	return allErrs
 }
 
-func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+func validateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	allErrs := field.ErrorList{}
 	policyPath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy")
 	policy := lws.Spec.LeaderWorkerTemplate.SubGroupPolicy
