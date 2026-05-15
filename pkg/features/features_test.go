@@ -34,6 +34,9 @@ func TestSetEnable(t *testing.T) {
 		t.Fatalf("failed to register test feature: %v", err)
 	}
 
+	// Ensure gate is restored after the test regardless of outcome.
+	SetFeatureGateDuringTest(t, testFeature, false)
+
 	if Enabled(testFeature) {
 		t.Fatalf("expected %s to be disabled by default", testFeature)
 	}
@@ -41,9 +44,6 @@ func TestSetEnable(t *testing.T) {
 	if err := SetEnable(testFeature, true); err != nil {
 		t.Fatalf("SetEnable returned error: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = SetEnable(testFeature, false)
-	})
 
 	if !Enabled(testFeature) {
 		t.Fatalf("expected %s to be enabled after SetEnable(true)", testFeature)

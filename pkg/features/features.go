@@ -18,12 +18,10 @@ package features
 
 import (
 	"fmt"
-	"testing"
 
 	"k8s.io/apimachinery/pkg/util/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/component-base/featuregate"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 )
 
 func init() {
@@ -38,12 +36,6 @@ func init() {
 // when adding or removing one entry.
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	// Example: {Default: false, PreRelease: featuregate.Alpha},
-}
-
-// SetFeatureGateDuringTest is a helper for setting a feature gate value
-// for the duration of a test.
-func SetFeatureGateDuringTest(tb testing.TB, f featuregate.Feature, value bool) {
-	featuregatetesting.SetFeatureGateDuringTest(tb, utilfeature.DefaultFeatureGate, f, value)
 }
 
 // Enabled is a helper for utilfeature.DefaultFeatureGate.Enabled().
