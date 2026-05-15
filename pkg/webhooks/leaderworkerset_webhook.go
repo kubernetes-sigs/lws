@@ -22,6 +22,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	meta "k8s.io/apimachinery/pkg/api/meta"
@@ -663,6 +664,21 @@ func validateSubGroupPlacement(policyPath *field.Path, spec *v1.LeaderWorkerSetS
 		}
 		if len(placement.MatchLabels) == 0 {
 			allErrs = append(allErrs, field.Required(placementPath.Child("matchLabels"), "matchLabels must not be empty"))
+		}
+		labelKeys := make([]string, 0, len(placement.MatchLabels))
+		for key := range placement.MatchLabels {
+			labelKeys = append(labelKeys, key)
+		}
+		sort.Strings(labelKeys)
+		for _, key := range labelKeys {
+			value := placement.MatchLabels[key]
+			labelPath := placementPath.Child("matchLabels").Key(key)
+			if errs := utilvalidation.IsQualifiedName(key); len(errs) > 0 {
+				allErrs = append(allErrs, field.Invalid(labelPath, key, fmt.Sprintf("must be a valid label key: %s", strings.Join(errs, "; "))))
+			}
+			if errs := utilvalidation.IsValidLabelValue(value); len(errs) > 0 {
+				allErrs = append(allErrs, field.Invalid(labelPath, value, fmt.Sprintf("must be a valid label value: %s", strings.Join(errs, "; "))))
+			}
 		}
 		for workerIndexPos, workerIndex := range placement.WorkerIndexes {
 			workerIndexPath := placementPath.Child("workerIndexes").Index(workerIndexPos)
