@@ -654,7 +654,7 @@ func validateSubGroupPlacement(policyPath *field.Path, spec *v1.LeaderWorkerSetS
 		leaderSpec = spec.LeaderWorkerTemplate.LeaderTemplate.Spec
 	}
 	if acceleratorutils.PodRequestsTPUs(leaderSpec) {
-		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPlacement"), policy.SubGroupPlacement, "subGroupPlacement does not support leader requesting TPUs"))
+		allErrs = append(allErrs, field.Invalid(policyPath.Child("subGroupPlacement"), policy.SubGroupPlacement, "subGroupPlacement does not support TPU-requesting leader pods; when leaderTemplate is omitted, workerTemplate is also used for the leader"))
 	}
 	seen := make(map[int32]int)
 	for placementIndex, placement := range policy.SubGroupPlacement {
