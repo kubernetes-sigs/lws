@@ -37,9 +37,6 @@ spec:
         - args:
           - --config=/controller_manager_config.yaml
           - --zap-log-level=2
-          {{- if .Values.featureGates }}
-          - --feature-gates={{ .Values.featureGates }}
-          {{- end }}
           command:
           - /manager
           name: manager

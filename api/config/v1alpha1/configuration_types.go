@@ -39,6 +39,12 @@ type Configuration struct {
 
 	// ClientConnection is configuration of the client while connecting to API Server
 	ClientConnection *ClientConnection `json:"clientConnection,omitempty"`
+
+	// FeatureGates is a map of feature names to bools that enable or disable alpha/experimental features.
+	// Keys must match a registered feature in pkg/features. Values that are not set fall back to the
+	// feature's default.
+	// +optional
+	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 }
 
 type ControllerManager struct {

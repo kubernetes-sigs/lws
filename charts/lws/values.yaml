@@ -53,6 +53,9 @@ affinity: {}
 # gangSchedulingManagement:
 #   schedulerProvider: volcano
 gangSchedulingManagement: {}
-# featureGates is a comma-separated list of alpha/experimental feature toggles
-# passed to the controller via --feature-gates. Example: "FooFeature=true,BarFeature=false".
-featureGates: ""
+# featureGates is a map of alpha/experimental feature toggles forwarded to the controller
+# via the Configuration API. Example:
+# featureGates:
+#   FooFeature: true
+#   BarFeature: false
+featureGates: {}

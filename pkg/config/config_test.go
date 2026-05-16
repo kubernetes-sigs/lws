@@ -150,6 +150,26 @@ clientConnection:
 		t.Fatal(err)
 	}
 
+	featureGatesConfig := filepath.Join(tmpDir, "featureGates.yaml")
+	if err := os.WriteFile(featureGatesConfig, []byte(`
+apiVersion: config.lws.x-k8s.io/v1alpha1
+kind: Configuration
+health:
+  healthProbeBindAddress: :8081
+metrics:
+  bindAddress: :8443
+leaderElection:
+  leaderElect: true
+  resourceName: b8b2488c.x-k8s.io
+webhook:
+  port: 9443
+featureGates:
+  FooFeature: true
+  BarFeature: false
+`), os.FileMode(0600)); err != nil {
+		t.Fatal(err)
+	}
+
 	invalidConfig := filepath.Join(tmpDir, "invalid-config.yaml")
 	if err := os.WriteFile(invalidConfig, []byte(`
 apiVersion: config.lws.x-k8s.io/v1alpha1
@@ -351,6 +371,23 @@ webhook:
 				ClientConnection: &configapi.ClientConnection{
 					QPS:   ptr.To[float32](50),
 					Burst: ptr.To[int32](100),
+				},
+			},
+			wantOptions: defaultControlOptions,
+		},
+		{
+			name:       "featureGates config",
+			configFile: featureGatesConfig,
+			wantConfiguration: configapi.Configuration{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: configapi.GroupVersion.String(),
+					Kind:       "Configuration",
+				},
+				InternalCertManagement: enableDefaultInternalCertManagement,
+				ClientConnection:       defaultClientConnection,
+				FeatureGates: map[string]bool{
+					"FooFeature": true,
+					"BarFeature": false,
 				},
 			},
 			wantOptions: defaultControlOptions,

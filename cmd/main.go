@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -87,15 +86,10 @@ func main() {
 		leaderElectResourceLock  string
 		leaderElectionID         string
 		configFile               string
-		featureGates             string
 		printVersion             bool
 	)
 
 	flag.BoolVar(&printVersion, "version", false, "Print version information and exit")
-	flag.StringVar(&featureGates, "feature-gates", "",
-		"A set of key=value pairs that describe feature gates for alpha/experimental features. "+
-			"Options are:\n"+
-			strings.Join(utilfeature.DefaultMutableFeatureGate.KnownFeatures(), "\n"))
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "DEPRECATED(please pass configuration file via --config flag): The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "DEPRECATED(please pass configuration file via --config flag): The address the probe endpoint binds to.")
 	flag.Float64Var(&qps, "kube-api-qps", 500, "Maximum QPS to use while talking with Kubernetes API")
@@ -140,18 +134,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	if featureGates != "" {
-		if err := utilfeature.DefaultMutableFeatureGate.Set(featureGates); err != nil {
-			fmt.Fprintf(os.Stderr, "unable to set feature gates: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID, metricsAddr)
 	if err != nil {
 		setupLog.Error(err, "unable to load the configuration")
+		os.Exit(1)
+	}
+
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(cfg.FeatureGates); err != nil {
+		setupLog.Error(err, "unable to set feature gates from configuration")
 		os.Exit(1)
 	}
 
