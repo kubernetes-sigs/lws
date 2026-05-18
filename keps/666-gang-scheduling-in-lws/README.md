@@ -9,8 +9,10 @@
   - [User Stories](#user-stories)
     - [LWS-level Gang Scheduling](#lws-level-gang-scheduling)
   - [Risks and Mitigations](#risks-and-mitigations)
+  - [Backwards Compatibility](#backwards-compatibility)
 - [Design Details](#design-details)
   - [Opt-in API](#opt-in-api)
+  - [Unified Provider Model](#unified-provider-model)
   - [API Discovery and Prerequisites](#api-discovery-and-prerequisites)
   - [Lifecycle of Workload and PodGroup Objects](#lifecycle-of-workload-and-podgroup-objects)
   - [Escape Hatch: Pre-set pod.spec.schedulingGroup](#escape-hatch-pre-set-podspecschedulinggroup)
@@ -30,7 +32,9 @@
 
 ## Summary
 
-Integrate the upstream Kubernetes Workload and PodGroup APIs (alpha; [kubernetes/enhancements#5558][workload-kep], [kubernetes/enhancements#5832][podgroup-kep]) into LWS as a gang-scheduling provider. Opt-in is per-LWS via a typed alpha `spec.gangScheduling` field, gated at admission by [API discovery](#api-discovery-and-prerequisites) against the upstream `GenericWorkload` feature gate. LWS then treats each replica's pods (1 leader + (size − 1) workers) as one all-or-nothing scheduling unit via **one PodGroup per replica**.
+Integrate the upstream Kubernetes Workload and PodGroup APIs (alpha; [kubernetes/enhancements#5558][workload-kep], [kubernetes/enhancements#5832][podgroup-kep]) into LWS as a gang-scheduling provider. Opt-in is per-LWS via a typed alpha `spec.gangScheduling` field, gated by an LWS feature gate `GangScheduling` (alpha=false) and at admission by [API discovery](#api-discovery-and-prerequisites) against the upstream `GenericWorkload` feature gate. LWS then treats each replica's pods (1 leader + (size − 1) workers) as one all-or-nothing scheduling unit via **one PodGroup per replica**.
+
+`spec.gangScheduling` is also the **single umbrella opt-in for every gang backend** LWS supports — including [KEP-407][kep407]'s third-party path (Volcano today). See [§Unified Provider Model](#unified-provider-model).
 
 [workload-kep]: https://github.com/kubernetes/enhancements/pull/5558
 [podgroup-kep]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-scheduling/5832-decouple-podgroup-api
@@ -44,7 +48,7 @@ For most multi-host inference use cases, all pods in an LWS replica need to be r
 
 [KEP-4671][kep4671] adds native gang scheduling to `kube-scheduler` via the Workload / PodGroup APIs, and brings group-level **TAS** (topology-aware scheduling) and **DRA** (dynamic resource allocation) along for free.
 
-[KEP-407][kep407] already covers gang scheduling via third-party PodGroup CRDs (Volcano / coscheduling / YuniKorn); this KEP adds a parallel, upstream-native path for clusters with the `scheduling.k8s.io/v1alpha2` Workload and PodGroup APIs enabled.
+[KEP-407][kep407] already covers gang scheduling via third-party PodGroup CRDs (Volcano / coscheduling / YuniKorn); this KEP adds an upstream-native path for clusters with `scheduling.k8s.io/v1alpha2` enabled. Both are reachable through `spec.gangScheduling` — see [§Unified Provider Model](#unified-provider-model).
 
 [kep407]: https://github.com/kubernetes-sigs/lws/tree/main/keps/407-gang-scheduling
 [kep4671]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-scheduling/4671-gang-scheduling
@@ -87,6 +91,13 @@ As a user running distributed inference with LWS, I want a replica's pods schedu
 
 **Forward-looking: deletion-protection finalizer.** [KEP-5832][podgroup-kep] §Deletion Protection makes the PodGroup finalizer mandatory at upstream beta. Once mandatory, recreating a leader pod will require its old PodGroup to fully delete before the new one can be created — see [Graduation Criteria](#graduation-criteria) for the migration path.
 
+### Backwards Compatibility
+
+- **Field unset** → zero behavior change.
+- **Field set, LWS `GangScheduling` gate disabled** → admission rejects with an explicit feature-gate error (alpha default; gate is on by default at LWS beta).
+- **Field set, v1alpha2 APIs missing** → admission rejects with the missing GVK named (see [API Discovery](#api-discovery-and-prerequisites)); no half-created objects.
+- **APIs registered but upstream `GenericWorkload` gate off** → install-time prerequisite (see [Risks](#risks-and-mitigations)), not a runtime failure.
+
 ## Design Details
 
 ### Opt-in API
@@ -108,15 +119,28 @@ type LeaderWorkerSetSpec struct {
 type GangSchedulingPolicy struct{}
 ```
 
-No LWS-side feature gate: the upstream `GenericWorkload` gate already controls whether `kube-apiserver` preserves `pod.spec.schedulingGroup`, and the webhook's [API discovery](#api-discovery-and-prerequisites) propagates that into LWS admission. Matches how LWS handles other typed alpha fields (`SubGroupPolicy`, `RolloutStrategy.MaxSurge`); a project-wide `pkg/features` scaffold, if ever needed, is tracked in [#850][lws-feature-gate-issue].
+Guarded by LWS feature gate `GangScheduling` (registered via the `pkg/features` scaffold from [#852][pr852]), tracking upstream `GenericWorkload`: **alpha=false → beta=true (aligned with upstream beta-on-by-default) → removed at GA**. The upstream gate is the real kill switch (it decides whether `kube-apiserver` preserves `pod.spec.schedulingGroup`); the LWS gate is the explicit alpha opt-in. See [Graduation Criteria](#graduation-criteria).
+
+[pr852]: https://github.com/kubernetes-sigs/lws/pull/852
 
 The validating webhook rejects:
 
-1. `spec.gangScheduling` set when the v1alpha2 Workload / PodGroup APIs are not registered (see [API Discovery and Prerequisites](#api-discovery-and-prerequisites)).
-2. Mutation of `spec.gangScheduling` on an existing LWS — `pod.spec.schedulingGroup` is immutable upstream, so a flip cannot retroactively gang-schedule already-running pods. Users delete-recreate the LWS to change mode.
-3. A pre-set `pod.spec.schedulingGroup` without `spec.gangScheduling` set — set `spec.gangScheduling: {}` to opt into the [Escape Hatch](#escape-hatch-pre-set-podspecschedulinggroup) explicitly.
+1. `spec.gangScheduling` set when the `GangScheduling` LWS feature gate is disabled.
+2. `spec.gangScheduling` set when the v1alpha2 Workload / PodGroup APIs are not registered (see [API Discovery and Prerequisites](#api-discovery-and-prerequisites)).
+3. Mutation of `spec.gangScheduling` on an existing LWS — `pod.spec.schedulingGroup` is immutable upstream, so a flip cannot retroactively gang-schedule already-running pods. Users delete-recreate the LWS to change mode.
+4. A pre-set `pod.spec.schedulingGroup` without `spec.gangScheduling` set — set `spec.gangScheduling: {}` to opt into the [Escape Hatch](#escape-hatch-pre-set-podspecschedulinggroup) explicitly.
 
-[lws-feature-gate-issue]: https://github.com/kubernetes-sigs/lws/issues/850
+### Unified Provider Model
+
+`spec.gangScheduling` is the single opt-in across **all** gang backends LWS supports — this KEP's upstream v1alpha2 path plus [KEP-407][kep407]'s third-party path (Volcano today; KAI / coscheduling possible). One user-facing knob, multiple backends, capability mismatches surface as admission errors.
+
+**Asymmetric capability, not least-common-denominator.** `spec.gangScheduling`'s schema tracks **upstream v1alpha2 exclusively** — future fields (`MinResources`, [KEP-6012][kep6012] hierarchical / per-role, DRA / TAS) are added additively. Third-party backends honor whatever subset they can express and reject the rest at admission. Backend-private knobs (Volcano's `queue` / `priorityClassName`) keep flowing through the existing `scheduling.volcano.sh/*` annotations — not promoted into the typed field.
+
+**Backend selection: operator-level**, via KEP-407's existing `--gang-scheduler-provider` flag — not per-LWS, since the alpha struct is deliberately empty and webhook discovery can't pick between providers when both are installed. Reuses KEP-407's [`SchedulerProvider`][lws-iface] interface.
+
+**Backward compatibility.** Field unset → KEP-407 path untouched; existing Volcano users unaffected.
+
+[lws-iface]: https://github.com/kubernetes-sigs/lws/blob/main/pkg/schedulerprovider/interface.go
 
 ### API Discovery and Prerequisites
 
@@ -325,13 +349,19 @@ Deferred for alpha. End-to-end coverage requires a CI cluster with `GenericWorkl
 
 ### Graduation Criteria
 
-Targets `alpha` while the upstream API is alpha. Promotion past alpha is gated on:
+Targets `alpha` while the upstream API is alpha. LWS feature gate `GangScheduling` tracks the upstream `GenericWorkload` lifecycle:
 
-- Upstream `scheduling.k8s.io/v1alpha2` reaching beta with stable field names.
-- Integration coverage for the lifecycle invariants above.
+**Alpha** (current): `GangScheduling=false`. Webhook rejects `spec.gangScheduling` unless the gate is enabled and v1alpha2 APIs are registered.
+
+**Beta**, gated on:
+
+- Upstream `GenericWorkload` beta-on-by-default with stable v1alpha2 field names; LWS `GangScheduling=true` by default.
 - Per-PodGroup unschedulable status surfaced on the LWS object (condition / event).
+- Integration coverage for the lifecycle invariants above.
 - A chosen path for re-enabling Size mutability under the mandatory deletion-protection finalizer, in priority order: (1) push upstream `gang.minCount` mutability so PodGroups can be patched in place; (2) switch to revision-keyed PodGroup names (`<lws-name>-<group-index>-<rev>`) that let old PodGroups GC naturally — contingent on the upstream finalizer treating an absent/deleted pod as terminal.
-- Promote `spec.gangScheduling` to beta stability (drop the alpha disclaimer; field is already served by the v1 LWS API), aligned with upstream `GenericWorkload` reaching beta-on-by-default; no API rename — the same struct gains stabilized upstream knobs (e.g. `MinResources`, hierarchical / per-role minimums from KEP-6012) additively as they land.
+- No API rename — the same struct gains stabilized upstream knobs (`MinResources`, hierarchical / per-role from KEP-6012) additively.
+
+**GA**: upstream `GenericWorkload` GA + LWS gate removed + production signal from beta.
 
 ## Implementation History
 
@@ -340,6 +370,7 @@ Targets `alpha` while the upstream API is alpha. Promotion past alpha is gated o
 - 2026-05-06: Aligned with prototype and [KEP-407][kep407] naming; escape-hatch lifecycle replaces the rejected `podGroupNamePrefix` knob
 - 2026-05-07: Added Future Work for hierarchical gangs via [KEP-6012][kep6012]; cross-LWS gangs layer on the escape hatch
 - 2026-05-09: PR review pass: typed `spec.gangScheduling` replaces the annotation as the umbrella opt-in (admission rejects pre-set `pod.spec.schedulingGroup` without it); no LWS-side feature gate; per-role gang policy split; additional WAS Non-Goals
+- 2026-05-15: Unified Provider Model — `spec.gangScheduling` is the single opt-in across all backends; upstream v1alpha2 schema is the reference, third-party backends honor a subset. Adopt LWS `GangScheduling` feature gate (alpha → beta → removed at GA) after [#852][pr852] landed the `pkg/features` scaffold.
 
 [gdoc]: https://docs.google.com/document/d/1QlcIBtR2KyOKYRUTGubhhxuy7NfjHs1fXMJlvdUCyhM
 [pr844]: https://github.com/kubernetes-sigs/lws/pull/844
@@ -350,21 +381,24 @@ Targets `alpha` while the upstream API is alpha. Promotion past alpha is gated o
 
 2. **PodGroup count scales with replicas.** One PodGroup per replica means a 1000-replica LWS produces 1000 PodGroup objects, each with its own controller bookkeeping and etcd footprint. Acceptable for typical multi-host inference (replica counts in tens to low hundreds); very-high-replica deployments can revisit once hierarchical PodGroups land ([KEP-6012][kep6012]).
 
-3. **Two parallel gang-scheduling paths.** Users now choose between this KEP and [KEP-407][kep407] (third-party CRDs) based on which scheduler the cluster runs. A transient cost during alpha — beta of upstream `GenericWorkload` should make the upstream-native path the default, with KEP-407 narrowing to a third-party-only fallback.
+3. **Asymmetric backend capability.** Under the [Unified Provider Model](#unified-provider-model), third-party backends honor only the v1alpha2 subset they can express; the rest is rejected at admission. Same `spec.gangScheduling` YAML is not always portable across backends — documented per backend.
 
 ## Alternatives
 
 **Annotation-only opt-in in alpha**.
 Rejected: can't be schema-validated, hard to deprecate, no place for future TAS / DRA / RC knobs. A typed alpha `spec.gangScheduling` struct gets all three for free.
 
-**An LWS-side feature gate for alpha**.
-Rejected: upstream `GenericWorkload` is already the kill switch (its `kube-apiserver` half decides whether `pod.spec.schedulingGroup` survives at all), and webhook API discovery propagates it to LWS admission. A parallel LWS gate would duplicate that signal and force LWS to stand up its first feature-gate scaffold ([#850][lws-feature-gate-issue]). Existing typed alpha fields (`SubGroupPolicy`, `RolloutStrategy.MaxSurge`) ship without one too.
+**Ship `spec.gangScheduling` without an LWS feature gate** (matching how `SubGroupPolicy` / `RolloutStrategy.MaxSurge` shipped).
+Rejected once [#852][pr852] landed the `pkg/features` scaffold. The upstream `GenericWorkload` gate is the real kill switch, but it cannot be detected by webhook discovery (see [API Discovery](#api-discovery-and-prerequisites)). An LWS `GangScheduling` gate adds an explicit alpha opt-in and a clean alpha → beta → GA lifecycle at near-zero infrastructure cost.
 
 **One shared PodGroup per LWS with `Replicas=N, MinCount=M`** (Edwin's original draft).
 Rejected: `MinCount` only requires M co-scheduled pods, with no notion of which replica they belong to — the scheduler may legally pick M pods from different replicas, none complete, and the model still cannot start. Per-replica PodGroups make each replica an independent all-or-nothing unit.
 
 **Rely on [KEP-407][kep407] only**.
-KEP-407 targets third-party schedulers (Volcano / coscheduling / YuniKorn) via their own PodGroup CRDs; this KEP targets the upstream-native `scheduling.k8s.io/v1alpha2` Workload and PodGroup APIs. The two evolve independently — different prerequisites, different API surfaces, no shared data path — and a single LWS object opts into at most one.
+Rejected: KEP-407 covers third-party CRDs only; this KEP adds the upstream-native v1alpha2 path (group-level TAS / DRA for free). The two coexist under one umbrella — see [§Unified Provider Model](#unified-provider-model).
+
+**Least-common-denominator unified API**.
+Rejected: intersecting v1alpha2 and Volcano capabilities would strip `MinResources` / hierarchical / per-role from one side and `Queue` / `PriorityClassName` from the other — strictly weaker than either standalone path. [§Unified Provider Model](#unified-provider-model) takes the opposite approach: schema follows upstream v1alpha2; third-party backends honor a subset; backend-private knobs stay outside the typed field.
 
 **Explicit `podGroupNamePrefix` knob for user-managed lifecycle**.
 Rejected: the implicit [Escape Hatch](#escape-hatch-pre-set-podspecschedulinggroup) (skip LWS-managed creation when `pod.spec.schedulingGroup` is already set in the pod template) gives the same opt-out semantics with no new API surface, matching the upstream Job controller integration pattern.
