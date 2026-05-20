@@ -153,6 +153,7 @@ func withCreationTimestamp(ts time.Time) func(*leaderworkerset.LeaderWorkerSet) 
 	}
 }
 
+//nolint:unparam // test helper, r will vary as more tests are added
 func withInitialReplicasAnnotation(r int) func(*leaderworkerset.LeaderWorkerSet) {
 	return func(lws *leaderworkerset.LeaderWorkerSet) {
 		if lws.Annotations == nil {
