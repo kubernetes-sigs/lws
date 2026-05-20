@@ -93,7 +93,11 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	for _, oldGrouped := range oldRevisions {
 		for roleName, roleLWS := range oldGrouped.Roles {
 			lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
-			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, lwsName, roleLWS.Replicas); err != nil {
+			replicas := 1
+			if roleLWS.Spec.Replicas != nil {
+				replicas = int(*roleLWS.Spec.Replicas)
+			}
+			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, lwsName, replicas); err != nil {
 				log.Error(err, "Failed to set initial-replicas annotation", "lws", lwsName)
 			}
 		}
@@ -196,7 +200,9 @@ func buildPlannerState(
 		currentOld[i] = oldRevisions.GetTotalReplicasPerRole(roleName)
 
 		if specRoleSet[roleName] {
-			currentNew[i] = newRevision.Roles[roleName].Replicas
+			if lws := newRevision.Roles[roleName]; lws != nil {
+				currentNew[i] = int(getLWSReplicas(lws))
+			}
 			targetNew[i] = getTargetReplicas(ds, roleName)
 		}
 	}
@@ -252,7 +258,11 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 
 func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
 	for _, name := range roleNames {
-		if w := rev.Roles[name]; w.Replicas != w.ReadyReplicas {
+		lws := rev.Roles[name]
+		if lws == nil {
+			return false
+		}
+		if getLWSReplicas(lws) != lws.Status.ReadyReplicas {
 			return false
 		}
 	}
@@ -261,9 +271,9 @@ func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []strin
 
 func maxTimestamp(wl disaggregatedsetutils.RevisionRoles) time.Time {
 	var maxTS time.Time
-	for _, info := range wl.Roles {
-		if info.CreationTimestamp.After(maxTS) {
-			maxTS = info.CreationTimestamp
+	for _, lws := range wl.Roles {
+		if lws.CreationTimestamp.Time.After(maxTS) {
+			maxTS = lws.CreationTimestamp.Time
 		}
 	}
 	return maxTS
@@ -329,13 +339,14 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		triggersCoordinated := make(map[string]bool)
 
 		for i, name := range roleNames {
-			info, exists := wl.Roles[name]
+			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
 			}
-			drain := min(budget[i], info.Replicas)
+			replicas := int(getLWSReplicas(lws))
+			drain := min(budget[i], replicas)
 			plannedDrain[name] = drain
-			newReplicas[name] = info.Replicas - drain
+			newReplicas[name] = replicas - drain
 			if newReplicas[name] == 0 {
 				triggersCoordinated[name] = true
 			}
@@ -351,17 +362,21 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		}
 
 		for i, name := range roleNames {
-			info, exists := wl.Roles[name]
-			if !exists || info.Replicas <= newReplicas[name] {
+			lws, exists := wl.Roles[name]
+			if !exists {
+				continue
+			}
+			replicas := int(getLWSReplicas(lws))
+			if replicas <= newReplicas[name] {
 				continue
 			}
 			lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, wl.Revision)
-			log.Info("Scaling down", "lws", lwsName, "from", info.Replicas, "to", newReplicas[name])
+			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
 			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
-				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, info.Replicas, newReplicas[name])
+				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
 
 			if triggersCoordinated[name] || !anyTriggered {
 				budget[i] -= plannedDrain[name]

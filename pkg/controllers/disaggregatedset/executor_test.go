@@ -125,8 +125,45 @@ func getTestLWSReplicas(fakeClient client.Client, namespace, name string) int32 
 	return *leaderWorkerSet.Spec.Replicas
 }
 
+// makeLWS creates a minimal LWS object for use in RevisionRoles test fixtures.
+func makeLWS(opts ...func(*leaderworkerset.LeaderWorkerSet)) *leaderworkerset.LeaderWorkerSet {
+	lws := &leaderworkerset.LeaderWorkerSet{}
+	for _, opt := range opts {
+		opt(lws)
+	}
+	return lws
+}
+
+func withReplicas(r int) func(*leaderworkerset.LeaderWorkerSet) {
+	return func(lws *leaderworkerset.LeaderWorkerSet) {
+		r32 := int32(r)
+		lws.Spec.Replicas = &r32
+	}
+}
+
+func withReadyReplicas(r int) func(*leaderworkerset.LeaderWorkerSet) {
+	return func(lws *leaderworkerset.LeaderWorkerSet) {
+		lws.Status.ReadyReplicas = int32(r)
+	}
+}
+
+func withCreationTimestamp(ts time.Time) func(*leaderworkerset.LeaderWorkerSet) {
+	return func(lws *leaderworkerset.LeaderWorkerSet) {
+		lws.CreationTimestamp = metav1.Time{Time: ts}
+	}
+}
+
+func withInitialReplicasAnnotation(r int) func(*leaderworkerset.LeaderWorkerSet) {
+	return func(lws *leaderworkerset.LeaderWorkerSet) {
+		if lws.Annotations == nil {
+			lws.Annotations = make(map[string]string)
+		}
+		lws.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = fmt.Sprintf("%d", r)
+	}
+}
+
 // =============================================================================
-// Workload Test Helpers
+// LWS Test Helpers
 // =============================================================================
 
 // createLWSForTest creates a LeaderWorkerSet for integration tests.
@@ -480,9 +517,9 @@ func TestSortByNewestTimestamp(t *testing.T) {
 		ts := baseTime.Add(time.Duration(offsetMinutes) * time.Minute)
 		return disaggregatedsetutils.RevisionRoles{
 			Revision: hash,
-			Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-				testRolePrefill: {CreationTimestamp: ts},
-				testRoleDecode:  {CreationTimestamp: ts},
+			Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				testRolePrefill: makeLWS(withCreationTimestamp(ts)),
+				testRoleDecode:  makeLWS(withCreationTimestamp(ts)),
 			},
 		}
 	}
@@ -524,13 +561,13 @@ func TestSortByNewestTimestamp(t *testing.T) {
 		ts2 := baseTime.Add(10 * time.Minute)
 		ts3 := baseTime.Add(20 * time.Minute)
 		workloads := disaggregatedsetutils.RevisionRolesList{
-			{Revision: "A", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-				testRolePrefill: {CreationTimestamp: ts1},
-				testRoleDecode:  {CreationTimestamp: ts3},
+			{Revision: "A", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				testRolePrefill: makeLWS(withCreationTimestamp(ts1)),
+				testRoleDecode:  makeLWS(withCreationTimestamp(ts3)),
 			}},
-			{Revision: "B", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-				testRolePrefill: {CreationTimestamp: ts2},
-				testRoleDecode:  {CreationTimestamp: ts2},
+			{Revision: "B", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				testRolePrefill: makeLWS(withCreationTimestamp(ts2)),
+				testRoleDecode:  makeLWS(withCreationTimestamp(ts2)),
 			}},
 		}
 		result := sortByNewestTimestamp(workloads, roleNames)
@@ -561,9 +598,9 @@ func TestIsRevisionStable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			workload := disaggregatedsetutils.RevisionRoles{
 				Revision: "hash1",
-				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-					testRolePrefill: {Replicas: tc.prefillReplicas, ReadyReplicas: tc.prefillReady},
-					testRoleDecode:  {Replicas: tc.decodeReplicas, ReadyReplicas: tc.decodeReady},
+				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					testRolePrefill: makeLWS(withReplicas(tc.prefillReplicas), withReadyReplicas(tc.prefillReady)),
+					testRoleDecode:  makeLWS(withReplicas(tc.decodeReplicas), withReadyReplicas(tc.decodeReady)),
 				},
 			}
 			assert.Equal(t, tc.expected, isRevisionStable(workload, roleNames))
@@ -866,9 +903,9 @@ func TestScaleDownOld(t *testing.T) {
 						workload.decode, workload.decode, creationTime))
 				grouped = append(grouped, disaggregatedsetutils.RevisionRoles{
 					Revision: workload.revision,
-					Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-						testRolePrefill: {Replicas: int(workload.prefill), CreationTimestamp: creationTime},
-						testRoleDecode:  {Replicas: int(workload.decode), CreationTimestamp: creationTime},
+					Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+						testRolePrefill: makeLWS(withReplicas(int(workload.prefill)), withCreationTimestamp(creationTime)),
+						testRoleDecode:  makeLWS(withReplicas(int(workload.decode)), withCreationTimestamp(creationTime)),
 					},
 				})
 			}
@@ -961,9 +998,9 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			grouped := disaggregatedsetutils.RevisionRolesList{
 				{
 					Revision: "oldhash",
-					Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-						"prefill": {Replicas: 4, CreationTimestamp: baseTime},
-						"decode":  {Replicas: 4, CreationTimestamp: baseTime},
+					Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+						"prefill": makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
+						"decode":  makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
 						// Note: encode is NOT in this map
 					},
 				},
@@ -1040,9 +1077,9 @@ func TestScaleUpNew(t *testing.T) {
 
 			newRevision := disaggregatedsetutils.RevisionRoles{
 				Revision: "newhash",
-				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-					testRolePrefill: {Replicas: tc.workloadPrefill},
-					testRoleDecode:  {Replicas: tc.workloadDecode},
+				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					testRolePrefill: makeLWS(withReplicas(tc.workloadPrefill)),
+					testRoleDecode:  makeLWS(withReplicas(tc.workloadDecode)),
 				},
 			}
 
@@ -1200,24 +1237,20 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 			}
 
 			oldRevisions := disaggregatedsetutils.RevisionRolesList{
-				{Revision: "hashA", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-					testRolePrefill: {
-						Replicas: int(tc.aPrefill), ReadyReplicas: int(tc.aPrefill),
-						InitialReplicas: 2, CreationTimestamp: baseTime},
-					testRoleDecode: {
-						Replicas: int(tc.aDecode), ReadyReplicas: int(tc.aDecode),
-						InitialReplicas: 2, CreationTimestamp: baseTime}}},
-				{Revision: "hashB", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-					testRolePrefill: {
-						Replicas: int(tc.bPrefill), ReadyReplicas: int(tc.bPrefill),
-						InitialReplicas: 2, CreationTimestamp: bTime},
-					testRoleDecode: {
-						Replicas: int(tc.bDecode), ReadyReplicas: int(tc.bDecode),
-						InitialReplicas: 2, CreationTimestamp: bTime}}},
+				{Revision: "hashA", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					testRolePrefill: makeLWS(withReplicas(int(tc.aPrefill)), withReadyReplicas(int(tc.aPrefill)),
+						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime)),
+					testRoleDecode: makeLWS(withReplicas(int(tc.aDecode)), withReadyReplicas(int(tc.aDecode)),
+						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime))}},
+				{Revision: "hashB", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					testRolePrefill: makeLWS(withReplicas(int(tc.bPrefill)), withReadyReplicas(int(tc.bPrefill)),
+						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime)),
+					testRoleDecode: makeLWS(withReplicas(int(tc.bDecode)), withReadyReplicas(int(tc.bDecode)),
+						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime))}},
 			}
-			newRevision := disaggregatedsetutils.RevisionRoles{Revision: "hashC", Roles: map[string]disaggregatedsetutils.WorkloadInfo{
-				testRolePrefill: {Replicas: int(tc.cPrefill), ReadyReplicas: int(tc.cPrefill)},
-				testRoleDecode:  {Replicas: int(tc.cDecode), ReadyReplicas: int(tc.cDecode)}}}
+			newRevision := disaggregatedsetutils.RevisionRoles{Revision: "hashC", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				testRolePrefill: makeLWS(withReplicas(int(tc.cPrefill)), withReadyReplicas(int(tc.cPrefill))),
+				testRoleDecode:  makeLWS(withReplicas(int(tc.cDecode)), withReadyReplicas(int(tc.cDecode)))}}
 
 			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, oldRevisions, newRevision)
 			require.NoError(t, err)

@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"time"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -79,18 +78,6 @@ func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[s
 	}
 
 	return state
-}
-
-type WorkloadInfo struct {
-	Name                         string
-	Namespace                    string
-	Role                         string
-	Revision                     string
-	Replicas                     int
-	ReadyReplicas                int
-	InitialReplicas              int
-	HasInitialReplicasAnnotation bool
-	CreationTimestamp            time.Time
 }
 
 type CreateParams struct {
@@ -165,15 +152,24 @@ func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []strin
 
 type RevisionRoles struct {
 	Revision string
-	Roles    map[string]WorkloadInfo
+	Roles    map[string]*leaderworkerset.LeaderWorkerSet
 }
 
 type RevisionRolesList []RevisionRoles
 
+func getLWSReplicas(lws *leaderworkerset.LeaderWorkerSet) int {
+	if lws.Spec.Replicas == nil {
+		return 1
+	}
+	return int(*lws.Spec.Replicas)
+}
+
 func (revisions RevisionRolesList) GetTotalReplicasPerRole(role string) int {
 	total := 0
 	for _, rev := range revisions {
-		total += rev.Roles[role].Replicas
+		if lws := rev.Roles[role]; lws != nil {
+			total += getLWSReplicas(lws)
+		}
 	}
 	return total
 }
@@ -181,21 +177,30 @@ func (revisions RevisionRolesList) GetTotalReplicasPerRole(role string) int {
 func (revisions RevisionRolesList) GetTotalInitialReplicasPerRole(role string) int {
 	total := 0
 	for _, rev := range revisions {
-		total += rev.Roles[role].InitialReplicas
+		if lws := rev.Roles[role]; lws != nil {
+			initialReplicas, ok := GetInitialReplicas(lws)
+			if ok {
+				total += int(initialReplicas)
+			} else {
+				total += getLWSReplicas(lws)
+			}
+		}
 	}
 	return total
 }
 
-func GroupByRevision(workloads []WorkloadInfo) RevisionRolesList {
+func GroupByRevision(lwsList []*leaderworkerset.LeaderWorkerSet) RevisionRolesList {
 	byRevision := make(map[string]*RevisionRoles)
-	for _, workload := range workloads {
-		if byRevision[workload.Revision] == nil {
-			byRevision[workload.Revision] = &RevisionRoles{
-				Revision: workload.Revision,
-				Roles:    make(map[string]WorkloadInfo),
+	for _, lws := range lwsList {
+		revision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
+		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if byRevision[revision] == nil {
+			byRevision[revision] = &RevisionRoles{
+				Revision: revision,
+				Roles:    make(map[string]*leaderworkerset.LeaderWorkerSet),
 			}
 		}
-		byRevision[workload.Revision].Roles[workload.Role] = workload
+		byRevision[revision].Roles[role] = lws
 	}
 
 	result := make(RevisionRolesList, 0, len(byRevision))

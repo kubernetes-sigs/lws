@@ -144,35 +144,19 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicasAnnotation(ctx conte
 	return nil
 }
 
-func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*disaggregatedsetutils.WorkloadInfo, error) {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
-	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet)
+func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkerset.LeaderWorkerSet, error) {
+	lws := &leaderworkerset.LeaderWorkerSet{}
+	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, lws)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
 	}
-
-	initialReplicas, hasAnnotation := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
-	if !hasAnnotation {
-		initialReplicas = getLWSReplicas(leaderWorkerSet)
-	}
-
-	return &disaggregatedsetutils.WorkloadInfo{
-		Name:                         leaderWorkerSet.Name,
-		Namespace:                    leaderWorkerSet.Namespace,
-		Role:                         leaderWorkerSet.Labels[disaggregatedsetv1.RoleLabelKey],
-		Revision:                     leaderWorkerSet.Labels[disaggregatedsetv1.RevisionLabelKey],
-		Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
-		ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
-		InitialReplicas:              int(initialReplicas),
-		HasInitialReplicasAnnotation: hasAnnotation,
-		CreationTimestamp:            leaderWorkerSet.CreationTimestamp.Time,
-	}, nil
+	return lws, nil
 }
 
-func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]disaggregatedsetutils.WorkloadInfo, error) {
+func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]*leaderworkerset.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkerset.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
@@ -184,26 +168,10 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", namespace, disaggDeploymentName, err)
 	}
 
-	result := make([]disaggregatedsetutils.WorkloadInfo, 0, len(lwsObjList.Items))
+	result := make([]*leaderworkerset.LeaderWorkerSet, len(lwsObjList.Items))
 	for i := range lwsObjList.Items {
-		leaderWorkerSet := &lwsObjList.Items[i]
-		initialReplicas, hasAnnotation := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
-		if !hasAnnotation {
-			initialReplicas = getLWSReplicas(leaderWorkerSet)
-		}
-		result = append(result, disaggregatedsetutils.WorkloadInfo{
-			Name:                         leaderWorkerSet.Name,
-			Namespace:                    leaderWorkerSet.Namespace,
-			Role:                         leaderWorkerSet.Labels[disaggregatedsetv1.RoleLabelKey],
-			Revision:                     leaderWorkerSet.Labels[disaggregatedsetv1.RevisionLabelKey],
-			Replicas:                     int(getLWSReplicas(leaderWorkerSet)),
-			ReadyReplicas:                int(leaderWorkerSet.Status.ReadyReplicas),
-			InitialReplicas:              int(initialReplicas),
-			HasInitialReplicasAnnotation: hasAnnotation,
-			CreationTimestamp:            leaderWorkerSet.CreationTimestamp.Time,
-		})
+		result[i] = &lwsObjList.Items[i]
 	}
-
 	return result, nil
 }
 
@@ -236,23 +204,23 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	namespace, disaggDeploymentName, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	lwsInfos, err := manager.List(ctx, namespace, disaggDeploymentName, "")
+	lwsList, err := manager.List(ctx, namespace, disaggDeploymentName, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
 
-	var oldLWSInfos []disaggregatedsetutils.WorkloadInfo
-	var newLWSInfos []disaggregatedsetutils.WorkloadInfo
-	for _, info := range lwsInfos {
-		if info.Revision == revision {
-			newLWSInfos = append(newLWSInfos, info)
+	var oldLWS []*leaderworkerset.LeaderWorkerSet
+	var newLWS []*leaderworkerset.LeaderWorkerSet
+	for _, lws := range lwsList {
+		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+			newLWS = append(newLWS, lws)
 		} else {
-			oldLWSInfos = append(oldLWSInfos, info)
+			oldLWS = append(oldLWS, lws)
 		}
 	}
 
-	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWSInfos)
-	newGrouped := disaggregatedsetutils.GroupByRevision(newLWSInfos)
+	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWS)
+	newGrouped := disaggregatedsetutils.GroupByRevision(newLWS)
 
 	var newRevision *disaggregatedsetutils.RevisionRoles
 	if len(newGrouped) > 0 {

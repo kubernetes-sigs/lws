@@ -162,8 +162,12 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		})
 	}
 
-	if existing.Replicas != int(desiredReplicas) {
-		log.Info("Scaling LWS", "role", role, "name", lwsName, "from", existing.Replicas, "to", desiredReplicas)
+	existingReplicas := int32(1)
+	if existing.Spec.Replicas != nil {
+		existingReplicas = *existing.Spec.Replicas
+	}
+	if existingReplicas != desiredReplicas {
+		log.Info("Scaling LWS", "role", role, "name", lwsName, "from", existingReplicas, "to", desiredReplicas)
 		if err := r.LWSManager.Scale(ctx, disaggregatedSet.Namespace, lwsName, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale LWS %s: %w", lwsName, err)
 		}
@@ -177,15 +181,20 @@ func (r *DisaggregatedSetReconciler) cleanupOldLWS(ctx context.Context, disaggre
 
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	for _, roleName := range roleNames {
-		lwsInfos, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
+		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
 		if err != nil {
 			return fmt.Errorf("failed to list LWS for cleanup: %w", err)
 		}
-		for _, info := range lwsInfos {
-			if info.Revision != revision && info.Replicas == 0 {
-				log.Info("Deleting old LWS", "name", info.Name)
-				if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, info.Name); err != nil {
-					return fmt.Errorf("failed to delete old LWS %s: %w", info.Name, err)
+		for _, lws := range lwsList {
+			lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
+			lwsReplicas := int32(0)
+			if lws.Spec.Replicas != nil {
+				lwsReplicas = *lws.Spec.Replicas
+			}
+			if lwsRevision != revision && lwsReplicas == 0 {
+				log.Info("Deleting old LWS", "name", lws.Name)
+				if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
+					return fmt.Errorf("failed to delete old LWS %s: %w", lws.Name, err)
 				}
 			}
 		}
@@ -197,20 +206,26 @@ func (r *DisaggregatedSetReconciler) cleanupOldLWS(ctx context.Context, disaggre
 func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
-	lwsInfos, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
+	lwsList, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
 	if err != nil {
 		return fmt.Errorf("failed to list LWS for cleanup: %w", err)
 	}
 
 	revisionReplicas := make(map[string]map[string]int)
-	for _, info := range lwsInfos {
-		if info.Revision == revision {
+	for _, lws := range lwsList {
+		lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
+		if lwsRevision == revision {
 			continue
 		}
-		if revisionReplicas[info.Revision] == nil {
-			revisionReplicas[info.Revision] = make(map[string]int)
+		if revisionReplicas[lwsRevision] == nil {
+			revisionReplicas[lwsRevision] = make(map[string]int)
 		}
-		revisionReplicas[info.Revision][info.Role] = info.Replicas
+		lwsRole := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		lwsReplicas := 0
+		if lws.Spec.Replicas != nil {
+			lwsReplicas = int(*lws.Spec.Replicas)
+		}
+		revisionReplicas[lwsRevision][lwsRole] = lwsReplicas
 	}
 
 	for oldRevision, roles := range revisionReplicas {

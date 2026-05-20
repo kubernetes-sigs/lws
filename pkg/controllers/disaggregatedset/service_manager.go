@@ -60,12 +60,12 @@ func (manager *ServiceManager) ReconcileServices(
 		logArgs := []interface{}{"revision", group.Revision}
 
 		for _, roleName := range roleNames {
-			roleInfo, hasRole := group.Roles[roleName]
-			if !hasRole || roleInfo.ReadyReplicas < 1 {
+			lws, hasRole := group.Roles[roleName]
+			if !hasRole || lws.Status.ReadyReplicas < 1 {
 				rolesReady = false
 				break
 			}
-			logArgs = append(logArgs, roleName+"Ready", roleInfo.ReadyReplicas)
+			logArgs = append(logArgs, roleName+"Ready", lws.Status.ReadyReplicas)
 		}
 
 		if rolesReady {
@@ -175,8 +175,8 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	for _, group := range revisionRoles {
 		rolesReady := true
 		for _, roleName := range roleNames {
-			roleInfo, hasRole := group.Roles[roleName]
-			if !hasRole || roleInfo.ReadyReplicas < 1 {
+			lws, hasRole := group.Roles[roleName]
+			if !hasRole || lws.Status.ReadyReplicas < 1 {
 				rolesReady = false
 				break
 			}

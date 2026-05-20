@@ -94,11 +94,11 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 
 	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
 	require.NotNil(t, prefillInfo, "prefill LWS should exist")
-	assert.Equal(t, 3, prefillInfo.Replicas, "prefill replicas")
+	assert.Equal(t, 3, int(*prefillInfo.Spec.Replicas), "prefill replicas")
 
 	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
-	assert.Equal(t, 2, decodeInfo.Replicas, "decode replicas")
+	assert.Equal(t, 2, int(*decodeInfo.Spec.Replicas), "decode replicas")
 }
 
 func TestScalingWithoutRollingUpdate(t *testing.T) {
@@ -131,9 +131,9 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 
 	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
 	require.NotNil(t, prefillInfo, "prefill LWS should exist")
-	assert.Equal(t, 5, prefillInfo.Replicas, "prefill replicas should be scaled to 5")
+	assert.Equal(t, 5, int(*prefillInfo.Spec.Replicas), "prefill replicas should be scaled to 5")
 
 	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
-	assert.Equal(t, 4, decodeInfo.Replicas, "decode replicas should be scaled to 4")
+	assert.Equal(t, 4, int(*decodeInfo.Spec.Replicas), "decode replicas should be scaled to 4")
 }
