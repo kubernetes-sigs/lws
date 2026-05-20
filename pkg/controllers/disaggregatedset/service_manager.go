@@ -48,14 +48,14 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	groupedWorkloads disaggregatedsetutils.GroupedWorkloads,
+	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 ) error {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(deployment)
 
 	var readyRevisions []string
-	for _, group := range groupedWorkloads {
+	for _, group := range revisionRoles {
 		rolesReady := true
 		logArgs := []interface{}{"revision", group.Revision}
 
@@ -94,7 +94,7 @@ func (manager *ServiceManager) ReconcileServices(
 		}
 	}
 
-	if err := manager.cleanupDrainedServices(ctx, deployment, groupedWorkloads, targetRevision, roleNames); err != nil {
+	if err := manager.cleanupDrainedServices(ctx, deployment, revisionRoles, targetRevision, roleNames); err != nil {
 		return fmt.Errorf("failed to cleanup drained services: %w", err)
 	}
 
@@ -165,14 +165,14 @@ func (manager *ServiceManager) buildService(
 func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	groupedWorkloads disaggregatedsetutils.GroupedWorkloads,
+	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 	roleNames []string,
 ) error {
 	log := logf.FromContext(ctx)
 
 	readyRevisionSet := make(map[string]bool)
-	for _, group := range groupedWorkloads {
+	for _, group := range revisionRoles {
 		rolesReady := true
 		for _, roleName := range roleNames {
 			roleInfo, hasRole := group.Roles[roleName]

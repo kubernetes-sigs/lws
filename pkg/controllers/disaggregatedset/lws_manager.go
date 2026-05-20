@@ -57,7 +57,7 @@ func copyAnnotations(annotations map[string]string) map[string]string {
 }
 
 func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disaggregatedsetutils.CreateParams) error {
-	workloadName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Role, params.Revision)
+	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Role, params.Revision)
 	replicas := int32(params.Replicas)
 	config := params.Config
 
@@ -79,7 +79,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 
 	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        workloadName,
+			Name:        lwsName,
 			Namespace:   params.DisaggregatedSet.Namespace,
 			Labels:      mergeLabels(config.ObjectMeta.Labels, params.Labels),
 			Annotations: copyAnnotations(config.ObjectMeta.Annotations),
@@ -98,7 +98,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 		if apierrors.IsAlreadyExists(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to create LeaderWorkerSet %s: %w", workloadName, err)
+		return fmt.Errorf("failed to create LeaderWorkerSet %s: %w", lwsName, err)
 	}
 
 	return nil
@@ -173,20 +173,20 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 }
 
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]disaggregatedsetutils.WorkloadInfo, error) {
-	workloadList := &leaderworkerset.LeaderWorkerSetList{}
+	lwsObjList := &leaderworkerset.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
 	if role != "" {
 		labels[disaggregatedsetv1.RoleLabelKey] = role
 	}
 
-	if err := manager.client.List(ctx, workloadList, client.InNamespace(namespace), labels); err != nil {
+	if err := manager.client.List(ctx, lwsObjList, client.InNamespace(namespace), labels); err != nil {
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", namespace, disaggDeploymentName, err)
 	}
 
-	result := make([]disaggregatedsetutils.WorkloadInfo, 0, len(workloadList.Items))
-	for i := range workloadList.Items {
-		leaderWorkerSet := &workloadList.Items[i]
+	result := make([]disaggregatedsetutils.WorkloadInfo, 0, len(lwsObjList.Items))
+	for i := range lwsObjList.Items {
+		leaderWorkerSet := &lwsObjList.Items[i]
 		initialReplicas, hasAnnotation := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
 		if !hasAnnotation {
 			initialReplicas = getLWSReplicas(leaderWorkerSet)
@@ -232,34 +232,34 @@ func getLWSReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) int32 {
 	return *leaderWorkerSet.Spec.Replicas
 }
 
-func (manager *LeaderWorkerSetManager) GetGroupedWorkloads(
+func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	namespace, disaggDeploymentName, revision string,
-) (disaggregatedsetutils.GroupedWorkloads, *disaggregatedsetutils.GroupedWorkload, error) {
-	workloads, err := manager.List(ctx, namespace, disaggDeploymentName, "")
+) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
+	lwsInfos, err := manager.List(ctx, namespace, disaggDeploymentName, "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list workloads: %w", err)
+		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
 
-	var oldWorkloadInfos []disaggregatedsetutils.WorkloadInfo
-	var newWorkloadInfos []disaggregatedsetutils.WorkloadInfo
-	for _, workload := range workloads {
-		if workload.Revision == revision {
-			newWorkloadInfos = append(newWorkloadInfos, workload)
+	var oldLWSInfos []disaggregatedsetutils.WorkloadInfo
+	var newLWSInfos []disaggregatedsetutils.WorkloadInfo
+	for _, info := range lwsInfos {
+		if info.Revision == revision {
+			newLWSInfos = append(newLWSInfos, info)
 		} else {
-			oldWorkloadInfos = append(oldWorkloadInfos, workload)
+			oldLWSInfos = append(oldLWSInfos, info)
 		}
 	}
 
-	oldWorkloads := disaggregatedsetutils.GroupWorkloadsByRevision(oldWorkloadInfos)
-	newGrouped := disaggregatedsetutils.GroupWorkloadsByRevision(newWorkloadInfos)
+	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWSInfos)
+	newGrouped := disaggregatedsetutils.GroupByRevision(newLWSInfos)
 
-	var newWorkload *disaggregatedsetutils.GroupedWorkload
+	var newRevision *disaggregatedsetutils.RevisionRoles
 	if len(newGrouped) > 0 {
-		newWorkload = &newGrouped[0]
+		newRevision = &newGrouped[0]
 	}
 
-	return oldWorkloads, newWorkload, nil
+	return oldRevisions, newRevision, nil
 }
 
 func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) *int {

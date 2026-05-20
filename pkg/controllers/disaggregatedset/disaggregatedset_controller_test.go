@@ -42,8 +42,8 @@ const (
 	testControllerRoleDecode  = "decode"
 )
 
-// createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing workload with the given revision.
-// Useful for simulating pre-existing workloads in rolling update tests.
+// createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing LWS with the given revision.
+// Useful for simulating pre-existing LWS objects in rolling update tests.
 func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas int32) *leaderworkerset.LeaderWorkerSet {
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
@@ -79,25 +79,25 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:          fakeClient,
-		Scheme:          scheme,
-		WorkloadManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager:  controller.NewServiceManager(fakeClient, scheme),
-		Record:          events.NewFakeRecorder(100),
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
 
 	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
-	require.NotNil(t, prefillInfo, "prefill workload should exist")
+	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
+	require.NotNil(t, prefillInfo, "prefill LWS should exist")
 	assert.Equal(t, 3, prefillInfo.Replicas, "prefill replicas")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
-	require.NotNil(t, decodeInfo, "decode workload should exist")
+	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
+	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 2, decodeInfo.Replicas, "decode replicas")
 }
 
@@ -117,23 +117,23 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:          fakeClient,
-		Scheme:          scheme,
-		WorkloadManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager:  controller.NewServiceManager(fakeClient, scheme),
-		Record:          events.NewFakeRecorder(100),
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
 
-	workloadManager := controller.NewLeaderWorkerSetManager(fakeClient)
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
-	require.NotNil(t, prefillInfo, "prefill workload should exist")
+	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
+	require.NotNil(t, prefillInfo, "prefill LWS should exist")
 	assert.Equal(t, 5, prefillInfo.Replicas, "prefill replicas should be scaled to 5")
 
-	decodeInfo, _ := workloadManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
-	require.NotNil(t, decodeInfo, "decode workload should exist")
+	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
+	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 4, decodeInfo.Replicas, "decode replicas should be scaled to 4")
 }

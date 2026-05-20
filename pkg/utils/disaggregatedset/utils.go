@@ -163,34 +163,34 @@ func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []strin
 	return names
 }
 
-type GroupedWorkload struct {
+type RevisionRoles struct {
 	Revision string
 	Roles    map[string]WorkloadInfo
 }
 
-type GroupedWorkloads []GroupedWorkload
+type RevisionRolesList []RevisionRoles
 
-func (groupedWorkloads GroupedWorkloads) GetTotalReplicasPerRole(role string) int {
+func (revisions RevisionRolesList) GetTotalReplicasPerRole(role string) int {
 	total := 0
-	for _, workload := range groupedWorkloads {
-		total += workload.Roles[role].Replicas
+	for _, rev := range revisions {
+		total += rev.Roles[role].Replicas
 	}
 	return total
 }
 
-func (groupedWorkloads GroupedWorkloads) GetTotalInitialReplicasPerRole(role string) int {
+func (revisions RevisionRolesList) GetTotalInitialReplicasPerRole(role string) int {
 	total := 0
-	for _, workload := range groupedWorkloads {
-		total += workload.Roles[role].InitialReplicas
+	for _, rev := range revisions {
+		total += rev.Roles[role].InitialReplicas
 	}
 	return total
 }
 
-func GroupWorkloadsByRevision(workloads []WorkloadInfo) GroupedWorkloads {
-	byRevision := make(map[string]*GroupedWorkload)
+func GroupByRevision(workloads []WorkloadInfo) RevisionRolesList {
+	byRevision := make(map[string]*RevisionRoles)
 	for _, workload := range workloads {
 		if byRevision[workload.Revision] == nil {
-			byRevision[workload.Revision] = &GroupedWorkload{
+			byRevision[workload.Revision] = &RevisionRoles{
 				Revision: workload.Revision,
 				Roles:    make(map[string]WorkloadInfo),
 			}
@@ -198,7 +198,7 @@ func GroupWorkloadsByRevision(workloads []WorkloadInfo) GroupedWorkloads {
 		byRevision[workload.Revision].Roles[workload.Role] = workload
 	}
 
-	result := make(GroupedWorkloads, 0, len(byRevision))
+	result := make(RevisionRolesList, 0, len(byRevision))
 	for _, grouped := range byRevision {
 		result = append(result, *grouped)
 	}

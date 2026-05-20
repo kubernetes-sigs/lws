@@ -49,7 +49,7 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Only prefill is ready
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -59,7 +59,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		// Verify no services created
@@ -76,7 +76,7 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Both roles ready
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -86,7 +86,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		// Verify services created for both roles
@@ -111,7 +111,7 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -121,7 +121,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		prefillService := &corev1.Service{}
@@ -141,7 +141,7 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -151,7 +151,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		decodeService := &corev1.Service{}
@@ -171,7 +171,7 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "ef53f2d7",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -181,7 +181,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "ef53f2d7")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "ef53f2d7")
 		require.NoError(t, err)
 
 		// Check expected service names with prv suffix
@@ -203,7 +203,7 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -213,7 +213,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		decodeService := &corev1.Service{}
@@ -235,7 +235,7 @@ func TestServiceManager(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -245,7 +245,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
 		decodeService := &corev1.Service{}
@@ -284,7 +284,7 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// New revision is ready, old is drained
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "new12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -294,7 +294,7 @@ func TestServiceManager(t *testing.T) {
 			},
 		}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, "new12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, "new12345")
 		require.NoError(t, err)
 
 		// Verify old service is deleted
@@ -351,7 +351,7 @@ func TestServiceManager(t *testing.T) {
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
 		// Both old and new revisions are ready (rolling update in progress)
-		groupedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "old12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
@@ -372,7 +372,7 @@ func TestServiceManager(t *testing.T) {
 		targetRevision := "new12345"
 
 		// First reconcile - new services created, old services kept (both still ready)
-		err := serviceManager.ReconcileServices(ctx, deployment, groupedWorkloads, targetRevision)
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles, targetRevision)
 		require.NoError(t, err)
 
 		// Verify new services are created
@@ -391,7 +391,7 @@ func TestServiceManager(t *testing.T) {
 		require.NoError(t, err, "old prefill service should still exist during rolling update")
 
 		// Now simulate old revision being fully drained
-		drainedWorkloads := disaggregatedsetutils.GroupedWorkloads{
+		drainedWorkloads := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "old12345",
 				Roles: map[string]disaggregatedsetutils.WorkloadInfo{
