@@ -691,9 +691,9 @@ func TestBatchSize(t *testing.T) {
 
 func TestComputeTotalSteps(t *testing.T) {
 	testCases := []struct {
-		source, target RoleReplicaState
-		config         []RollingUpdateConfig
-		expected       int
+		initialOld, target RoleReplicaState
+		config             []RollingUpdateConfig
+		expected           int
 	}{
 		{
 			RoleReplicaState{4, 4}, RoleReplicaState{4, 4},
@@ -714,8 +714,8 @@ func TestComputeTotalSteps(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := computeTotalSteps(tc.source, tc.target, tc.config)
-		assert.Equal(t, tc.expected, result, "computeTotalSteps(%v, %v, %v)", tc.source, tc.target, tc.config)
+		result := computeTotalSteps(tc.initialOld, tc.target, tc.config)
+		assert.Equal(t, tc.expected, result, "computeTotalSteps(%v, %v, %v)", tc.initialOld, tc.target, tc.config)
 	}
 }
 
@@ -723,22 +723,22 @@ func TestCorrectAbnormalState_Normal(t *testing.T) {
 	// Normal state should return nil
 	currentOld := RoleReplicaState{2, 2}
 	currentNew := RoleReplicaState{2, 2}
-	source := RoleReplicaState{4, 4}
+	initialOld := RoleReplicaState{4, 4}
 
-	result := correctAbnormalState(currentOld, currentNew, source)
+	result := correctAbnormalState(currentOld, currentNew, initialOld)
 	assert.Nil(t, result, "normal state should return nil")
 }
 
 func TestCorrectAbnormalState_Abnormal(t *testing.T) {
-	// Abnormal state: old > source
+	// Abnormal state: old > initialOld
 	currentOld := RoleReplicaState{5, 5}
 	currentNew := RoleReplicaState{2, 2}
-	source := RoleReplicaState{4, 4}
+	initialOld := RoleReplicaState{4, 4}
 
-	result := correctAbnormalState(currentOld, currentNew, source)
+	result := correctAbnormalState(currentOld, currentNew, initialOld)
 	require.NotNil(t, result, "abnormal state should return correction step")
-	assert.Equal(t, 4, result.Past[0], "old role0 should be clamped to source")
-	assert.Equal(t, 4, result.Past[1], "old role1 should be clamped to source")
+	assert.Equal(t, 4, result.Past[0], "old role0 should be clamped to initialOld")
+	assert.Equal(t, 4, result.Past[1], "old role1 should be clamped to initialOld")
 	assert.Equal(t, 2, result.New[0], "new role0 should be unchanged")
 	assert.Equal(t, 2, result.New[1], "new role1 should be unchanged")
 }
@@ -748,21 +748,21 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 
 	testCases := []struct {
 		name       string
-		source     RoleReplicaState
+		initialOld RoleReplicaState
 		currentOld RoleReplicaState
 		currentNew RoleReplicaState
 		targetNew  RoleReplicaState
 	}{
 		{
 			name:       "exactly at target",
-			source:     RoleReplicaState{3, 6},
+			initialOld: RoleReplicaState{3, 6},
 			currentOld: RoleReplicaState{0, 0},
 			currentNew: RoleReplicaState{3, 6},
 			targetNew:  RoleReplicaState{3, 6},
 		},
 		{
 			name:       "new exceeds target",
-			source:     RoleReplicaState{3, 6},
+			initialOld: RoleReplicaState{3, 6},
 			currentOld: RoleReplicaState{0, 0},
 			currentNew: RoleReplicaState{4, 7},
 			targetNew:  RoleReplicaState{3, 6},
@@ -771,7 +771,7 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := ComputeNextStep(tc.source, tc.currentOld, tc.currentNew, tc.targetNew, cfg)
+			result := ComputeNextStep(tc.initialOld, tc.currentOld, tc.currentNew, tc.targetNew, cfg)
 			assert.Nil(t, result, "should return nil when rollout is complete")
 		})
 	}
@@ -780,12 +780,12 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 func TestComputeNextStep_FreshStart(t *testing.T) {
 	cfg := DefaultRollingUpdateConfig(2)
 
-	source := RoleReplicaState{4, 4}
+	initialOld := RoleReplicaState{4, 4}
 	currentOld := RoleReplicaState{4, 4}
 	currentNew := RoleReplicaState{0, 0}
 	targetNew := RoleReplicaState{4, 4}
 
-	result := ComputeNextStep(source, currentOld, currentNew, targetNew, cfg)
+	result := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, cfg)
 	require.NotNil(t, result, "fresh start should return a step")
 
 	// First step should create some new replicas
@@ -852,14 +852,14 @@ func TestComputeNextNewReplicas_EdgeCases(t *testing.T) {
 func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 	testCases := []struct {
 		name       string
-		source     RoleReplicaState
+		initialOld RoleReplicaState
 		currentOld RoleReplicaState
 		totalSteps int
 		checkFunc  func(t *testing.T, result RoleReplicaState)
 	}{
 		{
 			name:       "source_role0_zero",
-			source:     RoleReplicaState{0, 4},
+			initialOld: RoleReplicaState{0, 4},
 			currentOld: RoleReplicaState{0, 3},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result RoleReplicaState) {
@@ -869,7 +869,7 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 		},
 		{
 			name:       "source_role1_zero",
-			source:     RoleReplicaState{4, 0},
+			initialOld: RoleReplicaState{4, 0},
 			currentOld: RoleReplicaState{3, 0},
 			totalSteps: 4,
 			checkFunc: func(t *testing.T, result RoleReplicaState) {
@@ -879,7 +879,7 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 		},
 		{
 			name:       "total_steps_zero",
-			source:     RoleReplicaState{4, 4},
+			initialOld: RoleReplicaState{4, 4},
 			currentOld: RoleReplicaState{2, 2},
 			totalSteps: 0,
 			checkFunc: func(t *testing.T, result RoleReplicaState) {
@@ -891,7 +891,7 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := computeNextOldReplicas(tc.source, tc.currentOld, tc.totalSteps)
+			result := computeNextOldReplicas(tc.initialOld, tc.currentOld, tc.totalSteps)
 			tc.checkFunc(t, result)
 		})
 	}
@@ -903,11 +903,11 @@ func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
 
 func TestNRole_RolloutCompletes(t *testing.T) {
 	testCases := []struct {
-		name    string
-		source  []int
-		target  []int
-		surge   []int
-		unavail []int
+		name       string
+		initialOld []int
+		target     []int
+		surge      []int
+		unavail    []int
 	}{
 		// 3-role scenarios
 		{"3role_symmetric", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}, []int{0, 0, 0}},
@@ -943,7 +943,7 @@ func TestNRole_RolloutCompletes(t *testing.T) {
 		{"remove_role_4to3", []int{3, 3, 3, 3}, []int{3, 3, 3, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
 
 		// Role rename (simultaneous add + remove): a,b,c,d,i -> a,b,c,d,h
-		// Sorted order becomes [a,b,c,d,h,i] with source h=0, target i=0
+		// Sorted order becomes [a,b,c,d,h,i] with initialOld h=0, target i=0
 		{"rename_role_5to5", []int{10, 10, 10, 10, 0, 10}, []int{10, 10, 10, 10, 10, 0}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
 
 		// Scale-down scenarios (maxSurge constraint regression tests)
@@ -957,11 +957,11 @@ func TestNRole_RolloutCompletes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.source))
+			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
 			for i := range cfg {
 				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i], MaxUnavailable: tc.unavail[i]}
 			}
-			steps := ComputeAllSteps(tc.source, tc.target, cfg)
+			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
 			require.True(t, completes(steps, tc.target), "rollout should complete")
 		})
 	}
@@ -969,10 +969,10 @@ func TestNRole_RolloutCompletes(t *testing.T) {
 
 func TestNRole_SurgeConstraint(t *testing.T) {
 	testCases := []struct {
-		name   string
-		source []int
-		target []int
-		surge  []int
+		name       string
+		initialOld []int
+		target     []int
+		surge      []int
 	}{
 		{"3role", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}},
 		{"4role", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}},
@@ -985,11 +985,11 @@ func TestNRole_SurgeConstraint(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.source))
+			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
 			for i := range cfg {
 				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i]}
 			}
-			steps := ComputeAllSteps(tc.source, tc.target, cfg)
+			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
 
 			// Verify per-role maxSurge constraint: old[i] + new[i] <= target[i] + surge[i]
 			// Only check when new[i] > 0 (scale-up has started for this role).
@@ -1013,10 +1013,10 @@ func TestNRole_SurgeConstraint(t *testing.T) {
 
 func TestNRole_UnavailableConstraint(t *testing.T) {
 	testCases := []struct {
-		name    string
-		source  []int
-		target  []int
-		unavail []int
+		name       string
+		initialOld []int
+		target     []int
+		unavail    []int
 	}{
 		{"symmetric_4_4", []int{4, 4}, []int{4, 4}, []int{1, 1}},
 		{"asymmetric_5_2", []int{5, 2}, []int{5, 2}, []int{1, 1}},
@@ -1026,20 +1026,20 @@ func TestNRole_UnavailableConstraint(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.source))
+			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
 			for i := range cfg {
 				cfg[i] = RollingUpdateConfig{MaxUnavailable: tc.unavail[i]}
 			}
-			steps := ComputeAllSteps(tc.source, tc.target, cfg)
+			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
 
 			// Verify rollout completes
 			require.True(t, completes(steps, tc.target), "rollout should complete")
 
 			// Verify per-role maxUnavailable constraint: old[i] + new[i] >= target[i] - unavail[i]
-			// Only enforced when source[i] >= target[i] (system had enough replicas)
+			// Only enforced when initialOld[i] >= target[i] (system had enough replicas)
 			for stepIdx, s := range steps {
 				for roleIdx := range tc.target {
-					if tc.source[roleIdx] < tc.target[roleIdx] {
+					if tc.initialOld[roleIdx] < tc.target[roleIdx] {
 						continue // Scale-up scenario, maxUnavailable not enforced
 					}
 					minRequired := tc.target[roleIdx] - tc.unavail[roleIdx]

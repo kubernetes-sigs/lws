@@ -19,10 +19,10 @@ limitations under the License.
 // # Rolling Update Algorithm
 //
 // The planner uses a linear scaling function that approximates discrete steps of a
-// linear interpolation between source and target replica counts:
+// linear interpolation between initialOld and target replica counts:
 //
 //	newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
-//	oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source → 0
+//	oldAtStep(i) = initialOld - floor(i * initialOld / totalSteps)  // scale down: initialOld → 0
 //
 // Since the controller is stateless, we compute only the needed step directly:
 // derive the current step index from observed replicas, then compute the next step's target.
@@ -65,11 +65,11 @@ func batchSize(maxSurge, maxUnavailable int) int {
 	return max(1, maxUnavailable)
 }
 
-func computeTotalSteps(source, target RoleReplicaState, config []RollingUpdateConfig) int {
+func computeTotalSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) int {
 	totalSteps := 0
-	numRoles := len(source)
+	numRoles := len(initialOld)
 	for i := 0; i < numRoles; i++ {
-		maxReplicas := max(source[i], target[i], 0)
+		maxReplicas := max(initialOld[i], target[i], 0)
 		roleBatchSize := batchSize(config[i].MaxSurge, config[i].MaxUnavailable)
 		roleSteps := (maxReplicas + roleBatchSize - 1) / roleBatchSize
 		totalSteps = max(totalSteps, roleSteps)
@@ -112,8 +112,8 @@ func computeNextNewReplicas(target, currentNew RoleReplicaState, totalSteps int)
 	return result
 }
 
-func computeNextOldReplicas(source, currentOld RoleReplicaState, totalSteps int) RoleReplicaState {
-	numRoles := len(source)
+func computeNextOldReplicas(initialOld, currentOld RoleReplicaState, totalSteps int) RoleReplicaState {
+	numRoles := len(initialOld)
 	if totalSteps == 0 {
 		return make([]int, numRoles)
 	}
@@ -127,11 +127,11 @@ func computeNextOldReplicas(source, currentOld RoleReplicaState, totalSteps int)
 
 	maxStepIdx := 0
 	for i := 0; i < numRoles; i++ {
-		if source[i] == 0 {
+		if initialOld[i] == 0 {
 			continue
 		}
-		removed := source[i] - currentOld[i]
-		maxStepIdx = max(maxStepIdx, stepIndex(removed, source[i]))
+		removed := initialOld[i] - currentOld[i]
+		maxStepIdx = max(maxStepIdx, stepIndex(removed, initialOld[i]))
 	}
 	nextStepIdx := maxStepIdx + 1
 
@@ -143,17 +143,17 @@ func computeNextOldReplicas(source, currentOld RoleReplicaState, totalSteps int)
 
 	result := make([]int, numRoles)
 	for i := 0; i < numRoles; i++ {
-		result[i] = computeOld(source[i], currentOld[i])
+		result[i] = computeOld(initialOld[i], currentOld[i])
 	}
 	return result
 }
 
-func correctAbnormalState(currentOld, currentNew, source RoleReplicaState) *UpdateStep {
-	numRoles := len(source)
+func correctAbnormalState(currentOld, currentNew, initialOld RoleReplicaState) *UpdateStep {
+	numRoles := len(initialOld)
 	expectedOld := make([]int, numRoles)
 	needsCorrection := false
 	for i := 0; i < numRoles; i++ {
-		expectedOld[i] = min(source[i], currentOld[i])
+		expectedOld[i] = min(initialOld[i], currentOld[i])
 		if currentOld[i] > expectedOld[i] {
 			needsCorrection = true
 		}
@@ -200,10 +200,10 @@ func canScaleUp(currentOld, nextNew, targetNew RoleReplicaState, config []Rollin
 	return true
 }
 
-func computeMinOld(source, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) []int {
-	minOld := make([]int, len(source))
-	for i := range source {
-		if source[i] >= targetNew[i] {
+func computeMinOld(initialOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) []int {
+	minOld := make([]int, len(initialOld))
+	for i := range initialOld {
+		if initialOld[i] >= targetNew[i] {
 			minOld[i] = max(0, targetNew[i]-config[i].MaxUnavailable-currentNew[i])
 		}
 	}
@@ -227,14 +227,14 @@ func tryScaleUp(currentOld, currentNew, nextNew, targetNew RoleReplicaState, con
 	return &UpdateStep{Past: currentOld, New: nextNew}
 }
 
-func tryProportionalDrain(source, currentOld, currentNew, targetNew RoleReplicaState, minOld []int, totalSteps int, config []RollingUpdateConfig) *UpdateStep {
-	nextOld := computeNextOldReplicas(source, currentOld, totalSteps)
+func tryProportionalDrain(initialOld, currentOld, currentNew, targetNew RoleReplicaState, minOld []int, totalSteps int, config []RollingUpdateConfig) *UpdateStep {
+	nextOld := computeNextOldReplicas(initialOld, currentOld, totalSteps)
 
 	for i := range nextOld {
 		nextOld[i] = max(nextOld[i], minOld[i])
 	}
 
-	applyOrphanPrevention(nextOld, currentNew, source, targetNew, config)
+	applyOrphanPrevention(nextOld, currentNew, initialOld, targetNew, config)
 
 	needsScaleDown := false
 	for i := range nextOld {
@@ -249,9 +249,9 @@ func tryProportionalDrain(source, currentOld, currentNew, targetNew RoleReplicaS
 	return &UpdateStep{Past: nextOld, New: currentNew}
 }
 
-func canDrainAllToZero(nextNew, source, target RoleReplicaState, config []RollingUpdateConfig) bool {
+func canDrainAllToZero(nextNew, initialOld, target RoleReplicaState, config []RollingUpdateConfig) bool {
 	for i := range target {
-		if source[i] >= target[i] {
+		if initialOld[i] >= target[i] {
 			minRequired := target[i] - config[i].MaxUnavailable
 			if nextNew[i] < minRequired {
 				return false
@@ -261,11 +261,11 @@ func canDrainAllToZero(nextNew, source, target RoleReplicaState, config []Rollin
 	return true
 }
 
-func applyOrphanPrevention(nextOld, currentNew, source, target RoleReplicaState, config []RollingUpdateConfig) {
+func applyOrphanPrevention(nextOld, currentNew, initialOld, target RoleReplicaState, config []RollingUpdateConfig) {
 	anyDrainsToZero := false
 	allDrainToZero := true
 	for i := range nextOld {
-		if source[i] == 0 {
+		if initialOld[i] == 0 {
 			continue
 		}
 		if nextOld[i] == 0 {
@@ -279,7 +279,7 @@ func applyOrphanPrevention(nextOld, currentNew, source, target RoleReplicaState,
 		return
 	}
 
-	if canDrainAllToZero(currentNew, source, target, config) {
+	if canDrainAllToZero(currentNew, initialOld, target, config) {
 		for i := range nextOld {
 			nextOld[i] = 0
 		}
@@ -287,20 +287,20 @@ func applyOrphanPrevention(nextOld, currentNew, source, target RoleReplicaState,
 	}
 
 	for i := range nextOld {
-		if nextOld[i] == 0 && source[i] > 0 {
+		if nextOld[i] == 0 && initialOld[i] > 0 {
 			nextOld[i] = 1
 		}
 	}
 }
 
-func tryForceDrain(currentOld, nextNew RoleReplicaState, source, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
+func tryForceDrain(currentOld, nextNew RoleReplicaState, initialOld, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	drainedOld := make([]int, len(currentOld))
 	needsDrain := false
 
 	for i := range currentOld {
 		maxOld := targetNew[i] + config[i].MaxSurge - nextNew[i]
 		drainedOld[i] = max(0, min(currentOld[i], maxOld))
-		if source[i] >= targetNew[i] {
+		if initialOld[i] >= targetNew[i] {
 			minOldForRole := max(0, targetNew[i]-config[i].MaxUnavailable-nextNew[i])
 			drainedOld[i] = max(drainedOld[i], minOldForRole)
 		}
@@ -312,65 +312,65 @@ func tryForceDrain(currentOld, nextNew RoleReplicaState, source, targetNew RoleR
 		return nil
 	}
 
-	applyOrphanPrevention(drainedOld, nextNew, source, targetNew, config)
+	applyOrphanPrevention(drainedOld, nextNew, initialOld, targetNew, config)
 
 	return &UpdateStep{Past: drainedOld, New: nextNew}
 }
 
-func ComputeNextStep(source, currentOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
+func ComputeNextStep(initialOld, currentOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
 	if isComplete(currentOld, currentNew, targetNew) {
 		return nil
 	}
 
-	totalSteps := computeTotalSteps(source, targetNew, config)
+	totalSteps := computeTotalSteps(initialOld, targetNew, config)
 	if totalSteps == 0 {
 		return nil
 	}
 
-	if step := correctAbnormalState(currentOld, currentNew, source); step != nil {
+	if step := correctAbnormalState(currentOld, currentNew, initialOld); step != nil {
 		return step
 	}
 
 	if isNewAtTarget(currentNew, targetNew) {
-		return &UpdateStep{Past: make([]int, len(source)), New: currentNew}
+		return &UpdateStep{Past: make([]int, len(initialOld)), New: currentNew}
 	}
 
 	nextNew := computeNextNewReplicas(targetNew, currentNew, totalSteps)
-	minOld := computeMinOld(source, currentNew, targetNew, config)
+	minOld := computeMinOld(initialOld, currentNew, targetNew, config)
 
 	if step := tryScaleUp(currentOld, currentNew, nextNew, targetNew, config); step != nil {
 		return step
 	}
-	if step := tryProportionalDrain(source, currentOld, currentNew, targetNew, minOld, totalSteps, config); step != nil {
+	if step := tryProportionalDrain(initialOld, currentOld, currentNew, targetNew, minOld, totalSteps, config); step != nil {
 		return step
 	}
-	if step := tryForceDrain(currentOld, nextNew, source, targetNew, config); step != nil {
+	if step := tryForceDrain(currentOld, nextNew, initialOld, targetNew, config); step != nil {
 		return step
 	}
 
 	return nil
 }
 
-func ComputeAllSteps(source, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
-	numRoles := len(source)
+func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
+	numRoles := len(initialOld)
 
 	currentOld := make([]int, numRoles)
-	copy(currentOld, source)
+	copy(currentOld, initialOld)
 	currentNew := make([]int, numRoles)
 
 	maxReplicas := 0
 	for i := 0; i < numRoles; i++ {
-		maxReplicas = max(maxReplicas, source[i], target[i])
+		maxReplicas = max(maxReplicas, initialOld[i], target[i])
 	}
 	maxSteps := maxReplicas*2 + 10
 
 	initialPast := make([]int, numRoles)
-	copy(initialPast, source)
+	copy(initialPast, initialOld)
 	initialNew := make([]int, numRoles)
 	steps := []UpdateStep{{Past: initialPast, New: initialNew}}
 
 	for i := 0; i < maxSteps; i++ {
-		nextStep := ComputeNextStep(source, currentOld, currentNew, target, config)
+		nextStep := ComputeNextStep(initialOld, currentOld, currentNew, target, config)
 		if nextStep == nil {
 			break
 		}

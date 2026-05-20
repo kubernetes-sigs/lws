@@ -136,10 +136,10 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	source, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames)
 
-	nextStep := ComputeNextStep(source, currentOld, currentNew, targetNew, config)
+	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
@@ -191,12 +191,12 @@ func buildPlannerState(
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-) (source, currentOld, currentNew, targetNew RoleReplicaState) {
+) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
 	n := len(allRoleNames)
-	source, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
+	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
 
 	for i, roleName := range allRoleNames {
-		source[i] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
+		initialOld[i] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
 		currentOld[i] = oldRevisions.GetTotalReplicasPerRole(roleName)
 
 		if specRoleSet[roleName] {
