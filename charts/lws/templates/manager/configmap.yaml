@@ -18,3 +18,7 @@ data:
     gangSchedulingManagement:
 {{ toYaml .Values.gangSchedulingManagement | indent 6 }}
     {{- end }}
+    {{- if .Values.featureGates }}
+    featureGates:
+{{ toYaml .Values.featureGates | indent 6 }}
+    {{- end }}

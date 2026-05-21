@@ -29,6 +29,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -44,6 +45,7 @@ import (
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	_ "sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
@@ -137,6 +139,11 @@ func main() {
 	options, cfg, err := apply(configFile, probeAddr, enableLeaderElection, leaderElectLeaseDuration, leaderElectRenewDeadline, leaderElectRetryPeriod, leaderElectResourceLock, leaderElectionID, metricsAddr)
 	if err != nil {
 		setupLog.Error(err, "unable to load the configuration")
+		os.Exit(1)
+	}
+
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(cfg.FeatureGates); err != nil {
+		setupLog.Error(err, "unable to set feature gates from configuration")
 		os.Exit(1)
 	}
 
