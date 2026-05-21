@@ -12,6 +12,7 @@ updates:
       kubernetes:
         patterns:
           - "k8s.io/*"
+          - "sigs.k8s.io/*"
     ignore:
       # Ignore major and minor versions for dependencies updates
       # Allow patches and security updates.
