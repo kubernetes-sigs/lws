@@ -39,8 +39,8 @@ var managerTestLabels = map[string]string{
 	disaggregatedsetv1.RevisionLabelKey: "abc123",
 }
 
-func buildManagerTestLWS(name, namespace string, replicas int32, annotations map[string]string) *leaderworkerset.LeaderWorkerSet {
-	return wrappers.BuildBasicLeaderWorkerSet(name, namespace).
+func buildManagerTestLWS(name string, replicas int32, annotations map[string]string) *leaderworkerset.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
 		Labels(managerTestLabels).
 		Replica(int(replicas)).
 		Annotation(annotations).
@@ -148,17 +148,15 @@ func TestManagerGetInitialReplicas(t *testing.T) {
 		expectedValue *int
 	}{
 		{
-			name: "returns nil when annotation not set",
-			existingLWS: buildManagerTestLWS(
-				"test-lws", "default", 3, nil,
-			),
+			name:          "returns nil when annotation not set",
+			existingLWS:   buildManagerTestLWS("test-lws", 3, nil),
 			expectError:   false,
 			expectedValue: nil,
 		},
 		{
 			name: "returns value when annotation is set",
 			existingLWS: buildManagerTestLWS(
-				"test-lws", "default", 3,
+				"test-lws", 3,
 				map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 			),
 			expectError:   false,
@@ -209,7 +207,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 
 	t.Run("returns existing value without modifying when annotation exists", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3,
+			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -226,9 +224,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets and returns default value when annotation missing", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3, nil,
-		)
+		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -261,7 +257,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 
 	t.Run("updates annotation when value differs", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3,
+			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -278,7 +274,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 
 	t.Run("skips update when annotation already has correct value", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3,
+			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -311,7 +307,7 @@ func TestManagerDelete(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -342,7 +338,7 @@ func TestManagerScale(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("skips patch when already at desired scale", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", "default", 5, nil)
+		existingLWS := buildManagerTestLWS("test-lws", 5, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -356,7 +352,7 @@ func TestManagerScale(t *testing.T) {
 	})
 
 	t.Run("scales to new replica count", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -388,7 +384,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("skips update when value already correct", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3,
+			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -407,7 +403,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("updates when overwriting different value", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", "default", 3,
+			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -425,7 +421,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets annotation when not present", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -458,7 +454,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
