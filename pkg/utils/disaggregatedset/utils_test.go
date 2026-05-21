@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
@@ -19,7 +19,7 @@ const (
 
 func TestGetInitialReplicas(t *testing.T) {
 	t.Run("returns parsed int from valid annotation", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
@@ -34,7 +34,7 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("returns zero and false for missing annotation", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "test-lws",
 				Annotations: map[string]string{},
@@ -47,7 +47,7 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("returns zero and false for nil annotations", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 			},
@@ -59,7 +59,7 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("returns zero and false for invalid annotation value", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
@@ -74,7 +74,7 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("returns zero and false for empty annotation value", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
@@ -89,7 +89,7 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("handles zero value annotation", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
@@ -106,11 +106,11 @@ func TestGetInitialReplicas(t *testing.T) {
 
 func TestSetInitialReplicas(t *testing.T) {
 	t.Run("sets annotation as string on LWS with nil annotations", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 			},
-			Spec: leaderworkerset.LeaderWorkerSetSpec{
+			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 				Replicas: ptr.To(int32(3)),
 			},
 		}
@@ -122,14 +122,14 @@ func TestSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets annotation as string on LWS with existing annotations", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
 					"other-key": "other-value",
 				},
 			},
-			Spec: leaderworkerset.LeaderWorkerSetSpec{
+			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 				Replicas: ptr.To(int32(5)),
 			},
 		}
@@ -141,14 +141,14 @@ func TestSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("overwrites existing annotation", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 				Annotations: map[string]string{
 					disaggregatedsetv1.InitialReplicasAnnotationKey: "10",
 				},
 			},
-			Spec: leaderworkerset.LeaderWorkerSetSpec{
+			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 				Replicas: ptr.To(int32(7)),
 			},
 		}
@@ -159,11 +159,11 @@ func TestSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("handles zero replicas", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-lws",
 			},
-			Spec: leaderworkerset.LeaderWorkerSetSpec{
+			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 				Replicas: ptr.To(int32(0)),
 			},
 		}
@@ -176,7 +176,7 @@ func TestSetInitialReplicas(t *testing.T) {
 
 func TestComputeInitialReplicaState(t *testing.T) {
 	t.Run("returns empty map for empty list", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{}
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{}
 
 		state := ComputeInitialReplicaState(lwsList)
 
@@ -185,7 +185,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("sums prefill annotations correctly", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -196,7 +196,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "3",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
 				},
 			},
@@ -210,7 +210,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "2",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
 				},
 			},
@@ -223,7 +223,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("sums decode annotations correctly", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -234,7 +234,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "4",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(4)),
 				},
 			},
@@ -248,7 +248,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "6",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(6)),
 				},
 			},
@@ -261,7 +261,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("sums mixed prefill and decode correctly", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-prefill-1",
@@ -272,7 +272,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "3",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
 				},
 			},
@@ -286,7 +286,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "6",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(6)),
 				},
 			},
@@ -300,7 +300,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "2",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
 				},
 			},
@@ -313,7 +313,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("uses spec.Replicas fallback for missing annotation", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -321,7 +321,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.RoleLabelKey: testUtilsRolePrefill,
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(4)),
 				},
 			},
@@ -333,7 +333,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("uses spec.Replicas fallback for invalid annotation", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -344,7 +344,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "not-a-number",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(5)),
 				},
 			},
@@ -356,7 +356,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("handles mixed valid and invalid annotations", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -367,7 +367,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "3",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
 				},
 			},
@@ -381,7 +381,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.InitialReplicasAnnotationKey: "invalid",
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
 				},
 			},
@@ -393,7 +393,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 
 	t.Run("handles nil spec.Replicas with missing annotation", func(t *testing.T) {
-		lwsList := []leaderworkerset.LeaderWorkerSet{
+		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "lws-1",
@@ -401,7 +401,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 						disaggregatedsetv1.RoleLabelKey: testUtilsRolePrefill,
 					},
 				},
-				Spec: leaderworkerset.LeaderWorkerSetSpec{},
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{},
 			},
 		}
 

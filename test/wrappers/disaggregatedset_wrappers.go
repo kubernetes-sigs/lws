@@ -23,7 +23,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // --- DisaggregatedSet wrapper ---
@@ -56,9 +56,9 @@ func (w *DisaggregatedSetWrapper) UID(uid string) *DisaggregatedSetWrapper {
 func (w *DisaggregatedSetWrapper) WithRole(name string, replicas int32, image string) *DisaggregatedSetWrapper {
 	w.Spec.Roles = append(w.Spec.Roles, disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: name,
-		LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+		LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 			Replicas: ptr.To(replicas),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+			LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 				Size:           ptr.To(int32(1)),
 				WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image}}}},
 			},
@@ -70,8 +70,8 @@ func (w *DisaggregatedSetWrapper) WithRole(name string, replicas int32, image st
 func (w *DisaggregatedSetWrapper) WithRoleNoReplicas(name string, image string) *DisaggregatedSetWrapper {
 	w.Spec.Roles = append(w.Spec.Roles, disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: name,
-		LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+		LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+			LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 				WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: image}}}},
 			},
 		}},
@@ -82,8 +82,8 @@ func (w *DisaggregatedSetWrapper) WithRoleNoReplicas(name string, image string) 
 func (w *DisaggregatedSetWrapper) WithRollout(role string, surge, unavail intstr.IntOrString) *DisaggregatedSetWrapper {
 	for i := range w.Spec.Roles {
 		if w.Spec.Roles[i].Name == role {
-			w.Spec.Roles[i].Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
-				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			w.Spec.Roles[i].Spec.RolloutStrategy = leaderworkersetv1.RolloutStrategy{
+				RollingUpdateConfiguration: &leaderworkersetv1.RollingUpdateConfiguration{
 					MaxSurge:       surge,
 					MaxUnavailable: unavail,
 				},
@@ -104,14 +104,14 @@ func MakeRoleSpec(
 ) disaggregatedsetv1.DisaggregatedRoleSpec {
 	return disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: name,
-		LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+		LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 			Replicas: ptr.To(replicas),
-			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+			LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 				Size:           ptr.To(int32(1)),
 				WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
 			},
-			RolloutStrategy: leaderworkerset.RolloutStrategy{
-				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+			RolloutStrategy: leaderworkersetv1.RolloutStrategy{
+				RollingUpdateConfiguration: &leaderworkersetv1.RollingUpdateConfiguration{
 					MaxSurge: surge, MaxUnavailable: unavail,
 				},
 			},
@@ -125,6 +125,6 @@ func DisaggregatedSetTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = disaggregatedsetv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
-	_ = leaderworkerset.AddToScheme(scheme)
+	_ = leaderworkersetv1.AddToScheme(scheme)
 	return scheme
 }

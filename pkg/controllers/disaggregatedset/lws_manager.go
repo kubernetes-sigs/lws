@@ -28,7 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
@@ -77,7 +77,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
 	}
 
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        lwsName,
 			Namespace:   params.DisaggregatedSet.Namespace,
@@ -105,7 +105,7 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 }
 
 func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, namespace, name string, replicas int) error {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s for scaling: %w", name, err)
 	}
@@ -125,7 +125,7 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, namespace, nam
 }
 
 func (manager *LeaderWorkerSetManager) UpdateInitialReplicasAnnotation(ctx context.Context, namespace, name string, replicas int) error {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s for annotation update: %w", name, err)
 	}
@@ -144,8 +144,8 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicasAnnotation(ctx conte
 	return nil
 }
 
-func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkerset.LeaderWorkerSet, error) {
-	lws := &leaderworkerset.LeaderWorkerSet{}
+func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
+	lws := &leaderworkersetv1.LeaderWorkerSet{}
 	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, lws)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -156,8 +156,8 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return lws, nil
 }
 
-func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]*leaderworkerset.LeaderWorkerSet, error) {
-	lwsObjList := &leaderworkerset.LeaderWorkerSetList{}
+func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
+	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
 	if role != "" {
@@ -168,7 +168,7 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", namespace, disaggDeploymentName, err)
 	}
 
-	result := make([]*leaderworkerset.LeaderWorkerSet, len(lwsObjList.Items))
+	result := make([]*leaderworkersetv1.LeaderWorkerSet, len(lwsObjList.Items))
 	for i := range lwsObjList.Items {
 		result[i] = &lwsObjList.Items[i]
 	}
@@ -176,7 +176,7 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 }
 
 func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, name string) error {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -193,7 +193,7 @@ func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, na
 	return nil
 }
 
-func getLWSReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) int32 {
+func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 	if leaderWorkerSet.Spec.Replicas == nil {
 		return 1
 	}
@@ -209,8 +209,8 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
 
-	var oldLWS []*leaderworkerset.LeaderWorkerSet
-	var newLWS []*leaderworkerset.LeaderWorkerSet
+	var oldLWS []*leaderworkersetv1.LeaderWorkerSet
+	var newLWS []*leaderworkersetv1.LeaderWorkerSet
 	for _, lws := range lwsList {
 		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
 			newLWS = append(newLWS, lws)
@@ -230,7 +230,7 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	return oldRevisions, newRevision, nil
 }
 
-func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) *int {
+func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) *int {
 	if leaderWorkerSet.Annotations == nil {
 		return nil
 	}
@@ -247,7 +247,7 @@ func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkerset.LeaderWorke
 
 func (manager *LeaderWorkerSetManager) patchInitialReplicasAnnotation(
 	ctx context.Context,
-	leaderWorkerSet *leaderworkerset.LeaderWorkerSet,
+	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
 	value int,
 ) error {
 	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
@@ -265,7 +265,7 @@ func (manager *LeaderWorkerSetManager) SetInitialReplicas(
 ) (*int, error) {
 	log := logf.FromContext(ctx)
 
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
 		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
 	}
@@ -294,7 +294,7 @@ func (manager *LeaderWorkerSetManager) GetInitialReplicas(
 	ctx context.Context,
 	namespace, name string,
 ) (*int, error) {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
 		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
 	}
@@ -307,7 +307,7 @@ func (manager *LeaderWorkerSetManager) GetOrSetInitialReplicas(
 	namespace, name string,
 	defaultValue int,
 ) (int, error) {
-	leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{}
+	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
 		return 0, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
 	}

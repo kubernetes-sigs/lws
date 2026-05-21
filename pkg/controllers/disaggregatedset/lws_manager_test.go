@@ -26,7 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
@@ -39,7 +39,7 @@ var managerTestLabels = map[string]string{
 	disaggregatedsetv1.RevisionLabelKey: "abc123",
 }
 
-func buildManagerTestLWS(name string, replicas int32, annotations map[string]string) *leaderworkerset.LeaderWorkerSet {
+func buildManagerTestLWS(name string, replicas int32, annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
 	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
 		Labels(managerTestLabels).
 		Replica(int(replicas)).
@@ -83,7 +83,7 @@ func TestParseInitialReplicasAnnotation(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
+			leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: testCase.annotations,
 				},
@@ -125,8 +125,8 @@ func TestGetLWSReplicas(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			leaderWorkerSet := &leaderworkerset.LeaderWorkerSet{
-				Spec: leaderworkerset.LeaderWorkerSetSpec{
+			leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: testCase.replicas,
 				},
 			}
@@ -139,11 +139,11 @@ func TestGetLWSReplicas(t *testing.T) {
 // TestManagerGetInitialReplicas tests the manager's disaggregatedsetutils.GetInitialReplicas method.
 func TestManagerGetInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	testCases := []struct {
 		name          string
-		existingLWS   *leaderworkerset.LeaderWorkerSet
+		existingLWS   *leaderworkersetv1.LeaderWorkerSet
 		expectError   bool
 		expectedValue *int
 	}{
@@ -203,7 +203,7 @@ func TestManagerGetInitialReplicas(t *testing.T) {
 // TestManagerGetOrSetInitialReplicas tests the manager's GetOrSetInitialReplicas method.
 func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("returns existing value without modifying when annotation exists", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
@@ -253,7 +253,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 // TestManagerUpdateInitialReplicasAnnotation tests the manager's UpdateInitialReplicasAnnotation method.
 func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("updates annotation when value differs", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
@@ -304,7 +304,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 // TestManagerDelete tests the manager's Delete method.
 func TestManagerDelete(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
@@ -335,7 +335,7 @@ func TestManagerDelete(t *testing.T) {
 // TestManagerScale tests the manager's Scale method.
 func TestManagerScale(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("skips patch when already at desired scale", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS("test-lws", 5, nil)
@@ -380,7 +380,7 @@ func TestManagerScale(t *testing.T) {
 // TestManagerSetInitialReplicas tests the manager's disaggregatedsetutils.SetInitialReplicas method.
 func TestManagerSetInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("skips update when value already correct", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
@@ -450,7 +450,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 // TestManagerCreate tests the manager's Create method.
 func TestManagerCreate(t *testing.T) {
 	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
@@ -479,8 +479,8 @@ func TestManagerCreate(t *testing.T) {
 				disaggregatedsetv1.RevisionLabelKey: "abc123",
 			},
 			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -514,8 +514,8 @@ func TestManagerCreate(t *testing.T) {
 				disaggregatedsetv1.RevisionLabelKey: "abc123",
 			},
 			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -537,20 +537,20 @@ func TestManagerCreate(t *testing.T) {
 			Role: "prefill", Revision: "rev1", Replicas: 1,
 			Labels: map[string]string{disaggregatedsetv1.SetNameLabelKey: "test", disaggregatedsetv1.RoleLabelKey: "prefill", "app": "system-app"},
 			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
 						Annotations: map[string]string{"note": "val"},
 					},
-					Spec: leaderworkerset.LeaderWorkerSetSpec{
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
+					Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
 					},
 				},
 			},
 		})
 		require.NoError(t, err)
 
-		var lws leaderworkerset.LeaderWorkerSet
+		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
 			client.ObjectKey{Name: "test-rev1-prefill", Namespace: "default"}, &lws))
 
@@ -566,18 +566,18 @@ func TestComputeRevision(t *testing.T) {
 		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
 			},
 			{
 				Name: "decode",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -595,18 +595,18 @@ func TestComputeRevision(t *testing.T) {
 		roles1 := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
 			},
 			{
 				Name: "decode",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -615,18 +615,18 @@ func TestComputeRevision(t *testing.T) {
 		roles2 := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(2)), // Different
 					},
 				}},
 			},
 			{
 				Name: "decode",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -643,18 +643,18 @@ func TestComputeRevision(t *testing.T) {
 		roles1 := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			{
 				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
 			},
 			{
 				Name: "decode",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
@@ -663,18 +663,18 @@ func TestComputeRevision(t *testing.T) {
 		roles2 := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			{
 				Name: "other-role",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(2)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},
 			},
 			{
 				Name: "decode",
-				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					Replicas: ptr.To(int32(3)),
-					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(1)),
 					},
 				}},

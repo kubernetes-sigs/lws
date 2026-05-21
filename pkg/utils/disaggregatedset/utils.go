@@ -23,14 +23,14 @@ import (
 	"fmt"
 	"strconv"
 
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
 const NumRequiredRoles = 2
 
-func GetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) (int32, bool) {
+func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int32, bool) {
 	if leaderWorkerSet.Annotations == nil {
 		return 0, false
 	}
@@ -45,14 +45,14 @@ func GetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet) (int32
 	return int32(parsed), true
 }
 
-func SetInitialReplicas(leaderWorkerSet *leaderworkerset.LeaderWorkerSet, replicas int32) {
+func SetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, replicas int32) {
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
 	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.FormatInt(int64(replicas), 10)
 }
 
-func ComputeInitialReplicaState(lwsList []leaderworkerset.LeaderWorkerSet) map[string]int {
+func ComputeInitialReplicaState(lwsList []leaderworkersetv1.LeaderWorkerSet) map[string]int {
 	state := make(map[string]int)
 
 	for i := range lwsList {
@@ -106,8 +106,8 @@ const revisionLength = 8
 
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
-		Name     string                               `json:"name"`
-		Template leaderworkerset.LeaderWorkerTemplate `json:"template"`
+		Name     string                                 `json:"name"`
+		Template leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
 	}
 
 	templates := make([]roleTemplate, 0, len(roles))
@@ -152,12 +152,12 @@ func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []strin
 
 type RevisionRoles struct {
 	Revision string
-	Roles    map[string]*leaderworkerset.LeaderWorkerSet
+	Roles    map[string]*leaderworkersetv1.LeaderWorkerSet
 }
 
 type RevisionRolesList []RevisionRoles
 
-func getLWSReplicas(lws *leaderworkerset.LeaderWorkerSet) int {
+func getLWSReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
 	if lws.Spec.Replicas == nil {
 		return 1
 	}
@@ -189,7 +189,7 @@ func (revisions RevisionRolesList) GetTotalInitialReplicasPerRole(role string) i
 	return total
 }
 
-func GroupByRevision(lwsList []*leaderworkerset.LeaderWorkerSet) RevisionRolesList {
+func GroupByRevision(lwsList []*leaderworkersetv1.LeaderWorkerSet) RevisionRolesList {
 	byRevision := make(map[string]*RevisionRoles)
 	for _, lws := range lwsList {
 		revision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
@@ -197,7 +197,7 @@ func GroupByRevision(lwsList []*leaderworkerset.LeaderWorkerSet) RevisionRolesLi
 		if byRevision[revision] == nil {
 			byRevision[revision] = &RevisionRoles{
 				Revision: revision,
-				Roles:    make(map[string]*leaderworkerset.LeaderWorkerSet),
+				Roles:    make(map[string]*leaderworkersetv1.LeaderWorkerSet),
 			}
 		}
 		byRevision[revision].Roles[role] = lws

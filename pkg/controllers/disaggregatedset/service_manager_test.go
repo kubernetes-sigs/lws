@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
@@ -53,9 +53,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 0}}, // not ready
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}}, // not ready
 				},
 			},
 		}
@@ -80,9 +80,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -115,9 +115,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -145,9 +145,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -175,9 +175,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "ef53f2d7",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -207,9 +207,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -239,9 +239,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "abc12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -288,9 +288,9 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "new12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -355,16 +355,16 @@ func TestServiceManager(t *testing.T) {
 		revisionRoles := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "old12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
 				},
 			},
 			{
 				Revision: "new12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
 				},
 			},
 		}
@@ -395,16 +395,16 @@ func TestServiceManager(t *testing.T) {
 		drainedWorkloads := disaggregatedsetutils.RevisionRolesList{
 			{
 				Revision: "old12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 0}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 0}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}},
 				},
 			},
 			{
 				Revision: "new12345",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkerset.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
 				},
 			},
 		}

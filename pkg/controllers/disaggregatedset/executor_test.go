@@ -34,7 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
@@ -90,7 +90,7 @@ func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorker
 
 // getTestLWSReplicas is a helper to get the current replica count from a LWS.
 func getTestLWSReplicas(fakeClient client.Client, namespace, name string) int32 {
-	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
+	var leaderWorkerSet leaderworkersetv1.LeaderWorkerSet
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 	if err := fakeClient.Get(context.TODO(), key, &leaderWorkerSet); err != nil {
 		return -1 // Not found
@@ -102,36 +102,36 @@ func getTestLWSReplicas(fakeClient client.Client, namespace, name string) int32 
 }
 
 // makeLWS creates a minimal LWS object for use in RevisionRoles test fixtures.
-func makeLWS(opts ...func(*leaderworkerset.LeaderWorkerSet)) *leaderworkerset.LeaderWorkerSet {
-	lws := &leaderworkerset.LeaderWorkerSet{}
+func makeLWS(opts ...func(*leaderworkersetv1.LeaderWorkerSet)) *leaderworkersetv1.LeaderWorkerSet {
+	lws := &leaderworkersetv1.LeaderWorkerSet{}
 	for _, opt := range opts {
 		opt(lws)
 	}
 	return lws
 }
 
-func withReplicas(r int) func(*leaderworkerset.LeaderWorkerSet) {
-	return func(lws *leaderworkerset.LeaderWorkerSet) {
+func withReplicas(r int) func(*leaderworkersetv1.LeaderWorkerSet) {
+	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
 		r32 := int32(r)
 		lws.Spec.Replicas = &r32
 	}
 }
 
-func withReadyReplicas(r int) func(*leaderworkerset.LeaderWorkerSet) {
-	return func(lws *leaderworkerset.LeaderWorkerSet) {
+func withReadyReplicas(r int) func(*leaderworkersetv1.LeaderWorkerSet) {
+	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
 		lws.Status.ReadyReplicas = int32(r)
 	}
 }
 
-func withCreationTimestamp(ts time.Time) func(*leaderworkerset.LeaderWorkerSet) {
-	return func(lws *leaderworkerset.LeaderWorkerSet) {
+func withCreationTimestamp(ts time.Time) func(*leaderworkersetv1.LeaderWorkerSet) {
+	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
 		lws.CreationTimestamp = metav1.Time{Time: ts}
 	}
 }
 
 //nolint:unparam // test helper, r will vary as more tests are added
-func withInitialReplicasAnnotation(r int) func(*leaderworkerset.LeaderWorkerSet) {
-	return func(lws *leaderworkerset.LeaderWorkerSet) {
+func withInitialReplicasAnnotation(r int) func(*leaderworkersetv1.LeaderWorkerSet) {
+	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
 		if lws.Annotations == nil {
 			lws.Annotations = make(map[string]string)
 		}
@@ -163,7 +163,7 @@ func createLWSForTest(
 
 // statusSubresourceObjects returns the objects that need status subresource support in the fake client.
 func statusSubresourceObjects() []client.Object {
-	return []client.Object{&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}}
+	return []client.Object{&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}}
 }
 
 // fetchLWSReplicas fetches an LWS by name and returns its spec replica count.
@@ -171,7 +171,7 @@ func statusSubresourceObjects() []client.Object {
 func fetchLWSReplicas(
 	fakeClient client.Client, name string,
 ) (specReplicas int32, exists bool, err error) {
-	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
+	var leaderWorkerSet leaderworkersetv1.LeaderWorkerSet
 	key := types.NamespacedName{Namespace: testNamespace, Name: name}
 	if err := fakeClient.Get(context.TODO(), key, &leaderWorkerSet); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -188,7 +188,7 @@ func fetchLWSReplicas(
 
 // simulateAllReady sets ReadyReplicas = Spec.Replicas for all LWS in the given namespace.
 func simulateAllReady(fakeClient client.Client) {
-	var list leaderworkerset.LeaderWorkerSetList
+	var list leaderworkersetv1.LeaderWorkerSetList
 	_ = fakeClient.List(context.TODO(), &list, client.InNamespace("default"))
 	for i := range list.Items {
 		leaderWorkerSet := &list.Items[i]
@@ -365,10 +365,10 @@ func TestReconcilerIntegration(t *testing.T) {
 				Build()
 
 			podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}}
-			var rolloutConfig *leaderworkerset.RollingUpdateConfiguration
+			var rolloutConfig *leaderworkersetv1.RollingUpdateConfiguration
 			if tc.maxSurge != nil {
 				surge, unavail := intstr.FromInt(*tc.maxSurge), intstr.FromInt(*tc.maxUnavailable)
-				rolloutConfig = &leaderworkerset.RollingUpdateConfiguration{
+				rolloutConfig = &leaderworkersetv1.RollingUpdateConfiguration{
 					MaxSurge: surge, MaxUnavailable: unavail,
 				}
 			}
@@ -376,26 +376,26 @@ func TestReconcilerIntegration(t *testing.T) {
 			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(tc.targetReplicas),
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 							Size:           ptr.To(int32(2)),
 							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
 						},
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
 							RollingUpdateConfiguration: rolloutConfig,
 						},
 					}},
 				},
 				{
 					Name: testRoleDecode,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(tc.targetReplicas),
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 							Size:           ptr.To(int32(2)),
 							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
 						},
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
 							RollingUpdateConfiguration: rolloutConfig,
 						},
 					}},
@@ -492,7 +492,7 @@ func TestSortByNewestTimestamp(t *testing.T) {
 		ts := baseTime.Add(time.Duration(offsetMinutes) * time.Minute)
 		return disaggregatedsetutils.RevisionRoles{
 			Revision: hash,
-			Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+			Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 				testRolePrefill: makeLWS(withCreationTimestamp(ts)),
 				testRoleDecode:  makeLWS(withCreationTimestamp(ts)),
 			},
@@ -536,11 +536,11 @@ func TestSortByNewestTimestamp(t *testing.T) {
 		ts2 := baseTime.Add(10 * time.Minute)
 		ts3 := baseTime.Add(20 * time.Minute)
 		workloads := disaggregatedsetutils.RevisionRolesList{
-			{Revision: "A", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+			{Revision: "A", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 				testRolePrefill: makeLWS(withCreationTimestamp(ts1)),
 				testRoleDecode:  makeLWS(withCreationTimestamp(ts3)),
 			}},
-			{Revision: "B", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+			{Revision: "B", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 				testRolePrefill: makeLWS(withCreationTimestamp(ts2)),
 				testRoleDecode:  makeLWS(withCreationTimestamp(ts2)),
 			}},
@@ -573,7 +573,7 @@ func TestIsRevisionStable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			workload := disaggregatedsetutils.RevisionRoles{
 				Revision: "hash1",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 					testRolePrefill: makeLWS(withReplicas(tc.prefillReplicas), withReadyReplicas(tc.prefillReady)),
 					testRoleDecode:  makeLWS(withReplicas(tc.decodeReplicas), withReadyReplicas(tc.decodeReady)),
 				},
@@ -589,8 +589,8 @@ func TestIsRevisionStable(t *testing.T) {
 
 func TestGetRoleConfigs(t *testing.T) {
 	roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
-		{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(3))}}},
-		{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(5))}}},
+		{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(3))}}},
+		{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(5))}}},
 	}
 	deployment := &disaggregatedsetv1.DisaggregatedSet{
 		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
@@ -626,9 +626,9 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var prefillRolloutConfig, decodeRolloutConfig *leaderworkerset.RollingUpdateConfiguration
+			var prefillRolloutConfig, decodeRolloutConfig *leaderworkersetv1.RollingUpdateConfiguration
 			if tc.prefillSurge != nil || tc.prefillUnavail != nil {
-				prefillRolloutConfig = &leaderworkerset.RollingUpdateConfiguration{}
+				prefillRolloutConfig = &leaderworkersetv1.RollingUpdateConfiguration{}
 				if tc.prefillSurge != nil {
 					prefillRolloutConfig.MaxSurge = intVal(*tc.prefillSurge)
 				}
@@ -637,7 +637,7 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 				}
 			}
 			if tc.decodeSurge != nil || tc.decodeUnavail != nil {
-				decodeRolloutConfig = &leaderworkerset.RollingUpdateConfiguration{}
+				decodeRolloutConfig = &leaderworkersetv1.RollingUpdateConfiguration{}
 				if tc.decodeSurge != nil {
 					decodeRolloutConfig.MaxSurge = intVal(*tc.decodeSurge)
 				}
@@ -649,18 +649,18 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(int32(3)),
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
 							RollingUpdateConfiguration: prefillRolloutConfig,
 						},
 					}},
 				},
 				{
 					Name: testRoleDecode,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(int32(2)),
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
 							RollingUpdateConfiguration: decodeRolloutConfig,
 						},
 					}},
@@ -752,10 +752,10 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(tc.prefillReplicas),
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
-							RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
+							RollingUpdateConfiguration: &leaderworkersetv1.RollingUpdateConfiguration{
 								MaxSurge:       strVal(tc.prefillSurge),
 								MaxUnavailable: strVal(tc.prefillUnavail),
 							},
@@ -764,10 +764,10 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 				},
 				{
 					Name: testRoleDecode,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(tc.decodeReplicas),
-						RolloutStrategy: leaderworkerset.RolloutStrategy{
-							RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						RolloutStrategy: leaderworkersetv1.RolloutStrategy{
+							RollingUpdateConfiguration: &leaderworkersetv1.RollingUpdateConfiguration{
 								MaxSurge:       strVal(tc.decodeSurge),
 								MaxUnavailable: strVal(tc.decodeUnavail),
 							},
@@ -876,7 +876,7 @@ func TestScaleDownOld(t *testing.T) {
 						Replica(int(workload.decode)).StatusReplicas(workload.decode).ReadyReplicas(workload.decode).CreationTimestamp(creationTime).Obj())
 				grouped = append(grouped, disaggregatedsetutils.RevisionRoles{
 					Revision: workload.revision,
-					Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 						testRolePrefill: makeLWS(withReplicas(int(workload.prefill)), withCreationTimestamp(creationTime)),
 						testRoleDecode:  makeLWS(withReplicas(int(workload.decode)), withCreationTimestamp(creationTime)),
 					},
@@ -884,7 +884,7 @@ func TestScaleDownOld(t *testing.T) {
 			}
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
-				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
+				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
 			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
@@ -971,7 +971,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			grouped := disaggregatedsetutils.RevisionRolesList{
 				{
 					Revision: "oldhash",
-					Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+					Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 						"prefill": makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
 						"decode":  makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
 						// Note: encode is NOT in this map
@@ -980,7 +980,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			}
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
-				WithObjects(objects...).WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).Build()
+				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
 			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
@@ -1041,7 +1041,7 @@ func TestScaleUpNew(t *testing.T) {
 					buildTestLWS("test-newhash-decode", namespace, testRoleDecode, "newhash").
 						Replica(int(tc.initDecode)).StatusReplicas(tc.initDecode).ReadyReplicas(tc.initDecode).CreationTimestamp(baseTime).Obj(),
 				).
-				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
+				WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).
 				Build()
 
 			executor := newTestExecutor(fakeClient)
@@ -1052,7 +1052,7 @@ func TestScaleUpNew(t *testing.T) {
 
 			newRevision := disaggregatedsetutils.RevisionRoles{
 				Revision: "newhash",
-				Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 					testRolePrefill: makeLWS(withReplicas(tc.workloadPrefill)),
 					testRoleDecode:  makeLWS(withReplicas(tc.workloadDecode)),
 				},
@@ -1093,7 +1093,7 @@ func TestEnsureNewLWSExists(t *testing.T) {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).
-				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
+				WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).
 				Build()
 
 			executor := newTestExecutor(fakeClient)
@@ -1101,9 +1101,9 @@ func TestEnsureNewLWSExists(t *testing.T) {
 			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
 				{
 					Name: testRolePrefill,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(int32(4)),
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 							Size:           ptr.To(int32(1)),
 							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
 						},
@@ -1111,9 +1111,9 @@ func TestEnsureNewLWSExists(t *testing.T) {
 				},
 				{
 					Name: testRoleDecode,
-					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 						Replicas: ptr.To(int32(4)),
-						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 							Size:           ptr.To(int32(1)),
 							WorkerTemplate: corev1.PodTemplateSpec{Spec: podSpec},
 						},
@@ -1192,12 +1192,12 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).
-				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
+				WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).
 				Build()
 			executor := newTestExecutor(fakeClient)
 			roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
-				{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
-				{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
+				{Name: testRolePrefill, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
+				{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
 			}
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
@@ -1205,18 +1205,18 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 			}
 
 			oldRevisions := disaggregatedsetutils.RevisionRolesList{
-				{Revision: "hashA", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				{Revision: "hashA", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 					testRolePrefill: makeLWS(withReplicas(int(tc.aPrefill)), withReadyReplicas(int(tc.aPrefill)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime)),
 					testRoleDecode: makeLWS(withReplicas(int(tc.aDecode)), withReadyReplicas(int(tc.aDecode)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime))}},
-				{Revision: "hashB", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+				{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 					testRolePrefill: makeLWS(withReplicas(int(tc.bPrefill)), withReadyReplicas(int(tc.bPrefill)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime)),
 					testRoleDecode: makeLWS(withReplicas(int(tc.bDecode)), withReadyReplicas(int(tc.bDecode)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime))}},
 			}
-			newRevision := disaggregatedsetutils.RevisionRoles{Revision: "hashC", Roles: map[string]*leaderworkerset.LeaderWorkerSet{
+			newRevision := disaggregatedsetutils.RevisionRoles{Revision: "hashC", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 				testRolePrefill: makeLWS(withReplicas(int(tc.cPrefill)), withReadyReplicas(int(tc.cPrefill))),
 				testRoleDecode:  makeLWS(withReplicas(int(tc.cDecode)), withReadyReplicas(int(tc.cDecode)))}}
 

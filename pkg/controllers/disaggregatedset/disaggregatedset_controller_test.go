@@ -28,7 +28,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	controller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
@@ -44,7 +44,7 @@ const (
 
 // createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing LWS with the given revision.
 // Useful for simulating pre-existing LWS objects in rolling update tests.
-func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas int32) *leaderworkerset.LeaderWorkerSet {
+func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas int32) *leaderworkersetv1.LeaderWorkerSet {
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
 		disaggregatedsetv1.RoleLabelKey:     role,
@@ -77,7 +77,7 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 		Obj()
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
-		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:         fakeClient,
 		Scheme:         scheme,
@@ -115,7 +115,7 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	decodeRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
-		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkerset.LeaderWorkerSet{}).Build()
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:         fakeClient,
 		Scheme:         scheme,
