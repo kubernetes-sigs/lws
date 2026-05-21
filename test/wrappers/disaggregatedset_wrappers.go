@@ -15,8 +15,6 @@ limitations under the License.
 package wrappers
 
 import (
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,54 +92,6 @@ func (w *DisaggregatedSetWrapper) WithRollout(role string, surge, unavail intstr
 		}
 	}
 	return w
-}
-
-// --- LWS builder for disaggregatedset tests ---
-
-func BuildDisaggregatedSetLWS(name, namespace, role, revision string) *LeaderWorkerSetWrapper {
-	return &LeaderWorkerSetWrapper{
-		LeaderWorkerSet: leaderworkerset.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels: map[string]string{
-					disaggregatedsetv1.RoleLabelKey:     role,
-					disaggregatedsetv1.SetNameLabelKey:  name,
-					disaggregatedsetv1.RevisionLabelKey: revision,
-				},
-			},
-		},
-	}
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) Namespace(ns string) *LeaderWorkerSetWrapper {
-	lwsWrapper.ObjectMeta.Namespace = ns
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) Labels(labels map[string]string) *LeaderWorkerSetWrapper {
-	lwsWrapper.ObjectMeta.Labels = labels
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) StatusReplicas(n int32) *LeaderWorkerSetWrapper {
-	lwsWrapper.Status.Replicas = n
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) ReadyReplicas(n int32) *LeaderWorkerSetWrapper {
-	lwsWrapper.Status.ReadyReplicas = n
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) CreationTimestamp(t time.Time) *LeaderWorkerSetWrapper {
-	lwsWrapper.ObjectMeta.CreationTimestamp = metav1.Time{Time: t}
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) OwnerReference(ref metav1.OwnerReference) *LeaderWorkerSetWrapper {
-	lwsWrapper.ObjectMeta.OwnerReferences = []metav1.OwnerReference{ref}
-	return lwsWrapper
 }
 
 // --- Role spec builder ---

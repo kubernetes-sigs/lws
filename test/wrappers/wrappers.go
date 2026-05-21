@@ -17,6 +17,7 @@ package wrappers
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -176,6 +177,36 @@ func (lwsWrapper *LeaderWorkerSetWrapper) PersistentVolumeClaimRetentionPolicy(p
 func (b *LeaderWorkerSetWrapper) Generation(generation int64) *LeaderWorkerSetWrapper {
 	b.LeaderWorkerSet.Generation = generation
 	return b
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) Namespace(ns string) *LeaderWorkerSetWrapper {
+	lwsWrapper.ObjectMeta.Namespace = ns
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) Labels(labels map[string]string) *LeaderWorkerSetWrapper {
+	lwsWrapper.ObjectMeta.Labels = labels
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) StatusReplicas(n int32) *LeaderWorkerSetWrapper {
+	lwsWrapper.Status.Replicas = n
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) ReadyReplicas(n int32) *LeaderWorkerSetWrapper {
+	lwsWrapper.Status.ReadyReplicas = n
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) CreationTimestamp(t time.Time) *LeaderWorkerSetWrapper {
+	lwsWrapper.ObjectMeta.CreationTimestamp = metav1.Time{Time: t}
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) OwnerReference(ref metav1.OwnerReference) *LeaderWorkerSetWrapper {
+	lwsWrapper.ObjectMeta.OwnerReferences = []metav1.OwnerReference{ref}
+	return lwsWrapper
 }
 
 func BuildBasicLeaderWorkerSet(name, ns string) *LeaderWorkerSetWrapper {

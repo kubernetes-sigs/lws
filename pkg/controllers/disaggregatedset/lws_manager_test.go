@@ -33,24 +33,18 @@ import (
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
-// createTestLWSWithAnnotation creates a LeaderWorkerSet for testing with optional annotations.
-//
-//nolint:unparam // namespace is always "default" in tests but kept for clarity
-func createTestLWSWithAnnotation(
-	name, namespace string,
-	replicas int32,
-	annotations map[string]string,
-) *leaderworkerset.LeaderWorkerSet {
-	lws := wrappers.BuildDisaggregatedSetLWS(name, namespace, "prefill", "abc123").
-		Labels(map[string]string{
-			disaggregatedsetv1.SetNameLabelKey:  "test-deployment",
-			disaggregatedsetv1.RoleLabelKey:     "prefill",
-			disaggregatedsetv1.RevisionLabelKey: "abc123",
-		}).
+var managerTestLabels = map[string]string{
+	disaggregatedsetv1.SetNameLabelKey:  "test-deployment",
+	disaggregatedsetv1.RoleLabelKey:     "prefill",
+	disaggregatedsetv1.RevisionLabelKey: "abc123",
+}
+
+func buildManagerTestLWS(name, namespace string, replicas int32, annotations map[string]string) *leaderworkerset.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet(name, namespace).
+		Labels(managerTestLabels).
 		Replica(int(replicas)).
 		Annotation(annotations).
 		Obj()
-	return lws
 }
 
 // TestParseInitialReplicasAnnotation tests the parseInitialReplicasAnnotation function.
@@ -155,7 +149,7 @@ func TestManagerGetInitialReplicas(t *testing.T) {
 	}{
 		{
 			name: "returns nil when annotation not set",
-			existingLWS: createTestLWSWithAnnotation(
+			existingLWS: buildManagerTestLWS(
 				"test-lws", "default", 3, nil,
 			),
 			expectError:   false,
@@ -163,7 +157,7 @@ func TestManagerGetInitialReplicas(t *testing.T) {
 		},
 		{
 			name: "returns value when annotation is set",
-			existingLWS: createTestLWSWithAnnotation(
+			existingLWS: buildManagerTestLWS(
 				"test-lws", "default", 3,
 				map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 			),
@@ -214,7 +208,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("returns existing value without modifying when annotation exists", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
@@ -232,7 +226,7 @@ func TestManagerGetOrSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets and returns default value when annotation missing", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3, nil,
 		)
 
@@ -266,7 +260,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("updates annotation when value differs", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
@@ -283,7 +277,7 @@ func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
 	})
 
 	t.Run("skips update when annotation already has correct value", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
@@ -317,7 +311,7 @@ func TestManagerDelete(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -348,7 +342,7 @@ func TestManagerScale(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("skips patch when already at desired scale", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation("test-lws", "default", 5, nil)
+		existingLWS := buildManagerTestLWS("test-lws", "default", 5, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -362,7 +356,7 @@ func TestManagerScale(t *testing.T) {
 	})
 
 	t.Run("scales to new replica count", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -393,7 +387,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	require.NoError(t, leaderworkerset.AddToScheme(scheme))
 
 	t.Run("skips update when value already correct", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
@@ -412,7 +406,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("updates when overwriting different value", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation(
+		existingLWS := buildManagerTestLWS(
 			"test-lws", "default", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
@@ -431,7 +425,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets annotation when not present", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation("test-lws", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-lws", "default", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -464,7 +458,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := createTestLWSWithAnnotation("test-deploy-abc123-prefill", "default", 3, nil)
+		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", "default", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).

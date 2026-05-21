@@ -79,37 +79,13 @@ func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 	}
 }
 
-// createTestLWS creates a LeaderWorkerSet for testing.
-func createTestLWS(
-	name, namespace, role, revision string,
-	replicas, readyReplicas int32,
-	creationTime time.Time,
-) *leaderworkerset.LeaderWorkerSet {
-	return wrappers.BuildDisaggregatedSetLWS(name, namespace, role, revision).
+func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorkerSetWrapper {
+	return wrappers.BuildBasicLeaderWorkerSet(name, namespace).
 		Labels(map[string]string{
 			disaggregatedsetv1.RoleLabelKey:     role,
 			disaggregatedsetv1.SetNameLabelKey:  "test",
 			disaggregatedsetv1.RevisionLabelKey: revision,
-		}).
-		Replica(int(replicas)).
-		StatusReplicas(replicas).
-		ReadyReplicas(readyReplicas).
-		CreationTimestamp(creationTime).
-		Obj()
-}
-
-// createTestLWSWithAnnotations creates a LeaderWorkerSet with custom annotations.
-//
-//nolint:unparam // namespace is always "default" in tests but kept for clarity
-func createTestLWSWithAnnotations(
-	name, namespace, role, revision string,
-	replicas, readyReplicas int32,
-	creationTime time.Time,
-	annotations map[string]string,
-) *leaderworkerset.LeaderWorkerSet {
-	lws := createTestLWS(name, namespace, role, revision, replicas, readyReplicas, creationTime)
-	lws.Annotations = annotations
-	return lws
+		})
 }
 
 // getTestLWSReplicas is a helper to get the current replica count from a LWS.
@@ -175,9 +151,7 @@ func createLWSForTest(
 	podSpec corev1.PodSpec,
 	ownerRef metav1.OwnerReference,
 ) client.Object {
-	role := labels[disaggregatedsetv1.RoleLabelKey]
-	revision := labels[disaggregatedsetv1.RevisionLabelKey]
-	return wrappers.BuildDisaggregatedSetLWS(name, "default", role, revision).
+	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
 		Labels(labels).
 		Replica(int(specReplicas)).
 		StatusReplicas(specReplicas).
@@ -896,12 +870,10 @@ func TestScaleDownOld(t *testing.T) {
 				creationTime := baseTime.Add(time.Duration(workload.ageHours) * time.Hour)
 				baseName := fmt.Sprintf("test-%s", workload.revision)
 				objects = append(objects,
-					createTestLWS(
-						baseName+"-prefill", testNamespace, testRolePrefill, workload.revision,
-						workload.prefill, workload.prefill, creationTime),
-					createTestLWS(
-						baseName+"-decode", testNamespace, testRoleDecode, workload.revision,
-						workload.decode, workload.decode, creationTime))
+					buildTestLWS(baseName+"-prefill", testNamespace, testRolePrefill, workload.revision).
+						Replica(int(workload.prefill)).StatusReplicas(workload.prefill).ReadyReplicas(workload.prefill).CreationTimestamp(creationTime).Obj(),
+					buildTestLWS(baseName+"-decode", testNamespace, testRoleDecode, workload.revision).
+						Replica(int(workload.decode)).StatusReplicas(workload.decode).ReadyReplicas(workload.decode).CreationTimestamp(creationTime).Obj())
 				grouped = append(grouped, disaggregatedsetutils.RevisionRoles{
 					Revision: workload.revision,
 					Roles: map[string]*leaderworkerset.LeaderWorkerSet{
@@ -988,10 +960,10 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create old workload with only prefill and decode roles (no encode)
 			objects := []client.Object{
-				createTestLWS("test-oldhash-prefill", testNamespace, "prefill", "oldhash",
-					4, 4, baseTime),
-				createTestLWS("test-oldhash-decode", testNamespace, "decode", "oldhash",
-					4, 4, baseTime),
+				buildTestLWS("test-oldhash-prefill", testNamespace, "prefill", "oldhash").
+					Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
+				buildTestLWS("test-oldhash-decode", testNamespace, "decode", "oldhash").
+					Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
 				// Note: NO encode LWS exists in old workload
 			}
 
@@ -1064,8 +1036,10 @@ func TestScaleUpNew(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(
-					createTestLWS("test-newhash-prefill", namespace, testRolePrefill, "newhash", tc.initPrefill, tc.initPrefill, baseTime),
-					createTestLWS("test-newhash-decode", namespace, testRoleDecode, "newhash", tc.initDecode, tc.initDecode, baseTime),
+					buildTestLWS("test-newhash-prefill", namespace, testRolePrefill, "newhash").
+						Replica(int(tc.initPrefill)).StatusReplicas(tc.initPrefill).ReadyReplicas(tc.initPrefill).CreationTimestamp(baseTime).Obj(),
+					buildTestLWS("test-newhash-decode", namespace, testRoleDecode, "newhash").
+						Replica(int(tc.initDecode)).StatusReplicas(tc.initDecode).ReadyReplicas(tc.initDecode).CreationTimestamp(baseTime).Obj(),
 				).
 				WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}).
 				Build()
@@ -1114,9 +1088,8 @@ func TestEnsureNewLWSExists(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var objects []client.Object
 			if tc.existingReplicas >= 0 {
-				objects = append(objects, createTestLWS(
-					"test-newhash-prefill", testNamespace, testRolePrefill, "newhash",
-					tc.existingReplicas, tc.existingReplicas, time.Now()))
+				objects = append(objects, buildTestLWS("test-newhash-prefill", testNamespace, testRolePrefill, "newhash").
+					Replica(int(tc.existingReplicas)).StatusReplicas(tc.existingReplicas).ReadyReplicas(tc.existingReplicas).CreationTimestamp(time.Now()).Obj())
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).
@@ -1200,28 +1173,22 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 			var objects []client.Object
 			if tc.aPrefill > 0 || tc.aDecode > 0 {
 				objects = append(objects,
-					createTestLWSWithAnnotations(
-						"test-hashA-prefill", testNamespace, testRolePrefill, "hashA",
-						tc.aPrefill, tc.aPrefill, baseTime, initAnnot),
-					createTestLWSWithAnnotations(
-						"test-hashA-decode", testNamespace, testRoleDecode, "hashA",
-						tc.aDecode, tc.aDecode, baseTime, initAnnot))
+					buildTestLWS("test-hashA-prefill", testNamespace, testRolePrefill, "hashA").
+						Replica(int(tc.aPrefill)).StatusReplicas(tc.aPrefill).ReadyReplicas(tc.aPrefill).CreationTimestamp(baseTime).Annotation(initAnnot).Obj(),
+					buildTestLWS("test-hashA-decode", testNamespace, testRoleDecode, "hashA").
+						Replica(int(tc.aDecode)).StatusReplicas(tc.aDecode).ReadyReplicas(tc.aDecode).CreationTimestamp(baseTime).Annotation(initAnnot).Obj())
 			}
 			bTime := baseTime.Add(1 * time.Hour)
 			cTime := baseTime.Add(2 * time.Hour)
 			objects = append(objects,
-				createTestLWSWithAnnotations(
-					"test-hashB-prefill", testNamespace, testRolePrefill, "hashB",
-					tc.bPrefill, tc.bPrefill, bTime, initAnnot),
-				createTestLWSWithAnnotations(
-					"test-hashB-decode", testNamespace, testRoleDecode, "hashB",
-					tc.bDecode, tc.bDecode, bTime, initAnnot),
-				createTestLWS(
-					"test-hashC-prefill", testNamespace, testRolePrefill, "hashC",
-					tc.cPrefill, tc.cPrefill, cTime),
-				createTestLWS(
-					"test-hashC-decode", testNamespace, testRoleDecode, "hashC",
-					tc.cDecode, tc.cDecode, cTime))
+				buildTestLWS("test-hashB-prefill", testNamespace, testRolePrefill, "hashB").
+					Replica(int(tc.bPrefill)).StatusReplicas(tc.bPrefill).ReadyReplicas(tc.bPrefill).CreationTimestamp(bTime).Annotation(initAnnot).Obj(),
+				buildTestLWS("test-hashB-decode", testNamespace, testRoleDecode, "hashB").
+					Replica(int(tc.bDecode)).StatusReplicas(tc.bDecode).ReadyReplicas(tc.bDecode).CreationTimestamp(bTime).Annotation(initAnnot).Obj(),
+				buildTestLWS("test-hashC-prefill", testNamespace, testRolePrefill, "hashC").
+					Replica(int(tc.cPrefill)).StatusReplicas(tc.cPrefill).ReadyReplicas(tc.cPrefill).CreationTimestamp(cTime).Obj(),
+				buildTestLWS("test-hashC-decode", testNamespace, testRoleDecode, "hashC").
+					Replica(int(tc.cDecode)).StatusReplicas(tc.cDecode).ReadyReplicas(tc.cDecode).CreationTimestamp(cTime).Obj())
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).

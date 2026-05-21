@@ -44,7 +44,7 @@ func TestServiceManager(t *testing.T) {
 	scheme := testSchemeForUnit()
 
 	t.Run("no service created when only one role is ready", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -71,7 +71,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("services created when both roles have >= 1 ready replica", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -107,7 +107,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("service is headless with clusterIP None", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -137,7 +137,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("service is portless with no ports defined", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -167,7 +167,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("service name uses prv prefix", func(t *testing.T) {
-		deployment := createTestDeployment("my-app", "default")
+		deployment := wrappers.BuildDisaggregatedSet("my-app", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -199,7 +199,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("standard labels are applied", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -231,7 +231,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("selector matches pod labels for role and revision", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
@@ -263,7 +263,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("old services deleted when revision is drained", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		// Create an old service
 		oldService := &corev1.Service{
@@ -316,7 +316,7 @@ func TestServiceManager(t *testing.T) {
 	})
 
 	t.Run("no flip-flop when multiple revisions are ready during rolling update", func(t *testing.T) {
-		deployment := createTestDeployment("test-deploy", "default")
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		// Create services for old revision (simulating existing state)
 		oldPrefillService := &corev1.Service{
@@ -458,15 +458,4 @@ func TestGenerateServiceName(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-// createTestDeployment creates a test deployment without ServiceTemplate
-//
-//nolint:unparam // namespace is always "default" in tests but kept for clarity
-func createTestDeployment(name, namespace string) *disaggregatedsetv1.DisaggregatedSet {
-	return wrappers.BuildDisaggregatedSet(name, namespace).
-		UID("test-uid").
-		WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
-		WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").
-		Obj()
 }

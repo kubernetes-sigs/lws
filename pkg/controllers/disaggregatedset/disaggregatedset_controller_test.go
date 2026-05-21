@@ -51,7 +51,7 @@ func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggregated
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
-	return wrappers.BuildDisaggregatedSetLWS(disaggregatedSet.Name+"-"+revision+"-"+role, disaggregatedSet.Namespace, role, revision).
+	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedSet.Name+"-"+revision+"-"+role, disaggregatedSet.Namespace).
 		Labels(labels).
 		Replica(int(replicas)).
 		Size(1).
