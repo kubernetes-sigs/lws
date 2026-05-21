@@ -351,6 +351,7 @@ func ComputeNextStep(initialOld, currentOld, currentNew, targetNew RoleReplicaSt
 	return nil
 }
 
+// ComputeAllSteps simulates a full rollout by repeatedly calling ComputeNextStep. Used in tests to validate the complete rollout sequence.
 func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
 	numRoles := len(initialOld)
 
