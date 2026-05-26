@@ -242,9 +242,9 @@ Each row is one checkpoint — the full `(newP, newD, oldP, oldD)` tuple the pla
 **Execute the trajectory.** At the start of each iteration the planner
 recomputes two aggregated step indices from the current observed state:
 
-- <u>**`minStep`**</u> = `min` over per-role `stepIndex(currentNew, target)` — used to
+- `minStep` = `min` over per-role `stepIndex(currentNew, target)` — used to
   pick the scale-up target. It targets `minStep + 1`'s `newAtStep` values.
-- <u>**`maxStep`**</u> = `max` over per-role `stepIndex(removed, source)` (where
+- `maxStep` = `max` over per-role `stepIndex(removed, source)` (where
   `removed = source - currentOld`) — used to pick the drain target. It
   targets `maxStep + 1`'s `oldAtStep` values.
 
@@ -256,14 +256,13 @@ target) similarly bypasses step-index and zeroes the remaining old replicas.
 
 The `min/maxStep` column shows `minStep/maxStep` computed at the start of
 each iteration (from the previous row's end state); the order lines up with
-the `ATTEMPTED STATE` tuple `(newP, newD, oldP, oldD)` — <u>**`minStep`**</u>
-drives the <u>**new half**</u> (`newAtStep(minStep+1)` per role),
-<u>**`maxStep`**</u> drives the <u>**old half**</u> (`oldAtStep(maxStep+1)`).
-Scale-up advances the <u>**new half**</u> toward its target; prop-drain
-advances the <u>**old half**</u>; force-drain drains old to a surge-bounded
-off-trajectory value; iter 7's final-drain shortcut targets the all-zero
-<u>**old half**</u> directly (not derived from min/maxStep).
-<u>**Bold + underline**</u> marks active step indices (in `min/maxStep`),
+the `ATTEMPTED STATE` tuple `(newP, newD, oldP, oldD)` — `minStep` drives
+the new half (`newAtStep(minStep+1)` per role), `maxStep` drives the old
+half (`oldAtStep(maxStep+1)`). Scale-up advances the new half toward its
+target; prop-drain advances the old half; force-drain drains old to a
+surge-bounded off-trajectory value; iter 7's final-drain shortcut targets
+the all-zero old state directly (not derived from min/maxStep).
+**Bold + underline** marks active step indices (in `min/maxStep`),
 the half of the tuple being driven (in `ATTEMPTED STATE`), and changed
 values (in the per-role columns). The `scale/drain/force` column shows the
 planner's three-try sequence (`tryScaleUp` → `tryProportionalDrain` →
