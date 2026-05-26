@@ -205,7 +205,9 @@ iterations).
 
 6. **Stability Check**: The controller waits for `replicas == readyReplicas` before computing the next step.
 
-**Example 1: Two-Role Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1).
+### Example 1: Two-Role Rollout
+
+**(5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1)**
 
 This is a template-only change (replica counts unchanged), so every old
 replica must be replaced. We'll walk through three things: the
