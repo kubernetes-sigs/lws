@@ -16,6 +16,7 @@ workload primitive.
 - [Design Details](#design-details)
   - [DisaggregatedSet API](#disaggregatedset-api)
   - [N-Dimensional Rolling Update Algorithm](#n-dimensional-rolling-update-algorithm)
+  - [Example 1: Two-Role Rollout](#example-1-two-role-rollout)
   - [Service Orchestration](#service-orchestration)
   - [Controller Architecture](#controller-architecture)
   - [Test Plan](#test-plan)
