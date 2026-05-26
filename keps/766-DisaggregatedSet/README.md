@@ -165,6 +165,27 @@ newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
 oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source → 0
 ```
 
+Where, per role:
+
+```
+batchSize  = maxSurge   if maxSurge > 0, else max(1, maxUnavailable)
+roleSteps  = ceil(max(source, target) / batchSize)
+```
+
+And across all roles:
+
+```
+totalSteps = max(roleSteps over all roles)
+```
+
+Note: `totalSteps` counts *ideal scale-up batches* — how many batches the
+slowest role would need to go from 0 to target at its `batchSize` granularity.
+It is **not** the number of reconcile iterations. Because each iteration
+changes either old or new replicas (Property 1), and surge-blocked scale-ups
+may require intermediate drain iterations, the reconcile count is typically
+higher than `totalSteps` (see Example 1: `totalSteps = 3` but 7 reconcile
+iterations).
+
 **Key Properties**:
 
 1. **Decoupled Steps**: Each step changes EITHER old OR new replicas, not both. This simplifies reasoning about state transitions.
@@ -184,25 +205,68 @@ oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source �
 
 6. **Stability Check**: The controller waits for `replicas == readyReplicas` before computing the next step.
 
-**Example 1: Two-Role Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1):
+**Example 1: Two-Role Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1).
+
+This is a template-only change (replica counts unchanged), so every old
+replica must be replaced. We'll walk through three things: the
+discretization (`totalSteps`), the ideal trajectory it implies, and the
+actual reconcile iterations that realize it.
+
+**Compute `totalSteps`** from the per-role configuration:
 
 ```
-┌──────┬────────────┬─────────────┬────────────┬─────────────┬───────┬───────────────────────────────┐
-│ STEP │ OLD DECODE │ OLD PREFILL │ NEW DECODE │ NEW PREFILL │ TOTAL │            ACTION             │
-├──────┼────────────┼─────────────┼────────────┼─────────────┼───────┼───────────────────────────────┤
-│ 0    │ 2          │ 5           │ 0          │ 0           │ 7     │ initial                       │
-│ 1    │ 2          │ 5           │ 1          │ 2           │ 10    │ new decode +1, new prefill +2 │
-│ 2    │ 2          │ 4           │ 1          │ 2           │ 9     │ old prefill -1                │
-│ 3    │ 2          │ 3           │ 1          │ 2           │ 8     │ old prefill -1                │
-│ 4    │ 2          │ 3           │ 2          │ 4           │ 11    │ new decode +1, new prefill +2 │
-│ 5    │ 1          │ 2           │ 2          │ 4           │ 9     │ old decode -1, old prefill -1 │
-│ 6    │ 1          │ 2           │ 2          │ 5           │ 10    │ new prefill +1                │
-│ 7    │ 0          │ 0           │ 2          │ 5           │ 7     │ old decode -1, old prefill -2 │
-└──────┴────────────┴─────────────┴────────────┴─────────────┴───────┴───────────────────────────────┘
+batchSize  = 2                              // maxSurge > 0, so maxSurge wins
+roleSteps(decode)  = ceil(max(2, 2) / 2) = 1
+roleSteps(prefill) = ceil(max(5, 5) / 2) = 3
+totalSteps = max(1, 3) = 3
 ```
+
+The rollout will take **3 ideal scale-up batches**.
+
+**Derive the ideal trajectory** by evaluating the interpolation formulas at
+each `i` from 1 to `totalSteps`. For example, at `i=2`:
+`newAtStep(2)` for prefill = `ceil(2*5/3) = ceil(3.33) = 4`;
+`oldAtStep(2)` for prefill = `5 - floor(2*5/3) = 5 - 3 = 2`.
+
+```
+                    | i=0   i=1   i=2   i=3
+--------------------|-----------------------
+new decode  (→2)    |  0     1     2     2
+new prefill (→5)    |  0     2     4     5
+old decode  (→0)    |  2     2     1     0
+old prefill (→0)    |  5     4     2     0
+```
+
+These four rows are the checkpoints the executor walks through.
+
+**Execute the trajectory.** Each ideal step takes one or more reconcile
+iterations: iterations are decoupled (scale-up XOR scale-down — see
+Property 1) and surge can block a scale-up, requiring an intermediate
+force-drain. The `STEP` column shows which ideal step each iteration
+belongs to (`-` for force-drains, which are preparatory and don't land on
+a trajectory checkpoint):
+
+```
+┌───────────┬─────────────┬──────┬────────────┬─────────────┬────────────┬─────────────┬───────┬───────────────────────────────┐
+│ ITERATION │ TYPE        │ STEP │ OLD DECODE │ OLD PREFILL │ NEW DECODE │ NEW PREFILL │ TOTAL │            ACTION             │
+├───────────┼─────────────┼──────┼────────────┼─────────────┼────────────┼─────────────┼───────┼───────────────────────────────┤
+│ 0         │ initial     │ -    │ 2          │ 5           │ 0          │ 0           │ 7     │ initial                       │
+│ 1         │ scale up    │ 1    │ 2          │ 5           │ 1          │ 2           │ 10    │ new decode +1, new prefill +2 │
+│ 2         │ prop drain  │ 1    │ 2          │ 4           │ 1          │ 2           │ 9     │ old prefill -1                │
+│ 3         │ force drain │ -    │ 2          │ 3           │ 1          │ 2           │ 8     │ old prefill -1                │
+│ 4         │ scale up    │ 2    │ 2          │ 3           │ 2          │ 4           │ 11    │ new decode +1, new prefill +2 │
+│ 5         │ prop drain  │ 2    │ 1          │ 2           │ 2          │ 4           │ 9     │ old decode -1, old prefill -1 │
+│ 6         │ scale up    │ 3    │ 1          │ 2           │ 2          │ 5           │ 10    │ new prefill +1                │
+│ 7         │ final drain │ 3    │ 0          │ 0           │ 2          │ 5           │ 7     │ old decode -1, old prefill -2 │
+└───────────┴─────────────┴──────┴────────────┴─────────────┴────────────┴─────────────┴───────┴───────────────────────────────┘
+```
+
+Iterations 2, 5, and 7 land the system exactly on the `i=1,2,3` checkpoints
+from the trajectory table above. The result is **3 scale-up iterations**
+(one per ideal step) plus **4 drain iterations** = 7 total.
 
 Key observations:
-- Prefill progresses through more steps due to higher replica count
+- Prefill progresses through more ideal steps due to higher replica count
 - Decode only changes when proportionally appropriate
 - Total capacity is maintained throughout: `old + new` stays within surge limits per role
 
