@@ -1,5 +1,5 @@
 
-# KEP-NNN: Fail-Fast Restart Budget and Init-Phase DNS for LeaderWorkerSet
+# KEP-820: Fail-Fast Restart Budget and Init-Phase DNS for LeaderWorkerSet
 
 <!-- toc -->
 - [Summary](#summary)
@@ -122,10 +122,11 @@ API changes in this KEP:
 1. **Spec field additions (new user knobs)**:
    - `spec.leaderWorkerTemplate.maxGroupRestarts` (*int32, optional, minimum 0)
    - `spec.networkConfig.publishNotReadyAddresses` (bool, default false)
-2. **Status semantic extension**:
+2. **Validation constraint**: `maxGroupRestarts` is only valid when `restartPolicy` is `RecreateGroupOnPodRestart`. The validating webhook rejects any LWS with `maxGroupRestarts` set but a different restart policy.
+3. **Status semantic extension**:
    - no new status field is added;
    - `status.conditions[]` introduces a new condition type value: `Failed`.
-3. **Compatibility**:
+4. **Compatibility**:
    - CRD schema shape for `status.conditions` stays the same (`[]metav1.Condition`);
    - clients/controllers that switch on known condition types must handle unknown/new values safely.
 
@@ -155,23 +156,25 @@ const (
 
 ### Controller Behavior
 
-1. Restart reconcile path:
+1. **Webhook validation**:
+   before creating or updating an LWS, the validating webhook checks that `maxGroupRestarts` is only set when `restartPolicy: RecreateGroupOnPodRestart`. If `maxGroupRestarts` is set with a different restart policy, the webhook denies the request with a clear error message.
+2. Restart reconcile path:
    for `RecreateGroupOnPodRestart`, controller checks group restart budget before leader deletion.
-2. In `RecreateGroupOnPodRestart` path, before deleting leader pod:
+3. In `RecreateGroupOnPodRestart` path, before deleting leader pod:
    - read `group-restart-count` annotation;
    - if `count >= maxGroupRestarts`, stop recreation and mark replica failed;
    - otherwise increment annotation and continue current recreation flow.
-3. The counter is group-level, not init-only: any failure path that enters
+4. The counter is group-level, not init-only: any failure path that enters
    `RecreateGroupOnPodRestart` contributes to the same retry budget.
-4. Service reconcile sets:
+5. Service reconcile sets:
    `svc.Spec.PublishNotReadyAddresses = spec.networkConfig.publishNotReadyAddresses`.
-5. Counter persistence is annotation-based so controller restarts do not reset state.
+6. Counter persistence is annotation-based so controller restarts do not reset state.
 
 ### Status Semantics
 
 1. `maxGroupRestarts` unset: current behavior (unbounded recreation).
 2. `maxGroupRestarts: 0`: first group-level failure becomes terminal.
-3. `maxGroupRestarts` is effective only for `restartPolicy: RecreateGroupOnPodRestart`.
+3. `maxGroupRestarts` requires `restartPolicy: RecreateGroupOnPodRestart` (enforced by webhook).
 4. Any replica exceeding limit sets LWS condition `Failed=True`
    with reason `MaxGroupRestartsExceeded`.
 5. Failed replica is excluded from available-ready accounting.
