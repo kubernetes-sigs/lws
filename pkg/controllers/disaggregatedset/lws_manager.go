@@ -200,6 +200,10 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 	return *leaderWorkerSet.Spec.Replicas
 }
 
+// GetRevisionRolesList fetches all LWS for a DisaggregatedSet, splits them into
+// old (non-target) and new (target revision), and groups each set by revision.
+// Returns: (oldRevisions, newRevision, error). newRevision is nil if no LWS
+// exist for the target revision yet.
 func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	namespace, disaggDeploymentName, revision string,
@@ -222,6 +226,9 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWS)
 	newGrouped := disaggregatedsetutils.GroupByRevision(newLWS)
 
+	// The target revision should have at most one RevisionRoles entry (one LWS
+	// per role grouped together). Take index 0 since GroupByRevision returns
+	// one entry per unique revision hash, and all newLWS share the same revision.
 	var newRevision *disaggregatedsetutils.RevisionRoles
 	if len(newGrouped) > 0 {
 		newRevision = &newGrouped[0]
