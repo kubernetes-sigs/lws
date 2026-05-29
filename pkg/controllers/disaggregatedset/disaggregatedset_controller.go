@@ -143,14 +143,6 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 		}
 	}
 
-	// cleanupOldLWS deletes individual LWS objects that have 0 replicas and
-	// belong to a non-current revision. Unlike cleanupDrainedLWS (which
-	// requires ALL roles of a revision to be at 0 before deleting), this
-	// handles the simple path where each role is cleaned up independently.
-	if err := r.cleanupOldLWS(ctx, disaggregatedSet, revision); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	return ctrl.Result{}, nil
 }
 
@@ -190,36 +182,6 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		log.Info("Scaling LWS", "role", role, "name", lwsName, "from", existingReplicas, "to", desiredReplicas)
 		if err := r.LWSManager.Scale(ctx, disaggregatedSet.Namespace, lwsName, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale LWS %s: %w", lwsName, err)
-		}
-	}
-
-	return nil
-}
-
-// cleanupOldLWS deletes individual LWS objects from non-current revisions that
-// have been scaled to 0 replicas. Used in the simple reconcile path where each
-// role is managed independently (no coordinated drain across roles).
-func (r *DisaggregatedSetReconciler) cleanupOldLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
-	log := logf.FromContext(ctx)
-
-	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
-	for _, roleName := range roleNames {
-		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, roleName)
-		if err != nil {
-			return fmt.Errorf("failed to list LWS for cleanup: %w", err)
-		}
-		for _, lws := range lwsList {
-			lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
-			lwsReplicas := int32(0)
-			if lws.Spec.Replicas != nil {
-				lwsReplicas = *lws.Spec.Replicas
-			}
-			if lwsRevision != revision && lwsReplicas == 0 {
-				log.Info("Deleting old LWS", "name", lws.Name)
-				if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
-					return fmt.Errorf("failed to delete old LWS %s: %w", lws.Name, err)
-				}
-			}
 		}
 	}
 
