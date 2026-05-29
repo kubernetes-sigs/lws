@@ -68,7 +68,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Reconcile proceeds in four steps:
 	// 1. Compute the target revision from the current spec.
 	// 2. Clean up fully-drained old revisions (all roles at 0 replicas).
-	// 3. Reconcile workloads — either a rolling update (if old revisions with
+	// 3. Reconcile LWS objects — either a rolling update (if old revisions with
 	//    replicas exist) or a simple create/scale to the target revision.
 	// 4. Reconcile services so that ready revisions get headless services.
 
@@ -82,7 +82,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Step 3: Reconcile workloads.
+	// Step 3: Reconcile LWS objects.
 	executor := r.createRollingUpdateExecutor()
 
 	oldRevisions, _, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
