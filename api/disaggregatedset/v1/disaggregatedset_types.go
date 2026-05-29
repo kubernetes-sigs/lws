@@ -23,12 +23,15 @@ import (
 
 const (
 	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	SetNameLabelKey string = "disaggregatedset.x-k8s.io/name"
 
-	// RoleLabelKey records which role the resource belongs to.
+	// RoleLabelKey records which role the resource belongs to (e.g. "prefill", "decode").
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
 
 	// RevisionLabelKey records the revision hash for the resource.
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
 
 	// InitialReplicasAnnotationKey stores the initial replica count at rollout start.
