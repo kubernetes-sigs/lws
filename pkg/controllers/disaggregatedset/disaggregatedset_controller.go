@@ -65,12 +65,24 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
+	// Reconcile proceeds in four steps:
+	// 1. Compute the target revision from the current spec.
+	// 2. Clean up fully-drained old revisions (all roles at 0 replicas).
+	// 3. Reconcile workloads — either a rolling update (if old revisions with
+	//    replicas exist) or a simple create/scale to the target revision.
+	// 4. Reconcile services so that ready revisions get headless services.
+
+	// Step 1: Compute the target revision hash from the spec's role templates.
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
+	// Step 2: Delete LWS objects for old revisions where every role has been
+	// drained to 0 replicas. This runs before the rolling update so that
+	// completed drains are finalized promptly.
 	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// Step 3: Reconcile workloads.
 	executor := r.createRollingUpdateExecutor()
 
 	oldRevisions, _, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
@@ -84,6 +96,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	for _, roleName := range roleNames {
 		totalOldReplicas += oldRevisions.GetTotalReplicasPerRole(roleName)
 	}
+	// If old revisions exist with running replicas, a rolling update is in
+	// progress or needs to start. Otherwise, reconcileSimple creates/scales
+	// LWS objects directly for the target revision (steady-state path).
 	if len(oldRevisions) > 0 && totalOldReplicas > 0 {
 		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, revision)
 		if err != nil {
@@ -96,6 +111,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	// Step 4: Reconcile headless services for revisions that are ready on all roles.
 	allLWS, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, "")
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list LWS for service reconciliation: %w", err)
@@ -127,6 +143,10 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 		}
 	}
 
+	// cleanupOldLWS deletes individual LWS objects that have 0 replicas and
+	// belong to a non-current revision. Unlike cleanupDrainedLWS (which
+	// requires ALL roles of a revision to be at 0 before deleting), this
+	// handles the simple path where each role is cleaned up independently.
 	if err := r.cleanupOldLWS(ctx, disaggregatedSet, revision); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -176,6 +196,9 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	return nil
 }
 
+// cleanupOldLWS deletes individual LWS objects from non-current revisions that
+// have been scaled to 0 replicas. Used in the simple reconcile path where each
+// role is managed independently (no coordinated drain across roles).
 func (r *DisaggregatedSetReconciler) cleanupOldLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
@@ -203,6 +226,10 @@ func (r *DisaggregatedSetReconciler) cleanupOldLWS(ctx context.Context, disaggre
 	return nil
 }
 
+// cleanupDrainedLWS deletes all LWS objects for old revisions where every role
+// has been drained to 0 replicas. This ensures coordinated cleanup: we only
+// delete a revision's LWS objects when ALL roles (prefill, decode, etc.) have
+// finished draining, preventing partial teardown during rolling updates.
 func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, revision string) error {
 	log := logf.FromContext(ctx)
 
@@ -211,6 +238,8 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 		return fmt.Errorf("failed to list LWS for cleanup: %w", err)
 	}
 
+	// revisionReplicas maps revision -> role -> replica count.
+	// Used to check if all roles of a revision have been drained to 0.
 	revisionReplicas := make(map[string]map[string]int)
 	for _, lws := range lwsList {
 		lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
@@ -221,6 +250,10 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 			revisionReplicas[lwsRevision] = make(map[string]int)
 		}
 		lwsRole := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if _, exists := revisionReplicas[lwsRevision][lwsRole]; exists {
+			log.Info("WARNING: multiple LWS found for same role and revision",
+				"role", lwsRole, "revision", lwsRevision, "lws", lws.Name)
+		}
 		lwsReplicas := 0
 		if lws.Spec.Replicas != nil {
 			lwsReplicas = int(*lws.Spec.Replicas)
