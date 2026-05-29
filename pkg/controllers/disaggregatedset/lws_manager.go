@@ -101,6 +101,8 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 		return fmt.Errorf("failed to create LeaderWorkerSet %s: %w", lwsName, err)
 	}
 
+	log := logf.FromContext(ctx)
+	log.Info("Created LWS", "name", lwsName, "role", params.Role, "revision", params.Revision, "replicas", params.Replicas)
 	return nil
 }
 

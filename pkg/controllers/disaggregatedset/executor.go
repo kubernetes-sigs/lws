@@ -36,7 +36,6 @@ import (
 const (
 	EventReasonRollingUpdateStarted   = "RollingUpdateStarted"
 	EventReasonRollingUpdateCompleted = "RollingUpdateCompleted"
-	EventReasonLWSCreated             = "LWSCreated"
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonLWSDeleted             = "LWSDeleted"
@@ -48,6 +47,12 @@ type RollingUpdateExecutor struct {
 	LWSManager *LeaderWorkerSetManager
 }
 
+// ReconcileRollingUpdateNew is the entry point for rolling update reconciliation.
+// It fetches current cluster state and either:
+//  1. Starts a new rolling update (initRollingUpdate) if no LWS for the target
+//     revision exist yet, or
+//  2. Continues an in-progress rolling update (ReconcileRollingUpdate) by
+//     computing and executing the next scale step.
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
@@ -90,6 +95,9 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
 		"Update", "Started rolling update to revision %s", revision)
 
+	// Snapshot each old LWS's current replica count as the initial-replicas
+	// annotation. The planner uses this as the baseline for proportional drain
+	// calculations, since Spec.Replicas changes as the rollout progresses.
 	for _, oldGrouped := range oldRevisions {
 		for roleName, roleLWS := range oldGrouped.Roles {
 			lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
@@ -103,22 +111,22 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 		}
 	}
 
+	// Create new LWS objects (one per role) for the target revision with 0
+	// replicas. The next reconcile loop will start scaling them up.
 	for _, roleName := range roleNames {
-		created, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, revision, roleName, roleConfigs[roleName], 0)
-		if err != nil {
+		if _, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, revision, roleName, roleConfigs[roleName], 0); err != nil {
 			return ctrl.Result{}, err
-		}
-		if created {
-			lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, revision)
-			log.Info("Created new LWS", "role", roleName, "revision", revision)
-			executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonLWSCreated,
-				"Create", "Created %s LWS %s", roleName, lwsName)
 		}
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
+// ReconcileRollingUpdate executes one step of an in-progress rolling update:
+//  1. Wait for the new revision to stabilize (all roles have ReadyReplicas == Replicas).
+//  2. Compute the next scale step using the planner.
+//  3. Scale up new revision LWS objects.
+//  4. Scale down old revision LWS objects (newest-first, with coordinated drain).
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
@@ -131,6 +139,9 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
 
+	// A revision is "stable" when every role's LWS has ReadyReplicas == Replicas,
+	// meaning all pods from the previous scale step are Running and Ready.
+	// We wait for stability before computing the next step to avoid over-scaling.
 	if !isRevisionStable(newRevision, specRoleNames) {
 		log.V(1).Info("Waiting for new revision to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
