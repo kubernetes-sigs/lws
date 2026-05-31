@@ -21,6 +21,23 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
+const (
+	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
+	SetNameLabelKey string = "disaggregatedset.x-k8s.io/name"
+
+	// RoleLabelKey records which role the resource belongs to (e.g. "prefill", "decode").
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
+	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
+
+	// RevisionLabelKey records the revision hash for the resource.
+	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
+	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
+
+	// InitialReplicasAnnotationKey stores the initial replica count at rollout start.
+	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
+)
+
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
@@ -39,7 +56,6 @@ type DisaggregatedRoleSpec struct {
 	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
 	// DisaggregatedSet handles rollouts across roles.
-	// +required
 	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 

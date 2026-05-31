@@ -18311,7 +18311,6 @@ spec:
                       - leaderWorkerTemplate
                       type: object
                   required:
-                  - ""
                   - name
                   type: object
                 maxItems: 10

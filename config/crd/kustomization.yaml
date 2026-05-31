@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/leaderworkerset.x-k8s.io_leaderworkersets.yaml
+- bases/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:
