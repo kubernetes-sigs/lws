@@ -16,6 +16,7 @@ workload primitive.
 - [Design Details](#design-details)
   - [DisaggregatedSet API](#disaggregatedset-api)
   - [N-Dimensional Rolling Update Algorithm](#n-dimensional-rolling-update-algorithm)
+  - [Example 1: Two-Role Rollout](#example-1-two-role-rollout)
   - [Service Orchestration](#service-orchestration)
   - [Controller Architecture](#controller-architecture)
   - [Test Plan](#test-plan)
@@ -165,6 +166,27 @@ newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
 oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source → 0
 ```
 
+Where, per role:
+
+```
+batchSize  = maxSurge   if maxSurge > 0, else max(1, maxUnavailable)
+roleSteps  = ceil(max(source, target) / batchSize)
+```
+
+And across all roles:
+
+```
+totalSteps = max(roleSteps over all roles)
+```
+
+Note: `totalSteps` counts *ideal scale-up batches* — how many batches the
+slowest role would need to go from 0 to target at its `batchSize` granularity.
+It is **not** the number of reconcile iterations. Because each iteration
+changes either old or new replicas (Property 1), and surge-blocked scale-ups
+may require intermediate drain iterations, the reconcile count is typically
+higher than `totalSteps` (see Example 1: `totalSteps = 3` but 7 reconcile
+iterations).
+
 **Key Properties**:
 
 1. **Decoupled Steps**: Each step changes EITHER old OR new replicas, not both. This simplifies reasoning about state transitions.
@@ -184,25 +206,94 @@ oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source �
 
 6. **Stability Check**: The controller waits for `replicas == readyReplicas` before computing the next step.
 
-**Example 1: Two-Role Rollout** (5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1):
+### Example 1: Two-Role Rollout
+
+**(5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1)**
+
+This is a template-only change (replica counts unchanged), so every old
+replica must be replaced. We'll walk through three things: the
+discretization (`totalSteps`), the ideal trajectory it implies, and the
+actual reconcile iterations that realize it.
+
+**Compute `totalSteps`** from the per-role configuration:
 
 ```
-┌──────┬────────────┬─────────────┬────────────┬─────────────┬───────┬───────────────────────────────┐
-│ STEP │ OLD DECODE │ OLD PREFILL │ NEW DECODE │ NEW PREFILL │ TOTAL │            ACTION             │
-├──────┼────────────┼─────────────┼────────────┼─────────────┼───────┼───────────────────────────────┤
-│ 0    │ 2          │ 5           │ 0          │ 0           │ 7     │ initial                       │
-│ 1    │ 2          │ 5           │ 1          │ 2           │ 10    │ new decode +1, new prefill +2 │
-│ 2    │ 2          │ 4           │ 1          │ 2           │ 9     │ old prefill -1                │
-│ 3    │ 2          │ 3           │ 1          │ 2           │ 8     │ old prefill -1                │
-│ 4    │ 2          │ 3           │ 2          │ 4           │ 11    │ new decode +1, new prefill +2 │
-│ 5    │ 1          │ 2           │ 2          │ 4           │ 9     │ old decode -1, old prefill -1 │
-│ 6    │ 1          │ 2           │ 2          │ 5           │ 10    │ new prefill +1                │
-│ 7    │ 0          │ 0           │ 2          │ 5           │ 7     │ old decode -1, old prefill -2 │
-└──────┴────────────┴─────────────┴────────────┴─────────────┴───────┴───────────────────────────────┘
+batchSize  = 2                              // maxSurge > 0, so maxSurge wins
+roleSteps(decode)  = ceil(max(2, 2) / 2) = 1
+roleSteps(prefill) = ceil(max(5, 5) / 2) = 3
+totalSteps = max(1, 3) = 3
 ```
+
+The rollout will take **3 ideal scale-up batches**.
+
+**Derive the ideal trajectory** by evaluating the interpolation formulas at
+each `i` from 1 to `totalSteps`. For example, at `i=2`:
+`newAtStep(2)` for prefill = `ceil(2*5/3) = ceil(3.33) = 4`;
+`oldAtStep(2)` for prefill = `5 - floor(2*5/3) = 5 - 3 = 2`.
+
+```
+    | newP   newD   oldP   oldD
+----|--------------------------
+i=0 |  0      0      5      2
+i=1 |  2      1      4      2
+i=2 |  4      2      2      1
+i=3 |  5      2      0      0
+```
+
+Each row is one checkpoint — the full `(newP, newD, oldP, oldD)` tuple the planner aims at for that step. Targets: prefill→5, decode→2.
+
+**Execute the trajectory.** At the start of each iteration the planner
+recomputes two aggregated step indices from the current observed state:
+
+- `minStep` = `min` over per-role `stepIndex(currentNew, target)` — used to
+  pick the scale-up target. It targets `minStep + 1`'s `newAtStep` values.
+- `maxStep` = `max` over per-role `stepIndex(removed, source)` (where
+  `removed = source - currentOld`) — used to pick the drain target. It
+  targets `maxStep + 1`'s `oldAtStep` values.
+
+Each iteration then runs only one of scale-up, proportional drain, or
+force-drain (Property 1: decoupled). Force-drain bypasses the step-index
+machinery — it just drains the minimum needed to unblock the next scale-up
+when surge has blocked it. The final-drain shortcut (when new has reached
+target) similarly bypasses step-index and zeroes the remaining old replicas.
+
+The `min/maxStep` column shows `minStep/maxStep` computed at the start of
+each iteration (from the previous row's end state); the order lines up with
+the `ATTEMPTED STATE` tuple `(newP, newD, oldP, oldD)` — `minStep` drives
+the new half (`newAtStep(minStep+1)` per role), `maxStep` drives the old
+half (`oldAtStep(maxStep+1)`). Scale-up advances the new half toward its
+target; prop-drain advances the old half; force-drain drains old to a
+surge-bounded off-trajectory value; iter 7's final-drain shortcut targets
+the all-zero old state directly (not derived from min/maxStep).
+**Bold + underline** marks active step indices (in `min/maxStep`),
+the half of the tuple being driven (in `ATTEMPTED STATE`), and changed
+values (in the per-role columns). The `scale/drain/force` column shows the
+planner's three-try sequence (`tryScaleUp` → `tryProportionalDrain` →
+`tryForceDrain`): ✅ = this check fired, ❌ = tried but returned nil, ⬜ =
+never reached (either an earlier check fired, or the `isNewAtTarget`
+shortcut bypassed the sequence — iter 0 and 7):
+
+| ITERATION | TYPE        | min/maxStep        | ATTEMPTED STATE              | scale/drain/force | NEW PREFILL    | NEW DECODE    | OLD PREFILL    | OLD DECODE    | TOTAL | ACTION                        |
+|-----------|-------------|--------------------|------------------------------|-------------------|----------------|---------------|----------------|---------------|-------|-------------------------------|
+| 0         | initial     | -/-                | -                            | ⬜→⬜→⬜           | 0              | 0             | 5              | 2             | 7     | initial                       |
+| 1         | scale up    | <u>**0**</u>/0     | (<u>**2, 1**</u>, 4, 2)      | ✅→⬜→⬜           | <u>**2**</u>   | <u>**1**</u>  | 5              | 2             | 10    | new decode +1, new prefill +2 |
+| 2         | prop drain  | 1/<u>**0**</u>     | (4, 2, <u>**4, 2**</u>)      | ❌→✅→⬜           | 2              | 1             | <u>**4**</u>   | 2             | 9     | old prefill -1                |
+| 3         | force drain | 1/0                | (4, 2, 4, 2)                 | ❌→❌→✅           | 2              | 1             | <u>**3**</u>   | 2             | 8     | old prefill -1                |
+| 4         | scale up    | <u>**1**</u>/1     | (<u>**4, 2**</u>, 2, 1)      | ✅→⬜→⬜           | <u>**4**</u>   | <u>**2**</u>  | 3              | 2             | 11    | new decode +1, new prefill +2 |
+| 5         | prop drain  | 2/<u>**1**</u>     | (5, 2, <u>**2, 1**</u>)      | ❌→✅→⬜           | 4              | 2             | <u>**2**</u>   | <u>**1**</u>  | 9     | old decode -1, old prefill -1 |
+| 6         | scale up    | <u>**2**</u>/1     | (<u>**5, 2**</u>, 2, 1)      | ✅→⬜→⬜           | <u>**5**</u>   | 2             | 2              | 1             | 10    | new prefill +1                |
+| 7         | final drain | -/-                | (5, 2, <u>**0, 0**</u>)      | ⬜→⬜→⬜           | 5              | 2             | <u>**0**</u>   | <u>**0**</u>  | 7     | old decode -1, old prefill -2 |
+
+Notes:
+- `minStep` advances faster than `maxStep` because the inverse `stepIndex`
+  formula rounds down: `stepIndex(currentNew, target)` reports step 1 as
+  soon as new reaches step 1's level, but `stepIndex(removed, source)`
+  doesn't roll over to 1 until `removed > source / totalSteps`.
+- Iterations 2, 5, and 7 land the system exactly on a trajectory
+  checkpoint (`i = 1, 2, 3` respectively).
 
 Key observations:
-- Prefill progresses through more steps due to higher replica count
+- Prefill progresses through more ideal steps due to higher replica count
 - Decode only changes when proportionally appropriate
 - Total capacity is maintained throughout: `old + new` stays within surge limits per role
 
