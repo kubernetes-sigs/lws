@@ -41,6 +41,13 @@ import (
 
 func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
+	placement, err := leaderworkerset.EncodeSubGroupPlacement([]leaderworkerset.SubGroupPlacement{
+		{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+		{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).Size(1).Obj()
 	updateRevision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
@@ -402,6 +409,82 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								},
 							},
 						},
+					},
+					Ordinals:            &appsapplyv1.StatefulSetOrdinalsApplyConfiguration{Start: ptr.To[int32](1)},
+					ServiceName:         ptr.To[string]("test-sample"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+				},
+			},
+		},
+		{
+			name:     "1 replica, placement-enabled subgroup adds placement annotations",
+			revision: updateRevision,
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:     "0",
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
+					},
+				},
+			},
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(1).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(4).
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             updateRevisionKey,
+					},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](3),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{MatchLabels: map[string]string{
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "1",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+					}},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								leaderworkerset.SetNameLabelKey:         "test-sample",
+								leaderworkerset.GroupIndexLabelKey:      "1",
+								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+								leaderworkerset.RevisionKey:             updateRevisionKey,
+							},
+							Annotations: map[string]string{
+								leaderworkerset.SizeAnnotationKey:               "4",
+								leaderworkerset.LeaderPodNameAnnotationKey:      "test-sample",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
+								leaderworkerset.SubGroupPlacementAnnotationKey:  placement,
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{Containers: []coreapplyv1.ContainerApplyConfiguration{{
+							Name:      ptr.To[string]("worker"),
+							Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+							Ports:     []coreapplyv1.ContainerPortApplyConfiguration{{ContainerPort: ptr.To[int32](8080), Protocol: ptr.To[corev1.Protocol](corev1.ProtocolTCP)}},
+							Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+						}}},
 					},
 					Ordinals:            &appsapplyv1.StatefulSetOrdinalsApplyConfiguration{Start: ptr.To[int32](1)},
 					ServiceName:         ptr.To[string]("test-sample"),

@@ -139,6 +139,14 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupType(subGroupType leaderworker
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupPlacement(subGroupPlacement ...leaderworkerset.SubGroupPlacement) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+	}
+	lwsWrapper.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement = append([]leaderworkerset.SubGroupPlacement{}, subGroupPlacement...)
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leaderworkerset.SubdomainPolicy) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,

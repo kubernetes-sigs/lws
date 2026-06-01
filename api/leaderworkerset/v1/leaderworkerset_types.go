@@ -82,6 +82,14 @@ const (
 	// LeaderWorkerSet.Spec.SubGroupPolicy.SubGroupSize
 	SubGroupSizeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-size"
 
+	// SubGroupPlacementAnnotationKey stores subgroup placement configuration on
+	// leader and worker pod templates so the pod webhook can apply placement.
+	SubGroupPlacementAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-placement"
+
+	// SubGroupMembersAnnotationKey stores the explicit worker indexes belonging to
+	// the pod's subgroup. It is populated by the pod webhook.
+	SubGroupMembersAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-members"
+
 	// Pods that are part of the same subgroup will have the same unique hash value.
 	SubGroupUniqueHashLabelKey string = "leaderworkerset.sigs.k8s.io/subgroup-key"
 
@@ -220,6 +228,21 @@ type SubGroupPolicy struct {
 	// by subGroupSize, in which case the leader is considered as
 	// the extra pod, and will be part of the first subgroup.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
+
+	// subGroupPlacement explicitly assigns workers to subgroups and constrains
+	// each subgroup to nodes matching the given labels. This field is only
+	// supported with LeaderExcluded and is mutually exclusive with subGroupSize.
+	// +optional
+	SubGroupPlacement []SubGroupPlacement `json:"subGroupPlacement,omitempty"`
+}
+
+// SubGroupPlacement explicitly describes one subgroup's members and node labels.
+type SubGroupPlacement struct {
+	// workerIndexes contains the worker indexes assigned to this subgroup.
+	WorkerIndexes []int32 `json:"workerIndexes"`
+
+	// matchLabels are merged into required node affinity for all workers in this subgroup.
+	MatchLabels map[string]string `json:"matchLabels"`
 }
 
 type SubGroupPolicyType string

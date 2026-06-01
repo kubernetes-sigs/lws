@@ -795,8 +795,19 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = (string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type))
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
+			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
+		}
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize != nil {
+			podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		}
+		if len(lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement) > 0 {
+			encodedPlacement, err := leaderworkerset.EncodeSubGroupPlacement(lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement)
+			if err != nil {
+				return nil, err
+			}
+			podAnnotations[leaderworkerset.SubGroupPlacementAnnotationKey] = encodedPlacement
+		}
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
