@@ -190,6 +190,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for initial deployment to stabilize")
 			kubectl.ForRunningPodCount(deploymentName, 4)
 
+			oldRevision := kubectl.GetRevision(deploymentName)
+			Expect(oldRevision).NotTo(BeEmpty())
+
 			By("triggering rolling update by changing image")
 			yamlV2 := fixtures.PrefillDecode(deploymentName,
 				fixtures.Role{Replicas: 2, Image: "registry.k8s.io/pause:3.10"},
@@ -198,7 +201,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(yamlV2)).To(Succeed())
 
 			By("waiting for rolling update to complete")
-			kubectl.ForSingleActiveRevision(deploymentName)
+			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 
 			By("verifying no orphaned single-role workloads exist")
 			output, err := kubectl.LWS(deploymentName).
@@ -247,6 +250,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for initial deployment to stabilize")
 			kubectl.ForRunningPodCount(deploymentName, 8)
 
+			oldRevision := kubectl.GetRevision(deploymentName)
+			Expect(oldRevision).NotTo(BeEmpty())
+
 			By("triggering rolling update by changing image")
 			yamlV2 := fixtures.PrefillDecode(deploymentName,
 				fixtures.Role{Replicas: 4, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: intstr.FromString("50%"), MaxUnavailable: intstr.FromString("25%")},
@@ -255,7 +261,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(yamlV2)).To(Succeed())
 
 			By("waiting for rolling update to complete")
-			kubectl.ForSingleActiveRevision(deploymentName)
+			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 
 			By("verifying final state has correct replicas")
 			kubectl.ForRunningPodCount(deploymentName, 8)
@@ -728,6 +734,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("verifying 3 LWS resources exist (one per role)")
 			kubectl.ForLWSCount(deploymentName, 3)
 
+			oldRevision := kubectl.GetRevision(deploymentName)
+			Expect(oldRevision).NotTo(BeEmpty())
+
 			By("triggering rolling update by changing image")
 			updatedYaml := fixtures.Config{
 				Name: deploymentName,
@@ -740,7 +749,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(updatedYaml)).To(Succeed())
 
 			By("waiting for rolling update to complete")
-			kubectl.ForSingleActiveRevision(deploymentName)
+			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 
 			By("verifying all 3 roles have correct pod count")
 			kubectl.ForRunningPodCount(deploymentName, 6)
@@ -1070,7 +1079,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")
 
 			By("verifying final state: only C at target replicas")
-			kubectl.ForSingleActiveRevision(deploymentName)
+			kubectl.ForSingleActiveRevision(deploymentName, revisionA)
 			kubectl.ForRunningPodCount(deploymentName, 12)
 		})
 	})
