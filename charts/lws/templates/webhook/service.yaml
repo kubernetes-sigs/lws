@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: webhook-service
+    {{- include "lws.labels" . | nindent 4 }}
+  name: lws-webhook-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+    - port: 443
+      protocol: TCP
+      targetPort: 9443
+  selector:
+    {{- include "lws.selectorLabels" . | nindent 4 }}
+    control-plane: controller-manager

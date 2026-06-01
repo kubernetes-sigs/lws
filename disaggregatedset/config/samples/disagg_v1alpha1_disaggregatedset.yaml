@@ -1,0 +1,24 @@
+apiVersion: disaggregatedset.x-k8s.io/v1alpha1
+kind: DisaggregatedSet
+metadata:
+  name: disaggregatedset-sample
+spec:
+  roles:
+  - name: prefill
+    replicas: 2
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        spec:
+          containers:
+          - name: prefill
+            image: registry.k8s.io/pause:3.9
+  - name: decode
+    replicas: 2
+    leaderWorkerTemplate:
+      size: 1
+      workerTemplate:
+        spec:
+          containers:
+          - name: decode
+            image: registry.k8s.io/pause:3.9

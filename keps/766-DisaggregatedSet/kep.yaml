@@ -1,0 +1,15 @@
+title: DisaggregatedSet
+kep-number: 766
+authors:
+  - "Mathis Felardos"
+status: implementable
+creation-date: 2026-03-05
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - unparam
+  exclusions:
+    generated: lax
+    paths:
+      - bin
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - bin

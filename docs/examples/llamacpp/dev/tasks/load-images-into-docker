@@ -1,0 +1,22 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+set -x
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}/docs/examples/llamacpp"
+
+dev/tasks/stop-blobserver
+dev/tasks/start-blobserver
+
+docker buildx bake clichat --load --progress=plain
+
+# Get the IP address of the host machine when os is darwin.
+# An Empty string means the address will be detected automatically via 
+# container default route during build.
+BLOB_SERVER=$([[ "$OSTYPE" == darwin* ]] && ipconfig getifaddr en0 || echo "")
+docker buildx bake bartowski --load --progress=plain --set bartowski.args.BLOB_SERVER="${BLOB_SERVER}"
+docker buildx bake llamacpp-worker --load --progress=plain

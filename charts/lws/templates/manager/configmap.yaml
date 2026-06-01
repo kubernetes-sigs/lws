@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lws.fullname" . }}-manager-config
+  namespace: {{ .Release.Namespace}}
+  labels:
+    {{- include "lws.labels" . | nindent 4 }}
+data:
+  controller_manager_config.yaml: |2
+
+    apiVersion: config.lws.x-k8s.io/v1alpha1
+    kind: Configuration
+    leaderElection:
+      leaderElect: true
+    internalCertManagement:
+      enable: {{ not .Values.enableCertManager }}
+    {{- if .Values.gangSchedulingManagement }}
+    gangSchedulingManagement:
+{{ toYaml .Values.gangSchedulingManagement | indent 6 }}
+    {{- end }}

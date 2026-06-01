@@ -1,0 +1,19 @@
+{{- if .Values.enablePrometheus }}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: controller-manager-metrics-service
+    {{- include "lws.labels" . | nindent 4 }}
+  name: {{ include "lws.fullname" . }}-controller-manager-metrics-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    control-plane: controller-manager
+{{- end }}

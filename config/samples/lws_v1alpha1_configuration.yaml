@@ -1,0 +1,31 @@
+apiVersion: lws.x-k8s.io/v1alpha1
+kind: Configuration
+metadata:
+  name: configuration-sample
+spec:
+  ## Examples as below (with their default values):
+  ## refer to `Configuration` struct definition for more details.
+  #
+  # webhook:
+  #   port: 9443
+  #   certDir: "/tmp/k8s-webhook-server/serving-certs"
+  #
+  # leaderElection:
+  #   leaderElect: true
+  #
+  # metrics:
+  #   bindAddress: ":8443"
+  #
+  # controllerHealth:
+  #   healthProbeBindAddress: ":8081"
+  #   readinessEndpointName: "/readyz"
+  #   livenessEndpointName: "/healthz"
+  #
+  # internalCertManagement:
+  #   enable: true
+  #   webhookServiceName: "lws-webhook-service"
+  #   webhookSecretName: "lws-webhook-server-cert"
+  #
+  # clientConnection:
+  #   qps: 500
+  #   burst: 500

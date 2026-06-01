@@ -1,0 +1,30 @@
+{{- if .Values.enableCertManager }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/instance: serving-cert
+    {{- include "lws.labels" . | nindent 4 }}
+  name: lws-serving-cert
+  namespace: {{ .Release.Namespace }}
+spec:
+  dnsNames:
+    - lws-webhook-service.{{ .Release.Namespace }}.svc
+    - lws-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: lws-selfsigned-issuer
+  secretName: lws-webhook-server-cert
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/instance: serving-cert
+    {{- include "lws.labels" . | nindent 4 }}
+  name: lws-selfsigned-issuer
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+{{- end}}
