@@ -20,12 +20,32 @@ spec:
                   image: nginx:latest
                   ports:
                     - containerPort: 80
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: worker
+                  image: nginx:latest
+                  ports:
+                    - containerPort: 80
     - name: decode
       spec:
         replicas: 2
         leaderWorkerTemplate:
           size: 1
           leaderTemplate:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: worker
+                  image: nginx:latest
+                  ports:
+                    - containerPort: 80
+          workerTemplate:
             metadata:
               labels:
                 role: decode
