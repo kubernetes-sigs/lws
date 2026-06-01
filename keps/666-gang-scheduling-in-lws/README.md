@@ -119,9 +119,9 @@ type LeaderWorkerSetSpec struct {
 type GangSchedulingPolicy struct{}
 ```
 
-Guarded by LWS feature gate `GangScheduling` (registered via the `pkg/features` scaffold from [#852][pr852]), tracking upstream `GenericWorkload`: **alpha=false → beta=true (aligned with upstream beta-on-by-default) → removed at GA**. The upstream gate is the real kill switch (it decides whether `kube-apiserver` preserves `pod.spec.schedulingGroup`); the LWS gate is the explicit alpha opt-in. See [Graduation Criteria](#graduation-criteria).
+Guarded by LWS feature gate `GangScheduling`, tracking upstream `GenericWorkload`: **alpha=false → beta=true (aligned with upstream beta-on-by-default) → removed at GA**. The upstream gate is the real kill switch (it decides whether `kube-apiserver` preserves `pod.spec.schedulingGroup`); the LWS gate is the explicit alpha opt-in. A small `pkg/features` scaffold (~150 LoC, mirroring Kueue/JobSet) lands inside this KEP's implementation PR (tracker [#850][issue850]). Gate is delivered via the LWS Configuration API — CLI-only feature gates make rolling upgrades painful, per Kueue's experience. See [Graduation Criteria](#graduation-criteria).
 
-[pr852]: https://github.com/kubernetes-sigs/lws/pull/852
+[issue850]: https://github.com/kubernetes-sigs/lws/issues/850
 
 The validating webhook rejects:
 
@@ -370,7 +370,8 @@ Targets `alpha` while the upstream API is alpha. LWS feature gate `GangSchedulin
 - 2026-05-06: Aligned with prototype and [KEP-407][kep407] naming; escape-hatch lifecycle replaces the rejected `podGroupNamePrefix` knob
 - 2026-05-07: Added Future Work for hierarchical gangs via [KEP-6012][kep6012]; cross-LWS gangs layer on the escape hatch
 - 2026-05-09: PR review pass: typed `spec.gangScheduling` replaces the annotation as the umbrella opt-in (admission rejects pre-set `pod.spec.schedulingGroup` without it); no LWS-side feature gate; per-role gang policy split; additional WAS Non-Goals
-- 2026-05-15: Unified Provider Model — `spec.gangScheduling` is the single opt-in across all backends; upstream v1alpha2 schema is the reference, third-party backends honor a subset. Adopt LWS `GangScheduling` feature gate (alpha → beta → removed at GA) after [#852][pr852] landed the `pkg/features` scaffold.
+- 2026-05-15: Unified Provider Model — `spec.gangScheduling` is the single opt-in across all backends; upstream v1alpha2 schema is the reference, third-party backends honor a subset. Adopt LWS `GangScheduling` feature gate (alpha → beta → removed at GA), backed by a `pkg/features` scaffold.
+- 2026-06-01: `pkg/features` scaffold folds into this KEP's impl PR (tracker [#850][issue850]). Gate delivered via the LWS Configuration API rather than a CLI flag — Kueue's experience showed CLI-only feature gates make rolling upgrades painful.
 
 [gdoc]: https://docs.google.com/document/d/1QlcIBtR2KyOKYRUTGubhhxuy7NfjHs1fXMJlvdUCyhM
 [pr844]: https://github.com/kubernetes-sigs/lws/pull/844
@@ -389,7 +390,7 @@ Targets `alpha` while the upstream API is alpha. LWS feature gate `GangSchedulin
 Rejected: can't be schema-validated, hard to deprecate, no place for future TAS / DRA / RC knobs. A typed alpha `spec.gangScheduling` struct gets all three for free.
 
 **Ship `spec.gangScheduling` without an LWS feature gate** (matching how `SubGroupPolicy` / `RolloutStrategy.MaxSurge` shipped).
-Rejected once [#852][pr852] landed the `pkg/features` scaffold. The upstream `GenericWorkload` gate is the real kill switch, but it cannot be detected by webhook discovery (see [API Discovery](#api-discovery-and-prerequisites)). An LWS `GangScheduling` gate adds an explicit alpha opt-in and a clean alpha → beta → GA lifecycle at near-zero infrastructure cost.
+Rejected. The upstream `GenericWorkload` gate is the real kill switch, but it cannot be detected by webhook discovery (see [API Discovery](#api-discovery-and-prerequisites)). An LWS `GangScheduling` gate adds an explicit alpha opt-in and a clean alpha → beta → GA lifecycle. The `pkg/features` scaffold cost is small (~150 LoC, mirroring Kueue/JobSet) and lands inside this KEP's impl PR.
 
 **One shared PodGroup per LWS with `Replicas=N, MinCount=M`** (Edwin's original draft).
 Rejected: `MinCount` only requires M co-scheduled pods, with no notion of which replica they belong to — the scheduler may legally pick M pods from different replicas, none complete, and the model still cannot start. Per-replica PodGroups make each replica an independent all-or-nothing unit.
