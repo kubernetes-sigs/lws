@@ -34,6 +34,17 @@ Get started with [installation](../installation/) or watch the LWS-related [talk
 
 Read the [examples](https://github.com/kubernetes-sigs/lws/tree/main/docs/examples) to learn more.
 
+## Disaggregated Inference with DisaggregatedSet
+
+For workloads that require separating inference phases (e.g., prefill and decode), LWS provides
+the **DisaggregatedSet** controller. DisaggregatedSet orchestrates multiple LeaderWorkerSets —
+one per inference role — with independent scaling and rollout policies.
+
+- [DisaggregatedSet concept overview](/docs/concepts/disaggregatedset/)
+- [Installing the DisaggregatedSet controller](/docs/installation/disaggregatedset/)
+- [DisaggregatedSet API reference](/docs/reference/disaggregatedset.v1alpha1/)
+- [DisaggregatedSet examples](/docs/examples/disaggregatedset/)
+
 ## Community, Discussion, Contribution, and Support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
