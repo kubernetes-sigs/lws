@@ -1,0 +1,28 @@
+title: Gang Scheduling in LWS
+kep-number: 666
+authors:
+  - Edwinhr716
+  - yankay
+status: provisional
+creation-date: 2025-10-13
+reviewers:
+  - ahg-g
+  - kerthcet
+  - ardaguclu
+  - JesseStutler
+approvers:
+  - ahg-g
+  - kerthcet
+  - Edwinhr716
+
+see-also:
+  - "/keps/407-gang-scheduling"
+  - "/keps/766-DisaggregatedSet"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v0.9.0"
