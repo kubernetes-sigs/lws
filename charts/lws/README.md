@@ -61,6 +61,25 @@ LWS supports prometheus metrics.
 Check out the [site](https://lws.sigs.k8s.io/docs/manage/prometheus/)
 for more information on installing LWS with metrics using our Helm chart.
 
+##### DisaggregatedSet
+
+The DisaggregatedSet CRD and the manager permissions required by its bundled
+controller are always installed with the chart. To also install the
+editor/viewer/admin ClusterRoles and validating webhook, set
+`enableDisaggregatedSet` to `true`.
+
+Helm installs CRDs during `helm install`, but does not install newly added CRDs
+during `helm upgrade`. Before upgrading an existing LWS Helm release to a chart
+version that introduces DisaggregatedSet, apply the new CRD from the repository
+root:
+
+```bash
+kubectl apply --server-side \
+  -f charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+helm upgrade lws charts/lws --namespace lws-system \
+  --set enableDisaggregatedSet=true
+```
+
 ### Configuration
 
 The following table lists the configurable parameters of the LWS chart and their default values.
@@ -71,6 +90,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `fullnameOverride`                         | fullnameOverride                               | ``                                                  |
 | `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
+| `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
 | `image.manager.repository`                 | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws` |
 | `image.manager.tag`                        | Tag for manager image                          | `main`                                              |

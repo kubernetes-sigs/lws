@@ -1,5 +1,8 @@
 # DisaggregatedSet Operator Helm Chart
 
+> **Deprecated:** Use the unified [`charts/lws`](../../../charts/lws) chart
+> instead. See [`DEPRECATED.md`](./DEPRECATED.md) for details.
+
 Kubernetes operator for managing disaggregated inference deployments using LeaderWorkerSets.
 
 ## Prerequisites
