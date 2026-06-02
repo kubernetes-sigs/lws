@@ -3,6 +3,7 @@
 
 <!-- toc -->
 - [Summary](#summary)
+  - [Story](#story)
 - [Goals](#goals)
 - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
