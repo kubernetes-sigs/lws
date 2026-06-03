@@ -403,5 +403,12 @@ hugo:
 .PHONY: crds
 crds: kustomize yq # update helm CRD files
 	$(KUSTOMIZE) build config/default \
-	| $(YQ) 'select(.kind == "CustomResourceDefinition")' \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "leaderworkersets.leaderworkerset.x-k8s.io")' \
 	> charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml
+	@test -s charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml \
+		|| { echo "ERROR: leaderworkerset CRD missing from kustomize output"; exit 1; }
+	$(KUSTOMIZE) build config/default \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "disaggregatedsets.disaggregatedset.x-k8s.io")' \
+	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml \
+		|| { echo "ERROR: disaggregatedset CRD missing from kustomize output"; exit 1; }

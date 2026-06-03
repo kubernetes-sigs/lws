@@ -1,0 +1,27 @@
+{{- if .Values.enableDisaggregatedSet }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lws.fullname" . }}-disaggregatedset-editor-role
+  labels:
+    {{- include "lws.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - disaggregatedset.x-k8s.io
+    resources:
+      - disaggregatedsets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - disaggregatedset.x-k8s.io
+    resources:
+      - disaggregatedsets/status
+    verbs:
+      - get
+{{- end }}
