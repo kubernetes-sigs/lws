@@ -65,33 +65,59 @@ func ForRevisionDrained(deploymentName, revision string) {
 	}, 4*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-// ForSingleActiveRevision waits until only one revision has replicas > 0.
-func ForSingleActiveRevision(deploymentName string) {
+// ForSingleActiveRevision waits until oldRevision is fully drained and
+// exactly one other revision has every role at replicas > 0.
+// Passing oldRevision closes the "apply but not yet reconciled" window
+// where the old revision would otherwise satisfy a revision-agnostic check
+// before the rollout begins (kubernetes-sigs/lws#826).
+func ForSingleActiveRevision(deploymentName, oldRevision string) {
 	Eventually(func(g Gomega) {
 		output, err := LWS(deploymentName).
 			JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision} {.spec.replicas}{"\n"}{end}`).
 			RunQuiet()
 		g.Expect(err).NotTo(HaveOccurred())
 
-		revisionReplicas := make(map[string]int)
-		for _, line := range GetNonEmptyLines(output) {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				rev := fields[0]
-				if n, err := strconv.Atoi(fields[1]); err == nil {
-					revisionReplicas[rev] += n
-				}
-			}
-		}
-
-		activeRevisions := 0
-		for _, replicas := range revisionReplicas {
-			if replicas > 0 {
-				activeRevisions++
-			}
-		}
-		g.Expect(activeRevisions).To(Equal(1), "Expected only one active revision")
+		g.Expect(evalSingleActiveRevision(output, oldRevision)).To(BeEmpty())
 	}, 4*time.Minute, 2*time.Second).Should(Succeed())
+}
+
+// evalSingleActiveRevision is the pure-data predicate behind
+// ForSingleActiveRevision, extracted for unit testing.
+func evalSingleActiveRevision(output, oldRevision string) string {
+	revReplicas := make(map[string]int)
+	revZeroRoles := make(map[string]int)
+	for _, line := range GetNonEmptyLines(output) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		revReplicas[fields[0]] += n
+		if n == 0 {
+			revZeroRoles[fields[0]]++
+		}
+	}
+
+	if total, ok := revReplicas[oldRevision]; ok && total > 0 {
+		return "old revision " + oldRevision + " not drained yet: total replicas=" + strconv.Itoa(total)
+	}
+
+	active := 0
+	for rev, total := range revReplicas {
+		if total > 0 {
+			if revZeroRoles[rev] != 0 {
+				return "revision " + rev + " mid-rollout: some roles still at 0 replicas"
+			}
+			active++
+		}
+	}
+	if active != 1 {
+		return "expected exactly one active revision, got " + strconv.Itoa(active)
+	}
+	return ""
 }
 
 // ForRoleReplicas waits until a role has the expected replica count.
