@@ -280,7 +280,9 @@ CompositePodGroup <lws-name>-<group-index>
 
 For the heterogeneous-role shape called out above, this lifts the *"1 CPU leader AND (size − 1) accelerator workers"* invariant from placement-only (`SubGroupPolicy` + `subgroup-exclusive-topology`) into gang admission itself, without changing pod-level binding (`pod.spec.schedulingGroup.podGroupName` still points at a leaf).
 
-**Cross-LWS gangs.** Gangs that span multiple LWS objects — e.g. [DisaggregatedSet][kep766]'s *"≥ M prefill AND ≥ N decode replicas co-schedule"*, the multi-node case of the inter-PodGroup gang gap raised in upstream [kubernetes/kubernetes#136207][k8s136207] — are layered on top of the alpha [Escape Hatch](#escape-hatch-pre-set-podspecschedulinggroup) by an external `Workload` owner. With the escape hatch in place, DisaggregatedSet or any future external consumer can build whatever `CompositePodGroup` tree they need with **zero new LWS-side API surface**. Minimal shape — one prefill LWS + one decode LWS joined under a root CPG so the serving instance is all-or-nothing:
+**Cross-LWS gangs.** Gangs that span multiple LWS objects — e.g. [DisaggregatedSet][kep766]'s *"≥ M prefill AND ≥ N decode replicas co-schedule"*, the multi-node case of the inter-PodGroup gang gap raised in upstream [kubernetes/kubernetes#136207][k8s136207] — are layered on top of the alpha [Escape Hatch](#escape-hatch-pre-set-podspecschedulinggroup) by an external `Workload` owner. With the escape hatch in place, DisaggregatedSet or any future external consumer can build whatever `CompositePodGroup` tree they need with **zero new LWS-side API surface**.
+
+Minimal disaggregated-serving shape: one prefill LWS + one decode LWS, each pinned to its own `PodGroup` via the escape hatch (`pod.spec.schedulingGroup.podGroupName` pre-set in both templates), joined under a root `CompositePodGroup` owned by an outer controller (DisaggregatedSet, Kueue, ...) so the whole P+D instance schedules all-or-nothing:
 
 ```yaml
 # Workload owned by an external controller (e.g. DisaggregatedSet);
@@ -305,7 +307,14 @@ CompositePodGroup serving-root
 └─ PodGroup       decode-pg        (parentRef=serving-root)
 ```
 
-The full DisaggregatedSet shape — per-revision tree, role × replica `compositePodGroupTemplates`, interaction with the N-dimensional rolling update — belongs to [KEP-766][kep766].
+How the pieces fit together:
+
+- **DisaggregatedSet** ([KEP-766][kep766]) is the outer controller. It owns the prefill / decode LWS objects (one per role), the `Workload`, and the `CompositePodGroup` tree. It is also responsible for keeping `prefill-pg` / `decode-pg` `minCount` in sync with each LWS's `size`, and for ordering creation: `Workload` + CPG before LWS scale-up so pods never reference a missing leaf.
+- **LWS** (this KEP) contributes the per-role pods. Both LWS objects opt in via `spec.gangScheduling: {}` and run in [escape-hatch mode](#escape-hatch-pre-set-podspecschedulinggroup) — the pod template pre-sets `pod.spec.schedulingGroup.podGroupName` (`prefill-pg` for the prefill LWS, `decode-pg` for the decode LWS), so LWS skips Workload / PodGroup creation and never adopts the externally-owned objects.
+- **`Workload` + `CompositePodGroup`** ([KEP-6012][kep6012]) is the gang structure. Each leaf `PodGroup` co-schedules its role; the root CPG's `gang.minGroupCount = 2` makes prefill and decode all-or-nothing as a unit. Pod-level binding stays flat — pods reference a leaf, hierarchy is invisible to them.
+- **kube-scheduler** admits the gang only when both leaves can be satisfied at once: no half-scheduled P+D, no prefill-blocks-decode deadlock between two competing serving instances.
+
+LWS itself does not know about the cross-LWS gang. The outer controller owns and GCs the `Workload` + CPG tree, the two LWS objects are managed independently, and `replicas > 1` (per-replica leaves, rolling-update interaction, partial-failure semantics) belongs to [KEP-766][kep766].
 
 [kep6012-pr]: https://github.com/kubernetes/enhancements/pull/6017
 [k8s136207]: https://github.com/kubernetes/kubernetes/issues/136207
@@ -372,6 +381,7 @@ Targets `alpha` while the upstream API is alpha. LWS feature gate `GangSchedulin
 - 2026-05-09: PR review pass: typed `spec.gangScheduling` replaces the annotation as the umbrella opt-in (admission rejects pre-set `pod.spec.schedulingGroup` without it); no LWS-side feature gate; per-role gang policy split; additional WAS Non-Goals
 - 2026-05-15: Unified Provider Model — `spec.gangScheduling` is the single opt-in across all backends; upstream v1alpha2 schema is the reference, third-party backends honor a subset. Adopt LWS `GangScheduling` feature gate (alpha → beta → removed at GA), backed by a `pkg/features` scaffold.
 - 2026-06-01: `pkg/features` scaffold folds into this KEP's impl PR (tracker [#850][issue850]). Gate delivered via the LWS Configuration API rather than a CLI flag — Kueue's experience showed CLI-only feature gates make rolling upgrades painful.
+- 2026-06-04: Expanded the Cross-LWS gangs section with the prefill + decode + `CompositePodGroup` shape and the DisaggregatedSet / LWS / Workload+CPG / kube-scheduler responsibility split.
 
 [gdoc]: https://docs.google.com/document/d/1QlcIBtR2KyOKYRUTGubhhxuy7NfjHs1fXMJlvdUCyhM
 [pr844]: https://github.com/kubernetes-sigs/lws/pull/844
