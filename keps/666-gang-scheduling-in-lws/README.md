@@ -316,6 +316,8 @@ How the pieces fit together:
 
 LWS itself does not know about the cross-LWS gang. The outer controller owns and GCs the `Workload` + CPG tree, the two LWS objects are managed independently, and `replicas > 1` (per-replica leaves, rolling-update interaction, partial-failure semantics) belongs to [KEP-766][kep766].
 
+**Topology-aware placement.** [KEP-5732][kep5732] adds `topologyConstraints` / `dRAConstraints` to the `Workload` API, letting kube-scheduler co-locate a gang inside a rack / block / DRA domain rather than just any N feasible nodes. It is additive on the same Workload object LWS already owns, so once stabilized it surfaces in two ways: in LWS-managed mode, a future optional `spec.gangScheduling.topology` field maps one-to-one onto `Workload.spec.topologyConstraints` (matching the additive-fields plan in [§Graduation Criteria](#graduation-criteria)); in escape-hatch / cross-LWS mode (the prefill+decode shape above), the outer controller writes the constraints directly on its `Workload` with zero LWS-side changes.
+
 [kep6012-pr]: https://github.com/kubernetes/enhancements/pull/6017
 [k8s136207]: https://github.com/kubernetes/kubernetes/issues/136207
 
@@ -381,7 +383,7 @@ Targets `alpha` while the upstream API is alpha. LWS feature gate `GangSchedulin
 - 2026-05-09: PR review pass: typed `spec.gangScheduling` replaces the annotation as the umbrella opt-in (admission rejects pre-set `pod.spec.schedulingGroup` without it); no LWS-side feature gate; per-role gang policy split; additional WAS Non-Goals
 - 2026-05-15: Unified Provider Model — `spec.gangScheduling` is the single opt-in across all backends; upstream v1alpha2 schema is the reference, third-party backends honor a subset. Adopt LWS `GangScheduling` feature gate (alpha → beta → removed at GA), backed by a `pkg/features` scaffold.
 - 2026-06-01: `pkg/features` scaffold folds into this KEP's impl PR (tracker [#850][issue850]). Gate delivered via the LWS Configuration API rather than a CLI flag — Kueue's experience showed CLI-only feature gates make rolling upgrades painful.
-- 2026-06-04: Expanded the Cross-LWS gangs section with the prefill + decode + `CompositePodGroup` shape and the DisaggregatedSet / LWS / Workload+CPG / kube-scheduler responsibility split.
+- 2026-06-04: Expanded the Cross-LWS gangs section with the prefill + decode + `CompositePodGroup` shape and the DisaggregatedSet / LWS / Workload+CPG / kube-scheduler responsibility split. Noted [KEP-5732][kep5732] (topology-aware workload scheduling) as a future additive field on the same Workload object.
 
 [gdoc]: https://docs.google.com/document/d/1QlcIBtR2KyOKYRUTGubhhxuy7NfjHs1fXMJlvdUCyhM
 [pr844]: https://github.com/kubernetes-sigs/lws/pull/844
