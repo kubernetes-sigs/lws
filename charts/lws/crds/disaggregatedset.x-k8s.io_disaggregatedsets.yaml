@@ -16843,6 +16843,15 @@ spec:
                   x-kubernetes-list-map-keys:
                     - name
                   x-kubernetes-list-type: map
+                slices:
+                  default: 1
+                  description: |-
+                    Slices is the number of independent copies of the whole role topology.
+                    Each slice is a complete set of all roles that rolls out independently.
+                    Changing Slices scales copies up or down and does not trigger a rollout.
+                  format: int32
+                  minimum: 1
+                  type: integer
               required:
                 - roles
               type: object

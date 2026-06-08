@@ -83,23 +83,33 @@ func ComputeInitialReplicaState(lwsList []leaderworkersetv1.LeaderWorkerSet) map
 type CreateParams struct {
 	DisaggregatedSet *disaggregatedsetv1.DisaggregatedSet
 	Role             string
+	Slice            int
 	Config           *disaggregatedsetv1.DisaggregatedRoleSpec
 	Revision         string
 	Labels           map[string]string
 	Replicas         int
 }
 
-func GenerateName(baseName, role, revision string) string {
-	return fmt.Sprintf("%s-%s-%s", baseName, revision, role)
+func GenerateName(baseName string, slice int, revision, role string) string {
+	return fmt.Sprintf("%s-%d-%s-%s", baseName, slice, revision, role)
 }
 
-func GenerateLabels(baseName, role, revision string) map[string]string {
+func GenerateLabels(baseName string, slice int, revision, role string) map[string]string {
 	return map[string]string{
-		"app":                               fmt.Sprintf("%s-%s", baseName, role),
+		"app":                               fmt.Sprintf("%s-%d-%s", baseName, slice, role),
 		disaggregatedsetv1.RoleLabelKey:     role,
+		disaggregatedsetv1.SliceLabelKey:    strconv.Itoa(slice),
 		disaggregatedsetv1.SetNameLabelKey:  baseName,
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
+}
+
+// GetSlices returns the desired slice count, defaulting to 1.
+func GetSlices(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) int32 {
+	if disaggregatedSet.Spec.Slices == nil {
+		return 1
+	}
+	return *disaggregatedSet.Spec.Slices
 }
 
 const revisionLength = 8

@@ -289,7 +289,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", 3, nil)
+		existingLWS := buildManagerTestLWS("test-deploy-0-abc123-prefill", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -387,7 +387,7 @@ func TestManagerCreate(t *testing.T) {
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-rev1-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: "test-0-rev1-prefill", Namespace: "default"}, &lws))
 
 		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
 		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
