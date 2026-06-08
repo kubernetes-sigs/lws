@@ -57,7 +57,7 @@ func copyAnnotations(annotations map[string]string) map[string]string {
 }
 
 func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disaggregatedsetutils.CreateParams) error {
-	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Role, params.Revision)
+	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Slice, params.Revision, params.Role)
 	replicas := int32(params.Replicas)
 	config := params.Config
 
@@ -138,10 +138,14 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return lws, nil
 }
 
-func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
+// List returns the LWS for a DisaggregatedSet. A slice < 0 matches all slices.
+func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName string, slice int, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
+	if slice >= 0 {
+		labels[disaggregatedsetv1.SliceLabelKey] = strconv.Itoa(slice)
+	}
 	if role != "" {
 		labels[disaggregatedsetv1.RoleLabelKey] = role
 	}
@@ -188,9 +192,9 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 // exist for the target revision yet.
 func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
-	namespace, disaggDeploymentName, revision string,
+	namespace, disaggDeploymentName string, slice int, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	lwsList, err := manager.List(ctx, namespace, disaggDeploymentName, "")
+	lwsList, err := manager.List(ctx, namespace, disaggDeploymentName, slice, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +49,7 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 ) error {
@@ -89,12 +91,12 @@ func (manager *ServiceManager) ReconcileServices(
 	}
 
 	for _, roleName := range roleNames {
-		if err := manager.ensureService(ctx, deployment, roleName, targetRevision); err != nil {
+		if err := manager.ensureService(ctx, deployment, slice, roleName, targetRevision); err != nil {
 			return fmt.Errorf("failed to ensure service for %s: %w", roleName, err)
 		}
 	}
 
-	if err := manager.cleanupDrainedServices(ctx, deployment, revisionRoles, targetRevision, roleNames); err != nil {
+	if err := manager.cleanupDrainedServices(ctx, deployment, slice, revisionRoles, targetRevision, roleNames); err != nil {
 		return fmt.Errorf("failed to cleanup drained services: %w", err)
 	}
 
@@ -104,12 +106,13 @@ func (manager *ServiceManager) ReconcileServices(
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	roleName string,
 	revision string,
 ) error {
 	log := logf.FromContext(ctx)
 
-	service := manager.buildService(deployment, roleName, revision)
+	service := manager.buildService(deployment, slice, roleName, revision)
 
 	if err := manager.client.Create(ctx, service); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -125,19 +128,22 @@ func (manager *ServiceManager) ensureService(
 
 func (manager *ServiceManager) buildService(
 	deployment *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	roleName string,
 	revision string,
 ) *corev1.Service {
-	serviceName := GenerateServiceName(deployment.Name, roleName, revision)
+	serviceName := GenerateServiceName(deployment.Name, slice, revision, roleName)
 
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+		disaggregatedsetv1.SliceLabelKey:    strconv.Itoa(slice),
 		disaggregatedsetv1.RoleLabelKey:     roleName,
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
 	selector := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+		disaggregatedsetv1.SliceLabelKey:    strconv.Itoa(slice),
 		disaggregatedsetv1.RoleLabelKey:     roleName,
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
@@ -165,6 +171,7 @@ func (manager *ServiceManager) buildService(
 func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 	roleNames []string,
@@ -191,7 +198,10 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	serviceList := &corev1.ServiceList{}
 	if err := manager.client.List(ctx, serviceList,
 		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
+		client.MatchingLabels{
+			disaggregatedsetv1.SetNameLabelKey: deployment.Name,
+			disaggregatedsetv1.SliceLabelKey:   strconv.Itoa(slice),
+		},
 	); err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
 	}
@@ -214,6 +224,41 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	return nil
 }
 
-func GenerateServiceName(baseName, role, revision string) string {
-	return fmt.Sprintf("%s-%s-%s-prv", baseName, revision, role)
+// CleanupRemovedSlices deletes services whose slice index is at or above the
+// desired slice count.
+func (manager *ServiceManager) CleanupRemovedSlices(
+	ctx context.Context,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
+	desiredSlices int,
+) error {
+	log := logf.FromContext(ctx)
+
+	serviceList := &corev1.ServiceList{}
+	if err := manager.client.List(ctx, serviceList,
+		client.InNamespace(deployment.Namespace),
+		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
+	); err != nil {
+		return fmt.Errorf("failed to list services: %w", err)
+	}
+
+	for i := range serviceList.Items {
+		service := &serviceList.Items[i]
+		sliceIdx, err := strconv.Atoi(service.Labels[disaggregatedsetv1.SliceLabelKey])
+		if err != nil || sliceIdx < desiredSlices {
+			continue
+		}
+		log.Info("Deleting Service for removed slice", "service", service.Name, "slice", sliceIdx)
+		if err := manager.client.Delete(ctx, service); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("failed to delete service %s: %w", service.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func GenerateServiceName(baseName string, slice int, revision, role string) string {
+	return fmt.Sprintf("%s-%d-%s-%s-prv", baseName, slice, revision, role)
 }

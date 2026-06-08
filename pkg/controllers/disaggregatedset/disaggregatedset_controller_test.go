@@ -18,6 +18,7 @@ package disaggregatedset_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,11 +48,12 @@ const (
 func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas int32) *leaderworkersetv1.LeaderWorkerSet {
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
+		disaggregatedsetv1.SliceLabelKey:    "0",
 		disaggregatedsetv1.RoleLabelKey:     role,
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
-	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedSet.Name+"-"+revision+"-"+role, disaggregatedSet.Namespace).
+	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedSet.Name+"-0-"+revision+"-"+role, disaggregatedSet.Namespace).
 		Labels(labels).
 		Replica(int(replicas)).
 		Size(1).
@@ -92,11 +94,11 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, newRevision))
+	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, newRevision, testControllerRolePrefill))
 	require.NotNil(t, prefillInfo, "prefill LWS should exist")
 	assert.Equal(t, 3, int(*prefillInfo.Spec.Replicas), "prefill replicas")
 
-	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, newRevision))
+	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, newRevision, testControllerRoleDecode))
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 2, int(*decodeInfo.Spec.Replicas), "decode replicas")
 }
@@ -129,11 +131,115 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRolePrefill, revision))
+	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
 	require.NotNil(t, prefillInfo, "prefill LWS should exist")
 	assert.Equal(t, 5, int(*prefillInfo.Spec.Replicas), "prefill replicas should be scaled to 5")
 
-	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, testControllerRoleDecode, revision))
+	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 4, int(*decodeInfo.Spec.Replicas), "decode replicas should be scaled to 4")
+}
+
+// createSliceLWS builds an LWS for a specific slice using the real name/label
+// helpers, so its name and slice label match what the controller generates.
+func createSliceLWS(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role, revision string) *leaderworkersetv1.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role), disaggregatedSet.Namespace).
+		Labels(disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, slice, revision, role)).
+		Replica(2).
+		Size(1).
+		StatusReplicas(2).
+		ReadyReplicas(2).
+		OwnerReference(metav1.OwnerReference{
+			APIVersion: disaggregatedsetv1.GroupVersion.String(),
+			Kind:       "DisaggregatedSet",
+			Name:       disaggregatedSet.Name,
+			UID:        disaggregatedSet.UID,
+		}).
+		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
+		Obj()
+}
+
+func TestSlicesCreateOneSetPerSlice(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("multi-slice", "default").
+		Slices(2).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 3, "nginx:1.0").
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	for slice := range 2 {
+		prefill, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, testControllerRolePrefill))
+		require.NotNil(t, prefill, "prefill LWS should exist for slice %d", slice)
+		assert.Equal(t, 2, int(*prefill.Spec.Replicas), "prefill replicas slice %d", slice)
+		assert.Equal(t, strconv.Itoa(slice), prefill.Labels[disaggregatedsetv1.SliceLabelKey], "slice label slice %d", slice)
+
+		decode, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, testControllerRoleDecode))
+		require.NotNil(t, decode, "decode LWS should exist for slice %d", slice)
+		assert.Equal(t, 3, int(*decode.Spec.Replicas), "decode replicas slice %d", slice)
+	}
+
+	var all leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, fakeClient.List(ctx, &all))
+	assert.Len(t, all.Items, 4, "should create slices*roles LWS")
+}
+
+func TestSlicesScaleDownDeletesRemovedSlice(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	// Desired slices = 1, but slice 1's LWS already exist (as if slices was 2).
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("scale-slice", "default").
+		Slices(1).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		createSliceLWS(disaggregatedSet, 0, testControllerRolePrefill, revision),
+		createSliceLWS(disaggregatedSet, 0, testControllerRoleDecode, revision),
+		createSliceLWS(disaggregatedSet, 1, testControllerRolePrefill, revision),
+		createSliceLWS(disaggregatedSet, 1, testControllerRoleDecode, revision),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	// Slice 0 is kept.
+	s0, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NotNil(t, s0, "slice 0 prefill should be kept")
+
+	// Slice 1 (>= desired) is deleted.
+	s1p, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	assert.Nil(t, s1p, "slice 1 prefill should be deleted")
+	s1d, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRoleDecode))
+	assert.Nil(t, s1d, "slice 1 decode should be deleted")
 }
