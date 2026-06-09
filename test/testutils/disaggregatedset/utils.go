@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck
@@ -64,10 +65,16 @@ func GetProjectDir() (string, error) {
 	if err != nil {
 		return workingDir, fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	// Handle being run from test/e2e subdirectory
-	workingDir = strings.ReplaceAll(workingDir, "/test/e2e", "")
-	workingDir = strings.ReplaceAll(workingDir, "/test/utils", "")
-	return workingDir, nil
+
+	for dir := workingDir; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+
+		if parent := filepath.Dir(dir); parent == dir {
+			return "", fmt.Errorf("failed to find project directory from %q", workingDir)
+		}
+	}
 }
 
 // GetNonEmptyLines converts command output string into individual lines,
