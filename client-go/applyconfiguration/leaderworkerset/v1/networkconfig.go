@@ -27,6 +27,13 @@ type NetworkConfigApplyConfiguration struct {
 	// subdomainPolicy determines the policy that will be used when creating
 	// the headless service, defaults to shared
 	SubdomainPolicy *leaderworkersetv1.SubdomainPolicy `json:"subdomainPolicy,omitempty"`
+	// publishNotReadyAddresses controls whether the LWS-owned headless
+	// Services publish endpoints for pods that are not yet Ready. Publishing
+	// not-ready addresses is what makes peer FQDN (e.g. LWS_LEADER_ADDRESS)
+	// resolvable during the init-container phase. It defaults to true when
+	// unset, preserving the historical LWS behavior (not-ready addresses have
+	// always been published). Set it to false to disable publishing.
+	PublishNotReadyAddresses *bool `json:"publishNotReadyAddresses,omitempty"`
 }
 
 // NetworkConfigApplyConfiguration constructs a declarative configuration of the NetworkConfig type for use with
@@ -40,5 +47,13 @@ func NetworkConfig() *NetworkConfigApplyConfiguration {
 // If called multiple times, the SubdomainPolicy field is set to the value of the last call.
 func (b *NetworkConfigApplyConfiguration) WithSubdomainPolicy(value leaderworkersetv1.SubdomainPolicy) *NetworkConfigApplyConfiguration {
 	b.SubdomainPolicy = &value
+	return b
+}
+
+// WithPublishNotReadyAddresses sets the PublishNotReadyAddresses field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PublishNotReadyAddresses field is set to the value of the last call.
+func (b *NetworkConfigApplyConfiguration) WithPublishNotReadyAddresses(value bool) *NetworkConfigApplyConfiguration {
+	b.PublishNotReadyAddresses = &value
 	return b
 }

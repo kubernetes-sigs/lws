@@ -17,11 +17,16 @@ limitations under the License.
 package webhooks
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -182,5 +187,85 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}
 		})
+	}
+}
+
+func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
+	tests := []struct {
+		name      string
+		lws       *leaderworkerset.LeaderWorkerSet
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil MaxGroupRestarts is always allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(leaderworkerset.NoneRestartPolicy).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "MaxGroupRestarts with RecreateGroupOnPodRestart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+				MaxGroupRestarts(3).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "MaxGroupRestarts with None policy is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(leaderworkerset.NoneRestartPolicy).
+				MaxGroupRestarts(1).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+		},
+		{
+			name: "MaxGroupRestarts with RecreateGroupAfterStart is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(leaderworkerset.RecreateGroupAfterStart).
+				MaxGroupRestarts(0).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := r.generalValidate(tc.lws)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatalf("expected validation error, got none")
+				}
+				joined := ""
+				for _, e := range errs {
+					joined += e.Error() + "\n"
+				}
+				if !strings.Contains(joined, tc.errSubstr) {
+					t.Fatalf("expected error to contain %q, got %q", tc.errSubstr, joined)
+				}
+			} else if len(errs) != 0 {
+				t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
+			}
+		})
+	}
+}
+
+// Make sure the import is used: verify Update path with nil maxGroupRestarts
+// does not regress when previously set fields remain.
+func TestGeneralValidateNilMaxGroupRestartsUpdate(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
+	// explicitly nil
+	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](0)
+
+	r := &LeaderWorkerSetWebhook{}
+	// MaxGroupRestarts(0) with RecreateGroupOnPodRestart should pass generalValidate.
+	if errs := r.generalValidate(lws); len(errs) != 0 {
+		t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
 	}
 }
