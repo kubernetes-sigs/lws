@@ -120,6 +120,7 @@ type DisaggregatedSetStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // DisaggregatedSet is the Schema for the disaggregatedsets API
 type DisaggregatedSet struct {
@@ -127,7 +128,7 @@ type DisaggregatedSet struct {
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// spec defines the desired state of DisaggregatedSet
 	// +required
@@ -135,7 +136,7 @@ type DisaggregatedSet struct {
 
 	// status defines the observed state of DisaggregatedSet
 	// +optional
-	Status DisaggregatedSetStatus `json:"status,omitzero"`
+	Status DisaggregatedSetStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -143,7 +144,7 @@ type DisaggregatedSet struct {
 // DisaggregatedSetList contains a list of DisaggregatedSet
 type DisaggregatedSetList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DisaggregatedSet `json:"items"`
 }
 
