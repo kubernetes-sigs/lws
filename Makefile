@@ -69,7 +69,7 @@ ARTIFACTS ?= $(PROJECT_DIR)/bin
 
 INTEGRATION_TARGET ?= ./test/integration/...
 
-E2E_KIND_VERSION ?= kindest/node:v1.35.0
+E2E_KIND_VERSION ?= kindest/node:v1.36.1
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
 
@@ -160,7 +160,7 @@ test: manifests fmt vet envtest gotestsum ## Run tests.
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
 kind:
-	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.27.0
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.32.0
 
 .PHONY: kind-image-build
 kind-image-build: PLATFORMS=linux/amd64
