@@ -166,6 +166,11 @@ func (in *LeaderWorkerTemplate) DeepCopyInto(out *LeaderWorkerTemplate) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MaxGroupRestarts != nil {
+		in, out := &in.MaxGroupRestarts, &out.MaxGroupRestarts
+		*out = new(int32)
+		**out = **in
+	}
 	if in.SubGroupPolicy != nil {
 		in, out := &in.SubGroupPolicy, &out.SubGroupPolicy
 		*out = new(SubGroupPolicy)
@@ -201,6 +206,11 @@ func (in *NetworkConfig) DeepCopyInto(out *NetworkConfig) {
 	if in.SubdomainPolicy != nil {
 		in, out := &in.SubdomainPolicy, &out.SubdomainPolicy
 		*out = new(SubdomainPolicy)
+		**out = **in
+	}
+	if in.PublishNotReadyAddresses != nil {
+		in, out := &in.PublishNotReadyAddresses, &out.PublishNotReadyAddresses
+		*out = new(bool)
 		**out = **in
 	}
 }
