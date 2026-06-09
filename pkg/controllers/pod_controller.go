@@ -255,6 +255,29 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
+	// If a restart budget is configured, enforce it: any recreate-triggering
+	// failure contributes to the same counter. nil keeps the unbounded legacy
+	// behavior.
+	if leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+		count, err := r.getGroupRestartCount(&leader)
+		if err != nil {
+			return false, fmt.Errorf("reading group restart count for %s: %w", leader.Name, err)
+		}
+		limit := *leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+		if count >= limit {
+			// Still bump the annotation so the LWS-level reconciler
+			// (hasFailedGroup) can observe the exhausted budget and surface
+			// the Failed condition, even though we do not delete the leader.
+			if err := r.incrementGroupRestartCount(ctx, &leader, count+1); err != nil {
+				return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+			}
+			r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeWarning, "MaxGroupRestartsExceeded", Delete, fmt.Sprintf("Skip recreating group %s: reached maxGroupRestarts=%d", leader.Labels[leaderworkerset.GroupIndexLabelKey], limit))
+			return false, nil
+		}
+		if err := r.incrementGroupRestartCount(ctx, &leader, count+1); err != nil {
+			return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+		}
+	}
 	deletionOpt := metav1.DeletePropagationForeground
 	if err := r.Delete(ctx, &leader, &client.DeleteOptions{
 		PropagationPolicy: &deletionOpt,
@@ -263,6 +286,37 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
+}
+
+// getGroupRestartCount reads the group-restart-count annotation on the leader
+// pod. Missing annotation is treated as zero; an invalid annotation is an
+// error so the operator notices the corruption rather than silently resetting
+// the budget.
+func (r *PodReconciler) getGroupRestartCount(leader *corev1.Pod) (int32, error) {
+	raw, ok := leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey]
+	if !ok || raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s annotation %q: %w", leaderworkerset.GroupRestartCountAnnotationKey, raw, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("invalid %s annotation %q: must be non-negative", leaderworkerset.GroupRestartCountAnnotationKey, raw)
+	}
+	return int32(v), nil
+}
+
+// incrementGroupRestartCount sets the group-restart-count annotation on the
+// leader pod to the supplied value. We only patch the annotation we own so
+// unrelated pod updates do not get clobbered.
+func (r *PodReconciler) incrementGroupRestartCount(ctx context.Context, leader *corev1.Pod, next int32) error {
+	patch := client.MergeFrom(leader.DeepCopy())
+	if leader.Annotations == nil {
+		leader.Annotations = map[string]string{}
+	}
+	leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = strconv.FormatInt(int64(next), 10)
+	return r.Patch(ctx, leader, patch)
 }
 
 func (r *PodReconciler) workerPodBelongsToLeader(ctx context.Context, pod corev1.Pod, leader corev1.Pod) (bool, error) {

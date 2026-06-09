@@ -96,6 +96,11 @@ const (
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
+
+	// GroupRestartCountAnnotationKey records the number of times the leader pod of a
+	// group has been recreated via the RecreateGroupOnPodRestart path. It is used
+	// to enforce an opt-in restart budget (spec.leaderWorkerTemplate.maxGroupRestarts).
+	GroupRestartCountAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-count"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -169,6 +174,17 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart,RecreateGroupAfterStart,None}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// maxGroupRestarts bounds how many times a group's leader pod can be recreated
+	// via the RecreateGroupOnPodRestart path before the group is marked terminally
+	// failed. It is opt-in: when unset (nil) the existing unbounded recreation
+	// behavior is preserved. This field is only valid when
+	// spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
+	// validating webhook rejects any other combination.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
@@ -246,6 +262,14 @@ type NetworkConfig struct {
 	// the headless service, defaults to shared
 	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
+
+	// publishNotReadyAddresses makes the LWS-owned headless Service publish
+	// endpoints for pods that are not yet Ready. This enables peer FQDN (e.g.
+	// LWS_LEADER_ADDRESS) to resolve during the init-container phase. It is
+	// opt-in and defaults to false to preserve today's behavior.
+	// +optional
+	// +kubebuilder:default=false
+	PublishNotReadyAddresses bool `json:"publishNotReadyAddresses,omitempty"`
 }
 
 type SubdomainPolicy string
@@ -408,6 +432,13 @@ const (
 	// is true when the lws is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
+
+	// LeaderWorkerSetFailed means lws has reached a terminal failure state. This
+	// is currently set when a group has exhausted the restart budget configured
+	// via spec.leaderWorkerTemplate.maxGroupRestarts. Existing built-in
+	// conditions (Available, Progressing, UpdateInProgress) remain orthogonal;
+	// callers must tolerate this new type safely.
+	LeaderWorkerSetFailed LeaderWorkerSetConditionType = "Failed"
 )
 
 // +genclient

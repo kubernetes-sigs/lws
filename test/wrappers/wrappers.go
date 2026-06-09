@@ -146,6 +146,22 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) PublishNotReadyAddresses(v bool) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Spec.NetworkConfig == nil {
+		subdomainPolicy := leaderworkerset.SubdomainShared
+		lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
+			SubdomainPolicy: &subdomainPolicy,
+		}
+	}
+	lwsWrapper.Spec.NetworkConfig.PublishNotReadyAddresses = v
+	return lwsWrapper
+}
+
+func (lwsWrapper *LeaderWorkerSetWrapper) MaxGroupRestarts(n int32) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](n)
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.NetworkConfig = nil
 	return lwsWrapper

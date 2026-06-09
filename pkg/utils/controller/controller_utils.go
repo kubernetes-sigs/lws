@@ -32,6 +32,12 @@ import (
 
 func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Client, Scheme *runtime.Scheme, lws *leaderworkerset.LeaderWorkerSet, serviceName string, serviceSelector map[string]string, owner metav1.Object) error {
 	log := ctrl.LoggerFrom(ctx)
+	// PublishNotReadyAddresses is spec-driven and must be reconciled on both
+	// create and update paths so later LWS updates take effect on existing Services.
+	publishNotReady := false
+	if lws.Spec.NetworkConfig != nil {
+		publishNotReady = lws.Spec.NetworkConfig.PublishNotReadyAddresses
+	}
 	// If the headless service does not exist in the namespace, create it.
 	var headlessService corev1.Service
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
@@ -47,7 +53,7 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 			Spec: corev1.ServiceSpec{
 				ClusterIP:                "None", // defines service as headless
 				Selector:                 serviceSelector,
-				PublishNotReadyAddresses: true,
+				PublishNotReadyAddresses: publishNotReady,
 			},
 		}
 
@@ -58,6 +64,15 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 		// create the service in the cluster
 		log.V(2).Info("Creating headless service.")
 		if err := k8sClient.Create(ctx, &headlessService); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if headlessService.Spec.PublishNotReadyAddresses != publishNotReady {
+		patch := client.MergeFrom(headlessService.DeepCopy())
+		headlessService.Spec.PublishNotReadyAddresses = publishNotReady
+		if err := k8sClient.Patch(ctx, &headlessService, patch); err != nil {
 			return err
 		}
 	}

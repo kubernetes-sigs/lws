@@ -181,6 +181,18 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
+	// maxGroupRestarts is only meaningful under RecreateGroupOnPodRestart. Reject
+	// it explicitly for any other policy so that the counter has a deterministic
+	// contract.
+	if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil &&
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("leaderWorkerTemplate", "maxGroupRestarts"),
+			*lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts,
+			"maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+		))
+	}
+
 	return allErrs
 }
 
