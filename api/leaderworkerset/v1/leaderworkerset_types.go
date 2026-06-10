@@ -101,6 +101,10 @@ const (
 	// group has been recreated via the RecreateGroupOnPodRestart path. It is used
 	// to enforce an opt-in restart budget (spec.leaderWorkerTemplate.maxGroupRestarts).
 	GroupRestartCountAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-count"
+
+	// GroupRestartCountsAnnotationKey stores per-group restart counts on the LWS object
+	// so the budget survives leader pod recreation.
+	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
