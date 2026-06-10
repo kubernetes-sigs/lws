@@ -252,6 +252,24 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				labels := a.GetLabels()
+				if labels == nil {
+					return nil
+				}
+				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
+				}
+				name := labels[leaderworkerset.SetNameLabelKey]
+				if name == "" {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Name:      name,
+					Namespace: a.GetNamespace(),
+				}}}
+			})).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 				return []reconcile.Request{
