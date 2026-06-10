@@ -72,11 +72,15 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 		}
 
 		wantPublishNotReady := false
+		subdomainPolicy := leaderworkerset.SubdomainShared
 		if lws.Spec.NetworkConfig != nil {
 			wantPublishNotReady = lws.Spec.NetworkConfig.PublishNotReadyAddresses
+			if lws.Spec.NetworkConfig.SubdomainPolicy != nil {
+				subdomainPolicy = *lws.Spec.NetworkConfig.SubdomainPolicy
+			}
 		}
 
-		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if subdomainPolicy == leaderworkerset.SubdomainShared {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
