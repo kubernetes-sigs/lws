@@ -952,7 +952,7 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 }
 
 // hasFailedGroup reports whether any leader pod carries a group-restart-count
-// annotation that meets or exceeds the configured maxGroupRestarts budget. The
+// annotation that has exceeded the configured maxGroupRestarts budget. The
 // annotation is the source of truth enforced by pod_controller.go. Invalid
 // annotations are surfaced as reconcile errors instead of being coerced into a
 // terminal Failed condition.
@@ -973,7 +973,7 @@ func (r *LeaderWorkerSetReconciler) hasFailedGroup(ctx context.Context, lws *lea
 			log.Error(err, "invalid group-restart-count annotation", "pod", pod.Name, "value", raw)
 			return false, fmt.Errorf("invalid %s annotation on leader pod %s: %w", leaderworkerset.GroupRestartCountAnnotationKey, pod.Name, err)
 		}
-		if int32(v) >= limit {
+		if int32(v) > limit {
 			return true, nil
 		}
 	}

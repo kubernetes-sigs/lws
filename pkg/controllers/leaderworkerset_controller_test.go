@@ -1257,8 +1257,17 @@ func TestHasFailedGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
 	}
+	if failed {
+		t.Fatal("count at limit should not trigger Failed")
+	}
+
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = "3"
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
 	if !failed {
-		t.Fatal("count at limit should trigger Failed")
+		t.Fatal("count above limit should trigger Failed")
 	}
 
 	// nil maxGroupRestarts disables detection entirely.

@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -99,6 +100,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// worker pods' reconciliation is only done to handle restart policy
 	if !podutils.LeaderPod(pod) {
 		return ctrl.Result{}, nil
+	}
+
+	if err := r.syncLeaderRestartCountAnnotation(ctx, &leaderWorkerSet, &pod); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// validate leader's annotations to prevent infinite StatefulSet creation loops
@@ -259,7 +264,14 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	// failure contributes to the same counter. nil keeps the unbounded legacy
 	// behavior.
 	if leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
-		count, err := r.getGroupRestartCount(&leader)
+		groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+		count, err := r.getPersistedGroupRestartCount(&leaderWorkerSet, groupIndex)
+		if err != nil {
+			return false, fmt.Errorf("reading persisted group restart count for %s: %w", leader.Name, err)
+		}
+		if count == 0 {
+			count, err = r.getGroupRestartCount(&leader)
+		}
 		if err != nil {
 			return false, fmt.Errorf("reading group restart count for %s: %w", leader.Name, err)
 		}
@@ -268,13 +280,13 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			// Still bump the annotation so the LWS-level reconciler
 			// (hasFailedGroup) can observe the exhausted budget and surface
 			// the Failed condition, even though we do not delete the leader.
-			if err := r.incrementGroupRestartCount(ctx, &leader, count+1); err != nil {
+			if err := r.incrementGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
 				return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 			}
 			r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeWarning, "MaxGroupRestartsExceeded", Delete, fmt.Sprintf("Skip recreating group %s: reached maxGroupRestarts=%d", leader.Labels[leaderworkerset.GroupIndexLabelKey], limit))
 			return false, nil
 		}
-		if err := r.incrementGroupRestartCount(ctx, &leader, count+1); err != nil {
+		if err := r.incrementGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
 			return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 		}
 	}
@@ -307,15 +319,80 @@ func (r *PodReconciler) getGroupRestartCount(leader *corev1.Pod) (int32, error) 
 	return int32(v), nil
 }
 
-// incrementGroupRestartCount sets the group-restart-count annotation on the
-// leader pod to the supplied value. We only patch the annotation we own so
-// unrelated pod updates do not get clobbered.
-func (r *PodReconciler) incrementGroupRestartCount(ctx context.Context, leader *corev1.Pod, next int32) error {
+func parseGroupRestartCounts(raw string) (map[string]int32, error) {
+	if raw == "" {
+		return map[string]int32{}, nil
+	}
+	counts := map[string]int32{}
+	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.LeaderWorkerSet, groupIndex string) (int32, error) {
+	if lws.Annotations == nil {
+		return 0, nil
+	}
+	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		return 0, err
+	}
+	return counts[groupIndex], nil
+}
+
+func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, groupIndex string, next int32) error {
+	patch := client.MergeFrom(lws.DeepCopy())
+	if lws.Annotations == nil {
+		lws.Annotations = map[string]string{}
+	}
+	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		return err
+	}
+	counts[groupIndex] = next
+	raw, err := json.Marshal(counts)
+	if err != nil {
+		return err
+	}
+	lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
+	return r.Patch(ctx, lws, patch)
+}
+
+// incrementGroupRestartCount stores the next count on the LWS object and on the
+// current leader pod so the budget survives leader recreation and remains visible
+// on the active leader.
+func (r *PodReconciler) incrementGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
+	groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+	if err := r.persistGroupRestartCount(ctx, lws, groupIndex, next); err != nil {
+		return err
+	}
 	patch := client.MergeFrom(leader.DeepCopy())
 	if leader.Annotations == nil {
 		leader.Annotations = map[string]string{}
 	}
 	leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = strconv.FormatInt(int64(next), 10)
+	return r.Patch(ctx, leader, patch)
+}
+
+func (r *PodReconciler) syncLeaderRestartCountAnnotation(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) error {
+	groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+	count, err := r.getPersistedGroupRestartCount(lws, groupIndex)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	want := strconv.FormatInt(int64(count), 10)
+	if leader.Annotations != nil && leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] == want {
+		return nil
+	}
+	patch := client.MergeFrom(leader.DeepCopy())
+	if leader.Annotations == nil {
+		leader.Annotations = map[string]string{}
+	}
+	leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = want
 	return r.Patch(ctx, leader, patch)
 }
 
