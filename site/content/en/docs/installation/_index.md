@@ -93,11 +93,11 @@ helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
   --wait --timeout 300s
 ```
 
-{{% alert title="Warning" color="warning" %}}
-Do not run `helm uninstall` followed by `helm install` to refresh CRDs.
-`helm uninstall` deletes the CRDs, which cascades to the deletion of every
-`LeaderWorkerSet` custom resource in the cluster. Always upgrade in place and
-reconcile the CRDs with the `kubectl apply` step above.
+{{% alert title="Note" color="info" %}}
+`helm upgrade` does not update CRD schemas — Helm never modifies CRDs placed
+in the `crds/` directory after the initial `helm install`, and does not delete
+them on `helm uninstall` either. Always reconcile CRD schemas explicitly with
+the `kubectl apply` step above before upgrading the chart.
 {{% /alert %}}
 
 ### Uninstall

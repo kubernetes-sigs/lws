@@ -94,10 +94,11 @@ kubectl apply --server-side --force-conflicts \
 helm upgrade lws charts/lws --namespace lws-system
 ```
 
-> **Note**: do not run `helm uninstall` followed by `helm install` to "refresh"
-> CRDs. Uninstalling deletes the CRDs, which cascades to the deletion of every
-> `LeaderWorkerSet` and `DisaggregatedSet` custom resource in the cluster. Always
-> upgrade in place and reconcile CRDs with the `kubectl apply` step above.
+> **Note**: neither `helm upgrade` nor `helm uninstall` + `helm install` will
+> update CRD schemas — Helm never modifies CRDs placed in the `crds/` directory
+> after the initial install, and does not delete them on `helm uninstall` either.
+> Always reconcile CRD schemas explicitly with the `kubectl apply` step above
+> before upgrading.
 
 ### Configuration
 
