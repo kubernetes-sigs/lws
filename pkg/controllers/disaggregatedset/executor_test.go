@@ -603,7 +603,7 @@ func TestGetRoleConfigs(t *testing.T) {
 }
 
 // =============================================================================
-// Unit Tests for extractRollingUpdateConfig
+// Unit Tests for extractRollingUpdateConfigMap
 // =============================================================================
 
 func TestExtractRollingUpdateConfig(t *testing.T) {
@@ -672,12 +672,12 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames)
+			config := extractRollingUpdateConfigMap(ds, roleNames)
 
-			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
-			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
-			assert.Equal(t, tc.expectedDecodeSurge, config[1].MaxSurge)
-			assert.Equal(t, tc.expectedDecodeUnavail, config[1].MaxUnavailable)
+			assert.Equal(t, tc.expectedPrefillSurge, config[testRolePrefill].MaxSurge)
+			assert.Equal(t, tc.expectedPrefillUnavail, config[testRolePrefill].MaxUnavailable)
+			assert.Equal(t, tc.expectedDecodeSurge, config[testRoleDecode].MaxSurge)
+			assert.Equal(t, tc.expectedDecodeUnavail, config[testRoleDecode].MaxUnavailable)
 		})
 	}
 }
@@ -781,12 +781,12 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames)
+			config := extractRollingUpdateConfigMap(ds, roleNames)
 
-			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
-			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
-			assert.Equal(t, tc.expectedDecodeSurge, config[1].MaxSurge)
-			assert.Equal(t, tc.expectedDecodeUnavail, config[1].MaxUnavailable)
+			assert.Equal(t, tc.expectedPrefillSurge, config[testRolePrefill].MaxSurge)
+			assert.Equal(t, tc.expectedPrefillUnavail, config[testRolePrefill].MaxUnavailable)
+			assert.Equal(t, tc.expectedDecodeSurge, config[testRoleDecode].MaxSurge)
+			assert.Equal(t, tc.expectedDecodeUnavail, config[testRoleDecode].MaxUnavailable)
 		})
 	}
 }
@@ -889,13 +889,13 @@ func TestScaleDownOld(t *testing.T) {
 			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
 			// Convert budget to current/target format
-			current := RoleReplicaState{
-				grouped.GetTotalReplicasPerRole(testRolePrefill),
-				grouped.GetTotalReplicasPerRole(testRoleDecode),
+			current := map[string]int{
+				testRolePrefill: grouped.GetTotalReplicasPerRole(testRolePrefill),
+				testRoleDecode:  grouped.GetTotalReplicasPerRole(testRoleDecode),
 			}
-			target := RoleReplicaState{
-				current[0] - tc.prefillBudget,
-				current[1] - tc.decodeBudget,
+			target := map[string]RoleStepState{
+				testRolePrefill: {Replicas: current[testRolePrefill] - tc.prefillBudget},
+				testRoleDecode:  {Replicas: current[testRoleDecode] - tc.decodeBudget},
 			}
 			err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target)
 			require.NoError(t, err)
@@ -985,15 +985,15 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
 
 			// Convert budget to current/target format for 3 roles
-			current := RoleReplicaState{
-				grouped.GetTotalReplicasPerRole("prefill"),
-				grouped.GetTotalReplicasPerRole("decode"),
-				grouped.GetTotalReplicasPerRole("encode"), // 0 since it doesn't exist
+			current := map[string]int{
+				"prefill": grouped.GetTotalReplicasPerRole("prefill"),
+				"decode":  grouped.GetTotalReplicasPerRole("decode"),
+				"encode":  grouped.GetTotalReplicasPerRole("encode"), // 0 since it doesn't exist
 			}
-			target := RoleReplicaState{
-				current[0] - tc.prefillBudget,
-				current[1] - tc.decodeBudget,
-				current[2] - tc.encodeBudget,
+			target := map[string]RoleStepState{
+				"prefill": {Replicas: current["prefill"] - tc.prefillBudget},
+				"decode":  {Replicas: current["decode"] - tc.decodeBudget},
+				"encode":  {Replicas: current["encode"] - tc.encodeBudget},
 			}
 			err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target)
 			require.NoError(t, err)
@@ -1058,8 +1058,14 @@ func TestScaleUpNew(t *testing.T) {
 				},
 			}
 
-			current := RoleReplicaState{tc.workloadPrefill, tc.workloadDecode}
-			target := RoleReplicaState{tc.targetPrefill, tc.targetDecode}
+			current := map[string]int{
+				testRolePrefill: tc.workloadPrefill,
+				testRoleDecode:  tc.workloadDecode,
+			}
+			target := map[string]RoleStepState{
+				testRolePrefill: {Replicas: tc.targetPrefill},
+				testRoleDecode:  {Replicas: tc.targetDecode},
+			}
 			err := executor.scaleUpNew(context.TODO(), ds, newRevision, roleNames, specRoleSet, current, target)
 			require.NoError(t, err)
 
@@ -1153,14 +1159,17 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 
 	testCases := []abcExecutorScenario{
 		{
+			// New planner scales up 1 and drains 1 simultaneously (newest-first drain).
 			name: "first step scales up C without drain", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 0, cDecode: 0,
-			expectedA: [2]int32{2, 2}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{1, 1},
+			expectedA: [2]int32{2, 2}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{1, 1},
 		},
 		{
-			name: "C scales up while B stays", aPrefill: 0, aDecode: 0, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
-			expectedA: [2]int32{0, 0}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{3, 3},
+			// New planner: old=2, target=4, ceiling=max(2,4)+1=5. Scale up C and drain B.
+			name: "C scales up while B drains", aPrefill: 0, aDecode: 0, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
+			expectedA: [2]int32{0, 0}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{3, 3},
 		},
 		{
+			// New planner: total old=4, target=4, drain 1 from newest (B).
 			name: "drains newest old workload first", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
 			expectedA: [2]int32{2, 2}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{2, 2},
 		},

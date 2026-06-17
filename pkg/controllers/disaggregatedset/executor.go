@@ -137,7 +137,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldRevisions)
 
-	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
+	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoleSet, specRoleSet)...)
 
 	// A revision is "stable" when every role's LWS has ReadyReplicas == Replicas,
 	// meaning all pods from the previous scale step are Running and Ready.
@@ -147,10 +147,10 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
-	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
+	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
 
-	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
+	nextStep := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
@@ -186,7 +186,7 @@ func buildRoleSets(specRoleNames []string, oldRevisions disaggregatedsetutils.Re
 	return spec, old
 }
 
-func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
+func removedRoleNames(oldRoleSet, specRoleSet map[string]bool) []string {
 	var removed []string
 	for role := range oldRoleSet {
 		if !specRoleSet[role] {
@@ -196,25 +196,27 @@ func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
 	return removed
 }
 
-func buildPlannerState(
+func buildPlannerStateMaps(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
-	n := len(allRoleNames)
-	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
+) (initialOld, currentOld, currentNew, targetNew map[string]int) {
+	initialOld = make(map[string]int, len(allRoleNames))
+	currentOld = make(map[string]int, len(allRoleNames))
+	currentNew = make(map[string]int, len(allRoleNames))
+	targetNew = make(map[string]int, len(allRoleNames))
 
-	for i, roleName := range allRoleNames {
-		initialOld[i] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
-		currentOld[i] = oldRevisions.GetTotalReplicasPerRole(roleName)
+	for _, roleName := range allRoleNames {
+		initialOld[roleName] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
+		currentOld[roleName] = oldRevisions.GetTotalReplicasPerRole(roleName)
 
 		if specRoleSet[roleName] {
 			if lws := newRevision.Roles[roleName]; lws != nil {
-				currentNew[i] = int(getLWSReplicas(lws))
+				currentNew[roleName] = int(getLWSReplicas(lws))
 			}
-			targetNew[i] = getTargetReplicas(ds, roleName)
+			targetNew[roleName] = getTargetReplicas(ds, roleName)
 		}
 	}
 	return
@@ -232,37 +234,40 @@ func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string)
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
-	config := DefaultRollingUpdateConfig(len(allRoleNames))
-
-	roleIndex := make(map[string]int, len(allRoleNames))
-	for i, name := range allRoleNames {
-		roleIndex[name] = i
+func extractRollingUpdateConfigMap(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) map[string]RollingUpdateConfig {
+	config := make(map[string]RollingUpdateConfig, len(allRoleNames))
+	for _, name := range allRoleNames {
+		config[name] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
 	}
 
 	for _, role := range ds.Spec.Roles {
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
-			i := roleIndex[role.Name]
 			replicas := getTargetReplicas(ds, role.Name)
-			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
-			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
+			cfg := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
 			if unavail > 0 {
-				config[i].MaxUnavailable = unavail
-				config[i].MaxSurge = surge
+				cfg.MaxUnavailable = unavail
+				cfg.MaxSurge = surge
 			} else if surge > 0 {
-				config[i].MaxSurge = surge
+				cfg.MaxSurge = surge
 			}
+			config[role.Name] = cfg
 		}
 	}
 	return config
 }
 
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
-	args := make([]interface{}, 0, len(roleNames)*4)
-	for i, name := range roleNames {
-		args = append(args, "past"+name, step.Past[i], "new"+name, step.New[i])
+	args := make([]interface{}, 0, len(roleNames)*6)
+	for _, name := range roleNames {
+		past := step.Past[name]
+		new := step.New[name]
+		args = append(args,
+			"past_"+name, past.Replicas,
+			"new_"+name, new.Replicas,
+			"sync_"+name, fmt.Sprintf("%d.%d", new.CrossRoleStep, new.RoleStep),
+		)
 	}
 	return args
 }
@@ -309,20 +314,22 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 	newRevision disaggregatedsetutils.RevisionRoles,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
-	current, target RoleReplicaState,
+	currentNew map[string]int,
+	targetNew map[string]RoleStepState,
 ) error {
 	log := logf.FromContext(ctx)
-	for i, name := range allRoleNames {
-		if !specRoleSet[name] || current[i] >= target[i] {
+	for _, name := range allRoleNames {
+		if !specRoleSet[name] || currentNew[name] >= targetNew[name].Replicas {
 			continue
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, newRevision.Revision)
-		log.Info("Scaling up", "lws", lwsName, "from", current[i], "to", target[i])
-		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, target[i]); err != nil {
+		log.Info("Scaling up", "lws", lwsName, "from", currentNew[name], "to", targetNew[name].Replicas,
+			"syncPoint", fmt.Sprintf("%d.%d", targetNew[name].CrossRoleStep, targetNew[name].RoleStep))
+		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, targetNew[name].Replicas); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, current[i], target[i])
+			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentNew[name], targetNew[name].Replicas)
 	}
 	return nil
 }
@@ -332,16 +339,24 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
-	current, target RoleReplicaState,
+	currentOld map[string]int,
+	targetOld map[string]RoleStepState,
 ) error {
-	budget := make([]int, len(roleNames))
-	for i := range roleNames {
-		budget[i] = current[i] - target[i]
+	budget := make(map[string]int, len(roleNames))
+	for _, name := range roleNames {
+		budget[name] = currentOld[name] - targetOld[name].Replicas
 	}
 
 	log := logf.FromContext(ctx)
 	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
-		if allZero(budget) {
+		allDone := true
+		for _, name := range roleNames {
+			if budget[name] > 0 {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
 			break
 		}
 
@@ -349,13 +364,13 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		plannedDrain := make(map[string]int)
 		triggersCoordinated := make(map[string]bool)
 
-		for i, name := range roleNames {
+		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			drain := min(budget[i], replicas)
+			drain := min(budget[name], replicas)
 			plannedDrain[name] = drain
 			newReplicas[name] = replicas - drain
 			if newReplicas[name] == 0 {
@@ -372,7 +387,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 
-		for i, name := range roleNames {
+		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
@@ -390,20 +405,11 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
 
 			if triggersCoordinated[name] || !anyTriggered {
-				budget[i] -= plannedDrain[name]
+				budget[name] -= plannedDrain[name]
 			}
 		}
 	}
 	return nil
-}
-
-func allZero(s []int) bool {
-	for _, v := range s {
-		if v > 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // --- LWS creation ---

@@ -569,19 +569,21 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				TargetDecode:  8,
 				PrefillSurge:  intstr.FromInt(2),
 				DecodeSurge:   intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":10,"decode":2}' --target '{"prefill":6,"decode":8}' --surge '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner (each revision follows its own curve)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 2: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 2, NewDecode: 2},  // step 3: new role0 +2, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 4: old role0 -2, old role1 -1
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 5: new role0 +1, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 6: new role0 +1, new role1 +1
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 7: old role0 -2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new role0 +1, new role1 +2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new role0 +1, new role1 +1
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old role0 -2, old role1 -1
+					{OldPrefill: 9, OldDecode: 1, NewPrefill: 1, NewDecode: 1},  // step 1
+					{OldPrefill: 8, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 2
+					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 3},  // step 3
+					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 4
+					{OldPrefill: 6, OldDecode: 0, NewPrefill: 4, NewDecode: 5},  // step 5
+					{OldPrefill: 5, OldDecode: 0, NewPrefill: 5, NewDecode: 6},  // step 6
+					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 7},  // step 7
+					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 8
+					{OldPrefill: 3, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 9
+					{OldPrefill: 2, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10
+					{OldPrefill: 1, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 11
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 12
 				},
 			},
 			{
@@ -594,13 +596,13 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				DecodeSurge:    intstr.FromInt(0),
 				PrefillUnavail: intstr.FromInt(2),
 				DecodeUnavail:  intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":4,"decode":4}' --target '{"prefill":4,"decode":4}' --surge '{"prefill":0,"decode":0}' --unavailable '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner (1-at-a-time with sync points)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 4, OldDecode: 4, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1: drain 2 each
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2: scale up 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3: drain 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4: scale up 2 each
+					{OldPrefill: 3, OldDecode: 3, NewPrefill: 1, NewDecode: 1}, // step 1
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2
+					{OldPrefill: 1, OldDecode: 1, NewPrefill: 3, NewDecode: 3}, // step 3
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4
 				},
 			},
 		}
