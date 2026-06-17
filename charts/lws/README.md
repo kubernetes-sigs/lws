@@ -107,3 +107,10 @@ The following table lists the configurable parameters of the LWS chart and their
 | `tolerations`                              | Tolerations                                    | `{}`                                                |
 | `affinity`                                 | Affinity                                       | `{}`                                                |
 | `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |
+| `crdUpgrade.enabled`                       | Enable CRD upgrade Job (pre-install/pre-upgrade hook) | `true`                                       |
+| `crdUpgrade.ttlSecondsAfterFinished`       | TTL for completed CRD upgrade Jobs             | `259200` (3 days)                                   |
+| `crdUpgrade.image.repository`              | Repository for CRD upgrader image              | `registry.k8s.io/lws/lws-upgrade-crd`               |
+| `crdUpgrade.image.tag`                     | Tag for CRD upgrader image                     | `.Chart.AppVersion`                                 |
+| `crdUpgrade.image.pullPolicy`              | Pull policy for CRD upgrader image             | `IfNotPresent`                                      |
+| `crdUpgrade.tolerations`                   | Tolerations for CRD upgrader Job pod           | `[{operator: Exists}]`                              |
+| `crdUpgrade.nodeSelector`                  | Node selector for CRD upgrader Job pod         | `{}`                                                |

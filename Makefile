@@ -35,6 +35,8 @@ STAGING_IMAGE_REGISTRY := us-central1-docker.pkg.dev/k8s-staging-images
 IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
+CRD_UPGRADER_IMG ?= $(IMAGE_REGISTRY)/lws-upgrade-crd
+CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 IMG ?= $(IMAGE_REPO):$(GIT_TAG)
 # Output type of docker buildx build
 OUTPUT_TYPE ?= image
@@ -232,6 +234,14 @@ image-build:
 		$(PUSH) \
 		$(IMAGE_BUILD_EXTRA_OPTS) ./
 
+.PHONY: docker-build-crd-upgrader
+docker-build-crd-upgrader: ## Build docker image for CRD upgrader.
+	$(CONTAINER_TOOL) build -f $(CRD_UPGRADER_DOCKERFILE) -t $(CRD_UPGRADER_IMG):$(GIT_TAG) .
+
+.PHONY: docker-push-crd-upgrader
+docker-push-crd-upgrader: ## Push docker image for CRD upgrader.
+	docker push $(CRD_UPGRADER_IMG):$(GIT_TAG)
+
 .PHONY: image-push
 image-push: PUSH=--push
 image-push: image-build
@@ -241,6 +251,13 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx create --name project-v3-builder --use
 	- $(MAKE) image-build PUSH=$(PUSH)
 	- $(CONTAINER_TOOL) buildx rm project-v3-builder
+
+.PHONY: docker-buildx-push-crd-upgrader
+docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
+	- $(CONTAINER_TOOL) buildx create --name lws-crd-builder
+	$(CONTAINER_TOOL) buildx use lws-crd-builder
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag $(CRD_UPGRADER_IMG):$(GIT_TAG) -f $(CRD_UPGRADER_DOCKERFILE) .
+	- $(CONTAINER_TOOL) buildx rm lws-crd-builder
 
 ##@ Deployment
 
