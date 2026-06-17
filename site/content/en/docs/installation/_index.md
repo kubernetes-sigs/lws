@@ -17,6 +17,7 @@ description: >
 - [Install in a different namespace](#install-in-a-different-namespace)
 - [Optional: Use cert manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
 - [Install with Helm chart](#install-with-helm-chart)
+- [Enabling DisaggregatedSet](#enabling-disaggregatedset)
 
 <!-- /toc -->
 
@@ -145,6 +146,63 @@ supports cert rotation), instead of internal cert, follow the [cert manage guide
 ## Install with Helm chart
 
 Please refer to the release page for [helm charts][helm_charts].
+
+## Enabling DisaggregatedSet
+
+Starting from version **v0.9.0**, **DisaggregatedSet** is bundled directly into the core LeaderWorkerSet
+controller manager binary. No separate controller deployment or namespace is required.
+
+When you install LWS using kubectl or Kustomize, the DisaggregatedSet CRD and controller permissions
+are automatically included.
+
+If you are using Helm, pass `--set enableDisaggregatedSet=true` to also deploy the editor, viewer, and
+admin `ClusterRoles`, as well as the validating admission webhook for DisaggregatedSet:
+
+```shell
+CHART_VERSION=0.9.0
+helm install lws oci://registry.k8s.io/lws/charts/lws \
+  --version=$CHART_VERSION \
+  --namespace lws-system \
+  --create-namespace \
+  --set enableDisaggregatedSet=true \
+  --wait --timeout 300s
+```
+
+### Verify Installation
+
+1. Wait for the controller manager to become available:
+
+```shell
+kubectl wait deploy/lws-controller-manager -n lws-system \
+  --for=condition=available --timeout=5m
+```
+
+2. Confirm the DisaggregatedSet CRD is registered:
+
+```shell
+kubectl get crd disaggregatedsets.disaggregatedset.x-k8s.io
+```
+
+3. (Helm with webhooks enabled) Confirm the validating webhook configuration:
+
+```shell
+kubectl get validatingwebhookconfiguration lws-validating-webhook-configuration \
+  -o yaml | grep disaggregatedsets
+```
+
+### Upgrade from an older version
+
+Helm does not automatically install newly added CRDs during `helm upgrade`. If you are upgrading
+from a version older than v0.9.0, manually apply the CRD first:
+
+```shell
+kubectl apply --server-side \
+  -f https://raw.githubusercontent.com/kubernetes-sigs/lws/main/charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+
+helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
+  --namespace lws-system \
+  --set enableDisaggregatedSet=true
+```
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 [start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal

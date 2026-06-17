@@ -95,6 +95,6 @@ Use **DisaggregatedSet** when:
 ## Further Reading
 
 - [KEP-766: DisaggregatedSet design document](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet)
-- [Installation guide](/docs/installation/disaggregatedset/)
+- [Installation guide](/docs/installation/#enabling-disaggregatedset)
 - [API Reference](/docs/reference/disaggregatedset.v1/)
 - [Examples](/docs/examples/)

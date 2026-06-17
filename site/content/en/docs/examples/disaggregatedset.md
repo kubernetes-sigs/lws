@@ -26,7 +26,7 @@ kubectl wait deploy/lws-controller-manager \
   -n lws-system --for=condition=available --timeout=5m
 ```
 
-See the [installation guide](/docs/installation/disaggregatedset/) for setup instructions.
+See the [installation guide](/docs/installation/#enabling-disaggregatedset) for setup instructions.
 
 ---
 
@@ -120,13 +120,13 @@ spec:
 # Apply the manifest
 kubectl apply -f disagg-nginx-demo.yaml
 
-# Confirm both child LeaderWorkerSets were created
-kubectl get leaderworkerset -n default
+# Confirm both child LeaderWorkerSets were created using label selectors
+kubectl get leaderworkerset -n default -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo
 
-# Expected output:
-# NAME                          REPLICAS   READY   AGE
-# disagg-nginx-demo-prefill     2          2       30s
-# disagg-nginx-demo-decode      1          1       30s
+# Expected output (revision hash in name is generated dynamically):
+# NAME                                      REPLICAS   READY   AGE
+# disagg-nginx-demo-58f79fdb78-prefill      2          2       30s
+# disagg-nginx-demo-58f79fdb78-decode       1          1       30s
 
 # Check all pods are running
 kubectl get pods -n default -l component=disaggregation
@@ -232,32 +232,42 @@ spec:
 ```shell
 kubectl apply -f disagg-3role-demo.yaml
 
-# All three child LWS resources should appear
-kubectl get leaderworkerset -n default
-# NAME                         REPLICAS   READY   AGE
-# disagg-3role-demo-prefill    4          4       30s
-# disagg-3role-demo-decode     2          2       30s
-# disagg-3role-demo-encode     2          2       30s
+# All three child LWS resources should appear (revision hash generated dynamically)
+kubectl get leaderworkerset -n default -l disaggregatedset.x-k8s.io/name=disagg-3role-demo
+# NAME                                   REPLICAS   READY   AGE
+# disagg-3role-demo-58f79fdb78-prefill   4          4       30s
+# disagg-3role-demo-58f79fdb78-decode    2          2       30s
+# disagg-3role-demo-58f79fdb78-encode    2          2       30s
 ```
 
 ---
 
 ## Understanding Child LWS Names
 
-The DisaggregatedSet controller names each child `LeaderWorkerSet` as:
+The DisaggregatedSet controller names each child `LeaderWorkerSet` using a **revision hash** to track
+rollouts. The naming format is:
 
 ```
-<DisaggregatedSet-name>-<role-name>
+<DisaggregatedSet-name>-<revision-hash>-<role-name>
 ```
 
-For a `DisaggregatedSet` named `my-inference` with roles `prefill` and `decode`, the controller creates:
-- `my-inference-prefill`
-- `my-inference-decode`
+For example, a `DisaggregatedSet` named `my-inference` with roles `prefill` and `decode` creates:
+- `my-inference-58f79fdb78-prefill`
+- `my-inference-58f79fdb78-decode`
 
-You can list them with:
+> **Note:** The revision hash is dynamic and changes on each rollout. Never rely on hardcoded
+> child LWS names — always use label selectors to query them.
+
+You can list all child LWS resources for a given DisaggregatedSet with:
 
 ```shell
 kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=my-inference
+```
+
+To filter by role:
+
+```shell
+kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=my-inference,disaggregatedset.x-k8s.io/role=prefill
 ```
 
 ## Checking Status
@@ -266,8 +276,9 @@ kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=my-inference
 # Check the DisaggregatedSet overall status
 kubectl describe disaggregatedset disagg-nginx-demo
 
-# Check the status of a specific child LWS
-kubectl describe leaderworkerset disagg-nginx-demo-prefill
+# Check the status of child LWSes by label
+kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo \
+  -l disaggregatedset.x-k8s.io/role=prefill
 ```
 
 ## Cleanup

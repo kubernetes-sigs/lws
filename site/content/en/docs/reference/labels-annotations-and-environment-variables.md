@@ -16,6 +16,9 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/worker-index`           | The index or identity of the pod within the group.                                | 0                              | Pod                            |
 | `leaderworkerset.sigs.k8s.io/subgroup-index`         | Tracks which subgroup the pod is part of.                                         | 0                              | Pod (only if SubGroup is set)  |
 | `leaderworkerset.sigs.k8s.io/subgroup-key`           | Pods that are part of the same subgroup will have the same unique hash value.     | 92904e74...801                 | Pod (only if SubGroup is set)  |
+| `disaggregatedset.x-k8s.io/name`                     | The name of the DisaggregatedSet object to which these resources belong.          | disaggregatedset-sample        | LeaderWorkerSet, Service, Pod  |
+| `disaggregatedset.x-k8s.io/role`                     | The DisaggregatedSet role for the resource.                                       | prefill                        | LeaderWorkerSet, Service, Pod  |
+| `disaggregatedset.x-k8s.io/revision`                 | Revision hash used to track a DisaggregatedSet rollout.                           | a1b2c3d4                       | LeaderWorkerSet, Service, Pod  |
 
 # Annotations
 
@@ -29,6 +32,7 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/subgroup-size`               | The number of pods per subgroup.                                       | 2                                | Pod (only if SubGroup is set)                                                          |
 | `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` | Specifies the topology for exclusive 1:1 scheduling within a subgroup. | topologyKey                      | LeaderWorkerSet, Pod (only if SubGroup is set and subgroup-exclusive-topology is used) |
 | `leaderworkerset.sigs.k8s.io/leader-requests-tpus`        | Indicates if the leader pod requests TPU.                              | true                             | Pod (only if leader pod requests TPU)                                                  |
+| `disaggregatedset.x-k8s.io/initial-replicas`              | Initial replica count captured when a DisaggregatedSet rollout starts. | 2                                | LeaderWorkerSet                                                                         |
 
 # Environment Variables
 
