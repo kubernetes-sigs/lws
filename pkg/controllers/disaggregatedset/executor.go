@@ -101,14 +101,15 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	// annotation. The planner uses this as the baseline for proportional drain
 	// calculations, since Spec.Replicas changes as the rollout progresses.
 	for _, oldGrouped := range oldRevisions {
-		for roleName, roleLWS := range oldGrouped.Roles {
-			lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, oldGrouped.Revision, roleName)
+		for _, roleLWS := range oldGrouped.Roles {
 			replicas := 1
 			if roleLWS.Spec.Replicas != nil {
 				replicas = int(*roleLWS.Spec.Replicas)
 			}
-			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, lwsName, replicas); err != nil {
-				log.Error(err, "Failed to set initial-replicas annotation", "lws", lwsName)
+			// Address by the LWS's actual name so a legacy slice-0 object (whose name
+			// has no slice segment) is updated rather than missed.
+			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, roleLWS.Name, replicas); err != nil {
+				log.Error(err, "Failed to set initial-replicas annotation", "lws", roleLWS.Name)
 			}
 		}
 	}
@@ -166,7 +167,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	if err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, slice, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -334,7 +335,6 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 func (executor *RollingUpdateExecutor) scaleDownOld(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
 	current, target RoleReplicaState,
@@ -386,7 +386,8 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			if replicas <= newReplicas[name] {
 				continue
 			}
-			lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, wl.Revision, name)
+			// Address by the LWS's actual name so a legacy slice-0 object drains too.
+			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
 			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)

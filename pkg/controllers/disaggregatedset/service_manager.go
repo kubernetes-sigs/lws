@@ -19,7 +19,7 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
-	"slices"
+	"maps"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
@@ -56,42 +57,29 @@ func (manager *ServiceManager) ReconcileServices(
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(deployment)
 
-	var readyRevisions []string
-	for _, group := range revisionRoles {
-		rolesReady := true
-		logArgs := []interface{}{"revision", group.Revision}
-
-		for _, roleName := range roleNames {
-			lws, hasRole := group.Roles[roleName]
-			if !hasRole || lws.Status.ReadyReplicas < 1 {
-				rolesReady = false
-				break
-			}
-			logArgs = append(logArgs, roleName+"Ready", lws.Status.ReadyReplicas)
-		}
-
-		if rolesReady {
-			readyRevisions = append(readyRevisions, group.Revision)
-			log.V(1).Info("Revision is ready on all roles", logArgs...)
+	var targetGroup *disaggregatedsetutils.RevisionRoles
+	for i := range revisionRoles {
+		if revisionRoles[i].Revision == targetRevision {
+			targetGroup = &revisionRoles[i]
+			break
 		}
 	}
 
-	if len(readyRevisions) == 0 {
-		log.V(1).Info("No revisions are ready on all roles, skipping Service creation")
-		return nil
-	}
-
-	targetRevisionReady := slices.Contains(readyRevisions, targetRevision)
-
-	if !targetRevisionReady {
+	if targetGroup == nil || !revisionReadyOnAllRoles(*targetGroup, roleNames) {
 		log.V(1).Info("Target revision not ready on all roles, keeping existing services",
-			"targetRevision", targetRevision,
-			"readyRevisions", readyRevisions)
+			"targetRevision", targetRevision)
 		return nil
 	}
 
+	// Create one headless service per role, derived from the target revision's LWS so
+	// the selector matches that LWS's pods. A legacy slice-0 LWS yields a slice-agnostic
+	// service; a slice-aware LWS yields a slice-scoped one.
 	for _, roleName := range roleNames {
-		if err := manager.ensureService(ctx, deployment, slice, roleName, targetRevision); err != nil {
+		lws := targetGroup.Roles[roleName]
+		if lws == nil {
+			continue
+		}
+		if err := manager.ensureService(ctx, deployment, lws); err != nil {
 			return fmt.Errorf("failed to ensure service for %s: %w", roleName, err)
 		}
 	}
@@ -103,16 +91,26 @@ func (manager *ServiceManager) ReconcileServices(
 	return nil
 }
 
+// revisionReadyOnAllRoles reports whether every role has a ready LWS
+// (ReadyReplicas >= 1) in the group.
+func revisionReadyOnAllRoles(group disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
+	for _, roleName := range roleNames {
+		lws, hasRole := group.Roles[roleName]
+		if !hasRole || lws.Status.ReadyReplicas < 1 {
+			return false
+		}
+	}
+	return true
+}
+
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
-	roleName string,
-	revision string,
+	lws *leaderworkersetv1.LeaderWorkerSet,
 ) error {
 	log := logf.FromContext(ctx)
 
-	service := manager.buildService(deployment, slice, roleName, revision)
+	service := manager.buildService(deployment, lws)
 
 	if err := manager.client.Create(ctx, service); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -122,37 +120,33 @@ func (manager *ServiceManager) ensureService(
 		return fmt.Errorf("failed to create service %s: %w", service.Name, err)
 	}
 
-	log.V(1).Info("Created Service", "service", service.Name, "revision", revision, "role", roleName)
+	log.V(1).Info("Created Service", "service", service.Name)
 	return nil
 }
 
+// buildService builds the per-revision headless service for an LWS. The service is
+// named after the LWS (<lws>-prv) and its selector mirrors the LWS's own DS labels,
+// so it targets exactly that LWS's pods: a legacy slice-0 LWS (no slice label) yields
+// a slice-agnostic selector that matches its label-less pods, while a slice-aware LWS
+// yields a slice-scoped selector.
 func (manager *ServiceManager) buildService(
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
-	roleName string,
-	revision string,
+	lws *leaderworkersetv1.LeaderWorkerSet,
 ) *corev1.Service {
-	serviceName := GenerateServiceName(deployment.Name, slice, revision, roleName)
-
-	labels := map[string]string{
-		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-		disaggregatedsetv1.SliceLabelKey:    strconv.Itoa(slice),
-		disaggregatedsetv1.RoleLabelKey:     roleName,
-		disaggregatedsetv1.RevisionLabelKey: revision,
-	}
-
 	selector := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-		disaggregatedsetv1.SliceLabelKey:    strconv.Itoa(slice),
-		disaggregatedsetv1.RoleLabelKey:     roleName,
-		disaggregatedsetv1.RevisionLabelKey: revision,
+		disaggregatedsetv1.RoleLabelKey:     lws.Labels[disaggregatedsetv1.RoleLabelKey],
+		disaggregatedsetv1.RevisionLabelKey: lws.Labels[disaggregatedsetv1.RevisionLabelKey],
+	}
+	if disaggregatedsetutils.HasSliceLabel(lws.Labels) {
+		selector[disaggregatedsetv1.SliceLabelKey] = lws.Labels[disaggregatedsetv1.SliceLabelKey]
 	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
+			Name:      lws.Name + "-prv",
 			Namespace: deployment.Namespace,
-			Labels:    labels,
+			Labels:    maps.Clone(selector),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
@@ -180,34 +174,29 @@ func (manager *ServiceManager) cleanupDrainedServices(
 
 	readyRevisionSet := make(map[string]bool)
 	for _, group := range revisionRoles {
-		rolesReady := true
-		for _, roleName := range roleNames {
-			lws, hasRole := group.Roles[roleName]
-			if !hasRole || lws.Status.ReadyReplicas < 1 {
-				rolesReady = false
-				break
-			}
-		}
-		if rolesReady {
+		if revisionReadyOnAllRoles(group, roleNames) {
 			readyRevisionSet[group.Revision] = true
 		}
 	}
 
 	readyRevisionSet[targetRevision] = true
 
+	// List all of the DisaggregatedSet's services and filter to this slice client-side
+	// so a legacy slice-0 service (which has no slice label) is included in slice 0's
+	// cleanup and removed once its revision drains.
 	serviceList := &corev1.ServiceList{}
 	if err := manager.client.List(ctx, serviceList,
 		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{
-			disaggregatedsetv1.SetNameLabelKey: deployment.Name,
-			disaggregatedsetv1.SliceLabelKey:   strconv.Itoa(slice),
-		},
+		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
 	); err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for i := range serviceList.Items {
 		service := &serviceList.Items[i]
+		if !disaggregatedsetutils.SliceLabelMatches(service.Labels, slice) {
+			continue
+		}
 		serviceRevision := service.Labels[disaggregatedsetv1.RevisionLabelKey]
 
 		if !readyRevisionSet[serviceRevision] {
@@ -261,4 +250,20 @@ func (manager *ServiceManager) CleanupRemovedSlices(
 
 func GenerateServiceName(baseName string, slice int, revision, role string) string {
 	return fmt.Sprintf("%s-%d-%s-%s-prv", baseName, slice, revision, role)
+}
+
+// DeleteLegacyService deletes the pre-slices, slice-agnostic service for a role and
+// revision. Used during legacy slice-0 migration: the legacy service shares the target
+// revision, so per-revision drained cleanup never removes it.
+func (manager *ServiceManager) DeleteLegacyService(
+	ctx context.Context,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
+	revision, role string,
+) error {
+	name := disaggregatedsetutils.GenerateLegacyName(deployment.Name, revision, role) + "-prv"
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: deployment.Namespace}}
+	if err := manager.client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete legacy service %s: %w", name, err)
+	}
+	return nil
 }
