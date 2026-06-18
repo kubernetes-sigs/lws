@@ -138,14 +138,14 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return lws, nil
 }
 
-// List returns the LWS for a DisaggregatedSet. A slice < 0 matches all slices.
+// List returns the LWS for a DisaggregatedSet, filtered to one slice. A slice < 0
+// matches all slices. Slice 0 also matches legacy (pre-slices) LWS that carry no
+// slice label, so they are reconciled as slice 0. Filtering is client-side because
+// "slice label == 0 OR absent" cannot be expressed as a label selector.
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName string, slice int, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
-	if slice >= 0 {
-		labels[disaggregatedsetv1.SliceLabelKey] = strconv.Itoa(slice)
-	}
 	if role != "" {
 		labels[disaggregatedsetv1.RoleLabelKey] = role
 	}
@@ -154,11 +154,27 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", namespace, disaggDeploymentName, err)
 	}
 
-	result := make([]*leaderworkersetv1.LeaderWorkerSet, len(lwsObjList.Items))
+	result := make([]*leaderworkersetv1.LeaderWorkerSet, 0, len(lwsObjList.Items))
 	for i := range lwsObjList.Items {
-		result[i] = &lwsObjList.Items[i]
+		if disaggregatedsetutils.SliceLabelMatches(lwsObjList.Items[i].Labels, slice) {
+			result = append(result, &lwsObjList.Items[i])
+		}
 	}
 	return result, nil
+}
+
+// GetForRole returns the existing LWS for (slice, revision, role), or nil if none.
+// It looks up the slice-aware name and, for slice 0, falls back to the legacy
+// (pre-slices) name so a legacy object is adopted in place rather than duplicated.
+func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision, role string) (*leaderworkersetv1.LeaderWorkerSet, error) {
+	lws, err := manager.Get(ctx, ds.Namespace, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
+	if err != nil {
+		return nil, err
+	}
+	if lws != nil || slice != 0 {
+		return lws, nil
+	}
+	return manager.Get(ctx, ds.Namespace, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
 }
 
 func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, name string) error {

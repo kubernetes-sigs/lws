@@ -39,6 +39,20 @@ const (
 	testServiceRoleDecode  = "decode"
 )
 
+// readyLWS builds a slice-aware LWS fixture with the standard name and labels and a
+// given ready replica count. Services are derived from the LWS, so fixtures must
+// carry realistic names and labels.
+func readyLWS(dsName string, slice int, revision, role string, ready int32) *leaderworkersetv1.LeaderWorkerSet {
+	lws := &leaderworkersetv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   disaggregatedsetutils.GenerateName(dsName, slice, revision, role),
+			Labels: disaggregatedsetutils.GenerateLabels(dsName, slice, revision, role),
+		},
+	}
+	lws.Status.ReadyReplicas = ready
+	return lws
+}
+
 func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
@@ -54,8 +68,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}}, // not ready
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 0), // not ready
 				},
 			},
 		}
@@ -81,8 +95,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -116,8 +130,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -146,8 +160,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -176,8 +190,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "ef53f2d7",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "my-app-ef53f2d7-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("my-app", 0, "ef53f2d7", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("my-app", 0, "ef53f2d7", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -208,8 +222,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -241,8 +255,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-abc12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -292,8 +306,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -316,6 +330,46 @@ func TestServiceManager(t *testing.T) {
 			Namespace: deployment.Namespace,
 		}, newService)
 		require.NoError(t, err, "new service should exist")
+	})
+
+	t.Run("legacy slice-agnostic service is adopted and cleaned up on drain", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+
+		// A legacy (pre-slices) service: legacy name, no slice label.
+		legacyPrefill := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      disaggregatedsetutils.GenerateLegacyName(deployment.Name, "old12345", testServiceRolePrefill) + "-prv",
+				Namespace: deployment.Namespace,
+				Labels: map[string]string{
+					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+					disaggregatedsetv1.RoleLabelKey:     testServiceRolePrefill,
+					disaggregatedsetv1.RevisionLabelKey: "old12345",
+				},
+			},
+			Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+		}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, legacyPrefill).Build()
+		serviceManager := NewServiceManager(fakeClient, scheme)
+
+		// New slice-aware revision is ready; the legacy revision is drained.
+		revisionRoles := disaggregatedsetutils.RevisionRolesList{
+			{
+				Revision: "new12345",
+				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
+				},
+			},
+		}
+
+		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "new12345")
+		require.NoError(t, err)
+
+		// The legacy slice-agnostic service belongs to slice 0 and its revision is
+		// drained, so it should be deleted.
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefill.Name, Namespace: deployment.Namespace}, &corev1.Service{})
+		assert.Error(t, err, "legacy service should be deleted once its revision drains")
 	})
 
 	t.Run("no flip-flop when multiple revisions are ready during rolling update", func(t *testing.T) {
@@ -361,15 +415,15 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "old12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "old12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "old12345", testServiceRoleDecode, 2),
 				},
 			},
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 1}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -401,15 +455,15 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "old12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-old12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 0}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "old12345", testServiceRolePrefill, 0),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "old12345", testServiceRoleDecode, 0),
 				},
 			},
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-prefill"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
-					testServiceRoleDecode:  &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "test-new12345-decode"}, Status: leaderworkersetv1.LeaderWorkerSetStatus{ReadyReplicas: 2}},
+					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 2),
 				},
 			},
 		}

@@ -111,6 +111,12 @@ func makeLWS(opts ...func(*leaderworkersetv1.LeaderWorkerSet)) *leaderworkersetv
 	return lws
 }
 
+func withName(name string) func(*leaderworkersetv1.LeaderWorkerSet) {
+	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
+		lws.Name = name
+	}
+}
+
 func withReplicas(r int) func(*leaderworkersetv1.LeaderWorkerSet) {
 	return func(lws *leaderworkersetv1.LeaderWorkerSet) {
 		r32 := int32(r)
@@ -879,8 +885,8 @@ func TestScaleDownOld(t *testing.T) {
 				grouped = append(grouped, disaggregatedsetutils.RevisionRoles{
 					Revision: workload.revision,
 					Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-						testRolePrefill: makeLWS(withReplicas(int(workload.prefill)), withCreationTimestamp(creationTime)),
-						testRoleDecode:  makeLWS(withReplicas(int(workload.decode)), withCreationTimestamp(creationTime)),
+						testRolePrefill: makeLWS(withName(baseName+"-prefill"), withReplicas(int(workload.prefill)), withCreationTimestamp(creationTime)),
+						testRoleDecode:  makeLWS(withName(baseName+"-decode"), withReplicas(int(workload.decode)), withCreationTimestamp(creationTime)),
 					},
 				})
 			}
@@ -899,7 +905,7 @@ func TestScaleDownOld(t *testing.T) {
 				current[0] - tc.prefillBudget,
 				current[1] - tc.decodeBudget,
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, 0, grouped, roleNames, current, target)
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target)
 			require.NoError(t, err)
 
 			for _, workload := range tc.workloads {
@@ -974,8 +980,8 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 				{
 					Revision: "oldhash",
 					Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-						"prefill": makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
-						"decode":  makeLWS(withReplicas(4), withCreationTimestamp(baseTime)),
+						"prefill": makeLWS(withName("test-0-oldhash-prefill"), withReplicas(4), withCreationTimestamp(baseTime)),
+						"decode":  makeLWS(withName("test-0-oldhash-decode"), withReplicas(4), withCreationTimestamp(baseTime)),
 						// Note: encode is NOT in this map
 					},
 				},
@@ -997,7 +1003,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 				current[1] - tc.decodeBudget,
 				current[2] - tc.encodeBudget,
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, 0, grouped, threeRoleNames, current, target)
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target)
 			require.NoError(t, err)
 
 			// Verify prefill and decode were scaled correctly
@@ -1208,14 +1214,14 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 
 			oldRevisions := disaggregatedsetutils.RevisionRolesList{
 				{Revision: "hashA", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testRolePrefill: makeLWS(withReplicas(int(tc.aPrefill)), withReadyReplicas(int(tc.aPrefill)),
+					testRolePrefill: makeLWS(withName("test-0-hashA-prefill"), withReplicas(int(tc.aPrefill)), withReadyReplicas(int(tc.aPrefill)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime)),
-					testRoleDecode: makeLWS(withReplicas(int(tc.aDecode)), withReadyReplicas(int(tc.aDecode)),
+					testRoleDecode: makeLWS(withName("test-0-hashA-decode"), withReplicas(int(tc.aDecode)), withReadyReplicas(int(tc.aDecode)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(baseTime))}},
 				{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testRolePrefill: makeLWS(withReplicas(int(tc.bPrefill)), withReadyReplicas(int(tc.bPrefill)),
+					testRolePrefill: makeLWS(withName("test-0-hashB-prefill"), withReplicas(int(tc.bPrefill)), withReadyReplicas(int(tc.bPrefill)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime)),
-					testRoleDecode: makeLWS(withReplicas(int(tc.bDecode)), withReadyReplicas(int(tc.bDecode)),
+					testRoleDecode: makeLWS(withName("test-0-hashB-decode"), withReplicas(int(tc.bDecode)), withReadyReplicas(int(tc.bDecode)),
 						withInitialReplicasAnnotation(2), withCreationTimestamp(bTime))}},
 			}
 			newRevision := disaggregatedsetutils.RevisionRoles{Revision: "hashC", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{

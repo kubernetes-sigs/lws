@@ -94,6 +94,12 @@ func GenerateName(baseName string, slice int, revision, role string) string {
 	return fmt.Sprintf("%s-%d-%s-%s", baseName, slice, revision, role)
 }
 
+// GenerateLegacyName returns the pre-slices LWS name (no slice segment). Used to
+// find and adopt objects created before the slices feature, which belong to slice 0.
+func GenerateLegacyName(baseName, revision, role string) string {
+	return fmt.Sprintf("%s-%s-%s", baseName, revision, role)
+}
+
 func GenerateLabels(baseName string, slice int, revision, role string) map[string]string {
 	return map[string]string{
 		"app":                               fmt.Sprintf("%s-%d-%s", baseName, slice, role),
@@ -110,6 +116,27 @@ func GetSlices(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) int32 {
 		return 1
 	}
 	return *disaggregatedSet.Spec.Slices
+}
+
+// SliceLabelMatches reports whether an object's labels place it in the given slice.
+// A slice < 0 matches all slices. Slice 0 also matches a legacy object that carries
+// no slice label, so pre-slices objects are adopted as slice 0.
+func SliceLabelMatches(labels map[string]string, slice int) bool {
+	if slice < 0 {
+		return true
+	}
+	value, ok := labels[disaggregatedsetv1.SliceLabelKey]
+	if !ok || value == "" {
+		return slice == 0
+	}
+	return value == strconv.Itoa(slice)
+}
+
+// HasSliceLabel reports whether an object carries a non-empty slice label, i.e. it
+// was created by the slices-aware controller rather than a pre-slices release.
+func HasSliceLabel(labels map[string]string) bool {
+	value, ok := labels[disaggregatedsetv1.SliceLabelKey]
+	return ok && value != ""
 }
 
 const revisionLength = 8
