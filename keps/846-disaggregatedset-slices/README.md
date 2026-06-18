@@ -22,6 +22,7 @@ This KEP proposes adding a `slices` parameter to DisaggregatedSet that replicate
   - [Per-Slice Reconciliation](#per-slice-reconciliation)
   - [Services](#services)
   - [Scale-Down](#scale-down)
+  - [Backward Compatibility](#backward-compatibility)
   - [Object Cardinality](#object-cardinality)
   - [Test Plan](#test-plan)
     - [Unit tests](#unit-tests)
@@ -88,9 +89,9 @@ A disaggregated-serving deployment wants each complete prefill+decode copy confi
 
 ### Risks and Mitigations
 
-**Risk**: Adding the slice segment changes the generated LWS names (`<ds>-<revision>-<role>` becomes `<ds>-<slice>-<revision>-<role>`), so upgrading an existing DisaggregatedSet recreates its LWS objects.
+**Risk**: Adding the slice segment changes the generated LWS names (`<ds>-<revision>-<role>` becomes `<ds>-<slice>-<revision>-<role>`). A naive rollout would rename, and therefore recreate, the LWS (and pods) of DisaggregatedSets that already exist in clusters running a pre-slices release.
 
-**Mitigation**: DisaggregatedSet has not shipped in a tagged release yet, so there is no deployed name format to preserve. The single-slice case (`slices: 1`) is slice index 0, producing exactly one copy with deterministic naming.
+**Mitigation**: The controller adopts a pre-slices LWS (one with no `disaggregatedset.x-k8s.io/slice` label) in place as slice 0 under its legacy name, so upgrading recreates nothing. New LWS always use the slice-aware name, and a legacy slice converges to it on its next rollout or when `slices` is increased above 1. See [Backward Compatibility](#backward-compatibility).
 
 **Risk**: More API objects exist (`slices x roles` LWS, and the same multiple of Services).
 
@@ -146,7 +147,9 @@ The revision hash is computed only from each role's name and `LeaderWorkerTempla
 
 ### Per-Slice Reconciliation
 
-`Reconcile` computes the (DisaggregatedSet-wide) target revision once, then iterates slice indices `[0, slices)`. For each slice it runs the existing per-DisaggregatedSet logic scoped to that slice: drained-revision cleanup, the rolling-update-vs-simple decision, and Service reconciliation. All listing, creation, and rolling-update calls are filtered by the slice label.
+`Reconcile` computes the (DisaggregatedSet-wide) target revision once, then iterates slice indices `[0, slices)`. For each slice it runs the existing per-DisaggregatedSet logic scoped to that slice: drained-revision cleanup, the rolling-update-vs-simple decision, and Service reconciliation.
+
+All listing, creation, and rolling-update calls are scoped to the slice via the slice label. Legacy LWS that carry no slice label are bucketed into slice 0 (see [Backward Compatibility](#backward-compatibility)).
 
 Crucially, the **rolling-update planner is unchanged**. The N-dimensional algorithm ([KEP-766](/keps/766-DisaggregatedSet)) operates on the per-role replica vectors of a single slice; running it once per slice yields independent per-slice rollouts with no new algorithm. The controller aggregates the per-slice reconcile results (e.g. requeue) into a single result.
 
@@ -159,6 +162,16 @@ Services remain per `(slice, revision, role)`, named `<ds>-<slice>-<revision>-<r
 Decreasing `slices` from M to N directly deletes the LWS and Services whose slice index is `>= N`. Their pods terminate via the normal pod grace period; no controller-orchestrated drain is performed.
 
 This is intentional and differs from revision teardown. The existing multi-phase drain exists to preserve the cross-role, same-version invariant *within* a slice during a rollout. Slice removal has no cross-slice invariant to protect (slices are independent), so it is a plain scale operation, mirroring how reducing a role's `replicas` removes the highest-ordinal groups directly.
+
+### Backward Compatibility
+
+DisaggregatedSet shipped before this feature, so clusters already run DisaggregatedSets whose LWS use the old `<ds>-<revision>-<role>` name and carry no slice label. Object names are immutable and a pod's slice label comes from its template, so a legacy pod cannot gain that label without being recreated. The controller therefore adopts legacy objects in place rather than renaming them on upgrade, then migrates them to the slice-aware form at the first safe opportunity. This follows the precedent set when controller revisions were introduced (KEP-238).
+
+**Adoption.** Per-slice listing buckets any LWS with no slice label into slice 0, so a legacy LWS is reconciled as slice 0 under its existing name and its existing Service keeps serving it. Every LWS created from now on uses the slice-aware name, including the `-0-` segment for slice 0. A plain upgrade with no spec change recreates nothing.
+
+**Migration on the next rollout.** A template change creates the new revision's slice-0 LWS in slice-aware form while the legacy LWS drains through the normal rolling update. The two are at different revisions and Services are revision-scoped, so they never select each other's pods, and the legacy Service is deleted when the old revision drains.
+
+**Migration when `slices` increases above 1.** Here no new revision is created, and the legacy slice-0 Service is revision-scoped but slice-agnostic, so it would also select the new sibling slices' pods. For example, with legacy slice 0 at revision `r`, a `slice 1` created at the same `r` is matched by the legacy `{set, role, revision: r}` selector because the new `{set, slice: 1, role, revision: r}` pod is a superset of it. To prevent this, increasing `slices` first migrates slice 0 to the slice-aware form at the current revision, and blocks sibling creation until no label-less slice-0 LWS remains at the target revision. Once slice 0 is slice-aware, every Service is slice-scoped and the siblings can safely share the revision.
 
 ### Object Cardinality
 
@@ -209,7 +222,7 @@ During a rollout, a slice that is mid-transition holds two revisions at once (ol
 ## Drawbacks
 
 1. **More objects.** `slices x roles` LWS and Services exist instead of one set, increasing API-server and controller bookkeeping (though pod count per copy is unchanged).
-2. **Name format change.** Introducing the slice segment changes generated LWS names relative to the pre-slices, unreleased DisaggregatedSet, recreating LWS on upgrade.
+2. **Transitional migration logic.** Because DisaggregatedSet already shipped, the controller must adopt legacy `<ds>-<revision>-<role>` objects in place and migrate them to the slice-aware form (see [Backward Compatibility](#backward-compatibility)). This adds adoption and one-time migration code that is purely transitional: it stops mattering once every DisaggregatedSet has rolled once or been scaled past a single slice.
 
 ## Alternatives
 
