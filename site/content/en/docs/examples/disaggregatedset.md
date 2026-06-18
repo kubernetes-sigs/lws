@@ -26,7 +26,7 @@ kubectl wait deploy/lws-controller-manager \
   -n lws-system --for=condition=available --timeout=5m
 ```
 
-See the [installation guide](/docs/installation/#enabling-disaggregatedset) for setup instructions.
+See the [installation guide](/docs/installation/#disaggregatedset) for setup instructions.
 
 ---
 

@@ -6,16 +6,6 @@ description: >
   Understanding DisaggregatedSet — purpose, relationship to LeaderWorkerSet, and when to use it.
 ---
 
-<!-- toc -->
-- [Overview](#overview)
-- [Relationship to LeaderWorkerSet](#relationship-to-leaderworkerset)
-- [Roles in DisaggregatedSet](#roles-in-disaggregatedset)
-- [When to Use DisaggregatedSet vs Plain LWS](#when-to-use-disaggregatedset-vs-plain-lws)
-- [Key Design Principles](#key-design-principles)
-<!-- /toc -->
-
-## Overview
-
 **DisaggregatedSet** is a Kubernetes controller and CRD (Custom Resource Definition) that extends
 LeaderWorkerSet (LWS) to support **disaggregated inference** workloads — use cases where different
 phases of inference (e.g., prefill, decode, encode) need to run on separate, independently-scaled
@@ -67,7 +57,9 @@ A `DisaggregatedSet` spec contains a `roles` list. Each role defines:
 | `rolloutStrategy` | Independent rolling update config per role |
 | `leaderWorkerTemplate` | Pod template defining leader + worker containers |
 
-Roles are independent — you can scale, update, or restart a single role without affecting others.
+DisaggregatedSet coordinates lifecycle and rollouts across roles. Each role's replica count,
+rollout strategy, and pod template can be configured independently, while the controller manages
+them as a single cohesive unit.
 
 ## When to Use DisaggregatedSet vs Plain LWS
 
@@ -95,6 +87,6 @@ Use **DisaggregatedSet** when:
 ## Further Reading
 
 - [KEP-766: DisaggregatedSet design document](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet)
-- [Installation guide](/docs/installation/#enabling-disaggregatedset)
+- [Installation guide](/docs/installation/#disaggregatedset)
 - [API Reference](/docs/reference/disaggregatedset.v1/)
 - [Examples](/docs/examples/)

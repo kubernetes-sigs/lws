@@ -38,7 +38,7 @@ Read the [examples](https://github.com/kubernetes-sigs/lws/tree/main/docs/exampl
 
 For workloads that require separating inference phases (e.g., prefill and decode), LWS provides
 the **DisaggregatedSet** controller. DisaggregatedSet builds on LeaderWorkerSet to add advanced
-disaggregated workload deployment, with support for autoscaling, coordinated rollouts, and failure handling.
+disaggregated workload deployment, with support for coordinated rollouts and failure handling.
 
 Key features of DisaggregatedSet include:
 - **Disaggregated Architecture Support:** Specifically designed for workloads where different phases (e.g., prefill and decode) run on separate infrastructure.
@@ -46,11 +46,6 @@ Key features of DisaggregatedSet include:
 - **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.
 - **Automatic Service Orchestration:** Automatically creates and manages headless services for each role to facilitate discovery and revision-aware routing.
 - **Advanced Failure Handling:** Coordinated drain and restart policies across all roles in the disaggregated set.
-
-- [DisaggregatedSet concept overview](/docs/concepts/disaggregatedset/)
-- [Enabling DisaggregatedSet](/docs/installation/#enabling-disaggregatedset)
-- [DisaggregatedSet API reference](/docs/reference/disaggregatedset.v1/)
-- [DisaggregatedSet examples](/docs/examples/disaggregatedset/)
 
 ## Community, Discussion, Contribution, and Support
 

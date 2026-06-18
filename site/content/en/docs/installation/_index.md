@@ -17,7 +17,7 @@ description: >
 - [Install in a different namespace](#install-in-a-different-namespace)
 - [Optional: Use cert manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
 - [Install with Helm chart](#install-with-helm-chart)
-- [Enabling DisaggregatedSet](#enabling-disaggregatedset)
+- [DisaggregatedSet](#disaggregatedset)
 
 <!-- /toc -->
 
@@ -41,7 +41,7 @@ To install a released version of LeaderWorkerSet in your cluster, run the follow
 
 
 ```shell
-VERSION=v0.8.0
+VERSION=v0.9.0
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -56,7 +56,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.8.0
+CHART_VERSION=0.9.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -67,7 +67,7 @@ helm install lws oci://registry.k8s.io/lws/charts/lws \
 You can also use the following command:
 
 ```shell
-VERSION=v0.8.0
+VERSION=v0.9.0
 helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
   --namespace lws-system \
   --create-namespace \
@@ -79,7 +79,7 @@ helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSI
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.8.0
+VERSION=v0.9.0
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -147,16 +147,17 @@ supports cert rotation), instead of internal cert, follow the [cert manage guide
 
 Please refer to the release page for [helm charts][helm_charts].
 
-## Enabling DisaggregatedSet
+## DisaggregatedSet
 
-Starting from version **v0.9.0**, **DisaggregatedSet** is bundled directly into the core LeaderWorkerSet
-controller manager binary. No separate controller deployment or namespace is required.
+Starting from v0.9.0, DisaggregatedSet is bundled with the LWS controller manager.
 
-When you install LWS using kubectl or Kustomize, the DisaggregatedSet CRD and controller permissions
-are automatically included.
+For kubectl and Kustomize installs, the standard v0.9.0+ manifests include the DisaggregatedSet
+CRD, controller permissions, and validating webhook. No separate DisaggregatedSet installation
+step is required.
 
-If you are using Helm, pass `--set enableDisaggregatedSet=true` to also deploy the editor, viewer, and
-admin `ClusterRoles`, as well as the validating admission webhook for DisaggregatedSet:
+For Helm installs, the DisaggregatedSet CRD and controller permissions are installed by default.
+The optional validating webhook and user-facing editor/viewer/admin ClusterRoles can be enabled
+by passing `--set enableDisaggregatedSet=true` to the Helm install command:
 
 ```shell
 CHART_VERSION=0.9.0
