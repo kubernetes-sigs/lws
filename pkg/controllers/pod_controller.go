@@ -431,6 +431,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		serviceName = lws.Name
 	}
 	// construct statefulset apply configuration
+	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
@@ -440,7 +441,8 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(selectorMap))).
-		WithLabels(labelMap)
+		WithLabels(statefulSetLabels).
+		WithAnnotations(lws.Annotations)
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(&lws)
 	if len(pvcApplyConfiguration) > 0 {
