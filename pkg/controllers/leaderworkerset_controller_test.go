@@ -28,12 +28,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -167,7 +169,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "1",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -236,7 +241,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "2"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "2",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](2),
@@ -440,7 +448,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":            "1",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -754,6 +765,235 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				t.Errorf("unexpected StatefulSet apply configuration: %s", diff)
 			}
 		})
+	}
+}
+
+func TestLeaderStatefulSetApplyConfigPropagatesMetadata(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Labels(map[string]string{
+			"app.kubernetes.io/part-of":     "inference",
+			leaderworkerset.SetNameLabelKey: "user-value",
+		}).
+		Annotation(map[string]string{
+			"example.com/owner":                   "platform",
+			leaderworkerset.ReplicasAnnotationKey: "user-value",
+		}).
+		Replica(3).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+			},
+		}).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(1).
+		Obj()
+	revision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionKey := revisionutils.GetRevisionKey(revision)
+
+	statefulSetConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, 0, 3, revisionKey)
+	if err != nil {
+		t.Fatalf("constructLeaderStatefulSetApplyConfiguration() error = %v", err)
+	}
+
+	wantLabels := map[string]string{
+		"app.kubernetes.io/part-of":     "inference",
+		leaderworkerset.SetNameLabelKey: "test-sample",
+		leaderworkerset.RevisionKey:     revisionKey,
+	}
+	if diff := cmp.Diff(wantLabels, statefulSetConfig.Labels); diff != "" {
+		t.Fatalf("unexpected StatefulSet labels (-want +got):\n%s", diff)
+	}
+
+	wantAnnotations := map[string]string{
+		"example.com/owner":                   "platform",
+		leaderworkerset.ReplicasAnnotationKey: "3",
+	}
+	if diff := cmp.Diff(wantAnnotations, statefulSetConfig.Annotations); diff != "" {
+		t.Fatalf("unexpected StatefulSet annotations (-want +got):\n%s", diff)
+	}
+}
+
+func TestLeaderReconcileUpdatesExistingWorkerStatefulSetMetadata(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	revisionKey := "rev-1"
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Replica(1).
+		Labels(map[string]string{
+			"app.kubernetes.io/part-of":             "inference",
+			leaderworkerset.SetNameLabelKey:         "user-name",
+			leaderworkerset.GroupIndexLabelKey:      "user-group",
+			leaderworkerset.GroupUniqueHashLabelKey: "user-hash",
+			leaderworkerset.RevisionKey:             "user-revision",
+		}).
+		Annotation(map[string]string{
+			"example.com/owner": "platform",
+		}).
+		Generation(2).
+		StatusReplicas(1).
+		ReadyReplicas(1).
+		Obj()
+	lws.TypeMeta = metav1.TypeMeta{
+		APIVersion: leaderworkerset.GroupVersion.String(),
+		Kind:       "LeaderWorkerSet",
+	}
+	lws.UID = types.UID("test-sample-uid")
+	lws.Status.ObservedGeneration = lws.Generation
+
+	leaderSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name,
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     revisionKey,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "1",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](1),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			Replicas: 1,
+		},
+	}
+	leaderPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-0",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:         lws.Name,
+				leaderworkerset.WorkerIndexLabelKey:     "0",
+				leaderworkerset.GroupIndexLabelKey:      "0",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             revisionKey,
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	workerSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      leaderPod.Name,
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				"existing-label":                        "keep",
+				leaderworkerset.SetNameLabelKey:         lws.Name,
+				leaderworkerset.GroupIndexLabelKey:      "0",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             revisionKey,
+			},
+			Annotations: map[string]string{
+				"existing-annotation": "keep",
+				"example.com/owner":   "old",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](1),
+		},
+		Status: appsv1.StatefulSetStatus{
+			AvailableReplicas: 1,
+			CurrentRevision:   "current",
+			UpdateRevision:    "current",
+		},
+	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(lws).
+		WithObjects(lws, leaderSts, leaderPod, workerSts).
+		Build()
+	reconciler := NewLeaderWorkerSetReconciler(fakeClient, scheme, fakeEventRecorder{})
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var got appsv1.StatefulSet
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: workerSts.Name, Namespace: workerSts.Namespace}, &got); err != nil {
+		t.Fatalf("Get() worker StatefulSet error = %v", err)
+	}
+	wantLabels := map[string]string{
+		"app.kubernetes.io/part-of":             "inference",
+		"existing-label":                        "keep",
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.GroupIndexLabelKey:      "0",
+		leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+		leaderworkerset.RevisionKey:             revisionKey,
+	}
+	if diff := cmp.Diff(wantLabels, got.Labels); diff != "" {
+		t.Fatalf("unexpected worker StatefulSet labels (-want +got):\n%s", diff)
+	}
+
+	wantAnnotations := map[string]string{
+		"existing-annotation": "keep",
+		"example.com/owner":   "platform",
+	}
+	if diff := cmp.Diff(wantAnnotations, got.Annotations); diff != "" {
+		t.Fatalf("unexpected worker StatefulSet annotations (-want +got):\n%s", diff)
+	}
+
+	var updatedLWS leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &updatedLWS); err != nil {
+		t.Fatalf("Get() LeaderWorkerSet error = %v", err)
+	}
+	updatedLWS.Labels = nil
+	updatedLWS.Annotations = nil
+	updatedLWS.Generation++
+	if err := fakeClient.Update(ctx, &updatedLWS); err != nil {
+		t.Fatalf("Update() LeaderWorkerSet error = %v", err)
+	}
+
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}})
+	if err != nil {
+		t.Fatalf("Reconcile() after metadata removal error = %v", err)
+	}
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: workerSts.Name, Namespace: workerSts.Namespace}, &got); err != nil {
+		t.Fatalf("Get() worker StatefulSet after removal error = %v", err)
+	}
+	wantLabelsAfterRemoval := map[string]string{
+		"existing-label":                        "keep",
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.GroupIndexLabelKey:      "0",
+		leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+		leaderworkerset.RevisionKey:             revisionKey,
+	}
+	if diff := cmp.Diff(wantLabelsAfterRemoval, got.Labels); diff != "" {
+		t.Fatalf("unexpected worker StatefulSet labels after removal (-want +got):\n%s", diff)
+	}
+
+	wantAnnotationsAfterRemoval := map[string]string{
+		"existing-annotation": "keep",
+	}
+	if diff := cmp.Diff(wantAnnotationsAfterRemoval, got.Annotations); diff != "" {
+		t.Fatalf("unexpected worker StatefulSet annotations after removal (-want +got):\n%s", diff)
 	}
 }
 

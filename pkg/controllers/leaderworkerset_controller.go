@@ -170,6 +170,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		return ctrl.Result{}, err
 	}
+	if err := r.syncWorkerStatefulSetsMetadata(ctx, lws); err != nil {
+		log.Error(err, "Syncing worker statefulset metadata.")
+		return ctrl.Result{}, err
+	}
 
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
@@ -218,6 +222,55 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		return nil
 	}
 	return nil
+}
+
+// syncWorkerStatefulSetsMetadata reconciles top-level labels and annotations on
+// existing worker StatefulSets for the given LeaderWorkerSet.
+func (r *LeaderWorkerSetReconciler) syncWorkerStatefulSetsMetadata(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if *lws.Spec.LeaderWorkerTemplate.Size == 1 {
+		return nil
+	}
+
+	var statefulSetList appsv1.StatefulSetList
+	selector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	})
+	if err := r.List(ctx, &statefulSetList, selector, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+
+	for index := range statefulSetList.Items {
+		workerStatefulSet := &statefulSetList.Items[index]
+		if !isWorkerStatefulSetForLeaderWorkerSet(workerStatefulSet, lws) {
+			continue
+		}
+		desiredLabels := workerStatefulSetLabelsForMetadataSync(lws, workerStatefulSet)
+		if err := applyStatefulSetMetadata(ctx, r.Client, workerStatefulSet.Name, workerStatefulSet.Namespace, desiredLabels, lws.Annotations); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isWorkerStatefulSetForLeaderWorkerSet reports whether statefulSet is an
+// existing worker StatefulSet for lws.
+func isWorkerStatefulSetForLeaderWorkerSet(statefulSet *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) bool {
+	return statefulSet.Name != lws.Name &&
+		statefulSet.Namespace == lws.Namespace &&
+		statefulSet.Labels[leaderworkerset.SetNameLabelKey] == lws.Name &&
+		statefulSet.Labels[leaderworkerset.GroupIndexLabelKey] != ""
+}
+
+// workerStatefulSetLabelsForMetadataSync returns desired worker StatefulSet
+// labels using LWS labels plus controller-owned keys from the existing child.
+func workerStatefulSetLabelsForMetadataSync(lws *leaderworkerset.LeaderWorkerSet, statefulSet *appsv1.StatefulSet) map[string]string {
+	controllerLabels := map[string]string{
+		leaderworkerset.SetNameLabelKey:         lws.Name,
+		leaderworkerset.GroupIndexLabelKey:      statefulSet.Labels[leaderworkerset.GroupIndexLabelKey],
+		leaderworkerset.GroupUniqueHashLabelKey: statefulSet.Labels[leaderworkerset.GroupUniqueHashLabelKey],
+		leaderworkerset.RevisionKey:             statefulSet.Labels[leaderworkerset.RevisionKey],
+	}
+	return mergeStatefulSetMetadata(lws.Labels, controllerLabels)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -828,6 +881,13 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		stsMaxUnavailableInt = 1
 	}
 	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
+	stsLabels := mergeStatefulSetMetadata(lws.Labels, map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RevisionKey:     revisionKey,
+	})
+	stsAnnotations := mergeStatefulSetMetadata(lws.Annotations, map[string]string{
+		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
+	})
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
@@ -844,13 +904,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
 				}))).
-		WithLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey: lws.Name,
-			leaderworkerset.RevisionKey:     revisionKey,
-		}).
-		WithAnnotations(map[string]string{
-			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
-		})
+		WithLabels(stsLabels).
+		WithAnnotations(stsAnnotations)
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(lws)
 	if len(pvcApplyConfiguration) > 0 {

@@ -195,7 +195,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			}
 			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
+		if err := syncWorkerStatefulSetMetadata(ctx, r.Client, pod.Name, leaderWorkerSet.Namespace, statefulSet); err != nil {
+			return ctrl.Result{}, err
+		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
+	} else if err := syncWorkerStatefulSetMetadata(ctx, r.Client, workerSts.Name, workerSts.Namespace, statefulSet); err != nil {
+		return ctrl.Result{}, err
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
@@ -410,6 +415,8 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(&leaderPod),
 	}
+	stsLabels := mergeStatefulSetMetadata(lws.Labels, labelMap)
+	stsAnnotations := mergeStatefulSetMetadata(lws.Annotations, nil)
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
 	podAnnotations := make(map[string]string)
@@ -440,7 +447,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(selectorMap))).
-		WithLabels(labelMap)
+		WithLabels(stsLabels)
+	if len(stsAnnotations) > 0 {
+		statefulSetConfig.WithAnnotations(stsAnnotations)
+	}
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(&lws)
 	if len(pvcApplyConfiguration) > 0 {
@@ -455,6 +465,12 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
 	}
 	return statefulSetConfig, nil
+}
+
+// syncWorkerStatefulSetMetadata updates metadata on an existing worker StatefulSet
+// without changing its spec or removing metadata owned by other actors.
+func syncWorkerStatefulSetMetadata(ctx context.Context, k8sClient client.Client, name, namespace string, desired *appsapplyv1.StatefulSetApplyConfiguration) error {
+	return applyStatefulSetMetadata(ctx, k8sClient, name, namespace, desired.Labels, desired.Annotations)
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
