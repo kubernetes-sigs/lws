@@ -160,10 +160,15 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
+	// Scale down old replicas before scaling up new ones. This ordering ensures
+	// the total replica count never exceeds the surge limit between the two
+	// API calls: e.g. with surge=0, scaling up first would briefly make
+	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
+	// currentOld down.
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
 		return ctrl.Result{}, err
 	}
 
