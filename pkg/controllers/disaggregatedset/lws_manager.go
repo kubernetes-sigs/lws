@@ -126,26 +126,6 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, namespace, nam
 	return nil
 }
 
-func (manager *LeaderWorkerSetManager) UpdateInitialReplicasAnnotation(ctx context.Context, namespace, name string, replicas int) error {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return fmt.Errorf("failed to get LeaderWorkerSet %s for annotation update: %w", name, err)
-	}
-
-	currentValue, ok := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
-	if ok && int(currentValue) == replicas {
-		return nil
-	}
-
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
-	disaggregatedsetutils.SetInitialReplicas(leaderWorkerSet, int32(replicas))
-	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
-		return fmt.Errorf("failed to update annotation on LeaderWorkerSet %s: %w", name, err)
-	}
-
-	return nil
-}
-
 func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
 	lws := &leaderworkersetv1.LeaderWorkerSet{}
 	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, lws)
@@ -297,37 +277,4 @@ func (manager *LeaderWorkerSetManager) SetInitialReplicas(
 	}
 
 	return oldValue, nil
-}
-
-func (manager *LeaderWorkerSetManager) GetInitialReplicas(
-	ctx context.Context,
-	namespace, name string,
-) (*int, error) {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
-	}
-
-	return parseInitialReplicasAnnotation(leaderWorkerSet), nil
-}
-
-func (manager *LeaderWorkerSetManager) GetOrSetInitialReplicas(
-	ctx context.Context,
-	namespace, name string,
-	defaultValue int,
-) (int, error) {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return 0, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
-	}
-
-	if existing := parseInitialReplicasAnnotation(leaderWorkerSet); existing != nil {
-		return *existing, nil
-	}
-
-	if err := manager.patchInitialReplicasAnnotation(ctx, leaderWorkerSet, defaultValue); err != nil {
-		return 0, fmt.Errorf("failed to set initial-replicas annotation on %s: %w", name, err)
-	}
-
-	return defaultValue, nil
 }
