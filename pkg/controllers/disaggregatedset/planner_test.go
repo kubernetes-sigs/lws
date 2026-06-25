@@ -356,6 +356,96 @@ func TestSurgeConstraint(t *testing.T) {
 }
 
 // =============================================================================
+// Step-Size Acceleration Tests
+// =============================================================================
+
+// TestSurgeUnavailAcceleration verifies that higher surge/unavail budgets
+// produce fewer sub-steps. The planner should use these budgets as per-step
+// accelerators, not just guardrails — small surge means small step, big surge
+// means big step (up to the next sync boundary).
+func TestSurgeUnavailAcceleration(t *testing.T) {
+	roles := []string{"p", "d"}
+	initial := makeRoles(roles, []int{20, 4})
+	target := makeRoles(roles, []int{20, 4})
+
+	// Baseline: surge=1 unavail=0 → ~1 replica per role per sub-step.
+	smallCfg := makeConfig(roles, []int{1, 1}, []int{0, 0})
+	smallSteps := ComputeAllSteps(roles, initial, target, smallCfg)
+
+	// Boosted: surge=3 unavail=2 → bigger sub-steps within the same sync windows.
+	bigCfg := makeConfig(roles, []int{3, 3}, []int{2, 2})
+	bigSteps := ComputeAllSteps(roles, initial, target, bigCfg)
+
+	require.True(t, completes(smallSteps, roles, target))
+	require.True(t, completes(bigSteps, roles, target))
+
+	// Sanity: both reach the same final state.
+	assert.Equal(t, target["p"], smallSteps[len(smallSteps)-1].New["p"].Replicas)
+	assert.Equal(t, target["p"], bigSteps[len(bigSteps)-1].New["p"].Replicas)
+
+	// Acceleration: bigger budgets should produce strictly fewer steps.
+	assert.Less(t, len(bigSteps), len(smallSteps),
+		"surge=3/unavail=2 should produce fewer sub-steps than surge=1/unavail=0 (got %d vs %d)",
+		len(bigSteps), len(smallSteps))
+
+	// Surge envelope still respected at every step for both configs.
+	for _, role := range roles {
+		bigCeil := max(initial[role], target[role]) + bigCfg[role].MaxSurge
+		for i, s := range bigSteps {
+			tot := totalPerRole(s, role)
+			assert.LessOrEqual(t, tot, bigCeil,
+				"big config step %d role %s: total %d > ceiling %d", i, role, tot, bigCeil)
+		}
+	}
+}
+
+// =============================================================================
+// Two-minimalUnit Tests
+// =============================================================================
+
+// TestTwoMinimalUnits_IndependentProgression verifies that with different
+// old/new minUs, each side advances at its own native rhythm. A=4P/4D → C=12P/3D
+// gives oldUnit=1/4 (drain in 4 windows) and newUnit=1/3 (scale up in 3 windows).
+func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
+	roles := []string{"prefill", "decode"}
+	initial := map[string]int{"prefill": 4, "decode": 4}
+	target := map[string]int{"prefill": 12, "decode": 3}
+	cfg := makeConfig(roles, []int{2, 2}, []int{2, 2})
+
+	oldUnit := revisionMinimalUnit(initial)
+	newUnit := revisionMinimalUnit(target)
+	assert.Equal(t, 4, oldUnit.den, "oldUnit should be 1/4 (smallest old role)")
+	assert.Equal(t, 3, newUnit.den, "newUnit should be 1/3 (smallest new role)")
+
+	steps := ComputeAllSteps(roles, initial, target, cfg)
+	require.True(t, completes(steps, roles, target))
+
+	// Verify ceiling never breached.
+	for i, s := range steps {
+		for _, role := range roles {
+			ceil := max(initial[role], target[role]) + cfg[role].MaxSurge
+			total := totalPerRole(s, role)
+			assert.LessOrEqual(t, total, ceil, "step %d role %s exceeds ceiling", i, role)
+		}
+	}
+}
+
+// TestTwoMinimalUnits_TinyRevisionAbsorbed verifies that summing the old side
+// dilutes a tiny revision: a 1P/1D revision mixed with a 20P/4D one yields
+// oldMinU=1/min(21,5)=1/5 (not 1/1). The planner's drain rhythm is governed by
+// the sum, so the tiny revision doesn't poison coordination.
+func TestTwoMinimalUnits_TinyRevisionAbsorbed(t *testing.T) {
+	// Simulated combined old: A (20P/4D) + tiny B (1P/1D) = 21P/5D.
+	combinedInitialOld := map[string]int{"prefill": 21, "decode": 5}
+	oldUnit := revisionMinimalUnit(combinedInitialOld)
+	assert.Equal(t, 5, oldUnit.den, "summed oldMinU should be 1/5, not 1/1 from tiny B alone")
+
+	// Sanity: tiny B alone would give 1/1 (the poison case).
+	tinyAlone := map[string]int{"prefill": 1, "decode": 1}
+	assert.Equal(t, 1, revisionMinimalUnit(tinyAlone).den, "tiny rev's own minU is 1/1")
+}
+
+// =============================================================================
 // Default Config Tests
 // =============================================================================
 

@@ -138,17 +138,18 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldRevisions)
 
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoleSet, specRoleSet)...)
+	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
 
-	// A revision is "stable" when every role's LWS has ReadyReplicas == Replicas,
-	// meaning all pods from the previous scale step are Running and Ready.
-	// We wait for stability before computing the next step to avoid over-scaling.
-	if !isRevisionStable(newRevision, specRoleNames) {
+	// A revision is "stable enough" to advance when each role has at most
+	// (MaxSurge + MaxUnavailable) pending replicas — the full in-flight slack
+	// the user authorized. This lets the rollout keep progressing when one
+	// slow-starting pod would otherwise gate everything. See isRevisionStable.
+	if !isRevisionStable(newRevision, specRoleNames, config) {
 		log.V(1).Info("Waiting for new revision to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
-	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
 
 	nextStep := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
@@ -168,7 +169,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New, initialOld, targetNew, config); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -219,7 +220,12 @@ func buildPlannerStateMaps(
 
 		if specRoleSet[roleName] {
 			if lws := newRevision.Roles[roleName]; lws != nil {
-				currentNew[roleName] = int(getLWSReplicas(lws))
+				// Use ReadyReplicas (not Spec) so the planner advances on actual
+				// serving capacity. Slow-starting pods don't inflate currentNew,
+				// so the planner won't compound pending replicas. The
+				// spec-footprint guard in scaleUpNew prevents spec from
+				// growing past the surge ceiling.
+				currentNew[roleName] = int(lws.Status.ReadyReplicas)
 			}
 			targetNew[roleName] = getTargetReplicas(ds, roleName)
 		}
@@ -277,13 +283,35 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	return args
 }
 
-func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
+// isRevisionStable returns true when the new revision is "stable enough" to
+// advance the rollout: each role's pending count (Spec.Replicas - ReadyReplicas)
+// must be within its total in-flight slack budget (MaxSurge + MaxUnavailable).
+//
+// A pending new pod occupies one of two budgets at any moment:
+//   - MaxSurge, if total spec is above target (the pod extends the spec footprint)
+//   - MaxUnavailable, if total ready is below target (the pod is replacing a
+//     drained old pod)
+//
+// In general it fills BOTH, so the natural upper bound is the sum. The
+// spec-footprint guard in scaleUpNew prevents spec from actually growing past
+// the surge ceiling, so this tolerance is safe even at the sum.
+func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string, config map[string]RollingUpdateConfig) bool {
 	for _, name := range roleNames {
 		lws := rev.Roles[name]
 		if lws == nil {
 			return false
 		}
-		if getLWSReplicas(lws) != lws.Status.ReadyReplicas {
+		spec := int32(getLWSReplicas(lws))
+		ready := lws.Status.ReadyReplicas
+		pending := spec - ready
+		if pending < 0 {
+			pending = 0
+		}
+		tolerance := int32(0)
+		if cfg, ok := config[name]; ok {
+			tolerance = int32(cfg.MaxSurge + cfg.MaxUnavailable)
+		}
+		if pending > tolerance {
 			return false
 		}
 	}
@@ -321,20 +349,41 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 	specRoleSet map[string]bool,
 	currentNew map[string]int,
 	targetNew map[string]RoleStepState,
+	initialOld, targetSpec map[string]int,
+	config map[string]RollingUpdateConfig,
 ) error {
 	log := logf.FromContext(ctx)
 	for _, name := range allRoleNames {
-		if !specRoleSet[name] || currentNew[name] >= targetNew[name].Replicas {
+		if !specRoleSet[name] {
+			continue
+		}
+		lws := newRevision.Roles[name]
+		if lws == nil {
+			continue
+		}
+		currentSpec := int(getLWSReplicas(lws))
+		desiredSpec := targetNew[name].Replicas
+
+		// Spec-footprint guard: cap desired spec at the per-role surge ceiling.
+		// `currentNew` is ready-based now, so the planner's targetNew is
+		// expressed in ready terms — pending replicas could push spec past
+		// the planner's intent if we scaled blindly.
+		ceiling := max(initialOld[name], targetSpec[name]) + config[name].MaxSurge
+		if desiredSpec > ceiling {
+			desiredSpec = ceiling
+		}
+
+		if currentSpec >= desiredSpec {
 			continue
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, newRevision.Revision)
-		log.Info("Scaling up", "lws", lwsName, "from", currentNew[name], "to", targetNew[name].Replicas,
+		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", currentNew[name], "to", desiredSpec,
 			"syncPoint", fmt.Sprintf("%d.%d", targetNew[name].CrossRoleStep, targetNew[name].RoleStep))
-		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, targetNew[name].Replicas); err != nil {
+		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentNew[name], targetNew[name].Replicas)
+			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentSpec, desiredSpec)
 	}
 	return nil
 }

@@ -558,16 +558,45 @@ func TestSortByNewestTimestamp(t *testing.T) {
 func TestIsRevisionStable(t *testing.T) {
 	roleNames := testRoleNames()
 
+	// Tolerance is MaxSurge + MaxUnavailable. With surge=1 unavail=0 → tol=1
+	// (allow 1 pending: a surge-added pod still becoming ready).
+	surgeOnlyCfg := map[string]RollingUpdateConfig{
+		testRolePrefill: {MaxSurge: 1, MaxUnavailable: 0},
+		testRoleDecode:  {MaxSurge: 1, MaxUnavailable: 0},
+	}
+	// surge=2 unavail=2 → tol=4 (max in-flight slack).
+	tolerantCfg := map[string]RollingUpdateConfig{
+		testRolePrefill: {MaxSurge: 2, MaxUnavailable: 2},
+		testRoleDecode:  {MaxSurge: 2, MaxUnavailable: 2},
+	}
+	// surge=0 unavail=0 → tol=0 (strict). Used when no rollout strategy set.
+	zeroCfg := map[string]RollingUpdateConfig{
+		testRolePrefill: {MaxSurge: 0, MaxUnavailable: 0},
+		testRoleDecode:  {MaxSurge: 0, MaxUnavailable: 0},
+	}
+
 	testCases := []struct {
 		name                                                       string
+		cfg                                                        map[string]RollingUpdateConfig
 		prefillReplicas, prefillReady, decodeReplicas, decodeReady int
 		expected                                                   bool
 	}{
-		{"all roles stable", 3, 3, 2, 2, true},
-		{"prefill unstable", 3, 2, 2, 2, false},
-		{"decode unstable", 3, 3, 2, 1, false},
-		{"both roles unstable", 3, 1, 2, 0, false},
-		{"zero replicas stable", 0, 0, 0, 0, true},
+		// Zero (no tolerance) — same as legacy strict behavior.
+		{"zero: all roles stable", zeroCfg, 3, 3, 2, 2, true},
+		{"zero: prefill 1 pending", zeroCfg, 3, 2, 2, 2, false},
+		{"zero: decode 1 pending", zeroCfg, 3, 3, 2, 1, false},
+		{"zero: zero replicas stable", zeroCfg, 0, 0, 0, 0, true},
+
+		// Surge=1 unavail=0 — tolerance 1, one pending OK.
+		{"surgeOnly: 1 pending OK", surgeOnlyCfg, 3, 2, 2, 2, true},
+		{"surgeOnly: 2 pending exceeds", surgeOnlyCfg, 3, 1, 2, 2, false},
+
+		// Surge=2 unavail=2 — tolerance 4, up to 4 pending per role.
+		{"tolerant: 0 pending", tolerantCfg, 5, 5, 4, 4, true},
+		{"tolerant: 4 pending prefill", tolerantCfg, 5, 1, 4, 4, true},
+		{"tolerant: 3 pending decode", tolerantCfg, 5, 5, 4, 1, true},
+		{"tolerant: 5 pending prefill (exceeds)", tolerantCfg, 6, 1, 4, 4, false},
+		{"tolerant: 5 pending decode (exceeds)", tolerantCfg, 5, 5, 6, 1, false},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -578,7 +607,38 @@ func TestIsRevisionStable(t *testing.T) {
 					testRoleDecode:  makeLWS(withReplicas(tc.decodeReplicas), withReadyReplicas(tc.decodeReady)),
 				},
 			}
-			assert.Equal(t, tc.expected, isRevisionStable(workload, roleNames))
+			assert.Equal(t, tc.expected, isRevisionStable(workload, roleNames, tc.cfg))
+		})
+	}
+}
+
+func TestIsRevisionStable_PerRoleTolerance(t *testing.T) {
+	// Different tolerance per role:
+	//   prefill: surge=1 + unavail=2 → tol=3
+	//   decode:  surge=1 + unavail=0 → tol=1
+	cfg := map[string]RollingUpdateConfig{
+		testRolePrefill: {MaxSurge: 1, MaxUnavailable: 2},
+		testRoleDecode:  {MaxSurge: 1, MaxUnavailable: 0},
+	}
+	cases := []struct {
+		name     string
+		pSpec    int
+		pReady   int
+		dSpec    int
+		dReady   int
+		expected bool
+	}{
+		{"prefill 3 pending (=tol), decode 1 pending (=tol)", 5, 2, 2, 1, true},
+		{"prefill 2 pending OK, decode 2 pending (exceeds tol=1)", 5, 3, 2, 0, false},
+		{"prefill 4 pending (exceeds tol=3)", 5, 1, 2, 2, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wl := disaggregatedsetutils.RevisionRoles{Revision: "h", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+				testRolePrefill: makeLWS(withReplicas(tc.pSpec), withReadyReplicas(tc.pReady)),
+				testRoleDecode:  makeLWS(withReplicas(tc.dSpec), withReadyReplicas(tc.dReady)),
+			}}
+			assert.Equal(t, tc.expected, isRevisionStable(wl, testRoleNames(), cfg))
 		})
 	}
 }
@@ -1066,7 +1126,15 @@ func TestScaleUpNew(t *testing.T) {
 				testRolePrefill: {Replicas: tc.targetPrefill},
 				testRoleDecode:  {Replicas: tc.targetDecode},
 			}
-			err := executor.scaleUpNew(context.TODO(), ds, newRevision, roleNames, specRoleSet, current, target)
+			// New scaleUpNew signature requires initialOld, targetSpec, config
+			// so it can compute and enforce the surge ceiling.
+			initialOld := map[string]int{testRolePrefill: 0, testRoleDecode: 0}
+			targetSpec := map[string]int{testRolePrefill: tc.targetPrefill, testRoleDecode: tc.targetDecode}
+			cfg := map[string]RollingUpdateConfig{
+				testRolePrefill: {MaxSurge: tc.targetPrefill, MaxUnavailable: 0},
+				testRoleDecode:  {MaxSurge: tc.targetDecode, MaxUnavailable: 0},
+			}
+			err := executor.scaleUpNew(context.TODO(), ds, newRevision, roleNames, specRoleSet, current, target, initialOld, targetSpec, cfg)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expectedPrefill, getTestLWSReplicas(fakeClient, namespace, "test-newhash-prefill"))
@@ -1159,18 +1227,25 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 
 	testCases := []abcExecutorScenario{
 		{
-			// New planner scales up 1 and drains 1 simultaneously (newest-first drain).
-			name: "first step scales up C without drain", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 0, cDecode: 0,
-			expectedA: [2]int32{2, 2}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{1, 1},
+			// surge=1 unavail=0 (defaults). total=4=floor, drainBudget=0 so no drain
+			// this reconcile — planner scales up C using the surge headroom only.
+			name: "first step scales up C using surge (no drain budget)", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 0, cDecode: 0,
+			expectedA: [2]int32{2, 2}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{1, 1},
 		},
 		{
-			// New planner: old=2, target=4, ceiling=max(2,4)+1=5. Scale up C and drain B.
-			name: "C scales up while B drains", aPrefill: 0, aDecode: 0, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
-			expectedA: [2]int32{0, 0}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{3, 3},
+			// curOld=2 curNew=2 total=4, ceiling=5, drainBudget=0. Planner scales C
+			// further (using surge). Drain of B happens on a later reconcile, after
+			// the surge step opens drain budget.
+			name: "C scales up using surge (drain deferred to next reconcile)", aPrefill: 0, aDecode: 0, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
+			expectedA: [2]int32{0, 0}, expectedB: [2]int32{2, 2}, expectedC: [2]int32{3, 3},
 		},
 		{
-			// New planner: total old=4, target=4, drain 1 from newest (B).
-			name: "drains newest old workload first", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
+			// total=6 already exceeds ceiling=5, addBudget=0. Two-minU planner
+			// caps drain at the next old-sync target (1 per sync window), not
+			// the full drainBudget — drain progresses one sync-window at a
+			// time. Drain 1 from newest old (B); subsequent reconciles
+			// continue per sync window.
+			name: "above ceiling: drains newest old workload to recover", aPrefill: 2, aDecode: 2, bPrefill: 2, bDecode: 2, cPrefill: 2, cDecode: 2,
 			expectedA: [2]int32{2, 2}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{2, 2},
 		},
 	}

@@ -94,43 +94,29 @@ func revisionMinimalUnit(replicas map[string]int) frac {
 	return frac{1, minN}
 }
 
-// globalMinimalUnit returns the coarsest minimalUnit across old and new revisions.
-// This determines the sync point interval.
-func globalMinimalUnit(initialOld, targetNew map[string]int) frac {
-	oldUnit := revisionMinimalUnit(initialOld)
-	newUnit := revisionMinimalUnit(targetNew)
-	// max(1/a, 1/b) = 1/min(a,b)
-	minDen := oldUnit.den
-	if newUnit.den < minDen {
-		minDen = newUnit.den
-	}
-	return frac{1, minDen}
-}
-
 func numSyncPoints(unit frac) int {
 	return unit.den / unit.num
 }
 
-// syncTargets computes the target replica counts for a role at a given sync point.
-// Each revision follows its own curve: new scales up, old drains down.
-func syncTargets(target, initialOld int, syncPct frac) (newTarget, oldTarget int) {
-	newTarget = floorFrac(frac{target * syncPct.num, syncPct.den})
-	remaining := frac{initialOld * (syncPct.den - syncPct.num), syncPct.den}
-	oldTarget = ceilFrac(remaining)
-	return
+// newSyncTarget returns the target new-replica count for a role at a given
+// new-side sync point.
+func newSyncTarget(target int, syncPct frac) int {
+	return floorFrac(frac{target * syncPct.num, syncPct.den})
 }
 
-// deriveRoleProgress computes the current cross-role step and role step for each role
-// by examining current new replica counts relative to the sync point targets.
-func deriveRoleProgress(
-	roleNames []string,
-	targets map[string]int,
-	currentNew map[string]int,
-	unit frac,
-) map[string]RoleStepState {
+// oldSyncTarget returns the target old-replica count for a role at a given
+// old-side sync point. Old drains down, so this returns the REMAINING old count.
+func oldSyncTarget(initialOld int, syncPct frac) int {
+	remaining := frac{initialOld * (syncPct.den - syncPct.num), syncPct.den}
+	return ceilFrac(remaining)
+}
+
+// deriveNewProgress computes each role's new-side sync position from the
+// current new-replica count relative to the new revision's sync points.
+// A role with target=0 (e.g. a removed role) is reported as fully done.
+func deriveNewProgress(roleNames []string, targets, currentNew map[string]int, unit frac) map[string]RoleStepState {
 	nSync := numSyncPoints(unit)
 	states := make(map[string]RoleStepState, len(roleNames))
-
 	for _, role := range roleNames {
 		target := targets[role]
 		cur := currentNew[role]
@@ -138,22 +124,51 @@ func deriveRoleProgress(
 			states[role] = RoleStepState{CrossRoleStep: nSync, RoleStep: 0, Replicas: cur}
 			continue
 		}
-
 		crossStep := 0
 		roleStep := 0
 		for s := 1; s <= nSync; s++ {
-			syncPct := unit.mul(s)
-			newTarget, _ := syncTargets(target, 0, syncPct)
-			if cur >= newTarget {
+			if cur >= newSyncTarget(target, unit.mul(s)) {
 				crossStep = s
 				roleStep = 0
 			} else {
-				prevTarget := 0
+				prev := 0
 				if s > 1 {
-					prevPct := unit.mul(s - 1)
-					prevTarget, _ = syncTargets(target, 0, prevPct)
+					prev = newSyncTarget(target, unit.mul(s-1))
 				}
-				roleStep = cur - prevTarget
+				roleStep = cur - prev
+				break
+			}
+		}
+		states[role] = RoleStepState{CrossRoleStep: crossStep, RoleStep: roleStep, Replicas: cur}
+	}
+	return states
+}
+
+// deriveOldProgress computes each role's old-side sync position. Old drains, so
+// "progress" means "how much has been drained" — we measure curOld against
+// per-sync oldTarget (remaining count). A role with initialOld=0 is fully done.
+func deriveOldProgress(roleNames []string, initial, currentOld map[string]int, unit frac) map[string]RoleStepState {
+	nSync := numSyncPoints(unit)
+	states := make(map[string]RoleStepState, len(roleNames))
+	for _, role := range roleNames {
+		init := initial[role]
+		cur := currentOld[role]
+		if init == 0 {
+			states[role] = RoleStepState{CrossRoleStep: nSync, RoleStep: 0, Replicas: cur}
+			continue
+		}
+		crossStep := 0
+		roleStep := 0
+		for s := 1; s <= nSync; s++ {
+			if cur <= oldSyncTarget(init, unit.mul(s)) {
+				crossStep = s
+				roleStep = 0
+			} else {
+				prev := init
+				if s > 1 {
+					prev = oldSyncTarget(init, unit.mul(s-1))
+				}
+				roleStep = prev - cur
 				break
 			}
 		}
@@ -163,8 +178,11 @@ func deriveRoleProgress(
 }
 
 // ComputeNextStep computes the next scaling step for a rolling update.
-// It derives the current progress from replica counts, enforces sync point
-// boundaries, and returns the next sub-step (or nil if the rollout is complete).
+//
+// Two-minU model: old and new revisions progress at their own native rhythms
+// (one minimalUnit each). Within a single revision, all roles coordinate at
+// that revision's sync points. Across revisions, no forced lockstep — the
+// maxSurge ceiling and maxUnavailable floor are the only cross-side coupling.
 func ComputeNextStep(
 	roleNames []string,
 	initialOld, currentOld, currentNew, targetNew map[string]int,
@@ -174,24 +192,31 @@ func ComputeNextStep(
 		return nil
 	}
 
-	unit := globalMinimalUnit(initialOld, targetNew)
-	nSync := numSyncPoints(unit)
+	oldUnit := revisionMinimalUnit(initialOld)
+	newUnit := revisionMinimalUnit(targetNew)
+	nNewSync := numSyncPoints(newUnit)
+	nOldSync := numSyncPoints(oldUnit)
 
-	progress := deriveRoleProgress(roleNames, targetNew, currentNew, unit)
+	newProgress := deriveNewProgress(roleNames, targetNew, currentNew, newUnit)
+	oldProgress := deriveOldProgress(roleNames, initialOld, currentOld, oldUnit)
 
-	// Find the minimum cross-role step — only roles at this level can advance.
-	minCrossStep := nSync
+	// Per-side floor of progress: only roles AT this level can advance to the
+	// next sync barrier on that side. Coordinates roles within a revision.
+	minNewCross := nNewSync
+	minOldCross := nOldSync
 	for _, role := range roleNames {
-		if progress[role].CrossRoleStep < minCrossStep {
-			minCrossStep = progress[role].CrossRoleStep
+		if newProgress[role].CrossRoleStep < minNewCross {
+			minNewCross = newProgress[role].CrossRoleStep
+		}
+		if oldProgress[role].CrossRoleStep < minOldCross {
+			minOldCross = oldProgress[role].CrossRoleStep
 		}
 	}
 
-	nextSyncIdx := minCrossStep + 1
-	if nextSyncIdx > nSync {
-		nextSyncIdx = nSync
-	}
-	syncPct := unit.mul(nextSyncIdx)
+	nextNewSync := min(minNewCross+1, nNewSync)
+	nextOldSync := min(minOldCross+1, nOldSync)
+	newSyncPct := newUnit.mul(nextNewSync)
+	oldSyncPct := oldUnit.mul(nextOldSync)
 
 	pastStep := make(map[string]RoleStepState, len(roleNames))
 	newStep := make(map[string]RoleStepState, len(roleNames))
@@ -203,59 +228,79 @@ func ComputeNextStep(
 		curOld := currentOld[role]
 		cfg := config[role]
 
-		newTarget, oldTarget := syncTargets(target, initial, syncPct)
+		newTarget := newSyncTarget(target, newSyncPct)
+		oldTarget := oldSyncTarget(initial, oldSyncPct)
 
-		// Only advance roles at the minimum sync point.
-		if progress[role].CrossRoleStep > minCrossStep {
-			pastStep[role] = RoleStepState{
-				CrossRoleStep: progress[role].CrossRoleStep,
-				RoleStep:      progress[role].RoleStep,
-				Replicas:      curOld,
-			}
-			newStep[role] = RoleStepState{
-				CrossRoleStep: progress[role].CrossRoleStep,
-				RoleStep:      progress[role].RoleStep,
-				Replicas:      curNew,
-			}
-			continue
-		}
+		// Decide each side independently. A role parked at a higher
+		// new-side sync barrier doesn't advance new (preserve within-new
+		// role ratio). Same for old. The two parking decisions are
+		// independent — a role can advance new but be parked on old, or
+		// vice versa.
+		newParked := newProgress[role].CrossRoleStep > minNewCross
+		oldParked := oldProgress[role].CrossRoleStep > minOldCross
 
-		// Advance new by 1 replica, drain old by 1 replica (toward sync targets).
-		nextNew := min(curNew+1, newTarget)
-		nextOld := max(curOld-1, oldTarget)
-
-		// Capacity ceiling: old + new <= max(initialOld, target) + maxSurge.
+		// Capacity envelope for this role.
 		ceiling := max(initial, target) + cfg.MaxSurge
+		floor := max(0, min(initial, target)-cfg.MaxUnavailable)
 		if cfg.MaxSurge == 0 && cfg.MaxUnavailable == 0 {
 			ceiling = max(initial, target) + 1
 		}
-		if nextNew+nextOld > ceiling {
-			nextNew = curNew
+
+		currentTotal := curNew + curOld
+		addBudget := max(0, ceiling-currentTotal)
+		drainBudget := max(0, currentTotal-floor)
+
+		addNew := 0
+		if !newParked {
+			addNew = max(0, min(newTarget-curNew, addBudget))
+		}
+		drainOld := 0
+		if !oldParked {
+			drainOld = max(0, min(curOld-oldTarget, drainBudget))
 		}
 
-		// Capacity floor: old + new >= min(initialOld, target) - maxUnavailable.
-		floor := max(0, min(initial, target)-cfg.MaxUnavailable)
-		if nextNew+nextOld < floor {
-			nextOld = curOld
+		// Guarantee at least one operation when an unparked side has work
+		// but its budget is zero at this instant (other side will free room
+		// on the next reconcile).
+		if addNew == 0 && drainOld == 0 {
+			if !newParked && curNew < newTarget && currentTotal+1 <= ceiling {
+				addNew = 1
+			} else if !oldParked && curOld > oldTarget && currentTotal-1 >= floor {
+				drainOld = 1
+			}
 		}
 
-		roleProgress := progress[role]
-		nextRoleStep := roleProgress.RoleStep + 1
-		nextCrossStep := roleProgress.CrossRoleStep
+		nextNew := curNew + addNew
+		nextOld := curOld - drainOld
 
-		if nextNew >= newTarget && nextOld <= oldTarget {
-			nextCrossStep = nextSyncIdx
-			nextRoleStep = 0
+		// Update each side's sync position separately.
+		nextNewCross := newProgress[role].CrossRoleStep
+		nextNewRoleStep := newProgress[role].RoleStep
+		if !newParked {
+			nextNewRoleStep++
+			if nextNew >= newTarget {
+				nextNewCross = nextNewSync
+				nextNewRoleStep = 0
+			}
+		}
+		nextOldCross := oldProgress[role].CrossRoleStep
+		nextOldRoleStep := oldProgress[role].RoleStep
+		if !oldParked {
+			nextOldRoleStep++
+			if nextOld <= oldTarget {
+				nextOldCross = nextOldSync
+				nextOldRoleStep = 0
+			}
 		}
 
 		pastStep[role] = RoleStepState{
-			CrossRoleStep: nextCrossStep,
-			RoleStep:      nextRoleStep,
+			CrossRoleStep: nextOldCross,
+			RoleStep:      nextOldRoleStep,
 			Replicas:      nextOld,
 		}
 		newStep[role] = RoleStepState{
-			CrossRoleStep: nextCrossStep,
-			RoleStep:      nextRoleStep,
+			CrossRoleStep: nextNewCross,
+			RoleStep:      nextNewRoleStep,
 			Replicas:      nextNew,
 		}
 	}
