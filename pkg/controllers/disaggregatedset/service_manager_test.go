@@ -39,14 +39,14 @@ const (
 	testServiceRoleDecode  = "decode"
 )
 
-// readyLWS builds a slice-aware LWS fixture with the standard name and labels and a
+// readyLWS builds a slice-0 LWS fixture with the standard name and labels and a
 // given ready replica count. Services are derived from the LWS, so fixtures must
 // carry realistic names and labels.
-func readyLWS(dsName string, slice int, revision, role string, ready int32) *leaderworkersetv1.LeaderWorkerSet {
+func readyLWS(dsName, revision, role string, ready int32) *leaderworkersetv1.LeaderWorkerSet {
 	lws := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   disaggregatedsetutils.GenerateName(dsName, slice, revision, role),
-			Labels: disaggregatedsetutils.GenerateLabels(dsName, slice, revision, role),
+			Name:   disaggregatedsetutils.GenerateName(dsName, 0, revision, role),
+			Labels: disaggregatedsetutils.GenerateLabels(dsName, 0, revision, role),
 		},
 	}
 	lws.Status.ReadyReplicas = ready
@@ -68,8 +68,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 0), // not ready
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 0), // not ready
 				},
 			},
 		}
@@ -95,8 +95,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -130,8 +130,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -160,8 +160,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -190,8 +190,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "ef53f2d7",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("my-app", 0, "ef53f2d7", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("my-app", 0, "ef53f2d7", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("my-app", "ef53f2d7", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("my-app", "ef53f2d7", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -222,8 +222,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -255,8 +255,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "abc12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "abc12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -306,8 +306,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -357,8 +357,8 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -415,15 +415,15 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "old12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "old12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "old12345", testServiceRoleDecode, 2),
+					testServiceRolePrefill: readyLWS("test-deploy", "old12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", "old12345", testServiceRoleDecode, 2),
 				},
 			},
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 1),
+					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
+					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
 				},
 			},
 		}
@@ -455,15 +455,15 @@ func TestServiceManager(t *testing.T) {
 			{
 				Revision: "old12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "old12345", testServiceRolePrefill, 0),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "old12345", testServiceRoleDecode, 0),
+					testServiceRolePrefill: readyLWS("test-deploy", "old12345", testServiceRolePrefill, 0),
+					testServiceRoleDecode:  readyLWS("test-deploy", "old12345", testServiceRoleDecode, 0),
 				},
 			},
 			{
 				Revision: "new12345",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", 0, "new12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", 0, "new12345", testServiceRoleDecode, 2),
+					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 2),
+					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 2),
 				},
 			},
 		}
