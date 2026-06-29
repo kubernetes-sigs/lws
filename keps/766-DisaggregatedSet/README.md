@@ -163,14 +163,14 @@ The rolling update algorithm coordinates all roles using a linear interpolation 
 
 ```
 newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
-oldAtStep(i) = source - floor(i * source / totalSteps)  // scale down: source → 0
+oldAtStep(i) = initialOld - floor(i * initialOld / totalSteps)  // scale down: initialOld → 0
 ```
 
 Where, per role:
 
 ```
 batchSize  = maxSurge   if maxSurge > 0, else max(1, maxUnavailable)
-roleSteps  = ceil(max(source, target) / batchSize)
+roleSteps  = ceil(max(initialOld, target) / batchSize)
 ```
 
 And across all roles:
@@ -247,8 +247,8 @@ recomputes two aggregated step indices from the current observed state:
 
 - `minStep` = `min` over per-role `stepIndex(currentNew, target)` — used to
   pick the scale-up target. It targets `minStep + 1`'s `newAtStep` values.
-- `maxStep` = `max` over per-role `stepIndex(removed, source)` (where
-  `removed = source - currentOld`) — used to pick the drain target. It
+- `maxStep` = `max` over per-role `stepIndex(removed, initialOld)` (where
+  `removed = initialOld - currentOld`) — used to pick the drain target. It
   targets `maxStep + 1`'s `oldAtStep` values.
 
 Each iteration then runs only one of scale-up, proportional drain, or
@@ -287,8 +287,8 @@ shortcut bypassed the sequence — iter 0 and 7):
 Notes:
 - `minStep` advances faster than `maxStep` because the inverse `stepIndex`
   formula rounds down: `stepIndex(currentNew, target)` reports step 1 as
-  soon as new reaches step 1's level, but `stepIndex(removed, source)`
-  doesn't roll over to 1 until `removed > source / totalSteps`.
+  soon as new reaches step 1's level, but `stepIndex(removed, initialOld)`
+  doesn't roll over to 1 until `removed > initialOld / totalSteps`.
 - Iterations 2, 5, and 7 land the system exactly on a trajectory
   checkpoint (`i = 1, 2, 3` respectively).
 
