@@ -34,5 +34,5 @@ spec:
         {{- end }}
   selector:
     matchLabels:
-      control-plane: controller-manager
+      {{- include "lws.labels" . | nindent 6 }}
 {{- end }}
