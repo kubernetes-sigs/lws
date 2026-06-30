@@ -382,7 +382,8 @@ toc-verify:
 
 .PHONY: generate-apiref
 generate-apiref: genref
-	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference
+	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference --include leaderworkerset
+	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference --include disaggregatedset
 
 HELM = $(PROJECT_DIR)/bin/helm
 .PHONY: helm
