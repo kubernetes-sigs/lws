@@ -197,8 +197,74 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 
 }
 
+func addTPUVariablesPlacement(pod *corev1.Pod) error {
+	container := getContainerRequestingTPUs(&pod.Spec)
+	if container == nil {
+		return nil
+	}
+
+	for _, env := range container.Env {
+		if env.Name == TpuWorkerHostNames || env.Name == TpuWorkerId {
+			return nil
+		}
+	}
+
+	members, err := leaderworkerset.DecodeSubGroupMembers(pod.Annotations[leaderworkerset.SubGroupMembersAnnotationKey])
+	if err != nil {
+		return err
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	workerIndex, err := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
+	if err != nil {
+		return err
+	}
+	leaderName, _ := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+	if leaderName == "" {
+		return fmt.Errorf("parsing parent name from pod %s", pod.Name)
+	}
+	tpuWorkerID := -1
+	for i, member := range members {
+		if int(member) == workerIndex {
+			tpuWorkerID = i
+			break
+		}
+	}
+	if tpuWorkerID == -1 {
+		return fmt.Errorf("worker %d is missing from subgroup members for pod %s", workerIndex, pod.Name)
+	}
+
+	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)
+	if !tpuProcessPortInContainer {
+		tpuProcessPort = strconv.Itoa(TpuProcessDefaultPort)
+	}
+
+	hostnames := make([]string, 0, len(members))
+	hostnamesAddresses := make([]string, 0, len(members))
+	for _, member := range members {
+		hostname := fmt.Sprintf("%s-%d.%s", leaderName, member, pod.Spec.Subdomain)
+		hostnames = append(hostnames, hostname)
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s:%s", hostname, tpuProcessPort))
+	}
+
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: TpuWorkerHostNames, Value: strings.Join(hostnames, ",")},
+		corev1.EnvVar{Name: TpuWorkerId, Value: fmt.Sprint(tpuWorkerID)},
+		corev1.EnvVar{Name: TpuName, Value: fmt.Sprint(leaderName)},
+		corev1.EnvVar{Name: TpuProcessAddresses, Value: strings.Join(hostnamesAddresses, ",")},
+	)
+	if !tpuProcessPortInContainer {
+		container.Env = append(container.Env, corev1.EnvVar{Name: TpuProcessPortName, Value: tpuProcessPort})
+	}
+	return nil
+}
+
 // AddTPUVariables adds TPU related environment variables to containers
 func AddTPUVariables(pod *corev1.Pod, size int) error {
+	if _, foundSubGroupMembers := pod.Annotations[leaderworkerset.SubGroupMembersAnnotationKey]; foundSubGroupMembers {
+		return addTPUVariablesPlacement(pod)
+	}
 	_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 	if foundSubGroupSize {
 		return addTPUVariablesSubGroup(pod)

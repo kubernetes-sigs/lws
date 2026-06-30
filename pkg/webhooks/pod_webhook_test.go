@@ -17,6 +17,7 @@ limitations under the License.
 package webhooks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -301,5 +302,90 @@ func TestGetSubGroupIndex(t *testing.T) {
 				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedSubGroupIndex, subGroupIndex)
 			}
 		})
+	}
+}
+
+func TestFindPlacementForWorker(t *testing.T) {
+	placement := []leaderworkerset.SubGroupPlacement{
+		{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+		{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+	}
+
+	placementIndex, members, matchLabels, found := findPlacementForWorker(placement, 2)
+	if !found {
+		t.Fatal("expected placement to be found")
+	}
+	if diff := cmp.Diff(0, placementIndex); diff != "" {
+		t.Fatalf("unexpected placement index: %s", diff)
+	}
+	if diff := cmp.Diff([]int32{1, 2}, members); diff != "" {
+		t.Fatalf("unexpected members: %s", diff)
+	}
+	if diff := cmp.Diff(map[string]string{"local": "schedule_zone"}, matchLabels); diff != "" {
+		t.Fatalf("unexpected matchLabels: %s", diff)
+	}
+}
+
+func TestApplyPlacementNodeAffinity(t *testing.T) {
+	pod := &corev1.Pod{}
+	applyPlacementNodeAffinity(pod, map[string]string{"local": "schedule_zone"})
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil || pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatal("expected required node affinity to be configured")
+	}
+	want := []corev1.NodeSelectorTerm{{
+		MatchExpressions: []corev1.NodeSelectorRequirement{{
+			Key:      "local",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"schedule_zone"},
+		}},
+	}}
+	if diff := cmp.Diff(want, pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms); diff != "" {
+		t.Fatalf("unexpected node affinity: %s", diff)
+	}
+}
+
+func TestDefaultAppliesSubGroupExclusiveAffinitiesForPlacement(t *testing.T) {
+	placement, err := leaderworkerset.EncodeSubGroupPlacement([]leaderworkerset.SubGroupPlacement{
+		{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+	})
+	if err != nil {
+		t.Fatalf("encoding subgroup placement: %v", err)
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-0-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:    "leader",
+				leaderworkerset.GroupIndexLabelKey: "0",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.SizeAnnotationKey:                 "3",
+				leaderworkerset.LeaderPodNameAnnotationKey:        "leader-0",
+				leaderworkerset.SubGroupPlacementAnnotationKey:    placement,
+				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone",
+			},
+		},
+	}
+
+	if err := (&PodWebhook{}).Default(context.Background(), pod); err != nil {
+		t.Fatalf("defaulting pod: %v", err)
+	}
+
+	if got := pod.Labels[leaderworkerset.SubGroupIndexLabelKey]; got != "0" {
+		t.Fatalf("unexpected subgroup index: %s", got)
+	}
+	if got := pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey]; got == "" {
+		t.Fatal("expected subgroup unique hash label to be set")
+	}
+	if !exclusiveAffinityApplied(*pod, "topology.kubernetes.io/zone") {
+		t.Fatal("expected subgroup exclusive affinities to be applied")
+	}
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil || pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatal("expected placement node affinity to be configured")
+	}
+	if got := pod.Annotations[leaderworkerset.SubGroupMembersAnnotationKey]; got != "[1,2]" {
+		t.Fatalf("unexpected subgroup members annotation: %s", got)
 	}
 }
