@@ -57,3 +57,21 @@ affinity: {}
 # gangSchedulingManagement:
 #   schedulerProvider: volcano
 gangSchedulingManagement: {}
+
+# crdUpgrade is configuration for the CRD upgrade Job that runs as a pre-install/pre-upgrade
+# Helm hook. It applies CRDs via kubectl before the controller starts, ensuring CRDs are
+# always up-to-date regardless of whether they live in the crds/ directory or templates/.
+crdUpgrade:
+  enabled: true
+  # Time-to-live (TTL) for crd-upgrade jobs after completion. Default is 259200 seconds (3 days).
+  ttlSecondsAfterFinished: 259200
+  # CRD Upgrader image configuration
+  image:
+    repository: registry.k8s.io/lws/lws-upgrade-crd
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  # Tolerations for CRD Upgrader Job pod
+  tolerations:
+    - operator: Exists
+  # Node selector for CRD Upgrader Job pod
+  nodeSelector: {}
