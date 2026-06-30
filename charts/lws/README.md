@@ -8,6 +8,7 @@
     - [Installing the chart](#installing-the-chart)
         - [Install chart using Helm v3.0+](#install-chart-using-helm-v30)
         - [Verify that controller pods are running properly.](#verify-that-controller-pods-are-running-properly)
+    - [Upgrading the chart](#upgrading-the-chart)
     - [Configuration](#configuration)
 <!-- /toc -->
 
@@ -68,17 +69,36 @@ controller are always installed with the chart. To also install the
 editor/viewer/admin ClusterRoles and validating webhook, set
 `enableDisaggregatedSet` to `true`.
 
-Helm installs CRDs during `helm install`, but does not install newly added CRDs
-during `helm upgrade`. Before upgrading an existing LWS Helm release to a chart
-version that introduces DisaggregatedSet, apply the new CRD from the repository
-root:
+### Upgrading the chart
+
+The chart ships its CRDs under the special `crds/` directory. Helm installs the
+files in that directory only during the initial `helm install`; it never updates
+or deletes them on `helm upgrade` (see the
+[Helm documentation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)).
+
+This has two consequences when upgrading an existing release:
+
+- CRD schema changes (new fields, printer columns, conversion settings, etc.) do
+  **not** reach the cluster through `helm upgrade`.
+- A newly added CRD (for example `DisaggregatedSet`) is **not** installed by
+  `helm upgrade`.
+
+Apply the CRDs explicitly before upgrading so the cluster always has the schema
+the new chart version expects. `--server-side` lets the apply coexist with the
+ownership Helm records for the resource:
 
 ```bash
-kubectl apply --server-side \
+kubectl apply --server-side --force-conflicts \
+  -f charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml \
   -f charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
-helm upgrade lws charts/lws --namespace lws-system \
-  --set enableDisaggregatedSet=true
+helm upgrade lws charts/lws --namespace lws-system
 ```
+
+> **Note**: neither `helm upgrade` nor `helm uninstall` + `helm install` will
+> update CRD schemas — Helm never modifies CRDs placed in the `crds/` directory
+> after the initial install, and does not delete them on `helm uninstall` either.
+> Always reconcile CRD schemas explicitly with the `kubectl apply` step above
+> before upgrading.
 
 ### Configuration
 

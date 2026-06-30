@@ -73,6 +73,33 @@ helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSI
   --wait --timeout 300s
 ```
 
+### Upgrade by Helm
+
+Helm only installs the chart's CRDs during the initial `helm install`. It does
+not update or delete CRDs on `helm upgrade` (see the
+[Helm documentation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)),
+so CRD schema changes and newly added CRDs do not reach the cluster through
+`helm upgrade` alone.
+
+Apply the CRDs explicitly before upgrading, then upgrade the release in place:
+
+```shell
+CHART_VERSION=0.8.0
+helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
+kubectl apply --server-side --force-conflicts -f lws/crds
+helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
+  --version=$CHART_VERSION \
+  --namespace lws-system \
+  --wait --timeout 300s
+```
+
+{{% alert title="Note" color="info" %}}
+`helm upgrade` does not update CRD schemas — Helm never modifies CRDs placed
+in the `crds/` directory after the initial `helm install`, and does not delete
+them on `helm uninstall` either. Always reconcile CRD schemas explicitly with
+the `kubectl apply` step above before upgrading the chart.
+{{% /alert %}}
+
 ### Uninstall
 
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
