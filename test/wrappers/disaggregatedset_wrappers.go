@@ -53,6 +53,11 @@ func (w *DisaggregatedSetWrapper) UID(uid string) *DisaggregatedSetWrapper {
 	return w
 }
 
+func (w *DisaggregatedSetWrapper) Slices(n int32) *DisaggregatedSetWrapper {
+	w.Spec.Slices = ptr.To(n)
+	return w
+}
+
 func (w *DisaggregatedSetWrapper) WithRole(name string, replicas int32, image string) *DisaggregatedSetWrapper {
 	w.Spec.Roles = append(w.Spec.Roles, disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: name,

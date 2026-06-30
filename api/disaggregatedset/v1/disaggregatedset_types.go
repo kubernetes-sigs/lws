@@ -30,6 +30,9 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
 
+	// SliceLabelKey records which slice the resource belongs to.
+	SliceLabelKey string = "disaggregatedset.x-k8s.io/slice"
+
 	// RevisionLabelKey records the revision hash for the resource.
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
@@ -70,6 +73,14 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +required
 	Roles []DisaggregatedRoleSpec `json:"roles"`
+
+	// Slices is the number of independent copies of the whole role topology.
+	// Each slice is a complete set of all roles that rolls out independently.
+	// Changing Slices scales copies up or down and does not trigger a rollout.
+	// +optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	Slices *int32 `json:"slices,omitempty"`
 }
 
 // RoleStatus defines the observed state of a single role.
