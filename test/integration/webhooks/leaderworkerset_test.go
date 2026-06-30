@@ -568,5 +568,42 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
+		ginkgo.Entry("creation with maxGroupRestarts and RecreateGroupOnPodRestart should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3)
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("creation with maxGroupRestarts and None restart policy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.NoneRestartPolicy).MaxGroupRestarts(1)
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("creation with maxGroupRestarts and RecreateGroupAfterStart restart policy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupAfterStart).MaxGroupRestarts(0)
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("update keeping maxGroupRestarts while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
+			},
+			updateShouldFail: true,
+		}),
+		ginkgo.Entry("update clearing maxGroupRestarts before changing restart policy should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = nil
+				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
+			},
+			updateShouldFail: false,
+		}),
 	)
 })

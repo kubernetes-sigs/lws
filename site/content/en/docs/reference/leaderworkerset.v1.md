@@ -234,6 +234,18 @@ The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
 </tr>
+<tr><td><code>maxGroupRestarts</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>maxGroupRestarts bounds how many times a group's leader pod can be recreated
+via the RecreateGroupOnPodRestart path before the group is marked terminally
+failed. It is opt-in: when unset (nil) the existing unbounded recreation
+behavior is preserved. This field is only valid when
+spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
+validating webhook rejects any other combination.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
@@ -283,6 +295,16 @@ the VolumeClaimTemplates.</p>
 <td>
    <p>subdomainPolicy determines the policy that will be used when creating
 the headless service, defaults to shared</p>
+</td>
+</tr>
+<tr><td><code>publishNotReadyAddresses</code><br/>
+<code>bool</code>
+</td>
+<td>
+   <p>publishNotReadyAddresses makes the LWS-owned headless Service publish
+endpoints for pods that are not yet Ready. This enables peer FQDN (e.g.
+LWS_LEADER_ADDRESS) to resolve during the init-container phase. It is
+opt-in and defaults to false to preserve today's behavior.</p>
 </td>
 </tr>
 </tbody>

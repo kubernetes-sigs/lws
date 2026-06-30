@@ -217,6 +217,32 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		}
 		return nil
 	}
+
+	leaderSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, leaderSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+	for i := range leaderPodList.Items {
+		leaderPod := &leaderPodList.Items[i]
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(
+			ctx,
+			r.Client,
+			r.Scheme,
+			lws,
+			leaderPod.Name,
+			map[string]string{
+				leaderworkerset.SetNameLabelKey:    lws.Name,
+				leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
+			},
+			leaderPod,
+		); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -226,6 +252,24 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				labels := a.GetLabels()
+				if labels == nil {
+					return nil
+				}
+				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
+				}
+				name := labels[leaderworkerset.SetNameLabelKey]
+				if name == "" {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Name:      name,
+					Namespace: a.GetNamespace(),
+				}}}
+			})).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 				return []reconcile.Request{
@@ -486,7 +530,15 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
-	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
+	// Terminal failure check must run first so Failed dominates over the
+	// rolling-update / progress / available decisions below.
+	failed, err := r.hasFailedGroup(ctx, lws, leaderPodList)
+	if err != nil {
+		return false, false, err
+	}
+	if failed {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws))
+	} else if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
@@ -878,6 +930,10 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
 		reason = GroupsUpdating
 		message = "Rolling Upgrade is in progress"
+	case leaderworkerset.LeaderWorkerSetFailed:
+		condtype = string(leaderworkerset.LeaderWorkerSetFailed)
+		reason = "MaxGroupRestartsExceeded"
+		message = "One or more groups exceeded maxGroupRestarts"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
 		reason = GroupsProgressing
@@ -893,6 +949,35 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 		Message:            message,
 	}
 	return condition
+}
+
+// hasFailedGroup reports whether any leader pod carries a group-restart-count
+// annotation that has exceeded the configured maxGroupRestarts budget. The
+// annotation is the source of truth enforced by pod_controller.go. Invalid
+// annotations are surfaced as reconcile errors instead of being coerced into a
+// terminal Failed condition.
+func (r *LeaderWorkerSetReconciler) hasFailedGroup(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPodList *corev1.PodList) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
+	if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts == nil {
+		return false, nil
+	}
+	limit := *lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		raw, ok := pod.Annotations[leaderworkerset.GroupRestartCountAnnotationKey]
+		if !ok || raw == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			log.Error(err, "invalid group-restart-count annotation", "pod", pod.Name, "value", raw)
+			return false, fmt.Errorf("invalid %s annotation on leader pod %s: %w", leaderworkerset.GroupRestartCountAnnotationKey, pod.Name, err)
+		}
+		if int32(v) > limit {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
@@ -957,6 +1042,20 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress)) ||
 		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
+	}
+
+	// Failed is terminal: if a previous reconcile set Failed=True, a new
+	// reconcile must clear Available/Progressing/UpdateInProgress to False.
+	failedType := string(leaderworkerset.LeaderWorkerSetFailed)
+	if condition1.Type == failedType || condition2.Type == failedType {
+		if condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) ||
+			condition1.Type == string(leaderworkerset.LeaderWorkerSetProgressing) ||
+			condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetProgressing) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) {
+			return true
+		}
 	}
 
 	return false

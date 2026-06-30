@@ -282,6 +282,76 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("shared headless service defaults publishNotReadyAddresses to false", &testCase{
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("shared headless service reconciles publishNotReadyAddresses updates", &testCase{
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var current leaderworkerset.LeaderWorkerSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &current)).To(gomega.Succeed())
+						patch := client.MergeFrom(current.DeepCopy())
+						current.Spec.NetworkConfig.PublishNotReadyAddresses = true
+						gomega.Expect(k8sClient.Patch(ctx, &current, patch)).To(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("unique-per-replica services propagate publishNotReadyAddresses=true", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).
+					SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+					PublishNotReadyAddresses(true)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("unique-per-replica services reconcile publishNotReadyAddresses updates", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var current leaderworkerset.LeaderWorkerSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &current)).To(gomega.Succeed())
+						patch := client.MergeFrom(current.DeepCopy())
+						current.Spec.NetworkConfig.PublishNotReadyAddresses = true
+						gomega.Expect(k8sClient.Patch(ctx, &current, patch)).To(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 2)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{

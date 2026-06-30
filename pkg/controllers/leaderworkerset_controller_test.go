@@ -1148,3 +1148,161 @@ func TestGetUpdatedRevision(t *testing.T) {
 		})
 	}
 }
+
+func TestMakeConditionFailed(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	cond := makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws)
+	if cond.Type != string(leaderworkerset.LeaderWorkerSetFailed) {
+		t.Fatalf("type = %q, want Failed", cond.Type)
+	}
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("status = %q, want True", cond.Status)
+	}
+	if cond.Reason != "MaxGroupRestartsExceeded" {
+		t.Fatalf("reason = %q, want MaxGroupRestartsExceeded", cond.Reason)
+	}
+}
+
+func TestExclusiveConditionTypesWithFailed(t *testing.T) {
+	failed := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetFailed), Status: metav1.ConditionTrue}
+	available := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetAvailable), Status: metav1.ConditionTrue}
+	progressing := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetProgressing), Status: metav1.ConditionTrue}
+	updating := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress), Status: metav1.ConditionTrue}
+	availableFalse := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetAvailable), Status: metav1.ConditionFalse}
+
+	if !exclusiveConditionTypes(failed, available) {
+		t.Fatal("Failed must be exclusive with Available=True")
+	}
+	if !exclusiveConditionTypes(available, failed) {
+		t.Fatal("Available=True must be exclusive with Failed")
+	}
+	if !exclusiveConditionTypes(failed, progressing) {
+		t.Fatal("Failed must be exclusive with Progressing=True")
+	}
+	if !exclusiveConditionTypes(updating, failed) {
+		t.Fatal("UpdateInProgress=True must be exclusive with Failed")
+	}
+	// Two non-terminal true conditions are still exclusive as before.
+	if !exclusiveConditionTypes(available, progressing) {
+		t.Fatal("Available and Progressing must remain exclusive")
+	}
+	_ = availableFalse
+}
+
+func TestSetConditionFailedClearsProgressing(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Generation(1).
+		Conditions([]metav1.Condition{{Type: string(leaderworkerset.LeaderWorkerSetProgressing), Status: metav1.ConditionTrue, ObservedGeneration: 1}}).
+		Obj()
+	failed := makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws)
+	if !setCondition(lws, failed) {
+		t.Fatal("expected setCondition to return true when adding Failed")
+	}
+	var foundProgressing, foundFailed bool
+	for _, c := range lws.Status.Conditions {
+		if c.Type == string(leaderworkerset.LeaderWorkerSetProgressing) {
+			foundProgressing = true
+			if c.Status != metav1.ConditionFalse {
+				t.Fatalf("Progressing should be forced to False, got %q", c.Status)
+			}
+		}
+		if c.Type == string(leaderworkerset.LeaderWorkerSetFailed) {
+			foundFailed = true
+			if c.Status != metav1.ConditionTrue {
+				t.Fatalf("Failed should be True, got %q", c.Status)
+			}
+		}
+	}
+	if !foundProgressing {
+		t.Fatal("Progressing condition should still be present (cleared to False)")
+	}
+	if !foundFailed {
+		t.Fatal("Failed condition should be present")
+	}
+}
+
+func TestHasFailedGroup(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Client: fake.NewClientBuilder().Build()}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](2)
+
+	pods := &corev1.PodList{}
+	failed, err := reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("empty pod list should not be a failed group")
+	}
+
+	pods.Items = append(pods.Items, corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "lws-0",
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartCountAnnotationKey: "1",
+			},
+		},
+	})
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("count below limit should not trigger Failed")
+	}
+
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = "2"
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("count at limit should not trigger Failed")
+	}
+
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = "3"
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if !failed {
+		t.Fatal("count above limit should trigger Failed")
+	}
+
+	// nil maxGroupRestarts disables detection entirely.
+	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = nil
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("nil MaxGroupRestarts should never trigger Failed")
+	}
+}
+
+func TestHasFailedGroupInvalidAnnotationReturnsError(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Client: fake.NewClientBuilder().Build()}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "lws-0",
+					Annotations: map[string]string{
+						leaderworkerset.GroupRestartCountAnnotationKey: "bad",
+					},
+				},
+			},
+		},
+	}
+
+	failed, err := reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err == nil {
+		t.Fatal("hasFailedGroup() error = nil, want invalid annotation error")
+	}
+	if failed {
+		t.Fatal("hasFailedGroup() should not coerce invalid annotation into Failed=true")
+	}
+}

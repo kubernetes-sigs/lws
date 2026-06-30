@@ -8880,6 +8880,17 @@ spec:
                                   - containers
                                   type: object
                               type: object
+                            maxGroupRestarts:
+                              description: |-
+                                maxGroupRestarts bounds how many times a group's leader pod can be recreated
+                                via the RecreateGroupOnPodRestart path before the group is marked terminally
+                                failed. It is opt-in: when unset (nil) the existing unbounded recreation
+                                behavior is preserved. This field is only valid when
+                                spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
+                                validating webhook rejects any other combination.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             persistentVolumeClaimRetentionPolicy:
                               description: |-
                                 persistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from
@@ -18207,6 +18218,14 @@ spec:
                           description: networkConfig defines the network configuration
                             of the group
                           properties:
+                            publishNotReadyAddresses:
+                              default: false
+                              description: |-
+                                publishNotReadyAddresses makes the LWS-owned headless Service publish
+                                endpoints for pods that are not yet Ready. This enables peer FQDN (e.g.
+                                LWS_LEADER_ADDRESS) to resolve during the init-container phase. It is
+                                opt-in and defaults to false to preserve today's behavior.
+                              type: boolean
                             subdomainPolicy:
                               description: |-
                                 subdomainPolicy determines the policy that will be used when creating
