@@ -74,25 +74,27 @@ func totalPerRole(s UpdateStep, role string) int {
 // Minimal Unit Tests
 // =============================================================================
 
-func TestComputeMinimalUnit(t *testing.T) {
+// TestSideSize verifies the step-count helper: number of steps a side has =
+// smallest non-zero role replica count (so the slowest role can express each
+// step boundary). 0 indicates an empty side.
+func TestSideSize(t *testing.T) {
 	tests := []struct {
-		name    string
-		targets map[string]int
-		wantNum int
-		wantDen int
+		name     string
+		replicas map[string]int
+		want     int
 	}{
-		{"symmetric_8_8", map[string]int{"p": 8, "d": 8}, 1, 8},
-		{"asymmetric_8_10", map[string]int{"p": 8, "d": 10}, 1, 8},
-		{"extreme_2_100", map[string]int{"p": 2, "d": 100}, 1, 2},
-		{"single_replica", map[string]int{"p": 1, "d": 10}, 1, 1},
-		{"three_roles", map[string]int{"p": 4, "d": 8, "c": 16}, 1, 4},
+		{"symmetric_8_8", map[string]int{"p": 8, "d": 8}, 8},
+		{"asymmetric_8_10", map[string]int{"p": 8, "d": 10}, 8},
+		{"extreme_2_100", map[string]int{"p": 2, "d": 100}, 2},
+		{"single_replica", map[string]int{"p": 1, "d": 10}, 1},
+		{"three_roles", map[string]int{"p": 4, "d": 8, "c": 16}, 4},
+		{"empty_side", map[string]int{"p": 0, "d": 0}, 0},
+		{"one_zero_role", map[string]int{"p": 0, "d": 4}, 4},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			unit := revisionMinimalUnit(tc.targets)
-			assert.Equal(t, tc.wantNum, unit.num)
-			assert.Equal(t, tc.wantDen, unit.den)
+			assert.Equal(t, tc.want, sideSize(tc.replicas))
 		})
 	}
 }
@@ -202,28 +204,38 @@ func TestCapacityNeverExceedsTarget(t *testing.T) {
 // Sync Point Tests
 // =============================================================================
 
-func TestSyncPointEnforcement(t *testing.T) {
-	// With 8 prefill and 3 decode-long, minimalUnit = 1/3 = 33.3%.
-	// Prefill must not cross a sync boundary before decode-long reaches it.
+// TestSyncCoordination_NewSide checks the in-side coordination invariant:
+// for the NEW side, no role's progress fraction (current/target) is more than
+// one minimalUnit ahead of another's. This is what the OLD test asserted
+// using sync-window indices; the invariant is the same, expressed in
+// fractions directly.
+func TestSyncCoordination_NewSide(t *testing.T) {
+	// 8 prefill, 3 decode → minimalUnit = 1/3 (~33%).
 	roles := []string{"P", "DL"}
 	initial := makeRoles(roles, []int{8, 3})
 	target := makeRoles(roles, []int{8, 3})
 	cfg := defaultConfig(roles)
 	steps := ComputeAllSteps(roles, initial, target, cfg)
-
 	require.True(t, completes(steps, roles, target))
 
+	const epsilon = 1e-9
+	minU := 1.0 / 3.0
 	for i, s := range steps {
-		pState := s.New["P"]
-		dlState := s.New["DL"]
-		// P should never be more than 1 sync point ahead of DL.
-		assert.LessOrEqual(t, pState.SyncWindowIndex, dlState.SyncWindowIndex+1,
-			"step %d: P at sync %d but DL at sync %d", i, pState.SyncWindowIndex, dlState.SyncWindowIndex)
+		pFrac := float64(s.New["P"].Replicas) / float64(target["P"])
+		dlFrac := float64(s.New["DL"].Replicas) / float64(target["DL"])
+		diff := pFrac - dlFrac
+		if diff < 0 {
+			diff = -diff
+		}
+		assert.LessOrEqual(t, diff, minU+epsilon,
+			"step %d: P frac %.3f vs DL frac %.3f (diff %.3f > minU %.3f)",
+			i, pFrac, dlFrac, diff, minU)
 	}
 }
 
-func TestSyncPointStructure_3Roles(t *testing.T) {
-	// 8P, 4D, 3DL: minimalUnit = 1/3, 3 sync points.
+// TestRolloutEndsAtTarget verifies the 3-role rollout's final step has all
+// roles at their target replica counts (full progress).
+func TestRolloutEndsAtTarget(t *testing.T) {
 	roles := []string{"P", "D", "DL"}
 	initial := makeRoles(roles, []int{8, 4, 3})
 	target := makeRoles(roles, []int{8, 4, 3})
@@ -231,12 +243,12 @@ func TestSyncPointStructure_3Roles(t *testing.T) {
 	steps := ComputeAllSteps(roles, initial, target, cfg)
 
 	require.True(t, completes(steps, roles, target))
-
-	// Verify that the last step has all roles at sync point 3 (= 1/minimalUnit).
 	last := steps[len(steps)-1]
 	for _, role := range roles {
-		assert.Equal(t, 3, last.New[role].SyncWindowIndex,
-			"role %s should end at sync point 3", role)
+		assert.Equal(t, target[role], last.New[role].Replicas,
+			"role %s should end at target %d", role, target[role])
+		assert.Equal(t, 0, last.Past[role].Replicas,
+			"role %s old side should end fully drained", role)
 	}
 }
 
@@ -404,18 +416,16 @@ func TestSurgeUnavailAcceleration(t *testing.T) {
 // =============================================================================
 
 // TestTwoMinimalUnits_IndependentProgression verifies that with different
-// old/new minUs, each side advances at its own native rhythm. A=4P/4D → C=12P/3D
-// gives oldUnit=1/4 (drain in 4 windows) and newUnit=1/3 (scale up in 3 windows).
+// old/new step counts, each side advances at its own rhythm. A=4P/4D →
+// C=12P/3D gives oldSize=4 (drain in 4 steps) and newSize=3 (scale up in 3).
 func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
 	roles := []string{"prefill", "decode"}
 	initial := map[string]int{"prefill": 4, "decode": 4}
 	target := map[string]int{"prefill": 12, "decode": 3}
 	cfg := makeConfig(roles, []int{2, 2}, []int{2, 2})
 
-	oldUnit := revisionMinimalUnit(initial)
-	newUnit := revisionMinimalUnit(target)
-	assert.Equal(t, 4, oldUnit.den, "oldUnit should be 1/4 (smallest old role)")
-	assert.Equal(t, 3, newUnit.den, "newUnit should be 1/3 (smallest new role)")
+	assert.Equal(t, 4, sideSize(initial), "old side has 4 steps (smallest old role)")
+	assert.Equal(t, 3, sideSize(target), "new side has 3 steps (smallest new role)")
 
 	steps := ComputeAllSteps(roles, initial, target, cfg)
 	require.True(t, completes(steps, roles, target))
@@ -432,44 +442,32 @@ func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
 
 // TestTwoMinimalUnits_TinyRevisionAbsorbed verifies that summing the old side
 // dilutes a tiny revision: a 1P/1D revision mixed with a 20P/4D one yields
-// oldMinU=1/min(21,5)=1/5 (not 1/1). The planner's drain rhythm is governed by
-// the sum, so the tiny revision doesn't poison coordination.
+// an old-side step count of min(21,5) = 5 (not 1). The drain rhythm is
+// governed by the sum, so the tiny revision doesn't poison coordination.
 func TestTwoMinimalUnits_TinyRevisionAbsorbed(t *testing.T) {
-	// Simulated combined old: A (20P/4D) + tiny B (1P/1D) = 21P/5D.
-	combinedInitialOld := map[string]int{"prefill": 21, "decode": 5}
-	oldUnit := revisionMinimalUnit(combinedInitialOld)
-	assert.Equal(t, 5, oldUnit.den, "summed oldMinU should be 1/5, not 1/1 from tiny B alone")
+	combined := map[string]int{"prefill": 21, "decode": 5}
+	assert.Equal(t, 5, sideSize(combined),
+		"summed old side should have 5 steps, not 1 from tiny B alone")
 
-	// Sanity: tiny B alone would give 1/1 (the poison case).
+	// Sanity: tiny B alone would give 1 (the poison case).
 	tinyAlone := map[string]int{"prefill": 1, "decode": 1}
-	assert.Equal(t, 1, revisionMinimalUnit(tinyAlone).den, "tiny rev's own minU is 1/1")
+	assert.Equal(t, 1, sideSize(tinyAlone), "tiny rev alone has 1 step")
 }
 
 // =============================================================================
 // Golden / Characterization Tests
 // =============================================================================
 
-// formatSteps serializes ComputeAllSteps output to a stable string. Used by
-// TestComputeAllSteps_Golden to lock the planner's current behavior so a
-// readability refactor can be verified to be semantics-preserving.
-//
-// Format per step:
-//
-//	N: oldP=X oldD=Y newP=A newD=B (sync new=NS.NR old=OS.OR)
-//
-// Where NS/NR are new-side cross-step.role-step for prefill, similarly OS/OR
-// for old-side. Decode positions are omitted to keep output compact — sync
-// invariants across roles are covered by TestSyncPointEnforcement.
+// formatSteps serializes ComputeAllSteps output to a stable string for the
+// golden tests. The replica counts are the contract; sync invariants are
+// covered separately by TestSyncCoordination_NewSide.
 func formatSteps(steps []UpdateStep) string {
 	out := ""
 	for i, s := range steps {
-		op, od := s.Past["prefill"].Replicas, s.Past["decode"].Replicas
-		np, nd := s.New["prefill"].Replicas, s.New["decode"].Replicas
-		ns := s.New["prefill"]
-		os := s.Past["prefill"]
-		out += fmt.Sprintf("%d: oldP=%d oldD=%d newP=%d newD=%d (sync new=%d.%d old=%d.%d)\n",
-			i, op, od, np, nd,
-			ns.SyncWindowIndex, ns.RoleStep, os.SyncWindowIndex, os.RoleStep)
+		out += fmt.Sprintf("%d: oldP=%d oldD=%d newP=%d newD=%d\n",
+			i,
+			s.Past["prefill"].Replicas, s.Past["decode"].Replicas,
+			s.New["prefill"].Replicas, s.New["decode"].Replicas)
 	}
 	return out
 }
@@ -488,64 +486,64 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			name:    "symmetric_8P4D_surge2_unavail2",
 			initial: []int{8, 4}, target: []int{8, 4},
 			surge: []int{2, 2}, unavail: []int{2, 2},
-			want: `0: oldP=8 oldD=4 newP=0 newD=0 (sync new=0.0 old=0.0)
-1: oldP=6 oldD=3 newP=2 newD=1 (sync new=1.0 old=1.0)
-2: oldP=4 oldD=2 newP=4 newD=2 (sync new=2.0 old=2.0)
-3: oldP=2 oldD=1 newP=6 newD=3 (sync new=3.0 old=3.0)
-4: oldP=0 oldD=0 newP=8 newD=4 (sync new=4.0 old=4.0)
+			want: `0: oldP=8 oldD=4 newP=0 newD=0
+1: oldP=6 oldD=3 newP=2 newD=1
+2: oldP=4 oldD=2 newP=4 newD=2
+3: oldP=2 oldD=1 newP=6 newD=3
+4: oldP=0 oldD=0 newP=8 newD=4
 `,
 		},
 		{
 			name:    "asymmetric_scale_10P2D_to_6P8D_surge2",
 			initial: []int{10, 2}, target: []int{6, 8},
 			surge: []int{2, 2}, unavail: []int{0, 0},
-			want: `0: oldP=10 oldD=2 newP=0 newD=0 (sync new=0.0 old=0.0)
-1: oldP=6 oldD=2 newP=1 newD=1 (sync new=1.0 old=0.1)
-2: oldP=5 oldD=1 newP=2 newD=2 (sync new=2.0 old=1.0)
-3: oldP=4 oldD=0 newP=3 newD=4 (sync new=3.0 old=1.1)
-4: oldP=3 oldD=0 newP=4 newD=5 (sync new=4.0 old=1.2)
-5: oldP=2 oldD=0 newP=5 newD=6 (sync new=5.0 old=1.3)
-6: oldP=1 oldD=0 newP=6 newD=8 (sync new=6.0 old=1.4)
-7: oldP=0 oldD=0 newP=6 newD=8 (sync new=6.0 old=2.0)
+			want: `0: oldP=10 oldD=2 newP=0 newD=0
+1: oldP=6 oldD=2 newP=1 newD=2
+2: oldP=5 oldD=1 newP=2 newD=3
+3: oldP=4 oldD=0 newP=3 newD=4
+4: oldP=3 oldD=0 newP=4 newD=6
+5: oldP=2 oldD=0 newP=5 newD=7
+6: oldP=1 oldD=0 newP=6 newD=8
+7: oldP=0 oldD=0 newP=6 newD=8
 `,
 		},
 		{
 			name:    "scale_down_20P4D_to_12P4D_surge3_unavail2",
 			initial: []int{20, 4}, target: []int{12, 4},
 			surge: []int{3, 3}, unavail: []int{2, 2},
-			want: `0: oldP=20 oldD=4 newP=0 newD=0 (sync new=0.0 old=0.0)
-1: oldP=15 oldD=3 newP=3 newD=1 (sync new=1.0 old=1.0)
-2: oldP=10 oldD=2 newP=6 newD=2 (sync new=2.0 old=2.0)
-3: oldP=5 oldD=1 newP=9 newD=3 (sync new=3.0 old=3.0)
-4: oldP=1 oldD=0 newP=12 newD=4 (sync new=4.0 old=3.1)
-5: oldP=0 oldD=0 newP=12 newD=4 (sync new=4.0 old=4.0)
+			want: `0: oldP=20 oldD=4 newP=0 newD=0
+1: oldP=15 oldD=3 newP=3 newD=1
+2: oldP=10 oldD=2 newP=6 newD=2
+3: oldP=5 oldD=1 newP=9 newD=3
+4: oldP=1 oldD=0 newP=12 newD=4
+5: oldP=0 oldD=0 newP=12 newD=4
 `,
 		},
 		{
 			name:    "surge0_unavail2_4P4D",
 			initial: []int{4, 4}, target: []int{4, 4},
 			surge: []int{0, 0}, unavail: []int{2, 2},
-			want: `0: oldP=4 oldD=4 newP=0 newD=0 (sync new=0.0 old=0.0)
-1: oldP=3 oldD=3 newP=0 newD=0 (sync new=0.1 old=1.0)
-2: oldP=2 oldD=2 newP=1 newD=1 (sync new=1.0 old=2.0)
-3: oldP=1 oldD=1 newP=2 newD=2 (sync new=2.0 old=3.0)
-4: oldP=0 oldD=0 newP=3 newD=3 (sync new=3.0 old=4.0)
-5: oldP=0 oldD=0 newP=4 newD=4 (sync new=4.0 old=4.0)
+			want: `0: oldP=4 oldD=4 newP=0 newD=0
+1: oldP=3 oldD=3 newP=0 newD=0
+2: oldP=2 oldD=2 newP=1 newD=1
+3: oldP=1 oldD=1 newP=2 newD=2
+4: oldP=0 oldD=0 newP=3 newD=3
+5: oldP=0 oldD=0 newP=4 newD=4
 `,
 		},
 		{
 			name:    "imbalanced_20P4D_surge3_unavail2",
 			initial: []int{20, 4}, target: []int{20, 4},
 			surge: []int{3, 3}, unavail: []int{2, 2},
-			want: `0: oldP=20 oldD=4 newP=0 newD=0 (sync new=0.0 old=0.0)
-1: oldP=18 oldD=3 newP=3 newD=1 (sync new=0.1 old=0.1)
-2: oldP=15 oldD=3 newP=5 newD=1 (sync new=1.0 old=1.0)
-3: oldP=13 oldD=2 newP=8 newD=2 (sync new=1.1 old=1.1)
-4: oldP=10 oldD=2 newP=10 newD=2 (sync new=2.0 old=2.0)
-5: oldP=8 oldD=1 newP=13 newD=3 (sync new=2.1 old=2.1)
-6: oldP=5 oldD=1 newP=15 newD=3 (sync new=3.0 old=3.0)
-7: oldP=3 oldD=0 newP=18 newD=4 (sync new=3.1 old=3.1)
-8: oldP=0 oldD=0 newP=20 newD=4 (sync new=4.0 old=4.0)
+			want: `0: oldP=20 oldD=4 newP=0 newD=0
+1: oldP=18 oldD=3 newP=3 newD=1
+2: oldP=15 oldD=3 newP=5 newD=1
+3: oldP=13 oldD=2 newP=8 newD=2
+4: oldP=10 oldD=2 newP=10 newD=2
+5: oldP=8 oldD=1 newP=13 newD=3
+6: oldP=5 oldD=1 newP=15 newD=3
+7: oldP=3 oldD=0 newP=18 newD=4
+8: oldP=0 oldD=0 newP=20 newD=4
 `,
 		},
 	}
@@ -565,101 +563,89 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 }
 
 // =============================================================================
-// deriveSideProgress Tests (unified new/old)
+// Side-Progress Helper Tests
 // =============================================================================
 
-// TestDeriveSideProgress_Up exercises the NEW side (ramping up from 0).
-func TestDeriveSideProgress_Up(t *testing.T) {
+// TestSideProgress_New verifies the helper that finds the step of the slowest
+// role on the NEW side (= "everyone has reached at least this fraction").
+func TestSideProgress_New(t *testing.T) {
 	roles := []string{"prefill", "decode"}
-	unit := frac{1, 4}
 	target := map[string]int{"prefill": 8, "decode": 4}
+	totalSteps := 4 // = sideSize(target)
 
 	cases := []struct {
-		name        string
-		current     map[string]int
-		wantPrefill RoleStepState
-		wantDecode  RoleStepState
+		name    string
+		current map[string]int
+		want    int
 	}{
-		{
-			name:        "at start (sync 0)",
-			current:     map[string]int{"prefill": 0, "decode": 0},
-			wantPrefill: RoleStepState{SyncWindowIndex: 0, RoleStep: 0, Replicas: 0},
-			wantDecode:  RoleStepState{SyncWindowIndex: 0, RoleStep: 0, Replicas: 0},
-		},
-		{
-			name:        "at sync 1 for both",
-			current:     map[string]int{"prefill": 2, "decode": 1},
-			wantPrefill: RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 2},
-			wantDecode:  RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 1},
-		},
-		{
-			name:        "mid-window for prefill, parked decode",
-			current:     map[string]int{"prefill": 3, "decode": 1},
-			wantPrefill: RoleStepState{SyncWindowIndex: 1, RoleStep: 1, Replicas: 3},
-			wantDecode:  RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 1},
-		},
-		{
-			name:        "complete",
-			current:     map[string]int{"prefill": 8, "decode": 4},
-			wantPrefill: RoleStepState{SyncWindowIndex: 4, RoleStep: 0, Replicas: 8},
-			wantDecode:  RoleStepState{SyncWindowIndex: 4, RoleStep: 0, Replicas: 4},
-		},
+		{"both at 0", map[string]int{"prefill": 0, "decode": 0}, 0},
+		{"both at sync 1 (25%)", map[string]int{"prefill": 2, "decode": 1}, 1},
+		{"prefill mid-window, decode parked at 1", map[string]int{"prefill": 3, "decode": 1}, 1},
+		{"prefill ahead, decode behind", map[string]int{"prefill": 6, "decode": 1}, 1},
+		{"both complete", map[string]int{"prefill": 8, "decode": 4}, 4},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := deriveSideProgress(roles, target, tc.current, unit, sideUp)
-			assert.Equal(t, tc.wantPrefill, got["prefill"])
-			assert.Equal(t, tc.wantDecode, got["decode"])
+			got := sideProgress(roles, tc.current, target, totalSteps, false)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
-// TestDeriveSideProgress_Down exercises the OLD side (draining from initial to 0).
-func TestDeriveSideProgress_Down(t *testing.T) {
+// TestSideProgress_Old verifies the OLD-side helper (drained fraction).
+func TestSideProgress_Old(t *testing.T) {
 	roles := []string{"prefill", "decode"}
-	unit := frac{1, 4}
 	initial := map[string]int{"prefill": 8, "decode": 4}
+	totalSteps := 4
 
 	cases := []struct {
-		name        string
-		current     map[string]int
-		wantPrefill RoleStepState
-		wantDecode  RoleStepState
+		name    string
+		current map[string]int
+		want    int
 	}{
-		{
-			name:        "at start (no drain yet)",
-			current:     map[string]int{"prefill": 8, "decode": 4},
-			wantPrefill: RoleStepState{SyncWindowIndex: 0, RoleStep: 0, Replicas: 8},
-			wantDecode:  RoleStepState{SyncWindowIndex: 0, RoleStep: 0, Replicas: 4},
-		},
-		{
-			name:        "at sync 1 (25% drained)",
-			current:     map[string]int{"prefill": 6, "decode": 3},
-			wantPrefill: RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 6},
-			wantDecode:  RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 3},
-		},
-		{
-			name:        "mid-window for prefill, parked decode",
-			current:     map[string]int{"prefill": 5, "decode": 3},
-			wantPrefill: RoleStepState{SyncWindowIndex: 1, RoleStep: 1, Replicas: 5},
-			wantDecode:  RoleStepState{SyncWindowIndex: 1, RoleStep: 0, Replicas: 3},
-		},
-		{
-			name:        "fully drained",
-			current:     map[string]int{"prefill": 0, "decode": 0},
-			wantPrefill: RoleStepState{SyncWindowIndex: 4, RoleStep: 0, Replicas: 0},
-			wantDecode:  RoleStepState{SyncWindowIndex: 4, RoleStep: 0, Replicas: 0},
-		},
+		{"no drain yet", map[string]int{"prefill": 8, "decode": 4}, 0},
+		{"25% drained both", map[string]int{"prefill": 6, "decode": 3}, 1},
+		{"prefill drained more, decode behind", map[string]int{"prefill": 4, "decode": 3}, 1},
+		{"fully drained", map[string]int{"prefill": 0, "decode": 0}, 4},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := deriveSideProgress(roles, initial, tc.current, unit, sideDown)
-			assert.Equal(t, tc.wantPrefill, got["prefill"])
-			assert.Equal(t, tc.wantDecode, got["decode"])
+			got := sideProgress(roles, tc.current, initial, totalSteps, true)
+			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// TestWantReplicas verifies the per-role count at a given side step.
+func TestWantReplicas(t *testing.T) {
+	// NEW side: target=8, totalSteps=4. step k → ceil(8*k/4) = 2k (exact, since divides).
+	assert.Equal(t, 0, wantReplicas(8, 0, 4, false))
+	assert.Equal(t, 2, wantReplicas(8, 1, 4, false))
+	assert.Equal(t, 4, wantReplicas(8, 2, 4, false))
+	assert.Equal(t, 8, wantReplicas(8, 4, 4, false))
+
+	// OLD side: initial=8, totalSteps=4. step k → floor(8*(4-k)/4) = 8 - 2k.
+	assert.Equal(t, 8, wantReplicas(8, 0, 4, true))
+	assert.Equal(t, 6, wantReplicas(8, 1, 4, true))
+	assert.Equal(t, 4, wantReplicas(8, 2, 4, true))
+	assert.Equal(t, 0, wantReplicas(8, 4, 4, true))
+
+	// Non-divisible NEW: target=11, totalSteps=3. step k → ceil(11*k/3).
+	assert.Equal(t, 0, wantReplicas(11, 0, 3, false))
+	assert.Equal(t, 4, wantReplicas(11, 1, 3, false)) // ceil(11/3) = 4
+	assert.Equal(t, 8, wantReplicas(11, 2, 3, false)) // ceil(22/3) = 8
+	assert.Equal(t, 11, wantReplicas(11, 3, 3, false))
+
+	// Non-divisible NEW: target=8, totalSteps=6 (the deadlock case from
+	// asymmetric_scale_10P2D_to_6P8D). step 1 → ceil(8/6) = 2.
+	assert.Equal(t, 0, wantReplicas(8, 0, 6, false))
+	assert.Equal(t, 2, wantReplicas(8, 1, 6, false)) // not 1 — that would deadlock
+	assert.Equal(t, 3, wantReplicas(8, 2, 6, false))
+	assert.Equal(t, 8, wantReplicas(8, 6, 6, false))
+
+	// Edge: totalSteps=0.
+	assert.Equal(t, 0, wantReplicas(8, 0, 0, false))
+	assert.Equal(t, 8, wantReplicas(8, 0, 0, true))
 }
 
 // =============================================================================

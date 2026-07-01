@@ -29,92 +29,61 @@ limitations under the License.
 //   - NEW: scales from 0 up to its target replica count.
 //   - OLD: drains from its initial replica count down to 0.
 //
-// Each side runs its own progression. They are only coupled through the
-// capacity envelope below (surge ceiling and unavailable floor); there is no
-// forced lockstep between "old has drained 50%" and "new has scaled to 50%".
+// They are coupled only through the per-role capacity envelope below
+// (surge ceiling, unavailable floor) — there is no forced lockstep between
+// "old has drained 50%" and "new has scaled to 50%".
 //
-// ## minimalUnit and sync windows (within a side)
+// ## Side progress and step size
 //
-// Inside a single side, roles must stay roughly in proportion so that prefill
-// and decode keep their intended ratio at every step. The smallest possible
-// progress increment a side can express is bounded by its smallest role:
-// a role with N replicas can only represent multiples of 1/N of itself.
-// So a side's "step granularity" is:
+// Each side's progress is measured as the SLOWEST role's fraction of the work
+// done. Concretely, if NEW has prefill 3/8 and decode 1/4, the side's progress
+// is min(3/8, 1/4) = 1/4 — i.e. "every role has reached at least the 25%
+// mark". The same idea for OLD, with "drained fraction" = (initial - current) / initial.
 //
-//	minimalUnit = 1 / min(replicas of all roles in that side)
+// Side advancement happens in discrete steps. Each step advances the side's
+// progress by exactly 1/min(replicas in side), the smallest fraction the
+// slowest role can express. For 8 prefill / 4 decode this is 1/4 → the side
+// has 4 steps total at 25%, 50%, 75%, 100%.
 //
-// minimalUnit divides the side's progress (0 → 100%) into "sync windows".
-// Within a window, each role advances toward the next sync barrier at its own
-// pace; once every role has reached the barrier, the window closes and the
-// next one opens. This is what keeps roles in lockstep within a side.
+// ## Capacity envelope
 //
-// Example: NEW side with prefill=8, decode=4 → minimalUnit = max(1/8, 1/4)
-// = 1/4 → 4 sync windows at 25%, 50%, 75%, 100%. At sync 1 (25%), prefill
-// should have added 2 replicas (= 8 × 25%) and decode should have added 1.
+// maxSurge and maxUnavailable are the operator's safety budgets. Per role:
 //
-// ## Capacity envelope (surge + unavailable)
+//	ceiling = max(initialOld, target) + maxSurge      // total spec cap
+//	floor   = max(0, min(initialOld, target) - maxUnavailable)  // min ready
 //
-// `maxSurge` and `maxUnavailable` are the operator's safety budgets. They set
-// two bounds on the TOTAL replicas (old + new) per role at any moment:
+// Per step, deltas are capped by:
 //
-//	ceiling = max(initialOld, target) + maxSurge      // max replicas allowed
-//	floor   = max(0, min(initialOld, target) - maxUnavailable)  // min ready replicas
+//	addBudget   = ceiling - currentTotal     (how many new we can add)
+//	drainBudget = currentTotal - floor       (how many old we can drain)
 //
-// These bounds are enforced per-step:
-//   - addBudget   = ceiling - currentTotal     (how much new we can add)
-//   - drainBudget = currentTotal - floor       (how much old we can drain)
+// Larger budgets ⇒ bigger per-step deltas ⇒ faster rollout.
 //
-// Larger surge/unavailable budgets mean more replicas can move per step —
-// this is the primary "speed knob" for the rollout.
+// ## ComputeNextStep, in five lines of pseudo-code
 //
-// ## What ComputeNextStep does, in four phases
-//
-//  1. derivePerSideProgress — for each side, work out where every role
-//     currently sits (which sync window, how far into it). Produces a
-//     `sidesProgress` value carrying both sides' state.
-//
-//  2. pickNextSyncTargets — for each side, find the lowest sync window any
-//     role has reached (= the floor of progress on that side) and aim for the
-//     barrier just above it. Roles ahead of the floor are "parked" — they
-//     wait until everyone else catches up before crossing the next barrier.
-//
-//  3. computeRoleDeltas — for each role, decide how many replicas to add to
-//     new and drain from old this step. The numbers are capped by both the
-//     sync targets (don't overshoot the next barrier) AND the capacity
-//     budgets (don't break the surge ceiling or unavailable floor). If both
-//     budgets are zero but progress is still possible, a +1 fallback ensures
-//     the rollout doesn't deadlock.
-//
-//  4. applyRoleDeltas — turn the per-role deltas into an `UpdateStep` (new
-//     replica counts + updated sync positions for both sides).
-//
-// If no role's count would actually change, ComputeNextStep returns nil —
-// signalling that the rollout has nothing to do this reconcile.
+//	progress(side) = min role fraction across the side
+//	nextStep = progress + 1/min(replicas in side)
+//	for each role:
+//	    want = round(target * nextStep)        # new side scales up
+//	         = round(initial * (1 - nextStep)) # old side drains
+//	    cap by addBudget / drainBudget; emit deltas
 package disaggregatedset
 
-// RoleStepState tracks a single role's position in the two-level step structure.
-//
-// The same struct is reused on both sides of an UpdateStep:
-//   - In step.New[role], SyncWindowIndex/RoleStep refer to the NEW revision's
-//     sync sequence (position scaling up toward target).
-//   - In step.Past[role], SyncWindowIndex/RoleStep refer to the OLD revision's
-//     sync sequence (position draining toward 0).
-//
-// The two sides have independent sync sequences (two-minU model), so the
-// indices in step.New and step.Past are not directly comparable.
+// RoleStepState reports the target replica count for one role at one step.
+// (Earlier revisions of this package also exposed sync-window indices here;
+// they were removed when the planner switched to a side-progress model where
+// sync windows are implicit in the replica counts.)
 type RoleStepState struct {
-	SyncWindowIndex int // sync point index this role has reached (side-specific)
-	RoleStep        int // sub-step index within the current sync window
-	Replicas        int // target replica count for this role at this step
+	Replicas int
 }
 
-// UpdateStep is the planner output: the target replica counts per role for
-// old and new revisions, along with their position in the step structure.
+// UpdateStep is the planner's per-step output for both revisions.
 type UpdateStep struct {
-	Past map[string]RoleStepState
-	New  map[string]RoleStepState
+	Past map[string]RoleStepState // old revision target counts (drain to here)
+	New  map[string]RoleStepState // new revision target counts (scale up to here)
 }
 
+// RollingUpdateConfig holds the per-role surge/unavailable budgets.
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
@@ -129,281 +98,79 @@ func DefaultRollingUpdateConfig(numRoles int) []RollingUpdateConfig {
 	return configs
 }
 
-// frac represents an exact rational number to avoid float precision issues.
-type frac struct {
-	num, den int
-}
-
-func (f frac) mul(n int) frac {
-	return frac{f.num * n, f.den}
-}
-
-func floorFrac(f frac) int {
-	return f.num / f.den
-}
-
-func ceilFrac(f frac) int {
-	return (f.num + f.den - 1) / f.den
-}
-
-// revisionMinimalUnit returns max(1/N_i) for a single revision's replica counts.
-func revisionMinimalUnit(replicas map[string]int) frac {
+// sideSize returns the side's total step count = min(replica count across
+// roles in the side). Returns 0 if the side has no work (all replicas 0).
+func sideSize(replicas map[string]int) int {
 	minN := 0
 	for _, n := range replicas {
 		if n > 0 && (minN == 0 || n < minN) {
 			minN = n
 		}
 	}
-	if minN == 0 {
-		return frac{1, 1}
-	}
-	return frac{1, minN}
+	return minN
 }
 
-func numSyncPoints(unit frac) int {
-	return unit.den / unit.num
-}
-
-// newSyncTarget returns the target new-replica count for a role at a given
-// new-side sync point.
-func newSyncTarget(target int, syncPercent frac) int {
-	return floorFrac(frac{target * syncPercent.num, syncPercent.den})
-}
-
-// oldSyncTarget returns the target old-replica count for a role at a given
-// old-side sync point. Old drains down, so this returns the REMAINING old count.
-func oldSyncTarget(initialOld int, syncPercent frac) int {
-	remaining := frac{initialOld * (syncPercent.den - syncPercent.num), syncPercent.den}
-	return ceilFrac(remaining)
-}
-
-// sideDirection selects which "side" of a rolling update deriveSideProgress
-// reports on. The two sides are mirror images of each other: NEW ramps up
-// from 0 to target; OLD drains from initial down to 0.
-type sideDirection int
-
-const (
-	sideUp   sideDirection = iota // NEW side: 0 → target
-	sideDown                      // OLD side: initial → 0
-)
-
-// deriveSideProgress reports each role's position in its side's sync sequence.
-// "N" is the role's far-end count (target for sideUp, initialOld for sideDown);
-// "cur" is its current replica count. A role with N=0 is reported as fully done.
-//
-// SyncWindowIndex is the highest sync barrier the role has reached/crossed.
-// RoleStep counts sub-step replicas advanced beyond that barrier toward the next.
-func deriveSideProgress(roleNames []string, N, cur map[string]int, unit frac, dir sideDirection) map[string]RoleStepState {
-	nSync := numSyncPoints(unit)
-	states := make(map[string]RoleStepState, len(roleNames))
-
-	for _, role := range roleNames {
-		n := N[role]
-		c := cur[role]
-		if n == 0 {
-			states[role] = RoleStepState{SyncWindowIndex: nSync, Replicas: c}
-			continue
-		}
-
-		crossStep, roleStep := 0, 0
-		for s := 1; s <= nSync; s++ {
-			target := sideTargetAt(n, unit.mul(s), dir)
-			if sideReached(c, target, dir) {
-				crossStep = s
-				roleStep = 0
-				continue
-			}
-			// Not yet at sync s; compute distance from the previous sync barrier.
-			prev := sideBaseline(n, dir)
-			if s > 1 {
-				prev = sideTargetAt(n, unit.mul(s-1), dir)
-			}
-			if c >= prev {
-				roleStep = c - prev
-			} else {
-				roleStep = prev - c
-			}
-			break
-		}
-		states[role] = RoleStepState{SyncWindowIndex: crossStep, RoleStep: roleStep, Replicas: c}
-	}
-	return states
-}
-
-func sideTargetAt(n int, p frac, dir sideDirection) int {
-	if dir == sideUp {
-		return newSyncTarget(n, p)
-	}
-	return oldSyncTarget(n, p)
-}
-
-func sideReached(cur, target int, dir sideDirection) bool {
-	if dir == sideUp {
-		return cur >= target
-	}
-	return cur <= target
-}
-
-func sideBaseline(n int, dir sideDirection) int {
-	if dir == sideUp {
+// sideProgress returns the step (out of totalSteps) the slowest role on the
+// side has reached. "fractionFn" maps a role's (current, total) to the integer
+// numerator of its fraction-of-work-done. Defined per-side:
+//   - NEW: fractionDone = current / target
+//   - OLD: fractionDrained = (initial - current) / initial
+func sideProgress(roles []string, current, total map[string]int, totalSteps int, drained bool) int {
+	if totalSteps == 0 {
 		return 0
 	}
-	return n
-}
-
-// sidesProgress bundles each side's current sync state (per-role) and its
-// minimalUnit, so downstream helpers don't have to thread three values each.
-type sidesProgress struct {
-	new, old         map[string]RoleStepState
-	newUnit, oldUnit frac
-}
-
-// syncTargets identifies the NEXT sync barrier each side wants to reach, plus
-// the corresponding fractional progress percentage used to compute per-role
-// replica targets.
-type syncTargets struct {
-	nextNewSync    int  // index of the new-side barrier we're advancing toward
-	nextOldSync    int  // index of the old-side barrier we're advancing toward
-	minNewCross    int  // floor across all roles' new-side progress
-	minOldCross    int  // floor across all roles' old-side progress
-	newSyncPercent frac // = newUnit * nextNewSync
-	oldSyncPercent frac // = oldUnit * nextOldSync
-}
-
-// roleDeltas is the per-role decision: how many new replicas to add and how
-// many old replicas to drain on this step.
-type roleDeltas struct {
-	addNew, drainOld int
-}
-
-// derivePerSideProgress computes the current sync position for every role on
-// both sides (NEW scaling up, OLD draining down), each at its own minimalUnit.
-func derivePerSideProgress(roleNames []string, initialOld, currentOld, currentNew, targetNew map[string]int) sidesProgress {
-	newUnit := revisionMinimalUnit(targetNew)
-	oldUnit := revisionMinimalUnit(initialOld)
-	return sidesProgress{
-		new:     deriveSideProgress(roleNames, targetNew, currentNew, newUnit, sideUp),
-		old:     deriveSideProgress(roleNames, initialOld, currentOld, oldUnit, sideDown),
-		newUnit: newUnit,
-		oldUnit: oldUnit,
-	}
-}
-
-// pickNextSyncTargets finds each side's lowest-progressed role (the floor) and
-// returns the next sync barrier above it. Within a side, only roles AT this
-// floor are allowed to advance — coordinates role ratios within a revision.
-func pickNextSyncTargets(roleNames []string, p sidesProgress) syncTargets {
-	nNewSync := numSyncPoints(p.newUnit)
-	nOldSync := numSyncPoints(p.oldUnit)
-	minNewCross := nNewSync
-	minOldCross := nOldSync
-	for _, role := range roleNames {
-		if p.new[role].SyncWindowIndex < minNewCross {
-			minNewCross = p.new[role].SyncWindowIndex
+	minStep := totalSteps
+	for _, role := range roles {
+		denom := total[role]
+		if denom == 0 {
+			continue
 		}
-		if p.old[role].SyncWindowIndex < minOldCross {
-			minOldCross = p.old[role].SyncWindowIndex
+		num := current[role]
+		if drained {
+			num = denom - current[role]
+		}
+		// Step = floor(num * totalSteps / denom). Integer math, no rounding error.
+		s := num * totalSteps / denom
+		if s < minStep {
+			minStep = s
 		}
 	}
-	nextNew := min(minNewCross+1, nNewSync)
-	nextOld := min(minOldCross+1, nOldSync)
-	return syncTargets{
-		nextNewSync:    nextNew,
-		nextOldSync:    nextOld,
-		minNewCross:    minNewCross,
-		minOldCross:    minOldCross,
-		newSyncPercent: p.newUnit.mul(nextNew),
-		oldSyncPercent: p.oldUnit.mul(nextOld),
-	}
+	return minStep
 }
 
-// computeRoleDeltas decides how many replicas to add (new) and drain (old) for
-// one role this step. A role parked at a higher sync barrier on either side
-// doesn't advance on that side. The capacity envelope (surge ceiling /
-// unavailable floor) caps both deltas; a +1 fallback breaks ties when the
-// budget is zero but progress is still possible.
-func computeRoleDeltas(role string, initial, target, curNew, curOld int, sync syncTargets, p sidesProgress, cfg RollingUpdateConfig) roleDeltas {
-	newTarget := newSyncTarget(target, sync.newSyncPercent)
-	oldTarget := oldSyncTarget(initial, sync.oldSyncPercent)
-
-	newParked := p.new[role].SyncWindowIndex > sync.minNewCross
-	oldParked := p.old[role].SyncWindowIndex > sync.minOldCross
-
-	ceiling := max(initial, target) + cfg.MaxSurge
-	floor := max(0, min(initial, target)-cfg.MaxUnavailable)
-	if cfg.MaxSurge == 0 && cfg.MaxUnavailable == 0 {
-		// Legacy default: allow a +1 ceiling so rollouts can progress at all.
-		ceiling = max(initial, target) + 1
-	}
-
-	currentTotal := curNew + curOld
-	addBudget := max(0, ceiling-currentTotal)
-	drainBudget := max(0, currentTotal-floor)
-
-	addNew := 0
-	if !newParked {
-		addNew = max(0, min(newTarget-curNew, addBudget))
-	}
-	drainOld := 0
-	if !oldParked {
-		drainOld = max(0, min(curOld-oldTarget, drainBudget))
-	}
-
-	// Guarantee at least one operation when an unparked side has work but its
-	// budget is zero at this instant (other side will free room next reconcile).
-	if addNew == 0 && drainOld == 0 {
-		if !newParked && curNew < newTarget && currentTotal+1 <= ceiling {
-			addNew = 1
-		} else if !oldParked && curOld > oldTarget && currentTotal-1 >= floor {
-			drainOld = 1
-		}
-	}
-
-	return roleDeltas{addNew: addNew, drainOld: drainOld}
-}
-
-// applyRoleDeltas builds the per-role pieces of the UpdateStep output:
-// new spec, old spec, and updated sync positions on both sides.
-func applyRoleDeltas(role string, initial, target, curNew, curOld int, d roleDeltas, sync syncTargets, p sidesProgress) (newSide, oldSide RoleStepState) {
-	newTarget := newSyncTarget(target, sync.newSyncPercent)
-	oldTarget := oldSyncTarget(initial, sync.oldSyncPercent)
-	nextNew := curNew + d.addNew
-	nextOld := curOld - d.drainOld
-
-	newSide = p.new[role]
-	if !(p.new[role].SyncWindowIndex > sync.minNewCross) { // not parked
-		newSide.RoleStep++
-		if nextNew >= newTarget {
-			newSide.SyncWindowIndex = sync.nextNewSync
-			newSide.RoleStep = 0
-		}
-	}
-	newSide.Replicas = nextNew
-
-	oldSide = p.old[role]
-	if !(p.old[role].SyncWindowIndex > sync.minOldCross) { // not parked
-		oldSide.RoleStep++
-		if nextOld <= oldTarget {
-			oldSide.SyncWindowIndex = sync.nextOldSync
-			oldSide.RoleStep = 0
-		}
-	}
-	oldSide.Replicas = nextOld
-	return
-}
-
-// ComputeNextStep computes the next scaling step for a rolling update.
+// wantReplicas returns the smallest replica count for a role to be considered
+// "at" side step k/N:
+//   - NEW: ceil(target * k / N) — minimum count to claim progress = step k.
+//   - OLD: floor(initial * (N - k) / N) — remaining after the matching drain.
 //
-// Two-minU model: old and new revisions progress at their own native rhythms
-// (one minimalUnit each). Within a single revision, all roles coordinate at
-// that revision's sync points. Across revisions, no forced lockstep — the
-// maxSurge ceiling and maxUnavailable floor are the only cross-side coupling.
+// Using ceil on NEW (instead of floor) matches sideProgress's "strict" step
+// formula: a role is at step k iff (current * N) >= (k * target). Without ceil,
+// the rollout can stall when target/N is not an integer (e.g. target=8, N=6:
+// the side wants step 1 but floor(8/6)=1 = current, so addNew=0 forever).
+func wantReplicas(roleSize, step, totalSteps int, drained bool) int {
+	if totalSteps == 0 {
+		if drained {
+			return roleSize
+		}
+		return 0
+	}
+	if drained {
+		// floor(roleSize * (totalSteps - step) / totalSteps)
+		return roleSize * (totalSteps - step) / totalSteps
+	}
+	// ceil(roleSize * step / totalSteps)
+	num := roleSize * step
+	return (num + totalSteps - 1) / totalSteps
+}
+
+// ComputeNextStep returns the per-role deltas for the next reconcile, or nil
+// if the rollout has reached its target.
 //
-// Algorithm in four phases:
-//  1. derivePerSideProgress — where is each role on each side's sync sequence?
-//  2. pickNextSyncTargets   — which barriers do we want to reach this step?
-//  3. computeRoleDeltas     — per role, how many replicas to add / drain?
-//  4. applyRoleDeltas       — assemble the UpdateStep with updated positions.
+// See the package doc for the algorithm. In short:
+//  1. Find each side's progress (the slowest role's fraction-done step).
+//  2. Aim to advance each side by one step (= one minimalUnit).
+//  3. For each role, compute the desired count at that next step, then cap by
+//     the surge / unavailable budgets.
 func ComputeNextStep(
 	roleNames []string,
 	initialOld, currentOld, currentNew, targetNew map[string]int,
@@ -413,37 +180,46 @@ func ComputeNextStep(
 		return nil
 	}
 
-	progress := derivePerSideProgress(roleNames, initialOld, currentOld, currentNew, targetNew)
-	sync := pickNextSyncTargets(roleNames, progress)
+	// 1. Each side's total step count = 1 / minimalUnit.
+	newTotalSteps := sideSize(targetNew)
+	oldTotalSteps := sideSize(initialOld)
 
-	pastStep := make(map[string]RoleStepState, len(roleNames))
-	newStep := make(map[string]RoleStepState, len(roleNames))
+	// 2. Side progress = slowest role's step. Next step = +1 (capped).
+	nextNewStep := min(sideProgress(roleNames, currentNew, targetNew, newTotalSteps, false)+1, newTotalSteps)
+	nextOldStep := min(sideProgress(roleNames, currentOld, initialOld, oldTotalSteps, true)+1, oldTotalSteps)
+
+	// 3. Per role, compute desired counts and cap by budget.
+	past := make(map[string]RoleStepState, len(roleNames))
+	now := make(map[string]RoleStepState, len(roleNames))
+
 	for _, role := range roleNames {
-		initial := initialOld[role]
-		target := targetNew[role]
-		curNew := currentNew[role]
-		curOld := currentOld[role]
+		wantNew := wantReplicas(targetNew[role], nextNewStep, newTotalSteps, false)
+		wantOld := wantReplicas(initialOld[role], nextOldStep, oldTotalSteps, true)
+
 		cfg := config[role]
-
-		deltas := computeRoleDeltas(role, initial, target, curNew, curOld, sync, progress, cfg)
-		newSide, oldSide := applyRoleDeltas(role, initial, target, curNew, curOld, deltas, sync, progress)
-		newStep[role] = newSide
-		pastStep[role] = oldSide
-	}
-
-	// Check if any role actually changed.
-	changed := false
-	for _, role := range roleNames {
-		if newStep[role].Replicas != currentNew[role] || pastStep[role].Replicas != currentOld[role] {
-			changed = true
-			break
+		ceiling := max(initialOld[role], targetNew[role]) + cfg.MaxSurge
+		floor := max(0, min(initialOld[role], targetNew[role])-cfg.MaxUnavailable)
+		if cfg.MaxSurge == 0 && cfg.MaxUnavailable == 0 {
+			// Default: allow +1 above target so rollouts can still progress.
+			ceiling = max(initialOld[role], targetNew[role]) + 1
 		}
+
+		total := currentNew[role] + currentOld[role]
+		addBudget := max(0, ceiling-total)
+		drainBudget := max(0, total-floor)
+
+		addNew := clamp(wantNew-currentNew[role], 0, addBudget)
+		drainOld := clamp(currentOld[role]-wantOld, 0, drainBudget)
+
+		now[role] = RoleStepState{Replicas: currentNew[role] + addNew}
+		past[role] = RoleStepState{Replicas: currentOld[role] - drainOld}
 	}
-	if !changed {
+
+	// No-op detection: if nothing changes, signal "no work this reconcile".
+	if !anyChange(roleNames, past, now, currentOld, currentNew) {
 		return nil
 	}
-
-	return &UpdateStep{Past: pastStep, New: newStep}
+	return &UpdateStep{Past: past, New: now}
 }
 
 func isComplete(roleNames []string, currentOld, currentNew, targetNew map[string]int) bool {
@@ -453,6 +229,25 @@ func isComplete(roleNames []string, currentOld, currentNew, targetNew map[string
 		}
 	}
 	return true
+}
+
+func anyChange(roleNames []string, past, now map[string]RoleStepState, curOld, curNew map[string]int) bool {
+	for _, role := range roleNames {
+		if now[role].Replicas != curNew[role] || past[role].Replicas != curOld[role] {
+			return true
+		}
+	}
+	return false
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // ComputeAllSteps simulates a full rollout by repeatedly calling ComputeNextStep.
@@ -475,27 +270,26 @@ func ComputeAllSteps(
 	}
 	maxSteps := maxReplicas*4 + 10
 
-	initialStep := UpdateStep{
+	initial := UpdateStep{
 		Past: make(map[string]RoleStepState, len(roleNames)),
 		New:  make(map[string]RoleStepState, len(roleNames)),
 	}
 	for _, role := range roleNames {
-		initialStep.Past[role] = RoleStepState{Replicas: initialOld[role]}
-		initialStep.New[role] = RoleStepState{Replicas: 0}
+		initial.Past[role] = RoleStepState{Replicas: initialOld[role]}
+		initial.New[role] = RoleStepState{Replicas: 0}
 	}
-	steps := []UpdateStep{initialStep}
+	steps := []UpdateStep{initial}
 
 	for range maxSteps {
-		nextStep := ComputeNextStep(roleNames, initialOld, currentOld, currentNew, target, config)
-		if nextStep == nil {
+		next := ComputeNextStep(roleNames, initialOld, currentOld, currentNew, target, config)
+		if next == nil {
 			break
 		}
-		steps = append(steps, *nextStep)
+		steps = append(steps, *next)
 		for _, role := range roleNames {
-			currentOld[role] = nextStep.Past[role].Replicas
-			currentNew[role] = nextStep.New[role].Replicas
+			currentOld[role] = next.Past[role].Replicas
+			currentNew[role] = next.New[role].Replicas
 		}
 	}
-
 	return steps
 }
