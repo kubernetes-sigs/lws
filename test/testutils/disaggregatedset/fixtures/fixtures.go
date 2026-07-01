@@ -108,15 +108,16 @@ spec:
 			}
 		}
 
+		slow := p.StartupDelaySeconds > 0 || p.TerminationDelayMax > 0
 		image := p.Image
 		if image == "" {
-			image = "registry.k8s.io/pause:3.9"
-		}
-		slow := p.StartupDelaySeconds > 0 || p.TerminationDelayMax > 0
-		if slow {
-			// Pause images have no shell, so override with busybox when we need
-			// startup delay or preStop scripting.
-			image = "busybox:1.36"
+			// Default image depends on whether the caller wants slow-pod
+			// scripting (needs a shell) or just an empty runnable pod.
+			if slow {
+				image = "busybox:1.36"
+			} else {
+				image = "registry.k8s.io/pause:3.9"
+			}
 		}
 		sb.WriteString("      leaderWorkerTemplate:\n")
 		sb.WriteString("        size: 1\n")
