@@ -1190,6 +1190,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			bDrainedFirst := false
 			aDrainedBeforeB := false
 
+			// Poll at 100ms — fast enough to catch the "B=0, A>0" transient
+			// on fast clusters (kind + pause pods can drain in <500ms).
 			Eventually(func(g Gomega) bool {
 				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
 				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
@@ -1206,7 +1208,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				}
 
 				return aTotal == 0 && bTotal == 0
-			}, 5*time.Minute, 500*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
+			}, 5*time.Minute, 100*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
 
 			Expect(bDrainedFirst).To(BeTrue(), "B (newer intermediate) should drain to 0 before A (stable original)")
 			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")
