@@ -16,34 +16,74 @@ limitations under the License.
 
 // Package disaggregatedset provides rolling update planning and execution for DisaggregatedSet.
 //
-// # Rolling Update Algorithm
+// # Rolling update algorithm
 //
-// The planner uses a linear scaling function that approximates discrete steps of a
-// linear interpolation between initialOld and target replica counts:
+// A DisaggregatedSet rollout has several roles (e.g. prefill, decode) running
+// at two revisions: the OLD one (being drained) and the NEW one (being scaled
+// up). The planner decides, on every reconcile, how many replicas to add to
+// the new revision and how many to drain from the old one for each role.
 //
-//	newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
-//	oldAtStep(i) = initialOld - floor(i * initialOld / totalSteps)  // scale down: initialOld → 0
+// ## The two sides
 //
-// Since the controller is stateless, we compute only the needed step directly:
-// derive the current step index from observed replicas, then compute the next step's target.
+// We treat the rollout as two independent "sides":
+//   - NEW: scales from 0 up to its target replica count.
+//   - OLD: drains from its initial replica count down to 0.
 //
-// The complexity comes from:
-//   - Decoupling: each step changes EITHER old OR new, not both
-//   - Surge constraints: old + new <= target + maxSurge
-//   - N dimensions: all roles must stay coordinated
+// They are coupled only through the per-role capacity envelope below
+// (surge ceiling, unavailable floor) — there is no forced lockstep between
+// "old has drained 50%" and "new has scaled to 50%".
+//
+// ## Side progress and step size
+//
+// Each side's progress is measured as the SLOWEST role's fraction of the work
+// done. Concretely, if NEW has prefill 3/8 and decode 1/4, the side's progress
+// is min(3/8, 1/4) = 1/4 — i.e. "every role has reached at least the 25%
+// mark". The same idea for OLD, with "drained fraction" = (initial - current) / initial.
+//
+// Side advancement happens in discrete steps. Each step advances the side's
+// progress by exactly 1/min(replicas in side), the smallest fraction the
+// slowest role can express. For 8 prefill / 4 decode this is 1/4 → the side
+// has 4 steps total at 25%, 50%, 75%, 100%.
+//
+// ## Capacity envelope
+//
+// maxSurge and maxUnavailable are the operator's safety budgets. Per role:
+//
+//	ceiling = max(initialOld, target) + maxSurge      // total spec cap
+//	floor   = max(0, min(initialOld, target) - maxUnavailable)  // min ready
+//
+// Per step, deltas are capped by:
+//
+//	addBudget   = ceiling - currentTotal     (how many new we can add)
+//	drainBudget = currentTotal - floor       (how many old we can drain)
+//
+// Larger budgets ⇒ bigger per-step deltas ⇒ faster rollout.
+//
+// ## ComputeNextStep, in five lines of pseudo-code
+//
+//	progress(side) = min role fraction across the side
+//	nextStep = progress + 1/min(replicas in side)
+//	for each role:
+//	    want = round(target * nextStep)        # new side scales up
+//	         = round(initial * (1 - nextStep)) # old side drains
+//	    cap by addBudget / drainBudget; emit deltas
 package disaggregatedset
 
-import (
-	"math"
-)
-
-type UpdateStep struct {
-	Past []int
-	New  []int
+// RoleStepState reports the target replica count for one role at one step.
+// (Earlier revisions of this package also exposed sync-window indices here;
+// they were removed when the planner switched to a side-progress model where
+// sync windows are implicit in the replica counts.)
+type RoleStepState struct {
+	Replicas int
 }
 
-type RoleReplicaState = []int
+// UpdateStep is the planner's per-step output for both revisions.
+type UpdateStep struct {
+	Past map[string]RoleStepState // old revision target counts (drain to here)
+	New  map[string]RoleStepState // new revision target counts (scale up to here)
+}
 
+// RollingUpdateConfig holds the per-role surge/unavailable budgets.
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
@@ -51,335 +91,205 @@ type RollingUpdateConfig struct {
 
 func DefaultRollingUpdateConfig(numRoles int) []RollingUpdateConfig {
 	configs := make([]RollingUpdateConfig, numRoles)
-	for i := 0; i < numRoles; i++ {
+	for i := range numRoles {
 		configs[i].MaxSurge = 1
 		configs[i].MaxUnavailable = 0
 	}
 	return configs
 }
 
-func batchSize(maxSurge, maxUnavailable int) int {
-	if maxSurge > 0 {
-		return maxSurge
-	}
-	return max(1, maxUnavailable)
-}
-
-func computeTotalSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) int {
-	totalSteps := 0
-	numRoles := len(initialOld)
-	for i := 0; i < numRoles; i++ {
-		maxReplicas := max(initialOld[i], target[i], 0)
-		roleBatchSize := batchSize(config[i].MaxSurge, config[i].MaxUnavailable)
-		roleSteps := (maxReplicas + roleBatchSize - 1) / roleBatchSize
-		totalSteps = max(totalSteps, roleSteps)
-	}
-	return totalSteps
-}
-
-func computeNextNewReplicas(target, currentNew RoleReplicaState, totalSteps int) RoleReplicaState {
-	numRoles := len(target)
-	if totalSteps == 0 {
-		result := make([]int, numRoles)
-		copy(result, target)
-		return result
-	}
-
-	stepIndex := func(current, targetVal int) int {
-		if targetVal == 0 {
-			return totalSteps
+// sideSize returns the side's total step count = min(replica count across
+// roles in the side). Returns 0 if the side has no work (all replicas 0).
+func sideSize(replicas map[string]int) int {
+	minN := 0
+	for _, n := range replicas {
+		if n > 0 && (minN == 0 || n < minN) {
+			minN = n
 		}
-		return int(float64(current) * float64(totalSteps) / float64(targetVal))
 	}
-
-	minStepIdx := totalSteps
-	for i := 0; i < numRoles; i++ {
-		stepIdx := stepIndex(currentNew[i], target[i])
-		minStepIdx = min(minStepIdx, stepIdx)
-	}
-	nextStepIdx := minStepIdx + 1
-
-	computeNew := func(targetVal, currentVal int) int {
-		progress := float64(nextStepIdx) * float64(targetVal) / float64(totalSteps)
-		computed := min(int(math.Ceil(progress)), targetVal)
-		return max(computed, currentVal)
-	}
-
-	result := make([]int, numRoles)
-	for i := 0; i < numRoles; i++ {
-		result[i] = computeNew(target[i], currentNew[i])
-	}
-	return result
+	return minN
 }
 
-func computeNextOldReplicas(initialOld, currentOld RoleReplicaState, totalSteps int) RoleReplicaState {
-	numRoles := len(initialOld)
+// sideProgress returns the step (out of totalSteps) the slowest role on the
+// side has reached. "fractionFn" maps a role's (current, total) to the integer
+// numerator of its fraction-of-work-done. Defined per-side:
+//   - NEW: fractionDone = current / target
+//   - OLD: fractionDrained = (initial - current) / initial
+func sideProgress(roles []string, current, total map[string]int, totalSteps int, drained bool) int {
 	if totalSteps == 0 {
-		return make([]int, numRoles)
+		return 0
 	}
-
-	stepIndex := func(removed, sourceVal int) int {
-		if sourceVal == 0 {
-			return 0
-		}
-		return int(float64(removed) * float64(totalSteps) / float64(sourceVal))
-	}
-
-	maxStepIdx := 0
-	for i := 0; i < numRoles; i++ {
-		if initialOld[i] == 0 {
+	minStep := totalSteps
+	for _, role := range roles {
+		denom := total[role]
+		if denom == 0 {
 			continue
 		}
-		removed := initialOld[i] - currentOld[i]
-		maxStepIdx = max(maxStepIdx, stepIndex(removed, initialOld[i]))
-	}
-	nextStepIdx := maxStepIdx + 1
-
-	computeOld := func(sourceVal, currentVal int) int {
-		progress := float64(nextStepIdx) * float64(sourceVal) / float64(totalSteps)
-		computed := max(0, sourceVal-int(math.Floor(progress)))
-		return min(computed, currentVal)
-	}
-
-	result := make([]int, numRoles)
-	for i := 0; i < numRoles; i++ {
-		result[i] = computeOld(initialOld[i], currentOld[i])
-	}
-	return result
-}
-
-func correctAbnormalState(currentOld, currentNew, initialOld RoleReplicaState) *UpdateStep {
-	numRoles := len(initialOld)
-	expectedOld := make([]int, numRoles)
-	needsCorrection := false
-	for i := 0; i < numRoles; i++ {
-		expectedOld[i] = min(initialOld[i], currentOld[i])
-		if currentOld[i] > expectedOld[i] {
-			needsCorrection = true
+		num := current[role]
+		if drained {
+			num = denom - current[role]
+		}
+		// Step = floor(num * totalSteps / denom). Integer math, no rounding error.
+		s := num * totalSteps / denom
+		if s < minStep {
+			minStep = s
 		}
 	}
-
-	if needsCorrection {
-		newCopy := make([]int, numRoles)
-		copy(newCopy, currentNew)
-		return &UpdateStep{
-			Past: expectedOld,
-			New:  newCopy,
-		}
-	}
-	return nil
+	return minStep
 }
 
-func isComplete(currentOld, currentNew, targetNew RoleReplicaState) bool {
-	for i := range currentOld {
-		if currentOld[i] != 0 || currentNew[i] < targetNew[i] {
+// wantReplicas returns the smallest replica count for a role to be considered
+// "at" side step k/N:
+//   - NEW: ceil(target * k / N) — minimum count to claim progress = step k.
+//   - OLD: floor(initial * (N - k) / N) — remaining after the matching drain.
+//
+// Using ceil on NEW (instead of floor) matches sideProgress's "strict" step
+// formula: a role is at step k iff (current * N) >= (k * target). Without ceil,
+// the rollout can stall when target/N is not an integer (e.g. target=8, N=6:
+// the side wants step 1 but floor(8/6)=1 = current, so addNew=0 forever).
+func wantReplicas(roleSize, step, totalSteps int, drained bool) int {
+	if totalSteps == 0 {
+		if drained {
+			return roleSize
+		}
+		return 0
+	}
+	if drained {
+		// floor(roleSize * (totalSteps - step) / totalSteps)
+		return roleSize * (totalSteps - step) / totalSteps
+	}
+	// ceil(roleSize * step / totalSteps)
+	num := roleSize * step
+	return (num + totalSteps - 1) / totalSteps
+}
+
+// ComputeNextStep returns the per-role deltas for the next reconcile, or nil
+// if the rollout has reached its target.
+//
+// See the package doc for the algorithm. In short:
+//  1. Find each side's progress (the slowest role's fraction-done step).
+//  2. Aim to advance each side by one step (= one minimalUnit).
+//  3. For each role, compute the desired count at that next step, then cap by
+//     the surge / unavailable budgets.
+func ComputeNextStep(
+	roleNames []string,
+	initialOld, currentOld, currentNew, targetNew map[string]int,
+	config map[string]RollingUpdateConfig,
+) *UpdateStep {
+	if isComplete(roleNames, currentOld, currentNew, targetNew) {
+		return nil
+	}
+
+	// 1. Each side's total step count = 1 / minimalUnit.
+	newTotalSteps := sideSize(targetNew)
+	oldTotalSteps := sideSize(initialOld)
+
+	// 2. Side progress = slowest role's step. Next step = +1 (capped).
+	nextNewStep := min(sideProgress(roleNames, currentNew, targetNew, newTotalSteps, false)+1, newTotalSteps)
+	nextOldStep := min(sideProgress(roleNames, currentOld, initialOld, oldTotalSteps, true)+1, oldTotalSteps)
+
+	// 3. Per role, compute desired counts and cap by budget.
+	past := make(map[string]RoleStepState, len(roleNames))
+	now := make(map[string]RoleStepState, len(roleNames))
+
+	for _, role := range roleNames {
+		wantNew := wantReplicas(targetNew[role], nextNewStep, newTotalSteps, false)
+		wantOld := wantReplicas(initialOld[role], nextOldStep, oldTotalSteps, true)
+
+		cfg := config[role]
+		ceiling := max(initialOld[role], targetNew[role]) + cfg.MaxSurge
+		floor := max(0, min(initialOld[role], targetNew[role])-cfg.MaxUnavailable)
+		if cfg.MaxSurge == 0 && cfg.MaxUnavailable == 0 {
+			// Default: allow +1 above target so rollouts can still progress.
+			ceiling = max(initialOld[role], targetNew[role]) + 1
+		}
+
+		total := currentNew[role] + currentOld[role]
+		addBudget := max(0, ceiling-total)
+		drainBudget := max(0, total-floor)
+
+		addNew := clamp(wantNew-currentNew[role], 0, addBudget)
+		drainOld := clamp(currentOld[role]-wantOld, 0, drainBudget)
+
+		now[role] = RoleStepState{Replicas: currentNew[role] + addNew}
+		past[role] = RoleStepState{Replicas: currentOld[role] - drainOld}
+	}
+
+	// No-op detection: if nothing changes, signal "no work this reconcile".
+	if !anyChange(roleNames, past, now, currentOld, currentNew) {
+		return nil
+	}
+	return &UpdateStep{Past: past, New: now}
+}
+
+func isComplete(roleNames []string, currentOld, currentNew, targetNew map[string]int) bool {
+	for _, role := range roleNames {
+		if currentOld[role] != 0 || currentNew[role] < targetNew[role] {
 			return false
 		}
 	}
 	return true
 }
 
-func isNewAtTarget(currentNew, targetNew RoleReplicaState) bool {
-	for i := range currentNew {
-		if currentNew[i] < targetNew[i] {
-			return false
+func anyChange(roleNames []string, past, now map[string]RoleStepState, curOld, curNew map[string]int) bool {
+	for _, role := range roleNames {
+		if now[role].Replicas != curNew[role] || past[role].Replicas != curOld[role] {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-func canScaleUp(currentOld, nextNew, targetNew RoleReplicaState, config []RollingUpdateConfig) bool {
-	for i := range currentOld {
-		if targetNew[i] == 0 {
-			continue
-		}
-		if currentOld[i]+nextNew[i] > targetNew[i]+config[i].MaxSurge {
-			return false
-		}
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
 	}
-	return true
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
-func computeMinOld(initialOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) []int {
-	minOld := make([]int, len(initialOld))
-	for i := range initialOld {
-		if initialOld[i] >= targetNew[i] {
-			minOld[i] = max(0, targetNew[i]-config[i].MaxUnavailable-currentNew[i])
-		}
+// ComputeAllSteps simulates a full rollout by repeatedly calling ComputeNextStep.
+// Used in tests to validate the complete rollout sequence.
+func ComputeAllSteps(
+	roleNames []string,
+	initialOld, target map[string]int,
+	config map[string]RollingUpdateConfig,
+) []UpdateStep {
+	currentOld := make(map[string]int, len(roleNames))
+	currentNew := make(map[string]int, len(roleNames))
+	for _, role := range roleNames {
+		currentOld[role] = initialOld[role]
+		currentNew[role] = 0
 	}
-	return minOld
-}
-
-func tryScaleUp(currentOld, currentNew, nextNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
-	needsScaleUp := false
-	for i := range currentNew {
-		if nextNew[i] > currentNew[i] {
-			needsScaleUp = true
-			break
-		}
-	}
-	if !needsScaleUp {
-		return nil
-	}
-	if !canScaleUp(currentOld, nextNew, targetNew, config) {
-		return nil
-	}
-	return &UpdateStep{Past: currentOld, New: nextNew}
-}
-
-func tryProportionalDrain(initialOld, currentOld, currentNew, targetNew RoleReplicaState, minOld []int, totalSteps int, config []RollingUpdateConfig) *UpdateStep {
-	nextOld := computeNextOldReplicas(initialOld, currentOld, totalSteps)
-
-	for i := range nextOld {
-		nextOld[i] = max(nextOld[i], minOld[i])
-	}
-
-	applyOrphanPrevention(nextOld, currentNew, initialOld, targetNew, config)
-
-	needsScaleDown := false
-	for i := range nextOld {
-		if nextOld[i] < currentOld[i] {
-			needsScaleDown = true
-			break
-		}
-	}
-	if !needsScaleDown {
-		return nil
-	}
-	return &UpdateStep{Past: nextOld, New: currentNew}
-}
-
-func canDrainAllToZero(nextNew, initialOld, target RoleReplicaState, config []RollingUpdateConfig) bool {
-	for i := range target {
-		if initialOld[i] >= target[i] {
-			minRequired := target[i] - config[i].MaxUnavailable
-			if nextNew[i] < minRequired {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func applyOrphanPrevention(nextOld, currentNew, initialOld, target RoleReplicaState, config []RollingUpdateConfig) {
-	anyDrainsToZero := false
-	allDrainToZero := true
-	for i := range nextOld {
-		if initialOld[i] == 0 {
-			continue
-		}
-		if nextOld[i] == 0 {
-			anyDrainsToZero = true
-		} else {
-			allDrainToZero = false
-		}
-	}
-
-	if !anyDrainsToZero || allDrainToZero {
-		return
-	}
-
-	if canDrainAllToZero(currentNew, initialOld, target, config) {
-		for i := range nextOld {
-			nextOld[i] = 0
-		}
-		return
-	}
-
-	for i := range nextOld {
-		if nextOld[i] == 0 && initialOld[i] > 0 {
-			nextOld[i] = 1
-		}
-	}
-}
-
-func tryForceDrain(currentOld, nextNew RoleReplicaState, initialOld, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
-	drainedOld := make([]int, len(currentOld))
-	needsDrain := false
-
-	for i := range currentOld {
-		maxOld := targetNew[i] + config[i].MaxSurge - nextNew[i]
-		drainedOld[i] = max(0, min(currentOld[i], maxOld))
-		if initialOld[i] >= targetNew[i] {
-			minOldForRole := max(0, targetNew[i]-config[i].MaxUnavailable-nextNew[i])
-			drainedOld[i] = max(drainedOld[i], minOldForRole)
-		}
-		if drainedOld[i] < currentOld[i] {
-			needsDrain = true
-		}
-	}
-	if !needsDrain {
-		return nil
-	}
-
-	applyOrphanPrevention(drainedOld, nextNew, initialOld, targetNew, config)
-
-	return &UpdateStep{Past: drainedOld, New: nextNew}
-}
-
-func ComputeNextStep(initialOld, currentOld, currentNew, targetNew RoleReplicaState, config []RollingUpdateConfig) *UpdateStep {
-	if isComplete(currentOld, currentNew, targetNew) {
-		return nil
-	}
-
-	totalSteps := computeTotalSteps(initialOld, targetNew, config)
-	if totalSteps == 0 {
-		return nil
-	}
-
-	if step := correctAbnormalState(currentOld, currentNew, initialOld); step != nil {
-		return step
-	}
-
-	if isNewAtTarget(currentNew, targetNew) {
-		return &UpdateStep{Past: make([]int, len(initialOld)), New: currentNew}
-	}
-
-	nextNew := computeNextNewReplicas(targetNew, currentNew, totalSteps)
-	minOld := computeMinOld(initialOld, currentNew, targetNew, config)
-
-	if step := tryScaleUp(currentOld, currentNew, nextNew, targetNew, config); step != nil {
-		return step
-	}
-	if step := tryProportionalDrain(initialOld, currentOld, currentNew, targetNew, minOld, totalSteps, config); step != nil {
-		return step
-	}
-	if step := tryForceDrain(currentOld, nextNew, initialOld, targetNew, config); step != nil {
-		return step
-	}
-
-	return nil
-}
-
-// ComputeAllSteps simulates a full rollout by repeatedly calling ComputeNextStep. Used in tests to validate the complete rollout sequence.
-func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
-	numRoles := len(initialOld)
-
-	currentOld := make([]int, numRoles)
-	copy(currentOld, initialOld)
-	currentNew := make([]int, numRoles)
 
 	maxReplicas := 0
-	for i := 0; i < numRoles; i++ {
-		maxReplicas = max(maxReplicas, initialOld[i], target[i])
+	for _, role := range roleNames {
+		maxReplicas = max(maxReplicas, initialOld[role], target[role])
 	}
-	maxSteps := maxReplicas*2 + 10
+	maxSteps := maxReplicas*4 + 10
 
-	initialPast := make([]int, numRoles)
-	copy(initialPast, initialOld)
-	initialNew := make([]int, numRoles)
-	steps := []UpdateStep{{Past: initialPast, New: initialNew}}
+	initial := UpdateStep{
+		Past: make(map[string]RoleStepState, len(roleNames)),
+		New:  make(map[string]RoleStepState, len(roleNames)),
+	}
+	for _, role := range roleNames {
+		initial.Past[role] = RoleStepState{Replicas: initialOld[role]}
+		initial.New[role] = RoleStepState{Replicas: 0}
+	}
+	steps := []UpdateStep{initial}
 
-	for i := 0; i < maxSteps; i++ {
-		nextStep := ComputeNextStep(initialOld, currentOld, currentNew, target, config)
-		if nextStep == nil {
+	for range maxSteps {
+		next := ComputeNextStep(roleNames, initialOld, currentOld, currentNew, target, config)
+		if next == nil {
 			break
 		}
-
-		steps = append(steps, *nextStep)
-		currentOld = nextStep.Past
-		currentNew = nextStep.New
+		steps = append(steps, *next)
+		for _, role := range roleNames {
+			currentOld[role] = next.Past[role].Replicas
+			currentNew[role] = next.New[role].Replicas
+		}
 	}
-
 	return steps
 }

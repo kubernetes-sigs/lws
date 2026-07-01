@@ -569,19 +569,21 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				TargetDecode:  8,
 				PrefillSurge:  intstr.FromInt(2),
 				DecodeSurge:   intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":10,"decode":2}' --target '{"prefill":6,"decode":8}' --surge '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner (each revision follows its own curve)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 2: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 2, NewDecode: 2},  // step 3: new role0 +2, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 4: old role0 -2, old role1 -1
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 5: new role0 +1, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 6: new role0 +1, new role1 +1
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 7: old role0 -2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new role0 +1, new role1 +2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new role0 +1, new role1 +1
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old role0 -2, old role1 -1
+					{OldPrefill: 9, OldDecode: 1, NewPrefill: 1, NewDecode: 1},  // step 1
+					{OldPrefill: 8, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 2
+					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 3},  // step 3
+					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 4
+					{OldPrefill: 6, OldDecode: 0, NewPrefill: 4, NewDecode: 5},  // step 5
+					{OldPrefill: 5, OldDecode: 0, NewPrefill: 5, NewDecode: 6},  // step 6
+					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 7},  // step 7
+					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 8
+					{OldPrefill: 3, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 9
+					{OldPrefill: 2, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10
+					{OldPrefill: 1, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 11
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 12
 				},
 			},
 			{
@@ -594,13 +596,13 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				DecodeSurge:    intstr.FromInt(0),
 				PrefillUnavail: intstr.FromInt(2),
 				DecodeUnavail:  intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":4,"decode":4}' --target '{"prefill":4,"decode":4}' --surge '{"prefill":0,"decode":0}' --unavailable '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner (1-at-a-time with sync points)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 4, OldDecode: 4, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1: drain 2 each
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2: scale up 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3: drain 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4: scale up 2 each
+					{OldPrefill: 3, OldDecode: 3, NewPrefill: 1, NewDecode: 1}, // step 1
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2
+					{OldPrefill: 1, OldDecode: 1, NewPrefill: 3, NewDecode: 3}, // step 3
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4
 				},
 			},
 		}
@@ -707,6 +709,137 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				}
 			})
 		}
+	})
+
+	Context("Slow Rollout with Imbalanced Roles", func() {
+		// This test validates that minimalUnit / sync-point coordination works
+		// in practice when pods have realistic startup and termination latency.
+		// All other rollout tests use pause images that become ready in ~1s, so
+		// per-role timing is symmetric and the executor's isRevisionStable gate
+		// is never stressed. Here we use 5s startup + 3-6s random termination
+		// with an imbalanced 2:1 prefill:decode ratio so sync-point waits
+		// (faster role parked at boundary waiting for slower role) become
+		// observable.
+		//
+		// Config: 8P/4D, minimalUnit = max(1/8, 1/4) = 1/4 → 4 sync points.
+		// Per sync window: prefill +2 replicas (2 sub-steps), decode +1.
+		// Expected rollout time: ~60-90s.
+		const deploymentName = "test-slow-rollout"
+		const (
+			sourcePrefill  = 8
+			sourceDecode   = 4
+			targetPrefill  = 8
+			targetDecode   = 4
+			maxSurge       = 2
+			maxUnavailable = 2
+			startupDelay   = 5
+			termDelayMin   = 3
+			termDelayMax   = 6
+		)
+
+		AfterEach(func() {
+			_, _ = kubectl.Delete("disaggregatedset", deploymentName).Namespace("default").IgnoreNotFound().Timeout("60s").RunQuiet()
+			_, _ = kubectl.Delete("lws").Label("disaggregatedset.x-k8s.io/name", deploymentName).Namespace("default").IgnoreNotFound().Timeout("60s").RunQuiet()
+			_, _ = kubectl.Delete("pods").Label("disaggregatedset.x-k8s.io/name", deploymentName).Namespace("default").IgnoreNotFound().GracePeriod(0).Force().RunQuiet()
+			kubectl.ForLWSCount(deploymentName, 0)
+			kubectl.ForPodCount(deploymentName, 0)
+		})
+
+		It("should respect sync-point coordination under slow per-role timing", func() {
+			slowRole := func(replicas int, image string) fixtures.Role {
+				return fixtures.Role{
+					Replicas:            replicas,
+					Image:               image,
+					HasRollout:          true,
+					MaxSurge:            intstr.FromInt(maxSurge),
+					MaxUnavailable:      intstr.FromInt(maxUnavailable),
+					StartupDelaySeconds: startupDelay,
+					TerminationDelayMin: termDelayMin,
+					TerminationDelayMax: termDelayMax,
+				}
+			}
+
+			By("creating initial DisaggregatedSet with slow pods (v1 image)")
+			initialYaml := fixtures.PrefillDecode(deploymentName,
+				slowRole(sourcePrefill, "busybox:1.36"),
+				slowRole(sourceDecode, "busybox:1.36"),
+			).YAML()
+			Expect(applyYAML(initialYaml)).To(Succeed())
+
+			By("waiting for initial deployment to stabilize")
+			kubectl.ForRunningPodCountWithTimeout(deploymentName, sourcePrefill+sourceDecode, 3*time.Minute)
+
+			oldRevision := kubectl.GetRevision(deploymentName)
+			Expect(oldRevision).NotTo(BeEmpty())
+			_, _ = fmt.Fprintf(GinkgoWriter, "Initial revision: %s\n", oldRevision)
+
+			initialState := getCurrentRolloutState(deploymentName, oldRevision)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Initial state: %s\n", initialState)
+
+			By("triggering rolling update by changing image (v2)")
+			updatedYaml := fixtures.PrefillDecode(deploymentName,
+				slowRole(targetPrefill, "busybox:stable"),
+				slowRole(targetDecode, "busybox:stable"),
+			).YAML()
+			Expect(applyYAML(updatedYaml)).To(Succeed())
+
+			By("polling rollout states until target reached")
+			observedStates := []rolloutState{initialState}
+			lastState := initialState
+			finalState := rolloutState{OldPrefill: 0, OldDecode: 0, NewPrefill: targetPrefill, NewDecode: targetDecode}
+
+			Eventually(func(g Gomega) bool {
+				state := getCurrentRolloutState(deploymentName, oldRevision)
+				if !state.Equals(lastState) {
+					observedStates = append(observedStates, state)
+					_, _ = fmt.Fprintf(GinkgoWriter, "Observed state %d: %s\n", len(observedStates)-1, state)
+					lastState = state
+				}
+				return state.Equals(finalState)
+			}, 8*time.Minute, 250*time.Millisecond).Should(BeTrue(), "should reach final state")
+
+			By("verifying surge limits were respected at every observed state")
+			maxAllowedPrefill := max(sourcePrefill, targetPrefill) + maxSurge
+			maxAllowedDecode := max(sourceDecode, targetDecode) + maxSurge
+			for _, state := range observedStates {
+				totalPrefill := state.OldPrefill + state.NewPrefill
+				totalDecode := state.OldDecode + state.NewDecode
+				Expect(totalPrefill).To(BeNumerically("<=", maxAllowedPrefill),
+					"prefill surge limit exceeded at state %s", state)
+				Expect(totalDecode).To(BeNumerically("<=", maxAllowedDecode),
+					"decode surge limit exceeded at state %s", state)
+			}
+
+			By("verifying sync-point coordination invariant on new-replica progress")
+			// minimalUnit = 1/4. Neither role's progress (newReplicas/target)
+			// should be more than 1 sync window (= minimalUnit) ahead of the
+			// other. Equivalently: |newP/targetP - newD/targetD| <= 1/4.
+			// Small epsilon accounts for the moment between executor API calls
+			// where one role's spec has updated and the other hasn't yet.
+			const minimalUnit = 0.25
+			const epsilon = 0.01
+			for i, state := range observedStates {
+				if state.NewPrefill == 0 && state.NewDecode == 0 {
+					continue
+				}
+				progressP := float64(state.NewPrefill) / float64(targetPrefill)
+				progressD := float64(state.NewDecode) / float64(targetDecode)
+				diff := progressP - progressD
+				if diff < 0 {
+					diff = -diff
+				}
+				Expect(diff).To(BeNumerically("<=", minimalUnit+epsilon),
+					"sync coordination violated at state %d %s: progress diff %.3f > minimalUnit %.3f",
+					i, state, diff, minimalUnit)
+			}
+
+			By("printing observed rollout summary")
+			_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Slow Rollout Summary ===\n")
+			_, _ = fmt.Fprintf(GinkgoWriter, "Total observed states: %d\n", len(observedStates))
+			for i, s := range observedStates {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  %d: %s\n", i, s)
+			}
+		})
 	})
 
 	Context("N-Role Rolling Update (3 roles)", func() {
@@ -1057,6 +1190,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			bDrainedFirst := false
 			aDrainedBeforeB := false
 
+			// Poll at 100ms — fast enough to catch the "B=0, A>0" transient
+			// on fast clusters (kind + pause pods can drain in <500ms).
 			Eventually(func(g Gomega) bool {
 				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
 				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
@@ -1073,7 +1208,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				}
 
 				return aTotal == 0 && bTotal == 0
-			}, 5*time.Minute, 500*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
+			}, 5*time.Minute, 100*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
 
 			Expect(bDrainedFirst).To(BeTrue(), "B (newer intermediate) should drain to 0 before A (stable original)")
 			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")

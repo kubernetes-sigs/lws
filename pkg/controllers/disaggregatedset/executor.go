@@ -137,20 +137,21 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldRevisions)
 
-	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
+	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoleSet, specRoleSet)...)
+	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
 
-	// A revision is "stable" when every role's LWS has ReadyReplicas == Replicas,
-	// meaning all pods from the previous scale step are Running and Ready.
-	// We wait for stability before computing the next step to avoid over-scaling.
-	if !isRevisionStable(newRevision, specRoleNames) {
+	// A revision is "stable enough" to advance when each role has at most
+	// (MaxSurge + MaxUnavailable) pending replicas — the full in-flight slack
+	// the user authorized. This lets the rollout keep progressing when one
+	// slow-starting pod would otherwise gate everything. See isRevisionStable.
+	if !isRevisionStable(newRevision, specRoleNames, config) {
 		log.V(1).Info("Waiting for new revision to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
-	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
 
-	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
+	nextStep := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
@@ -160,10 +161,15 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
+	// Scale down old replicas before scaling up new ones. This ordering ensures
+	// the total replica count never exceeds the surge limit between the two
+	// API calls: e.g. with surge=0, scaling up first would briefly make
+	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
+	// currentOld down.
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New, initialOld, targetNew, config); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -186,7 +192,7 @@ func buildRoleSets(specRoleNames []string, oldRevisions disaggregatedsetutils.Re
 	return spec, old
 }
 
-func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
+func removedRoleNames(oldRoleSet, specRoleSet map[string]bool) []string {
 	var removed []string
 	for role := range oldRoleSet {
 		if !specRoleSet[role] {
@@ -196,25 +202,32 @@ func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
 	return removed
 }
 
-func buildPlannerState(
+func buildPlannerStateMaps(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
-	n := len(allRoleNames)
-	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
+) (initialOld, currentOld, currentNew, targetNew map[string]int) {
+	initialOld = make(map[string]int, len(allRoleNames))
+	currentOld = make(map[string]int, len(allRoleNames))
+	currentNew = make(map[string]int, len(allRoleNames))
+	targetNew = make(map[string]int, len(allRoleNames))
 
-	for i, roleName := range allRoleNames {
-		initialOld[i] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
-		currentOld[i] = oldRevisions.GetTotalReplicasPerRole(roleName)
+	for _, roleName := range allRoleNames {
+		initialOld[roleName] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
+		currentOld[roleName] = oldRevisions.GetTotalReplicasPerRole(roleName)
 
 		if specRoleSet[roleName] {
 			if lws := newRevision.Roles[roleName]; lws != nil {
-				currentNew[i] = int(getLWSReplicas(lws))
+				// Use ReadyReplicas (not Spec) so the planner advances on actual
+				// serving capacity. Slow-starting pods don't inflate currentNew,
+				// so the planner won't compound pending replicas. The
+				// spec-footprint guard in scaleUpNew prevents spec from
+				// growing past the surge ceiling.
+				currentNew[roleName] = int(lws.Status.ReadyReplicas)
 			}
-			targetNew[i] = getTargetReplicas(ds, roleName)
+			targetNew[roleName] = getTargetReplicas(ds, roleName)
 		}
 	}
 	return
@@ -232,28 +245,25 @@ func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string)
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
-	config := DefaultRollingUpdateConfig(len(allRoleNames))
-
-	roleIndex := make(map[string]int, len(allRoleNames))
-	for i, name := range allRoleNames {
-		roleIndex[name] = i
+func extractRollingUpdateConfigMap(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) map[string]RollingUpdateConfig {
+	config := make(map[string]RollingUpdateConfig, len(allRoleNames))
+	for _, name := range allRoleNames {
+		config[name] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
 	}
 
 	for _, role := range ds.Spec.Roles {
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
-			i := roleIndex[role.Name]
 			replicas := getTargetReplicas(ds, role.Name)
-			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
-			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
+			cfg := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
 			if unavail > 0 {
-				config[i].MaxUnavailable = unavail
-				config[i].MaxSurge = surge
+				cfg.MaxUnavailable = unavail
+				cfg.MaxSurge = surge
 			} else if surge > 0 {
-				config[i].MaxSurge = surge
+				cfg.MaxSurge = surge
 			}
+			config[role.Name] = cfg
 		}
 	}
 	return config
@@ -261,19 +271,44 @@ func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRole
 
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	args := make([]interface{}, 0, len(roleNames)*4)
-	for i, name := range roleNames {
-		args = append(args, "past"+name, step.Past[i], "new"+name, step.New[i])
+	for _, name := range roleNames {
+		args = append(args,
+			"past_"+name, step.Past[name].Replicas,
+			"new_"+name, step.New[name].Replicas,
+		)
 	}
 	return args
 }
 
-func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
+// isRevisionStable returns true when the new revision is "stable enough" to
+// advance the rollout: each role's pending count (Spec.Replicas - ReadyReplicas)
+// must be within its total in-flight slack budget (MaxSurge + MaxUnavailable).
+//
+// A pending new pod occupies one of two budgets at any moment:
+//   - MaxSurge, if total spec is above target (the pod extends the spec footprint)
+//   - MaxUnavailable, if total ready is below target (the pod is replacing a
+//     drained old pod)
+//
+// In general it fills BOTH, so the natural upper bound is the sum. The
+// spec-footprint guard in scaleUpNew prevents spec from actually growing past
+// the surge ceiling, so this tolerance is safe even at the sum.
+func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string, config map[string]RollingUpdateConfig) bool {
 	for _, name := range roleNames {
 		lws := rev.Roles[name]
 		if lws == nil {
 			return false
 		}
-		if getLWSReplicas(lws) != lws.Status.ReadyReplicas {
+		spec := int32(getLWSReplicas(lws))
+		ready := lws.Status.ReadyReplicas
+		pending := spec - ready
+		if pending < 0 {
+			pending = 0
+		}
+		tolerance := int32(0)
+		if cfg, ok := config[name]; ok {
+			tolerance = int32(cfg.MaxSurge + cfg.MaxUnavailable)
+		}
+		if pending > tolerance {
 			return false
 		}
 	}
@@ -309,20 +344,42 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 	newRevision disaggregatedsetutils.RevisionRoles,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
-	current, target RoleReplicaState,
+	currentNew map[string]int,
+	targetNew map[string]RoleStepState,
+	initialOld, targetSpec map[string]int,
+	config map[string]RollingUpdateConfig,
 ) error {
 	log := logf.FromContext(ctx)
-	for i, name := range allRoleNames {
-		if !specRoleSet[name] || current[i] >= target[i] {
+	for _, name := range allRoleNames {
+		if !specRoleSet[name] {
+			continue
+		}
+		lws := newRevision.Roles[name]
+		if lws == nil {
+			continue
+		}
+		currentSpec := int(getLWSReplicas(lws))
+		desiredSpec := targetNew[name].Replicas
+
+		// Spec-footprint guard: cap desired spec at the per-role surge ceiling.
+		// `currentNew` is ready-based now, so the planner's targetNew is
+		// expressed in ready terms — pending replicas could push spec past
+		// the planner's intent if we scaled blindly.
+		ceiling := max(initialOld[name], targetSpec[name]) + config[name].MaxSurge
+		if desiredSpec > ceiling {
+			desiredSpec = ceiling
+		}
+
+		if currentSpec >= desiredSpec {
 			continue
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, newRevision.Revision)
-		log.Info("Scaling up", "lws", lwsName, "from", current[i], "to", target[i])
-		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, target[i]); err != nil {
+		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", currentNew[name], "to", desiredSpec)
+		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, current[i], target[i])
+			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentSpec, desiredSpec)
 	}
 	return nil
 }
@@ -332,16 +389,24 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
-	current, target RoleReplicaState,
+	currentOld map[string]int,
+	targetOld map[string]RoleStepState,
 ) error {
-	budget := make([]int, len(roleNames))
-	for i := range roleNames {
-		budget[i] = current[i] - target[i]
+	budget := make(map[string]int, len(roleNames))
+	for _, name := range roleNames {
+		budget[name] = currentOld[name] - targetOld[name].Replicas
 	}
 
 	log := logf.FromContext(ctx)
 	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
-		if allZero(budget) {
+		allDone := true
+		for _, name := range roleNames {
+			if budget[name] > 0 {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
 			break
 		}
 
@@ -349,13 +414,13 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		plannedDrain := make(map[string]int)
 		triggersCoordinated := make(map[string]bool)
 
-		for i, name := range roleNames {
+		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			drain := min(budget[i], replicas)
+			drain := min(budget[name], replicas)
 			plannedDrain[name] = drain
 			newReplicas[name] = replicas - drain
 			if newReplicas[name] == 0 {
@@ -372,7 +437,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 
-		for i, name := range roleNames {
+		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
@@ -390,20 +455,11 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
 
 			if triggersCoordinated[name] || !anyTriggered {
-				budget[i] -= plannedDrain[name]
+				budget[name] -= plannedDrain[name]
 			}
 		}
 	}
 	return nil
-}
-
-func allZero(s []int) bool {
-	for _, v := range s {
-		if v > 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // --- LWS creation ---
