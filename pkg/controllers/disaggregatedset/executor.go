@@ -270,14 +270,17 @@ func extractRollingUpdateConfigMap(ds *disaggregatedsetv1.DisaggregatedSet, allR
 }
 
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
-	args := make([]interface{}, 0, len(roleNames)*6)
+	args := make([]interface{}, 0, len(roleNames)*8)
 	for _, name := range roleNames {
 		past := step.Past[name]
-		new := step.New[name]
+		newSide := step.New[name]
+		// Log both sides' sync positions — in the two-minU model each side has
+		// its own sync sequence and the indices are not directly comparable.
 		args = append(args,
 			"past_"+name, past.Replicas,
-			"new_"+name, new.Replicas,
-			"sync_"+name, fmt.Sprintf("%d.%d", new.CrossRoleStep, new.RoleStep),
+			"new_"+name, newSide.Replicas,
+			"sync_new_"+name, fmt.Sprintf("%d.%d", newSide.SyncWindowIndex, newSide.RoleStep),
+			"sync_old_"+name, fmt.Sprintf("%d.%d", past.SyncWindowIndex, past.RoleStep),
 		)
 	}
 	return args
@@ -378,7 +381,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, newRevision.Revision)
 		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", currentNew[name], "to", desiredSpec,
-			"syncPoint", fmt.Sprintf("%d.%d", targetNew[name].CrossRoleStep, targetNew[name].RoleStep))
+			"syncPoint", fmt.Sprintf("%d.%d", targetNew[name].SyncWindowIndex, targetNew[name].RoleStep))
 		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
