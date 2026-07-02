@@ -899,10 +899,14 @@ func TestScaleDownOld(t *testing.T) {
 			prefillBudget: 2, decodeBudget: 2,
 		},
 		{
-			name: "three workloads drain newest then middle",
+			// Newest-first drain-order: only ONE revision is drained per
+			// call (executor breaks after any revision receives drain calls).
+			// Next reconcile handles the middle. This preserves the
+			// observable "B drained to 0 before A" property.
+			name: "three workloads drain newest only, per call",
 			workloads: []lwsDef{
 				{revision: "oldest", prefill: 2, decode: 2, ageHours: 0, expectedPrefill: 2, expectedDecode: 2},
-				{revision: "middle", prefill: 2, decode: 2, ageHours: 1, expectedPrefill: 0, expectedDecode: 0},
+				{revision: "middle", prefill: 2, decode: 2, ageHours: 1, expectedPrefill: 2, expectedDecode: 2},
 				{revision: "newest", prefill: 2, decode: 2, ageHours: 2, expectedPrefill: 0, expectedDecode: 0},
 			},
 			prefillBudget: 4, decodeBudget: 4,

@@ -502,6 +502,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 
+		revisionDrained := false
 		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
@@ -522,6 +523,16 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas)
 			budget[name] -= drain
 			drainedAny = true
+			revisionDrained = true
+		}
+		// Newest-first drain-order invariant: once we've touched a revision,
+		// finish this reconcile without moving budget to older revisions.
+		// Next reconcile picks up the next revision if this one is done.
+		// Cost: extra reconciles for multi-revision cases; benefit: the
+		// observable "B drained to 0 before A" property holds even on fast
+		// clusters where reconciles chain in <100ms.
+		if revisionDrained {
+			break
 		}
 	}
 
