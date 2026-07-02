@@ -84,10 +84,10 @@ func TestSideSize(t *testing.T) {
 		want     int
 	}{
 		{"symmetric_8_8", map[string]int{"p": 8, "d": 8}, 8},
-		{"asymmetric_8_10", map[string]int{"p": 8, "d": 10}, 8},
-		{"extreme_2_100", map[string]int{"p": 2, "d": 100}, 2},
-		{"single_replica", map[string]int{"p": 1, "d": 10}, 1},
-		{"three_roles", map[string]int{"p": 4, "d": 8, "c": 16}, 4},
+		{"asymmetric_8_10", map[string]int{"p": 8, "d": 10}, 10},
+		{"extreme_2_100", map[string]int{"p": 2, "d": 100}, 100},
+		{"single_replica", map[string]int{"p": 1, "d": 10}, 10},
+		{"three_roles", map[string]int{"p": 4, "d": 8, "c": 16}, 16},
 		{"empty_side", map[string]int{"p": 0, "d": 0}, 0},
 		{"one_zero_role", map[string]int{"p": 0, "d": 4}, 4},
 	}
@@ -424,8 +424,8 @@ func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
 	target := map[string]int{"prefill": 12, "decode": 3}
 	cfg := makeConfig(roles, []int{2, 2}, []int{2, 2})
 
-	assert.Equal(t, 4, sideSize(initial), "old side has 4 steps (smallest old role)")
-	assert.Equal(t, 3, sideSize(target), "new side has 3 steps (smallest new role)")
+	assert.Equal(t, 4, sideSize(initial), "old side has 4 steps (largest old role)")
+	assert.Equal(t, 12, sideSize(target), "new side has 12 steps (largest new role)")
 
 	steps := ComputeAllSteps(roles, initial, target, cfg)
 	require.True(t, completes(steps, roles, target))
@@ -442,12 +442,13 @@ func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
 
 // TestTwoMinimalUnits_TinyRevisionAbsorbed verifies that summing the old side
 // dilutes a tiny revision: a 1P/1D revision mixed with a 20P/4D one yields
-// an old-side step count of min(21,5) = 5 (not 1). The drain rhythm is
-// governed by the sum, so the tiny revision doesn't poison coordination.
+// an old-side step count of max(21,5) = 21 (the largest role sets pace).
+// The drain rhythm is governed by the sum, so the tiny revision doesn't
+// poison coordination.
 func TestTwoMinimalUnits_TinyRevisionAbsorbed(t *testing.T) {
 	combined := map[string]int{"prefill": 21, "decode": 5}
-	assert.Equal(t, 5, sideSize(combined),
-		"summed old side should have 5 steps, not 1 from tiny B alone")
+	assert.Equal(t, 21, sideSize(combined),
+		"summed old side should have 21 steps (max), driven by largest role")
 
 	// Sanity: tiny B alone would give 1 (the poison case).
 	tinyAlone := map[string]int{"prefill": 1, "decode": 1}
@@ -498,13 +499,16 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			initial: []int{10, 2}, target: []int{6, 8},
 			surge: []int{2, 2}, unavail: []int{0, 0},
 			want: `0: oldP=10 oldD=2 newP=0 newD=0
-1: oldP=6 oldD=2 newP=1 newD=2
-2: oldP=5 oldD=1 newP=2 newD=3
-3: oldP=4 oldD=0 newP=3 newD=4
-4: oldP=3 oldD=0 newP=4 newD=6
-5: oldP=2 oldD=0 newP=5 newD=7
-6: oldP=1 oldD=0 newP=6 newD=8
-7: oldP=0 oldD=0 newP=6 newD=8
+1: oldP=9 oldD=2 newP=2 newD=3
+2: oldP=8 oldD=2 newP=3 newD=5
+3: oldP=7 oldD=2 newP=4 newD=7
+4: oldP=6 oldD=2 newP=5 newD=8
+5: oldP=5 oldD=1 newP=6 newD=8
+6: oldP=4 oldD=1 newP=6 newD=8
+7: oldP=3 oldD=1 newP=6 newD=8
+8: oldP=2 oldD=1 newP=6 newD=8
+9: oldP=1 oldD=1 newP=6 newD=8
+10: oldP=0 oldD=0 newP=6 newD=8
 `,
 		},
 		{
@@ -512,11 +516,13 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			initial: []int{20, 4}, target: []int{12, 4},
 			surge: []int{3, 3}, unavail: []int{2, 2},
 			want: `0: oldP=20 oldD=4 newP=0 newD=0
-1: oldP=15 oldD=3 newP=3 newD=1
-2: oldP=10 oldD=2 newP=6 newD=2
-3: oldP=5 oldD=1 newP=9 newD=3
-4: oldP=1 oldD=0 newP=12 newD=4
-5: oldP=0 oldD=0 newP=12 newD=4
+1: oldP=17 oldD=4 newP=3 newD=1
+2: oldP=14 oldD=3 newP=6 newD=1
+3: oldP=11 oldD=3 newP=7 newD=2
+4: oldP=8 oldD=2 newP=10 newD=2
+5: oldP=5 oldD=1 newP=10 newD=3
+6: oldP=2 oldD=1 newP=12 newD=4
+7: oldP=0 oldD=0 newP=12 newD=4
 `,
 		},
 		{
@@ -524,7 +530,7 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			initial: []int{4, 4}, target: []int{4, 4},
 			surge: []int{0, 0}, unavail: []int{2, 2},
 			want: `0: oldP=4 oldD=4 newP=0 newD=0
-1: oldP=3 oldD=3 newP=0 newD=0
+1: oldP=2 oldD=2 newP=0 newD=0
 2: oldP=2 oldD=2 newP=1 newD=1
 3: oldP=1 oldD=1 newP=2 newD=2
 4: oldP=0 oldD=0 newP=3 newD=3
@@ -536,13 +542,13 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			initial: []int{20, 4}, target: []int{20, 4},
 			surge: []int{3, 3}, unavail: []int{2, 2},
 			want: `0: oldP=20 oldD=4 newP=0 newD=0
-1: oldP=18 oldD=3 newP=3 newD=1
+1: oldP=18 oldD=4 newP=3 newD=1
 2: oldP=15 oldD=3 newP=5 newD=1
-3: oldP=13 oldD=2 newP=8 newD=2
+3: oldP=13 oldD=3 newP=8 newD=2
 4: oldP=10 oldD=2 newP=10 newD=2
-5: oldP=8 oldD=1 newP=13 newD=3
+5: oldP=8 oldD=2 newP=13 newD=3
 6: oldP=5 oldD=1 newP=15 newD=3
-7: oldP=3 oldD=0 newP=18 newD=4
+7: oldP=3 oldD=1 newP=18 newD=4
 8: oldP=0 oldD=0 newP=20 newD=4
 `,
 		},

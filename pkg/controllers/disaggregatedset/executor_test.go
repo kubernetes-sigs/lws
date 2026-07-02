@@ -886,8 +886,11 @@ func TestScaleDownOld(t *testing.T) {
 			prefillBudget: 2, decodeBudget: 2,
 		},
 		{
-			name:          "coordinated drain when one role reaches zero",
-			workloads:     []lwsDef{{revision: "hash1", prefill: 3, decode: 2, ageHours: 0, expectedPrefill: 0, expectedDecode: 0}},
+			// Aliveness: planned drain (1P, 2D) would leave (2P, 0D) — orphan.
+			// Budget can't cover full retirement (P=3 > budget=1), so skip
+			// the D drain that would hit 0. Result: P drains by 1, D untouched.
+			name:          "aliveness skips orphaning drain when retire not budgeted",
+			workloads:     []lwsDef{{revision: "hash1", prefill: 3, decode: 2, ageHours: 0, expectedPrefill: 2, expectedDecode: 2}},
 			prefillBudget: 1, decodeBudget: 2,
 		},
 		{
@@ -1007,12 +1010,16 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			expectedDecode:  3,
 		},
 		{
-			name:            "coordinated drain only when existing role reaches zero",
-			prefillBudget:   4, // drain all prefill
+			// Aliveness skips the orphaning P drain first (canRetire false
+			// because D budget=0 < D replicas=4). Since NO drain happens
+			// and budget remains, the deadlock fallback fires and force-
+			// retires the newest revision.
+			name:            "deadlock fallback retires when aliveness blocks all",
+			prefillBudget:   4,
 			decodeBudget:    0,
 			encodeBudget:    0,
 			expectedPrefill: 0,
-			expectedDecode:  0, // should be 0 due to coordinated drain (prefill reached 0)
+			expectedDecode:  0,
 		},
 	}
 

@@ -282,17 +282,19 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 
 // isRevisionStable returns true when the new revision is "stable enough" to
 // advance the rollout: each role's pending count (Spec.Replicas - ReadyReplicas)
-// must be within its total in-flight slack budget (MaxSurge + MaxUnavailable).
-//
-// A pending new pod occupies one of two budgets at any moment:
-//   - MaxSurge, if total spec is above target (the pod extends the spec footprint)
-//   - MaxUnavailable, if total ready is below target (the pod is replacing a
-//     drained old pod)
-//
-// In general it fills BOTH, so the natural upper bound is the sum. The
-// spec-footprint guard in scaleUpNew prevents spec from actually growing past
-// the surge ceiling, so this tolerance is safe even at the sum.
+// must be within its per-role slack budget, which is the sum of the surge and
+// unavail budgets projected onto this role's size. See planner package doc for
+// the minUnit-multiplier semantics.
 func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string, config map[string]RollingUpdateConfig) bool {
+	// totalSteps for the projection = max role size across the new revision.
+	roleSizes := make(map[string]int, len(roleNames))
+	for _, name := range roleNames {
+		if lws := rev.Roles[name]; lws != nil {
+			roleSizes[name] = int(getLWSReplicas(lws))
+		}
+	}
+	totalSteps := maxRoleSize(roleSizes)
+
 	for _, name := range roleNames {
 		lws := rev.Roles[name]
 		if lws == nil {
@@ -304,15 +306,28 @@ func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []strin
 		if pending < 0 {
 			pending = 0
 		}
-		tolerance := int32(0)
+		var tolerance int32
 		if cfg, ok := config[name]; ok {
-			tolerance = int32(cfg.MaxSurge + cfg.MaxUnavailable)
+			slack := projectBudget(int(spec), cfg.MaxSurge+cfg.MaxUnavailable, totalSteps)
+			tolerance = int32(slack)
 		}
 		if pending > tolerance {
 			return false
 		}
 	}
 	return true
+}
+
+// maxRoleSize returns the largest replica count across roles (used as
+// totalSteps for minUnit projections). Returns 0 if the map is empty.
+func maxRoleSize(sizes map[string]int) int {
+	maxN := 0
+	for _, n := range sizes {
+		if n > maxN {
+			maxN = n
+		}
+	}
+	return maxN
 }
 
 func maxTimestamp(wl disaggregatedsetutils.RevisionRoles) time.Time {
@@ -362,10 +377,13 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		desiredSpec := targetNew[name].Replicas
 
 		// Spec-footprint guard: cap desired spec at the per-role surge ceiling.
-		// `currentNew` is ready-based now, so the planner's targetNew is
-		// expressed in ready terms — pending replicas could push spec past
-		// the planner's intent if we scaled blindly.
-		ceiling := max(initialOld[name], targetSpec[name]) + config[name].MaxSurge
+		// MaxSurge is a minUnit multiplier at the side level; project onto
+		// this role's pod count so smaller roles get proportionally less
+		// absolute slack. See planner package doc.
+		totalSteps := maxRoleSize(targetSpec)
+		roleSize := max(initialOld[name], targetSpec[name])
+		surgePods := projectBudget(roleSize, config[name].MaxSurge, totalSteps)
+		ceiling := roleSize + surgePods
 		if desiredSpec > ceiling {
 			desiredSpec = ceiling
 		}
@@ -398,6 +416,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	}
 
 	log := logf.FromContext(ctx)
+	drainedAny := false
 	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
 		allDone := true
 		for _, name := range roleNames {
@@ -410,29 +429,75 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			break
 		}
 
-		newReplicas := make(map[string]int)
-		plannedDrain := make(map[string]int)
-		triggersCoordinated := make(map[string]bool)
-
+		plannedDrain := make(map[string]int, len(roleNames))
 		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			drain := min(budget[name], replicas)
-			plannedDrain[name] = drain
-			newReplicas[name] = replicas - drain
-			if newReplicas[name] == 0 {
-				triggersCoordinated[name] = true
-			}
+			plannedDrain[name] = min(budget[name], replicas)
 		}
 
-		anyTriggered := len(triggersCoordinated) > 0
-		if anyTriggered {
-			for _, name := range roleNames {
-				if _, exists := wl.Roles[name]; exists {
-					newReplicas[name] = 0
+		// Per-revision aliveness: if the planned drain would take some role
+		// to 0 while another role stays > 0, choose between:
+		//   - Retire the whole revision atomically (when budget allows for
+		//     every role — planner clearly wants retirement).
+		//   - Skip drains that would hit 0 (keep those roles alive; budget
+		//     rolls to the next revision or next reconcile). Preserves
+		//     ratio and avoids over-draining ready pods below floor.
+		anyAliveAfter, wouldOrphan, canRetire := false, false, true
+		for _, name := range roleNames {
+			lws, exists := wl.Roles[name]
+			if !exists {
+				continue
+			}
+			replicas := int(getLWSReplicas(lws))
+			if replicas == 0 {
+				continue
+			}
+			after := replicas - plannedDrain[name]
+			if after > 0 {
+				anyAliveAfter = true
+			}
+			if replicas > budget[name] {
+				canRetire = false
+			}
+		}
+		for _, name := range roleNames {
+			lws, exists := wl.Roles[name]
+			if !exists {
+				continue
+			}
+			replicas := int(getLWSReplicas(lws))
+			if replicas == 0 {
+				continue
+			}
+			after := replicas - plannedDrain[name]
+			if after == 0 && anyAliveAfter {
+				wouldOrphan = true
+				break
+			}
+		}
+		if wouldOrphan {
+			if canRetire {
+				for _, name := range roleNames {
+					lws, exists := wl.Roles[name]
+					if !exists {
+						continue
+					}
+					plannedDrain[name] = int(getLWSReplicas(lws))
+				}
+			} else {
+				for _, name := range roleNames {
+					lws, exists := wl.Roles[name]
+					if !exists {
+						continue
+					}
+					replicas := int(getLWSReplicas(lws))
+					if replicas > 0 && replicas-plannedDrain[name] == 0 {
+						plannedDrain[name] = 0
+					}
 				}
 			}
 		}
@@ -443,19 +508,67 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			if replicas <= newReplicas[name] {
+			drain := plannedDrain[name]
+			if drain <= 0 {
 				continue
 			}
+			newReplicas := replicas - drain
 			lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, wl.Revision)
-			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
-			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
+			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas)
+			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
-				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
+				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas)
+			budget[name] -= drain
+			drainedAny = true
+		}
+	}
 
-			if triggersCoordinated[name] || !anyTriggered {
-				budget[name] -= plannedDrain[name]
+	// Deadlock fallback: aliveness may have skipped every revision (no drain
+	// applied) even though planner still has budget to spend. This happens
+	// when no revision can safely partial-drain AND no revision can be
+	// fully retired within budget. Force-retire the newest non-empty revision
+	// to unstick; the aliveness invariant is briefly broken, but progress
+	// resumes next reconcile.
+	if !drainedAny {
+		remaining := false
+		for _, name := range roleNames {
+			if budget[name] > 0 {
+				remaining = true
+				break
+			}
+		}
+		if remaining {
+			for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
+				anyReplicas := false
+				for _, name := range roleNames {
+					if lws, ok := wl.Roles[name]; ok && getLWSReplicas(lws) > 0 {
+						anyReplicas = true
+						break
+					}
+				}
+				if !anyReplicas {
+					continue
+				}
+				for _, name := range roleNames {
+					lws, exists := wl.Roles[name]
+					if !exists {
+						continue
+					}
+					replicas := int(getLWSReplicas(lws))
+					if replicas == 0 {
+						continue
+					}
+					lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, wl.Revision)
+					log.Info("Scaling down (deadlock fallback: full retire)", "lws", lwsName, "from", replicas)
+					if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, 0); err != nil {
+						return fmt.Errorf("failed to scale %s: %w", lwsName, err)
+					}
+					executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
+						"Update", "Scaling down %s LWS %s from %d to 0 replicas (deadlock fallback)", name, lwsName, replicas)
+				}
+				break
 			}
 		}
 	}
