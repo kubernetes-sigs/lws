@@ -9,9 +9,11 @@ namespace: lws-system
 namePrefix: lws-
 
 # Common labels to add to all resources and selectors (matches Helm behavior).
-commonLabels:
-  app.kubernetes.io/name: lws
-  app.kubernetes.io/instance: lws
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/name: lws
+      app.kubernetes.io/instance: lws
 
 resources:
 - ../crd
