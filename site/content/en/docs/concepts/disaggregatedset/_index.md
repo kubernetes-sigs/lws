@@ -8,18 +8,18 @@ description: >
 
 **DisaggregatedSet** is a Kubernetes controller and CRD (Custom Resource Definition) that extends
 LeaderWorkerSet (LWS) to support **disaggregated inference** workloads — use cases where different
-phases of inference (e.g., prefill, decode, encode) need to run on separate, independently-scaled
+roles (e.g., prefill, decode, encode) need to run on separate, independently-scaled
 groups of pods.
 
 This is especially useful for large language model (LLM) inference services where:
 
-- The **prefill** phase (generating the initial KV cache from the input prompt) is compute-bound and benefits from larger pod groups.
-- The **decode** phase (token-by-token autoregressive generation) is memory-bandwidth-bound and can run on smaller groups.
-- The **encode** phase (optional context encoding) may have different resource requirements from either.
+- The **prefill** role (generating the initial KV cache from the input prompt) is compute-bound and benefits from larger pod groups.
+- The **decode** role (token-by-token autoregressive generation) is memory-bandwidth-bound and can run on smaller groups.
+- The **encode** role (optional context encoding) may have different resource requirements from either.
 
 DisaggregatedSet was introduced in
 [KEP-766](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet) to address
-these multi-phase, multi-resource serving patterns with a single, declarative Kubernetes resource.
+these multi-role, multi-resource serving patterns with a single, declarative Kubernetes resource.
 
 ## Relationship to LeaderWorkerSet
 
@@ -54,7 +54,7 @@ A `DisaggregatedSet` spec contains a `roles` list. Each role defines:
 |---|---|
 | `name` | Unique name for this role (e.g., `prefill`, `decode`) |
 | `replicas` | Number of LWS replicas (pod groups) for this role |
-| `rolloutStrategy` | Independent rolling update config per role |
+| `rolloutStrategy` | Rolling update config for this role (DisaggregatedSet coordinates rollouts across roles; `partition`-based rollout is not supported) |
 | `leaderWorkerTemplate` | Pod template defining leader + worker containers |
 
 DisaggregatedSet coordinates lifecycle and rollouts across roles. Each role's replica count,
@@ -76,13 +76,11 @@ Use **DisaggregatedSet** when:
 
 ## Key Design Principles
 
-1. **LWS-native** — DisaggregatedSet is built on top of LWS, not alongside it. This means all LWS features (failure handling, rollout strategy, subgroup topology) are available per role.
+1. **LWS-native** — DisaggregatedSet is built on top of LWS, not alongside it. This means LWS features (failure handling, subgroup topology, exclusive placement) are available per role. Note: rollout strategy is owned by the DisaggregatedSet controller, which replaces the per-LWS rollout to coordinate updates across roles.
 
-2. **Role isolation** — Each role's lifecycle, scaling, and rollout is fully independent. A failed decode role does not impact the prefill role.
+2. **Coordinated rollouts** — Rollouts across roles are coordinated by DisaggregatedSet to preserve capacity ratios (e.g., prefill-to-decode ratio) throughout the update process. Partition-based rollout is not supported.
 
 3. **Declarative** — The entire multi-role inference topology is expressed in a single YAML manifest, making it easy to version-control and apply via GitOps.
-
-4. **API Version** — DisaggregatedSet is at `v1`, matching the LeaderWorkerSet API version.
 
 ## Further Reading
 

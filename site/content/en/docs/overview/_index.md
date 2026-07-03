@@ -37,7 +37,7 @@ Read the [examples](https://github.com/kubernetes-sigs/lws/tree/main/docs/exampl
 ## Disaggregated Inference with DisaggregatedSet
 
 For workloads that require separating inference phases (e.g., prefill and decode), LWS provides
-the **DisaggregatedSet** controller. DisaggregatedSet builds on LeaderWorkerSet to add advanced
+the **DisaggregatedSet** operator. DisaggregatedSet builds on LeaderWorkerSet to add advanced
 disaggregated workload deployment, with support for coordinated rollouts and failure handling.
 
 Key features of DisaggregatedSet include:
