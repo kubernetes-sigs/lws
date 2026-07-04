@@ -24,6 +24,7 @@ counts for individual roles (e.g., "prefill" or "decode") independently.
   - [Controller Wiring](#controller-wiring)
   - [Scale Subresource Status Fields](#scale-subresource-status-fields)
   - [Rolling Update Interaction](#rolling-update-interaction)
+  - [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices)
   - [Validation](#validation)
   - [Edge Cases](#edge-cases)
   - [Test Plan](#test-plan)
@@ -69,6 +70,7 @@ The upstream issue [#849](https://github.com/kubernetes-sigs/lws/issues/849) cap
 2. **Cross-role coordination of autoscaling decisions.** The scaler for `prefill` and the scaler for `decode` are independent. Coordinated scaling (e.g., "always keep decode at 2x prefill") is out of scope and can be built externally.
 3. **Autoscaling metrics or recommendations.** How the HPA computes its target replica count (which metrics, which thresholds) is entirely the user's responsibility.
 4. **VPA integration.** Vertical scaling (changing container resources) is out of scope; only replica count is delegated.
+5. **Multi-slice DisaggregatedSets (alpha).** Interaction with [KEP-846](/keps/846-disaggregatedset-slices) `spec.slices > 1` is deferred to a follow-up KEP. Alpha only supports single-slice DisaggregatedSets. See [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices).
 
 ## Proposal
 
@@ -325,6 +327,23 @@ Two safety guards are added:
 
 2. **Stability check unchanged.** The controller still waits for `replicas == readyReplicas` on the new revision before recomputing the next step. HPA writes that arrive during this window are simply picked up on the next iteration.
 
+### Interaction with DisaggregatedSet Slices
+
+[KEP-846](/keps/846-disaggregatedset-slices) adds `spec.slices: int` to DisaggregatedSet, replicating the whole role topology into N independent copies. Each slice rolls independently, and `spec.roles[].spec.replicas` becomes a *per-slice* count (total pods per role = `replicas × slices`). LWS names gain a slice segment (`<ds>-<slice>-<revision>-<role>`).
+
+This has three unresolved implications for scaler-driven roles:
+
+1. **Scope of `scaler.spec.replicas`.** Three possible shapes:
+   - **Aggregate** — value is total across slices; controller divides among slices. Matches HPA's usual mental model.
+   - **Per-slice scaler CR** — one scaler per (DS, role, slice). Explicit; combinatorial (`roles × slices` scalers per DS).
+   - **Per-role, applied per-slice** — value is *per slice*, consistent with `spec.roles[].spec.replicas`. UX footgun: HPA sets N, gets N × slices pods.
+2. **`status.selector` across slices.** With N slices, a per-role scaler must select pods across N LWS objects that may be on different revisions during a rollout. The single `leaderworkerset.sigs.k8s.io/name=<lws>` selector no longer suffices.
+3. **N × R rollouts in flight.** The monotonicity guard would need to become per-(slice, role) since each slice rolls independently.
+
+**Alpha scope: `spec.slices` must be 1 (default).** The scaler webhook rejects creation of a `DisaggregatedSetRoleScaler` whose `targetRef` points at a DS with `slices > 1`. Symmetrically, the DS webhook rejects an increase of `slices` above 1 while any External-mode role exists. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.
+
+**Proposed direction for slices > 1** (out of scope for alpha, to be revisited in a follow-up KEP after production feedback): **per-slice scaler CR**. It is the most Kubernetes-idiomatic (one CR = one `/scale` target), has no math surprises, and lets users apply distinct scaling policies per slice (useful when slices map to different placement domains, per KEP-848). The cost — more CRs to manage — is opt-in and scales linearly with `roles × slices`.
+
 ### Validation
 
 **Webhook (`DisaggregatedSetRoleScaler`)**:
@@ -333,11 +352,13 @@ Two safety guards are added:
 - The referenced DS need not exist at admission time (allow GitOps ordering); missing target surfaces as a `TargetMissing` status condition.
 - Reject if another scaler in the namespace already has the same `targetRef`.
 - Reject `spec.replicas < 0`.
+- Alpha: reject if the referenced DS has `spec.slices > 1` (see [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices)).
 
 **Webhook (`DisaggregatedSet`)**:
 
 - For each role with `scaling.mode == External`, warn (not reject) if `spec.replicas` is set to a non-zero value — the CEL rule already enforces this, but the warning is friendlier.
 - Reject if two roles share a name (already validated by `+listType=map`).
+- Alpha: reject increasing `spec.slices` above 1 while any role has `scaling.mode == External`.
 
 **CEL** (documented above): scaling-mode-aware refresh of the all-or-nothing rule, plus a role-level forbid-replicas-if-external rule.
 
@@ -381,14 +402,16 @@ to implement this enhancement.
 - `DisaggregatedSetRoleScaler` CRD with `/scale` subresource
 - `scaling.mode` field on `DisaggregatedRoleSpec` (default `Static`, backward compatible)
 - Controller wiring: watch + replica resolution + status writeback
-- Validation: webhook + CEL
+- Validation: webhook + CEL, including the `spec.slices == 1` restriction for External roles
 - Rolling-update monotonicity guard
 - Test coverage per plan above
 - Documentation and example manifests for HPA and KEDA
+- **Scope**: single-slice DisaggregatedSets only (`spec.slices == 1`). Multi-slice support is deferred to a follow-up KEP.
 
 **Beta**:
 - Production feedback incorporated
 - Metrics: count of `WaitingForScaler` conditions
+- Multi-slice support tracked in a follow-up KEP (proposed direction: per-slice scaler CR; see [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices))
 
 **Stable**:
 - Proven stability across a range of autoscalers (HPA v2, KEDA, custom)
