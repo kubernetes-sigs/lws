@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -87,17 +86,15 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 
 	// Backward compatibility: when slices > 1, a pre-slices (label-less) slice-0
-	// deployment that still sits at the target revision must be migrated to the
-	// slice-aware form before any sibling slice is created, otherwise the legacy
-	// slice-agnostic service would also select the siblings' same-revision pods.
-	// While that migration runs we block the slice loop.
+	// deployment still at the target revision must become slice-aware before any
+	// sibling slice is created, otherwise its slice-agnostic service would also
+	// select the siblings' same-revision pods. Delete the legacy slice-0 objects
+	// here (service first); the slice loop below then recreates slice 0 in
+	// slice-aware form. Running before the loop, and returning on error, keeps the
+	// legacy service from ever coexisting with sibling slices.
 	if sliceCount > 1 {
-		migrating, migResult, err := r.migrateLegacySlice0(ctx, executor, disaggregatedSet, revision, roleNames)
-		if err != nil {
+		if err := r.recreateLegacySlice0(ctx, disaggregatedSet, revision, roleNames); err != nil {
 			return ctrl.Result{}, err
-		}
-		if migrating {
-			return migResult, nil
 		}
 	}
 
@@ -321,153 +318,41 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 	return nil
 }
 
-// migrateLegacySlice0 migrates a pre-slices (label-less) slice-0 deployment to the
-// slice-aware form when its LWS still sit at the target revision. Because legacy and
-// slice-aware share the revision hash, the normal revision-keyed rollout cannot drive
-// this, so it runs a bounded rolling swap reusing the planner on the legacy<->slice-aware
-// split. It returns (true, requeue) while in progress, signaling the caller to block the
-// slice loop until slice 0 carries the slice label, and (false, _) when there is nothing
-// to migrate or the migration has completed.
-func (r *DisaggregatedSetReconciler) migrateLegacySlice0(
-	ctx context.Context,
-	executor *RollingUpdateExecutor,
-	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
-	revision string,
-	roleNames []string,
-) (bool, ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Detect legacy (label-less) slice-0 LWS sitting at the target revision.
-	legacy := make(map[string]*leaderworkersetv1.LeaderWorkerSet)
-	for _, role := range roleNames {
-		lws, err := r.LWSManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
-		if err != nil {
-			return false, ctrl.Result{}, err
-		}
-		if lws != nil && !disaggregatedsetutils.HasSliceLabel(lws.Labels) {
-			legacy[role] = lws
-		}
-	}
-	if len(legacy) == 0 {
-		return false, ctrl.Result{}, nil
-	}
-
-	log.Info("Migrating legacy slice-0 to slice-aware form before scaling slices", "revision", revision)
-
-	// Ensure the slice-aware slice-0 LWS exist (created at 0 replicas).
-	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
-	newLWS := make(map[string]*leaderworkersetv1.LeaderWorkerSet)
-	createdAny := false
-	for _, role := range roleNames {
-		existing, err := r.LWSManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role))
-		if err != nil {
-			return false, ctrl.Result{}, err
-		}
-		if existing == nil {
-			if _, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, 0, revision, role, roleConfigs[role], 0); err != nil {
-				return false, ctrl.Result{}, err
-			}
-			createdAny = true
-			continue
-		}
-		newLWS[role] = existing
-	}
-	if createdAny {
-		return true, ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-
-	// Wait for the slice-aware LWS to stabilize before draining the legacy ones further.
-	for _, role := range roleNames {
-		lws := newLWS[role]
-		if getLWSReplicas(lws) != lws.Status.ReadyReplicas {
-			return true, ctrl.Result{RequeueAfter: time.Second}, nil
-		}
-	}
-
-	// Drive a bounded rolling swap with the planner, treating the legacy LWS as the old
-	// set and the slice-aware LWS as the new set (both at the same revision).
-	n := len(roleNames)
-	initialOld := make(RoleReplicaState, n)
-	currentOld := make(RoleReplicaState, n)
-	currentNew := make(RoleReplicaState, n)
-	targetNew := make(RoleReplicaState, n)
-	for i, role := range roleNames {
-		target := getTargetReplicas(disaggregatedSet, role)
-		initialOld[i] = target
-		targetNew[i] = target
-		if lws, ok := legacy[role]; ok {
-			currentOld[i] = int(getLWSReplicas(lws))
-		}
-		currentNew[i] = int(getLWSReplicas(newLWS[role]))
-	}
-	config := extractRollingUpdateConfig(disaggregatedSet, roleNames)
-
-	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
-	if nextStep == nil {
-		if err := r.finishLegacyMigration(ctx, disaggregatedSet, revision, roleNames, legacy); err != nil {
-			return false, ctrl.Result{}, err
-		}
-		return false, ctrl.Result{}, nil
-	}
-
-	for i, role := range roleNames {
-		if currentNew[i] < nextStep.New[i] {
-			name := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role)
-			if err := r.LWSManager.Scale(ctx, disaggregatedSet.Namespace, name, nextStep.New[i]); err != nil {
-				return false, ctrl.Result{}, fmt.Errorf("failed to scale up %s: %w", name, err)
-			}
-		}
-	}
-	for i, role := range roleNames {
-		lws, ok := legacy[role]
-		if !ok {
-			continue
-		}
-		if int(getLWSReplicas(lws)) > nextStep.Past[i] {
-			if err := r.LWSManager.Scale(ctx, disaggregatedSet.Namespace, lws.Name, nextStep.Past[i]); err != nil {
-				return false, ctrl.Result{}, fmt.Errorf("failed to scale down %s: %w", lws.Name, err)
-			}
-		}
-	}
-
-	return true, ctrl.Result{RequeueAfter: time.Second}, nil
-}
-
-// finishLegacyMigration completes a legacy slice-0 migration: it creates the slice-aware
-// slice-0 services, then deletes the legacy LWS and their lingering slice-agnostic
-// services (the latter share the target revision so per-revision cleanup would not remove
-// them).
-func (r *DisaggregatedSetReconciler) finishLegacyMigration(
+// recreateLegacySlice0 converts a pre-slices (label-less) slice-0 deployment to the
+// slice-aware form when slices is increased above 1. The legacy slice-0 uses legacy names
+// and a slice-agnostic service (selector {name, role, revision}) that would also select
+// the new siblings' same-revision pods. For each role it deletes the legacy service first
+// (so a partial failure leaves the LWS present and this retries, and the service never
+// lingers alongside siblings), then the legacy LWS. The caller runs this before the slice
+// loop, which then recreates slice 0 in slice-aware form. This restarts slice 0 once,
+// which we accept in place of an in-place migration. A legacy slice-0 at an older revision
+// is left alone: the normal rolling update migrates it without a restart.
+func (r *DisaggregatedSetReconciler) recreateLegacySlice0(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	revision string,
 	roleNames []string,
-	legacy map[string]*leaderworkersetv1.LeaderWorkerSet,
 ) error {
 	log := logf.FromContext(ctx)
 
 	for _, role := range roleNames {
-		lws, err := r.LWSManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role))
+		lws, err := r.LWSManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
 		if err != nil {
 			return err
 		}
-		if lws != nil {
-			if err := r.ServiceManager.ensureService(ctx, disaggregatedSet, lws); err != nil {
-				return err
-			}
+		if lws == nil || disaggregatedsetutils.HasSliceLabel(lws.Labels) {
+			continue
 		}
-	}
 
-	for role, lws := range legacy {
-		log.Info("Deleting migrated legacy slice-0 LWS", "name", lws.Name)
-		if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
-			return fmt.Errorf("failed to delete legacy LWS %s: %w", lws.Name, err)
-		}
+		log.Info("Recreating legacy slice-0 in slice-aware form", "role", role, "name", lws.Name)
 		if err := r.ServiceManager.DeleteLegacyService(ctx, disaggregatedSet, revision, role); err != nil {
 			return err
 		}
+		if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
+			return fmt.Errorf("failed to delete legacy LWS %s: %w", lws.Name, err)
+		}
 		r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonLWSDeleted,
-			"Migrate", "Migrated legacy slice-0 LWS %s to slice-aware form", lws.Name)
+			"Migrate", "Deleted legacy slice-0 LWS %s to recreate it in slice-aware form", lws.Name)
 	}
 
 	return nil

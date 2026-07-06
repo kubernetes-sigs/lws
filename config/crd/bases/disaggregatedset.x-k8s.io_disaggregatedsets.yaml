@@ -18326,6 +18326,7 @@ spec:
                   Each slice is a complete set of all roles that rolls out independently.
                   Changing Slices scales copies up or down and does not trigger a rollout.
                 format: int32
+                maximum: 100
                 minimum: 1
                 type: integer
             required:

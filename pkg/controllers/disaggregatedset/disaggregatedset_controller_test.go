@@ -70,8 +70,9 @@ func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggregated
 }
 
 // createLegacyLeaderWorkerSet builds a pre-slices LWS: legacy name and labels with no
-// slice label, as produced by a controller that predates the slices feature.
-func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string, replicas, ready int32) *leaderworkersetv1.LeaderWorkerSet {
+// slice label, as produced by a controller that predates the slices feature. It is a
+// healthy legacy slice-0 at full replicas.
+func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role, revision string) *leaderworkersetv1.LeaderWorkerSet {
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
 		disaggregatedsetv1.RoleLabelKey:     role,
@@ -80,10 +81,10 @@ func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggrega
 
 	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role), disaggregatedSet.Namespace).
 		Labels(labels).
-		Replica(int(replicas)).
+		Replica(2).
 		Size(1).
-		StatusReplicas(replicas).
-		ReadyReplicas(ready).
+		StatusReplicas(2).
+		ReadyReplicas(2).
 		OwnerReference(metav1.OwnerReference{
 			APIVersion: disaggregatedsetv1.GroupVersion.String(),
 			Kind:       "DisaggregatedSet",
@@ -283,8 +284,8 @@ func TestLegacyAdoptedInPlace(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 2, 2),
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2, 2),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:         fakeClient,
@@ -315,7 +316,11 @@ func TestLegacyAdoptedInPlace(t *testing.T) {
 // TestSlicesIncreaseBlocksUntilLegacyMigrated: increasing slices above 1 over a legacy
 // slice-0 deployment starts a same-revision migration of slice 0 and does not create the
 // sibling slice until that migration completes.
-func TestSlicesIncreaseBlocksUntilLegacyMigrated(t *testing.T) {
+// TestSlicesIncreaseRecreatesLegacySlice0: increasing slices above 1 over a pre-slices
+// (label-less) slice-0 deletes the legacy LWS and its slice-agnostic service, and the
+// slice loop then recreates slice 0 in slice-aware form alongside the new sibling, with no
+// blocking.
+func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
 
@@ -326,52 +331,7 @@ func TestSlicesIncreaseBlocksUntilLegacyMigrated(t *testing.T) {
 		Obj()
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		disaggregatedSet,
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 2, 2),
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2, 2),
-	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
-	}
-
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err, "Reconcile should succeed")
-
-	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
-
-	// Migration started: slice-aware slice-0 LWS exists (at 0 replicas).
-	s0, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	require.NotNil(t, s0, "slice-aware slice-0 prefill should be created for migration")
-
-	// Legacy still present (not yet drained).
-	legacy, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill))
-	require.NotNil(t, legacy, "legacy prefill should still exist during migration")
-
-	// Sibling slice blocked: slice 1 not created.
-	s1, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	assert.Nil(t, s1, "slice 1 must not be created until legacy slice 0 is migrated")
-}
-
-// TestSlicesIncreaseCompletesMigrationAndUnblocks: once the slice-aware slice 0 is at the
-// target and the legacy LWS has drained, the migration finishes (legacy LWS and its
-// slice-agnostic service deleted, slice-aware service created) and the sibling slice is
-// created.
-func TestSlicesIncreaseCompletesMigrationAndUnblocks(t *testing.T) {
-	ctx := context.Background()
-	scheme := wrappers.DisaggregatedSetTestScheme()
-
-	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-done", "default").
-		Slices(2).
-		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
-		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
-		Obj()
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-
+	// The legacy slice-agnostic service that would otherwise select the new sibling's pods.
 	legacyPrefillSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill) + "-prv",
@@ -387,12 +347,8 @@ func TestSlicesIncreaseCompletesMigrationAndUnblocks(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
-		// Legacy slice 0 fully drained.
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 0, 0),
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 0, 0),
-		// Slice-aware slice 0 already at target and ready.
-		createSliceLWS(disaggregatedSet, 0, testControllerRolePrefill, revision),
-		createSliceLWS(disaggregatedSet, 0, testControllerRoleDecode, revision),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision),
 		legacyPrefillSvc,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
@@ -408,19 +364,21 @@ func TestSlicesIncreaseCompletesMigrationAndUnblocks(t *testing.T) {
 
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	// Legacy LWS deleted.
-	legacy, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill))
-	assert.Nil(t, legacy, "legacy LWS should be deleted once migration completes")
+	// Legacy slice-0 LWS deleted for both roles.
+	legacyP, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill))
+	assert.Nil(t, legacyP, "legacy slice-0 prefill LWS should be deleted")
+	legacyD, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRoleDecode))
+	assert.Nil(t, legacyD, "legacy slice-0 decode LWS should be deleted")
 
-	// Legacy slice-agnostic service deleted, slice-aware service created.
+	// Legacy slice-agnostic service deleted (before any sibling could be selected).
 	err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSvc.Name, Namespace: disaggregatedSet.Namespace}, &corev1.Service{})
 	assert.Error(t, err, "legacy slice-agnostic service should be deleted")
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: controller.GenerateServiceName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill), Namespace: disaggregatedSet.Namespace}, &corev1.Service{})
-	require.NoError(t, err, "slice-aware slice-0 service should be created")
 
-	// Sibling slice now created (unblocked).
+	// Slice 0 recreated slice-aware, and sibling slice 1 created in the same pass.
+	s0, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NotNil(t, s0, "slice-aware slice-0 prefill should be recreated")
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	require.NotNil(t, s1, "slice 1 should be created once migration completes")
+	require.NotNil(t, s1, "sibling slice 1 prefill should be created (no blocking)")
 }
 
 // TestSlicesIncreaseWithRolloutNotBlocked: when slices increases at the same time as a
@@ -443,8 +401,8 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
 		// Legacy slice 0 at the OLD revision.
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision, 2, 2),
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision, 2, 2),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:         fakeClient,

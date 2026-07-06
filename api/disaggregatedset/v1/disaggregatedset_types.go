@@ -80,6 +80,7 @@ type DisaggregatedSetSpec struct {
 	// +optional
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
 }
 
