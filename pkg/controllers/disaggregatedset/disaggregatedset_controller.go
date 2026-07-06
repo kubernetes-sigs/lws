@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -98,16 +99,20 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	// Slices reconcile independently, so a failure in one must not skip the others.
+	// Collect per-slice errors and join them; a non-nil result requeues the whole set.
 	var result ctrl.Result
+	var errs []error
 	for slice := range sliceCount {
 		sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, roleNames)
 		if err != nil {
-			return sliceResult, err
+			errs = append(errs, fmt.Errorf("slice %d: %w", slice, err))
+			continue
 		}
 		result = soonerRequeue(result, sliceResult)
 	}
 
-	return result, nil
+	return result, errors.Join(errs...)
 }
 
 // reconcileSlice reconciles a single slice independently: it rolls the slice's LWS
