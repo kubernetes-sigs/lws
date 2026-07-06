@@ -248,10 +248,6 @@ func (manager *ServiceManager) CleanupRemovedSlices(
 	return nil
 }
 
-func GenerateServiceName(baseName string, slice int, revision, role string) string {
-	return fmt.Sprintf("%s-%d-%s-%s-prv", baseName, slice, revision, role)
-}
-
 // DeleteLegacyService deletes the pre-slices, slice-agnostic service for a role and
 // revision. Used during legacy slice-0 migration: the legacy service shares the target
 // revision, so per-revision drained cleanup never removes it.

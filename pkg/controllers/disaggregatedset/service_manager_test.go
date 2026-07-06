@@ -53,6 +53,12 @@ func readyLWS(dsName, revision, role string, ready int32) *leaderworkersetv1.Lea
 	return lws
 }
 
+// serviceName mirrors the production service name (<lws-name>-prv, where the LWS
+// name is GenerateName) for slice 0, for building expected names in assertions.
+func serviceName(base, revision, role string) string {
+	return disaggregatedsetutils.GenerateName(base, 0, revision, role) + "-prv"
+}
+
 func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
@@ -107,14 +113,14 @@ func TestServiceManager(t *testing.T) {
 		// Verify services created for both roles
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRolePrefill),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
 		}, prefillService)
 		require.NoError(t, err, "prefill service should exist")
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err, "decode service should exist")
@@ -141,7 +147,7 @@ func TestServiceManager(t *testing.T) {
 
 		prefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRolePrefill),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
 		}, prefillService)
 		require.NoError(t, err)
@@ -171,7 +177,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -233,7 +239,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -266,7 +272,7 @@ func TestServiceManager(t *testing.T) {
 
 		decodeService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "abc12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, decodeService)
 		require.NoError(t, err)
@@ -284,7 +290,7 @@ func TestServiceManager(t *testing.T) {
 		// Create an old service
 		oldService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRoleDecode),
+				Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
 					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
@@ -318,7 +324,7 @@ func TestServiceManager(t *testing.T) {
 		// Verify old service is deleted
 		oldServiceCheck := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, oldServiceCheck)
 		assert.Error(t, err, "old service should be deleted")
@@ -326,7 +332,7 @@ func TestServiceManager(t *testing.T) {
 		// Verify new service exists
 		newService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "new12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "new12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, newService)
 		require.NoError(t, err, "new service should exist")
@@ -378,7 +384,7 @@ func TestServiceManager(t *testing.T) {
 		// Create services for old revision (simulating existing state)
 		oldPrefillService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRolePrefill),
+				Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
 					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
@@ -393,7 +399,7 @@ func TestServiceManager(t *testing.T) {
 		}
 		oldDecodeService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRoleDecode),
+				Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
 				Namespace: deployment.Namespace,
 				Labels: map[string]string{
 					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
@@ -438,14 +444,14 @@ func TestServiceManager(t *testing.T) {
 		// Verify new services are created
 		newPrefillService := &corev1.Service{}
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "new12345", testServiceRolePrefill),
+			Name:      serviceName(deployment.Name, "new12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
 		}, newPrefillService)
 		require.NoError(t, err, "new prefill service should exist")
 
 		// Old services should STILL exist (both revisions are ready during rolling update)
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRolePrefill),
+			Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		require.NoError(t, err, "old prefill service should still exist during rolling update")
@@ -474,50 +480,15 @@ func TestServiceManager(t *testing.T) {
 
 		// Old services should now be deleted
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRolePrefill),
+			Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		assert.Error(t, err, "old prefill service should be deleted after drain")
 
 		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      GenerateServiceName(deployment.Name, 0, "old12345", testServiceRoleDecode),
+			Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		assert.Error(t, err, "old decode service should be deleted after drain")
 	})
-}
-
-func TestGenerateServiceName(t *testing.T) {
-	tests := []struct {
-		name     string
-		baseName string
-		slice    int
-		role     string
-		revision string
-		expected string
-	}{
-		{
-			name:     "prefill service",
-			baseName: "my-app",
-			slice:    0,
-			role:     testServiceRolePrefill,
-			revision: "abc12345",
-			expected: "my-app-0-abc12345-prefill-prv",
-		},
-		{
-			name:     "decode service slice 1",
-			baseName: "my-app",
-			slice:    1,
-			role:     testServiceRoleDecode,
-			revision: "def67890",
-			expected: "my-app-1-def67890-decode-prv",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GenerateServiceName(tt.baseName, tt.slice, tt.revision, tt.role)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }
