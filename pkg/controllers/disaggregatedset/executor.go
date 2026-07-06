@@ -429,6 +429,32 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			break
 		}
 
+		// Newest-first drain-order guard: if this revision was already
+		// retired (spec=0 for all its roles) but still has pods terminating
+		// (status.Replicas > 0), wait for termination to finish before
+		// touching the next-older revision. This makes the "retired but
+		// draining" state externally observable — the crucial invariant
+		// checked by the ABC drain-order e2e test.
+		specAllZero := true
+		anyStillTerminating := false
+		for _, name := range roleNames {
+			lws, exists := wl.Roles[name]
+			if !exists {
+				continue
+			}
+			if getLWSReplicas(lws) > 0 {
+				specAllZero = false
+			}
+			if lws.Status.Replicas > 0 {
+				anyStillTerminating = true
+			}
+		}
+		if specAllZero && anyStillTerminating {
+			log.V(1).Info("Waiting for retired revision's pods to terminate before draining older revisions",
+				"revision", wl.Revision)
+			break
+		}
+
 		plannedDrain := make(map[string]int, len(roleNames))
 		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
