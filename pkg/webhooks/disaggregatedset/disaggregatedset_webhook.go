@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,12 +45,14 @@ var _ admission.Validator[*disaggv1.DisaggregatedSet] = &DisaggregatedSetWebhook
 // ValidateCreate implements admission.Validator for create operations.
 func (w *DisaggregatedSetWebhook) ValidateCreate(ctx context.Context, disagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
 	allErrs := w.validateRoles(disagg)
+	allErrs = append(allErrs, w.validatePlacement(disagg)...)
 	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator for update operations.
 func (w *DisaggregatedSetWebhook) ValidateUpdate(ctx context.Context, oldDisagg, newDisagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
 	allErrs := w.validateRoles(newDisagg)
+	allErrs = append(allErrs, w.validatePlacement(newDisagg)...)
 	return nil, allErrs.ToAggregate()
 }
 
@@ -69,6 +72,57 @@ func (w *DisaggregatedSetWebhook) validateRoles(obj *disaggv1.DisaggregatedSet) 
 	}
 
 	return allErrs
+}
+
+// validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy
+// needs a topology key, and conflicts with the LWS group-level exclusive-topology
+// annotation on a role: both co-locate/exclude at overlapping levels, so the slice
+// would never schedule.
+func (w *DisaggregatedSetWebhook) validatePlacement(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+	var allErrs field.ErrorList
+
+	policy := obj.Spec.PlacementPolicy
+	if policy == nil || policy.Type == disaggv1.PlacementNone || policy.Type == "" {
+		return allErrs
+	}
+	policyPath := field.NewPath("spec", "placementPolicy")
+
+	if policy.Topology == "" {
+		allErrs = append(allErrs, field.Required(policyPath.Child("topology"),
+			"topology is required when type is not None"))
+	}
+
+	rolesPath := field.NewPath("spec", "roles")
+	for i, role := range obj.Spec.Roles {
+		if roleHasExclusiveTopology(role) {
+			allErrs = append(allErrs, field.Forbidden(
+				rolesPath.Index(i),
+				fmt.Sprintf("the %q annotation must not be combined with a non-None spec.placementPolicy.type (%s)",
+					leaderworkerset.ExclusiveKeyAnnotationKey, policy.Type)))
+		}
+	}
+
+	return allErrs
+}
+
+// roleHasExclusiveTopology reports whether a role carries the LWS group-level
+// exclusive-topology annotation anywhere it takes effect: the LWS metadata, or the
+// leader/worker pod templates (the LWS pod webhook reads it from the pod, so a
+// template-level annotation would enable LWS exclusive placement too).
+func roleHasExclusiveTopology(role disaggv1.DisaggregatedRoleSpec) bool {
+	if _, ok := role.ObjectMeta.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
+		return true
+	}
+	template := role.Spec.LeaderWorkerTemplate
+	if template.LeaderTemplate != nil {
+		if _, ok := template.LeaderTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
+			return true
+		}
+	}
+	if _, ok := template.WorkerTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
+		return true
+	}
+	return false
 }
 
 // validateRoleRolloutStrategy validates the RolloutStrategy fields for a role.

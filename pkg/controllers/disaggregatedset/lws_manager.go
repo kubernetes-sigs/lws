@@ -70,11 +70,15 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
 	// Defensive copy: struct copy is shallow, so maps are shared with the original config.
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+	// Inject placement affinity (no-op when no policy is set). The helper deep-copies
+	// any existing affinity, so the shared worker template is not mutated.
+	disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Spec, params.DisaggregatedSet.Name, params.Slice, params.DisaggregatedSet.Spec.PlacementPolicy)
 
 	if lwsSpec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate = lwsSpec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
+		disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Spec, params.DisaggregatedSet.Name, params.Slice, params.DisaggregatedSet.Spec.PlacementPolicy)
 	}
 
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
