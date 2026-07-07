@@ -16,4 +16,5 @@ spec:
       targetPort: 8443
   selector:
     control-plane: controller-manager
+    {{- include "lws.selectorLabels" . | nindent 4 }}
 {{- end }}
