@@ -1120,6 +1120,15 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(revisionA).NotTo(BeEmpty())
 			_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Revision A (stable original): %s ===\n", revisionA)
 
+			// Start a watch-based observer BEFORE triggering B/C rollouts.
+			// External polling at 100ms can miss transient states (e.g. the
+			// "B=0, A>0" state can last <10ms on fast clusters). A watch
+			// captures every LWS event with a timestamp, so the drain-order
+			// invariant is checked against ground-truth history.
+			watcher, err := kubectl.NewLWSWatcher(deploymentName)
+			Expect(err).NotTo(HaveOccurred(), "failed to start LWS watcher")
+			defer watcher.Stop()
+
 			By("triggering update B (simulates bad deploy)")
 			yamlB := fixtures.PrefillDecode(deploymentName,
 				fixtures.Role{Replicas: 6, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: intstr.FromInt(1)},
@@ -1186,32 +1195,21 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			}, 30*time.Second, time.Second).Should(Succeed())
 			_, _ = fmt.Fprintf(GinkgoWriter, "=== Revision C (the fix / target): %s ===\n\n", revisionC)
 
-			By("tracking drain order: B must drain to 0 before A")
-			bDrainedFirst := false
-			aDrainedBeforeB := false
-
-			// Poll at 100ms — fast enough to catch the "B=0, A>0" transient
-			// on fast clusters (kind + pause pods can drain in <500ms).
-			Eventually(func(g Gomega) bool {
-				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
-				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
-				cTotal := kubectl.GetTotalReplicas(deploymentName, revisionC)
-
-				_, _ = fmt.Fprintf(GinkgoWriter, "A(%s)=%d  B(%s)=%d  C(%s)=%d\n",
-					revisionA[:8], aTotal, revisionB[:8], bTotal, revisionC[:8], cTotal)
-
-				if bTotal == 0 && aTotal > 0 {
-					bDrainedFirst = true
-				}
-				if aTotal == 0 && bTotal > 0 {
-					aDrainedBeforeB = true
-				}
-
-				return aTotal == 0 && bTotal == 0
+			By("waiting for both A and B to fully drain")
+			Eventually(func() bool {
+				return kubectl.GetTotalReplicas(deploymentName, revisionA) == 0 &&
+					kubectl.GetTotalReplicas(deploymentName, revisionB) == 0
 			}, 5*time.Minute, 100*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
 
-			Expect(bDrainedFirst).To(BeTrue(), "B (newer intermediate) should drain to 0 before A (stable original)")
-			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")
+			By("checking drain-order invariant against watched history")
+			// The watcher captured every LWS state transition. Check whether
+			// the history contains a moment where B had fully drained (total
+			// spec = 0) while A still had replicas — the newest-first drain
+			// invariant.
+			Expect(watcher.SawDrainedFirst(revisionB, revisionA)).To(BeTrue(),
+				"B (newer intermediate) should drain to 0 before A (stable original)")
+			Expect(watcher.SawDrainedFirst(revisionA, revisionB)).To(BeFalse(),
+				"A should NOT drain to 0 while B still has replicas")
 
 			By("verifying final state: only C at target replicas")
 			kubectl.ForSingleActiveRevision(deploymentName, revisionA)
