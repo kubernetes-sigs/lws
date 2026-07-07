@@ -1,0 +1,25 @@
+title: "Design DisaggregatedSet Integration with CompositePodGroup"
+kep-number: 893
+authors:
+  - "Dasmat13"
+status: provisional
+creation-date: 2026-07-08
+reviewers:
+  - ahg-g
+  - yankay
+approvers:
+  - ahg-g
+  - yankay
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/407-gang-scheduling"
+
+stage: alpha
+
+latest-milestone: "v0.9"
+
+milestone:
+  alpha: "v0.9"
+  beta: "v1.0"
+  stable: "v1.1"
