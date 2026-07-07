@@ -86,13 +86,16 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	executor := r.createRollingUpdateExecutor()
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 
-	// Backward compatibility: when slices > 1, a pre-slices (label-less) slice-0
-	// deployment still at the target revision must become slice-aware before any
-	// sibling slice is created, otherwise its slice-agnostic service would also
-	// select the siblings' same-revision pods. Delete the legacy slice-0 objects
-	// here (service first); the slice loop below then recreates slice 0 in
-	// slice-aware form. Running before the loop, and returning on error, keeps the
-	// legacy service from ever coexisting with sibling slices.
+	// Backward compatibility. We migrate a legacy slice-0 only when slices is raised
+	// above the default of 1: it keeps working untouched until a sibling slice shares
+	// its revision, so a plain upgrade to the slices-aware controller must not delete
+	// and recreate an existing deployment. When slices > 1, the pre-slices (label-less)
+	// slice-0 still at the target revision must become slice-aware before any sibling
+	// slice is created, otherwise its slice-agnostic service would also select the
+	// siblings' same-revision pods. Delete the legacy slice-0 objects here (service
+	// first); the slice loop below then recreates slice 0 in slice-aware form. Running
+	// before the loop, and returning on error, keeps the legacy service from ever
+	// coexisting with sibling slices.
 	if sliceCount > 1 {
 		if err := r.recreateLegacySlice0(ctx, disaggregatedSet, revision, roleNames); err != nil {
 			return ctrl.Result{}, err
@@ -109,7 +112,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			errs = append(errs, fmt.Errorf("slice %d: %w", slice, err))
 			continue
 		}
-		result = soonerRequeue(result, sliceResult)
+		result = earliestRequeue(result, sliceResult)
 	}
 
 	return result, errors.Join(errs...)
@@ -166,8 +169,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	return result, nil
 }
 
-// soonerRequeue keeps the soonest non-zero RequeueAfter across slices.
-func soonerRequeue(a, b ctrl.Result) ctrl.Result {
+// earliestRequeue keeps the soonest non-zero RequeueAfter across slices.
+func earliestRequeue(a, b ctrl.Result) ctrl.Result {
 	if b.RequeueAfter > 0 && (a.RequeueAfter == 0 || b.RequeueAfter < a.RequeueAfter) {
 		return b
 	}
@@ -323,6 +326,11 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 	return nil
 }
 
+// TODO(0.11.0): remove legacy slice-0 handling once pre-slices DisaggregatedSets are no
+// longer supported. The related legacy-compat code to remove with it: GenerateLegacyName,
+// GetForRole's legacy-name fallback, DeleteLegacyService, and the label-less branch in
+// SliceLabelMatches.
+//
 // recreateLegacySlice0 converts a pre-slices (label-less) slice-0 deployment to the
 // slice-aware form when slices is increased above 1. The legacy slice-0 uses legacy names
 // and a slice-agnostic service (selector {name, role, revision}) that would also select

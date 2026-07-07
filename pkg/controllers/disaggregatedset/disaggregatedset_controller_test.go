@@ -313,6 +313,49 @@ func TestLegacyAdoptedInPlace(t *testing.T) {
 	assert.Len(t, all.Items, 2, "only the two legacy LWS should exist")
 }
 
+// TestLegacyMigratesToSliceAwareOnRollout: a pod-template change to a legacy (pre-slices,
+// label-less) slice-0 DisaggregatedSet rolls it to the slice-aware form at the new revision.
+func TestLegacyMigratesToSliceAwareOnRollout(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-migrate", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:2.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:2.0").
+		Obj()
+	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	// The legacy objects were created by a pre-slices release at an earlier revision.
+	const oldRevision = "old12345"
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision),
+		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	// The rollout creates the new revision in slice-aware form: the name carries the
+	// -0- slice segment and the object carries the slice label.
+	migrated, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, newRevision, testControllerRolePrefill))
+	require.NotNil(t, migrated, "slice-aware prefill LWS at the new revision should be created")
+	assert.Equal(t, "0", migrated.Labels[disaggregatedsetv1.SliceLabelKey], "migrated LWS should carry the slice label")
+
+	// The legacy (label-less) object keeps its old name while it drains.
+	legacy, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, oldRevision, testControllerRolePrefill))
+	assert.NotNil(t, legacy, "legacy prefill LWS should still exist while draining")
+}
+
 // TestSlicesIncreaseBlocksUntilLegacyMigrated: increasing slices above 1 over a legacy
 // slice-0 deployment starts a same-revision migration of slice 0 and does not create the
 // sibling slice until that migration completes.
