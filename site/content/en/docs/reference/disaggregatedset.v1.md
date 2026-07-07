@@ -10,7 +10,43 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 ## Resource Types 
 
 
+- [DisaggregatedSet](#disaggregatedset-x-k8s-io-v1-DisaggregatedSet)
   
+
+## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
+    
+
+**Appears in:**
+
+
+
+<p>DisaggregatedSet is the Schema for the disaggregatedsets API</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+<tr><td><code>apiVersion</code><br/>string</td><td><code>disaggregatedset.x-k8s.io/v1</code></td></tr>
+<tr><td><code>kind</code><br/>string</td><td><code>DisaggregatedSet</code></td></tr>
+    
+  
+<tr><td><code>spec</code> <B>[Required]</B><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
+</td>
+<td>
+   <p>spec defines the desired state of DisaggregatedSet</p>
+</td>
+</tr>
+<tr><td><code>status</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus"><code>DisaggregatedSetStatus</code></a>
+</td>
+<td>
+   <p>status defines the observed state of DisaggregatedSet</p>
+</td>
+</tr>
+</tbody>
+</table>
 
 ## `DisaggregatedRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec}
     
@@ -46,38 +82,6 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
 Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
 DisaggregatedSet handles rollouts across roles.</p>
-</td>
-</tr>
-</tbody>
-</table>
-
-## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
-    
-
-**Appears in:**
-
-
-
-<p>DisaggregatedSet is the Schema for the disaggregatedsets API</p>
-
-
-<table class="table">
-<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
-<tbody>
-    
-  
-<tr><td><code>spec</code> <B>[Required]</B><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
-</td>
-<td>
-   <p>spec defines the desired state of DisaggregatedSet</p>
-</td>
-</tr>
-<tr><td><code>status,omitzero</code><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus"><code>DisaggregatedSetStatus</code></a>
-</td>
-<td>
-   <p>status defines the observed state of DisaggregatedSet</p>
 </td>
 </tr>
 </tbody>
