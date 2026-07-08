@@ -85,7 +85,7 @@ so CRD schema changes and newly added CRDs do not reach the cluster through
 Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
 ```shell
-CHART_VERSION=0.8.0
+CHART_VERSION=0.9.0
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
 kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
