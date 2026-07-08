@@ -3,8 +3,10 @@
 <!--
 This KEP proposes adding per-role HorizontalPodAutoscaler (HPA) support to
 DisaggregatedSet through a new DisaggregatedSetRoleScaler CRD that exposes the
-/scale subresource. This allows KEDA, HPA, or any autoscaler to drive replica
-counts for individual roles (e.g., "prefill" or "decode") independently.
+/scale subresource. The DisaggregatedSet controller auto-creates one scaler
+per role that sets scaling.mode: External; users don't author the scaler.
+KEDA, HPA, or any /scale-aware controller then drives replica counts for
+individual roles (e.g., "prefill" or "decode") independently.
 -->
 
 <!-- toc -->
@@ -31,19 +33,22 @@ counts for individual roles (e.g., "prefill" or "decode") independently.
     - [Unit tests](#unit-tests)
     - [e2e tests](#e2e-tests)
   - [Graduation Criteria](#graduation-criteria)
-- [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
   - [Alternative 1: Point HPA directly at the underlying LeaderWorkerSet](#alternative-1-point-hpa-directly-at-the-underlying-leaderworkerset)
   - [Alternative 2: Expose /scale directly on DisaggregatedSet](#alternative-2-expose-scale-directly-on-disaggregatedset)
   - [Alternative 3: Embed scaling config inline in DisaggregatedRoleSpec](#alternative-3-embed-scaling-config-inline-in-disaggregatedrolespec)
+  - [Alternative 4: Require the user to author the scaler CR](#alternative-4-require-the-user-to-author-the-scaler-cr)
+  - [Alternative 5: Bootstrap seed field on the role](#alternative-5-bootstrap-seed-field-on-the-role)
 <!-- /toc -->
 
 ## Summary
 
-This KEP proposes adding per-role autoscaling to `DisaggregatedSet` by introducing a new lightweight CRD, `DisaggregatedSetRoleScaler`, that exposes the `/scale` subresource. When a user opts into external scaling for a role, the `DisaggregatedSet` controller stops reading `replicas` from the role's inline spec and instead pulls the desired replica count from the scaler CR — meaning **the number of replicas is effectively supplied by the HPA** (or KEDA, or any other `/scale`-aware controller).
+This KEP proposes adding per-role autoscaling to `DisaggregatedSet` by introducing a new lightweight CRD, `DisaggregatedSetRoleScaler`, that exposes the `/scale` subresource. When a user opts a role into external scaling via `scaling.mode: External`, the `DisaggregatedSet` controller **automatically creates and manages** a `DisaggregatedSetRoleScaler` for that role. The scaler is a per-role `/scale` target that an HPA, KEDA `ScaledObject`, or any custom `/scale`-aware controller can drive; the DisaggregatedSet controller reads its `spec.replicas` on every reconcile and drives the underlying LeaderWorkerSet.
 
-The feature is fully opt-in and per-role: roles without a scaler continue to work exactly as they do today.
+The feature is fully opt-in and per-role: roles without `scaling.mode: External` behave exactly as they do today.
+
+Users author two objects: the `DisaggregatedSet` and their HPA/KEDA target. The scaler CR itself is controller-managed — created and cleaned up by the DisaggregatedSet controller, in the same way the DisaggregatedSet already creates a `LeaderWorkerSet` per role.
 
 ## Motivation
 
@@ -53,7 +58,8 @@ Autoscaling a role today is only possible by pointing an HPA at the underlying L
 
 1. **LWS names change on every rollout.** The revision hash is part of the name, so an HPA created for `myds-6ad7c921-prefill` becomes an orphan the moment a rolling update produces `myds-7bf3d1a2-prefill`. Users would have to recreate the HPA on every deploy.
 2. **DisaggregatedSet has no stable per-role scale target.** The parent CR aggregates multiple roles, so a single `/scale` subresource on `DisaggregatedSet` cannot express "scale prefill from 5 to 8 without touching decode".
-3. **Disaggregated workloads scale per role.** Prefill and decode have different bottlenecks (compute-bound vs memory-bandwidth-bound). Autoscaling each independently is the natural pattern; a single knob for both roles is the wrong shape.
+3. **Disaggregated workloads scale per role.** Prefill and decode have different bottlenecks (compute-bound vs memory-bandwidth-bound), so operators need to autoscale each role independently. The DisaggregatedSet slices field ([KEP-846](/keps/846-disaggregatedset-slices)) replicates the whole role topology as a unit — it solves a different problem (adding entire copies of the deployment) and does not give per-role control within a single copy.
+4. **DisaggregatedSet already owns per-role replica counts.** The controller reads `spec.roles[i].spec.replicas` and drives each LeaderWorkerSet's replica count on every reconcile. Adding an autoscaling entry point at the DisaggregatedSet layer keeps that responsibility in one place; delegating it out (e.g. asking users to bypass DisaggregatedSet and drive LWSes directly) would fragment ownership of the replica field between two controllers.
 
 The upstream issue [#849](https://github.com/kubernetes-sigs/lws/issues/849) captures this.
 
@@ -76,19 +82,24 @@ The upstream issue [#849](https://github.com/kubernetes-sigs/lws/issues/849) cap
 
 We introduce a new CRD, `DisaggregatedSetRoleScaler`, in the `disaggregatedset.x-k8s.io/v1` API group. It exposes the `/scale` subresource so any autoscaler can drive it.
 
-Each `DisaggregatedSetRoleScaler` instance targets exactly one `(DisaggregatedSet, role)` pair via a `targetRef`. To opt into external scaling, the user:
+Instances of `DisaggregatedSetRoleScaler` are **created by the DisaggregatedSet controller**, one per role that has `scaling.mode: External`. Their names are deterministic — `<disaggregatedset>-<role>` — so users know in advance what to point their HPA/KEDA object at. The scaler is owned by the DisaggregatedSet, so garbage collection follows the standard Kubernetes cascade (see [Design Details](#disaggregatedsetrolescaler-api) for the exact ownerRef fields).
+
+To opt into external scaling, the user:
 
 1. Sets `scaling.mode: External` on the role inside the `DisaggregatedSet` spec.
-2. Creates a `DisaggregatedSetRoleScaler` whose `targetRef` names the DisaggregatedSet and role.
-3. Creates an HPA (or KEDA `ScaledObject`) whose `scaleTargetRef` names the scaler CR.
+2. Creates an HPA (or KEDA `ScaledObject`) whose `scaleTargetRef` names the deterministic scaler (`<ds>-<role>`).
 
-The DisaggregatedSet controller then reads the desired replica count for that role from `scaler.spec.replicas` on every reconcile and writes back `scaler.status.replicas` and `scaler.status.selector` so the HPA loop closes.
+That's it. The scaler CR appears on the next DS reconcile — the user does not author it. The autoscaler is responsible for the first write to `spec.replicas` (HPA enforces its `minReplicas` floor unconditionally; KEDA writes via its scale-from-zero paths; custom autoscalers with their own floor bootstrap themselves). Until that first write, the role is held at 0 replicas and the DS reports a `WaitingForScaler` condition.
+
+The DisaggregatedSet controller reads the desired replica count for each External role from its scaler's `spec.replicas` on every reconcile and writes back `scaler.status.replicas` and `scaler.status.selector` so the HPA loop closes.
 
 ### User Stories
 
 #### Story 1: KEDA scales prefill on queue depth
 
 An SRE runs a disaggregated vLLM deployment. Prefill is bottlenecked on request queue depth exposed via a Prometheus metric; decode is bottlenecked on GPU memory bandwidth. They want KEDA to scale prefill from 2 to 20 based on queue depth, and keep decode at a static 4.
+
+They apply two objects. The `DisaggregatedSet` marks `prefill` as `External`; the DS controller creates a scaler named `my-llm-serving-prefill` on the next reconcile. KEDA's `ScaledObject` targets that (deterministic) scaler name and provides `minReplicaCount: 2`, which KEDA writes on its first tick to bootstrap the role from zero.
 
 ```yaml
 apiVersion: disaggregatedset.x-k8s.io/v1
@@ -99,23 +110,13 @@ spec:
   roles:
     - name: prefill
       scaling:
-        mode: External           # replicas come from the scaler
+        mode: External           # controller auto-creates my-llm-serving-prefill
       spec:
-        # replicas: omitted — ignored anyway
         leaderWorkerTemplate: {...}
     - name: decode
       spec:
         replicas: 4              # static
         leaderWorkerTemplate: {...}
----
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSetRoleScaler
-metadata:
-  name: my-llm-prefill-scaler
-spec:
-  targetRef:
-    name: my-llm-serving
-    role: prefill
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -125,7 +126,7 @@ spec:
   scaleTargetRef:
     apiVersion: disaggregatedset.x-k8s.io/v1
     kind: DisaggregatedSetRoleScaler
-    name: my-llm-prefill-scaler
+    name: my-llm-serving-prefill   # controller-generated name: "<ds>-<role>"
   minReplicaCount: 2
   maxReplicaCount: 20
   triggers:
@@ -134,6 +135,8 @@ spec:
         query: vllm_queue_depth{role="prefill"}
         threshold: "10"
 ```
+
+The same layout works with vanilla HPA v2 — just swap the `ScaledObject` for a `HorizontalPodAutoscaler` targeting `my-llm-serving-prefill`. HPA enforces `minReplicas` unconditionally, so the role bootstraps from zero on the first HPA tick.
 
 #### Story 2: Rolling update while HPA is active
 
@@ -149,17 +152,21 @@ An SRE pushes a new container image. A rolling update starts. Meanwhile, request
 
 **Mitigation**: The scaler drives only the *new-revision target*. Old-revision replicas continue to use the existing snapshot-and-drain mechanism (unchanged). A guard in the planner prevents the new-revision target from shrinking below its current in-flight value mid-rollout, which would otherwise force a scale-down/scale-up flip.
 
-**Risk**: Users configure inline `replicas` and a scaler for the same role, causing confusion about which wins.
+**Risk**: Users configure inline `replicas` and set `scaling.mode: External` on the same role, causing confusion about which wins.
 
-**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. Webhook validation forbids `replicas > 0` on an `External` role. CEL validation on the DS spec is scoped to non-External roles.
+**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. A CEL rule on `DisaggregatedRoleSpec` forbids `spec.replicas > 0` when `scaling.mode == External`. The all-or-nothing CEL rule on `DisaggregatedSetSpec` is scoped to non-External roles.
 
-**Risk**: The scaler CR is created after the DS references it (`scaling.mode: External` but no scaler exists yet), leaving the role at 0 replicas indefinitely.
+**Risk**: The autoscaler is not yet applied (or has never written) when the DS is applied, or a role is flipped from `Static` to `External` while serving traffic — in production this must not silently drain the role to 0.
 
-**Mitigation**: The controller surfaces a `WaitingForScaler` condition and emits a warning event on the DS. The role stays at 0 replicas until the scaler is created — safer than guessing an initial count.
+**Mitigation**: The controller **never scales an existing LeaderWorkerSet down as a side effect of switching to `External`**. Concretely, when the scaler for an External role has `spec.replicas: nil` (no autoscaler write yet):
+- If the role's LWS **does not exist yet** (fresh DisaggregatedSet, or newly added role), it is created at 0 replicas and `WaitingForScaler` is reported.
+- If the role's LWS **already exists** (e.g. a role that was `Static` with 5 replicas is switched to `External`), the controller holds it at its current replica count. The rolling-update planner behaves the same way: it clamps `targetNew` to the current in-flight value rather than shrinking. `WaitingForScaler` is still reported so operators can see that an autoscaler is expected.
 
-**Risk**: The scaler is deleted while a role is running, silently returning replicas to `spec.replicas` (which may be 0 or unset).
+Once the autoscaler makes its first write, the LWS scales to that value on the next reconcile. HPA and KEDA both write `minReplicas` / `minReplicaCount` unconditionally when the target is below the floor, so the "hold" window closes quickly. Custom autoscalers that only observe per-pod metrics and lack a min-replicas floor must issue a one-time `kubectl scale` to bootstrap.
 
-**Mitigation**: An owner reference from the DS to the scaler (non-controller, non-blocking) allows GC when the DS is deleted but keeps the scaler visible in `kubectl get`. If the user deletes the scaler manually, the controller reports a `WaitingForScaler` condition and holds at the last known replica count until the user either recreates the scaler or flips the role back to `Static`.
+**Risk**: A user deletes the auto-created scaler expecting it to stay gone.
+
+**Mitigation**: The controller recreates it on the next reconcile. To truly opt out of external scaling, the user flips the role's `scaling.mode` back to `Static` (or removes `scaling` entirely); the controller then deletes the scaler in the same pass.
 
 ## Design Details
 
@@ -172,9 +179,16 @@ An SRE pushes a new container image. A rolling update starts. Meanwhile, request
 // +kubebuilder:resource:shortName=dsrs
 
 // DisaggregatedSetRoleScaler exposes the /scale subresource for a single
-// (DisaggregatedSet, role) pair, allowing external autoscalers (HPA, KEDA,
-// custom) to drive that role's replica count independently of the rest of the
-// DisaggregatedSet.
+// role of a DisaggregatedSet. Instances are created by the DisaggregatedSet
+// controller for every role that opts into external scaling via
+// scaling.mode: External. Instance names follow the pattern
+// "<disaggregatedset>-<role>", and each instance carries a controller
+// owner reference back to the DisaggregatedSet.
+//
+// The DisaggregatedSet controller reads spec.replicas on every reconcile
+// and drives the role's LeaderWorkerSet accordingly. External autoscalers
+// (HPA, KEDA, or any /scale-aware controller) write spec.replicas via the
+// /scale subresource.
 type DisaggregatedSetRoleScaler struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata,omitzero"`
@@ -184,26 +198,18 @@ type DisaggregatedSetRoleScaler struct {
 }
 
 type DisaggregatedSetRoleScalerSpec struct {
-    // TargetRef selects the DisaggregatedSet and role this scaler drives.
-    // The DisaggregatedSet must exist in the same namespace.
-    // +required
-    TargetRef DisaggregatedSetRoleRef `json:"targetRef"`
-
-    // Replicas is the desired replica count for the referenced role's
-    // new-revision LeaderWorkerSet. Written by the /scale subresource
-    // (i.e., by HPA/KEDA). Read by the DisaggregatedSet controller.
+    // Replicas is the desired replica count for the associated role.
+    // Written by an external autoscaler via the /scale subresource.
+    // Read by the DisaggregatedSet controller.
+    //
+    // The DisaggregatedSet + role this scaler drives is derived from the
+    // scaler's controller ownerReference (kind: DisaggregatedSet) and the
+    // scaler's disaggregatedset.x-k8s.io/role label. Users do not name the
+    // target explicitly; the scaler's name — "<disaggregatedset>-<role>" —
+    // is authoritative.
     // +optional
+    // +kubebuilder:validation:Minimum=0
     Replicas *int32 `json:"replicas,omitempty"`
-}
-
-type DisaggregatedSetRoleRef struct {
-    // Name is the DisaggregatedSet name (same namespace).
-    // +required
-    Name string `json:"name"`
-
-    // Role is the role name inside that DisaggregatedSet.
-    // +required
-    Role string `json:"role"`
 }
 
 type DisaggregatedSetRoleScalerStatus struct {
@@ -223,10 +229,9 @@ type DisaggregatedSetRoleScalerStatus struct {
     // +optional
     ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-    // Conditions expose scaler-level state:
-    //   - Ready: True when a matching DS and role were resolved and status is fresh
-    //   - WaitingForScaler is NOT a scaler condition (see DS conditions)
-    //   - TargetMissing: True when the referenced DS or role does not exist
+    // Conditions expose scaler-level state. Standard types:
+    //   - Ready: True when the scaler is bound to a live DS+role and its
+    //     status fields reflect the current observed LeaderWorkerSet.
     // +listType=map
     // +listMapKey=type
     // +optional
@@ -234,9 +239,13 @@ type DisaggregatedSetRoleScalerStatus struct {
 }
 ```
 
-**Uniqueness**: A validating webhook rejects the creation of a `DisaggregatedSetRoleScaler` if another scaler with the same `targetRef` already exists in the namespace. As a backstop against races, the scaler controller sets a `Conflicting` status condition and refuses to serve reads.
+**Naming**: instances are always named `<disaggregatedset>-<role>`. The DisaggregatedSet webhook rejects any create/update that would make this exceed the Kubernetes 253-character object-name limit for a role with `scaling.mode: External`; the user must shorten the DisaggregatedSet name or the role name. Since role names are already capped at 63 characters, this leaves 189 characters for the DisaggregatedSet name — enough for any realistic naming scheme. Rejecting at admission keeps the derivation from `(ds, role)` a stable, deterministic transformation without any fallback shape.
 
-**Owner reference**: On first reconcile, the DS controller adds an owner reference from the DS to the scaler with `Controller=false, BlockOwnerDeletion=false`. This ensures the scaler is garbage-collected if the DS is deleted, without transferring ownership away from the user.
+**Owner reference**: the scaler carries `Controller=true, BlockOwnerDeletion=true` ownerRef to the DisaggregatedSet, so the scaler is garbage-collected via the standard Kubernetes ownership chain when the DisaggregatedSet is deleted.
+
+**Labels applied by the controller**:
+- `disaggregatedset.x-k8s.io/name`: the parent DisaggregatedSet name.
+- `disaggregatedset.x-k8s.io/role`: the role name (also used by the controller to identify which role the scaler drives).
 
 ### Changes to DisaggregatedRoleSpec
 
@@ -257,8 +266,10 @@ type DisaggregatedRoleSpec struct {
 type RoleScaling struct {
     // Mode controls the source of the replica count for this role.
     //   - Static (default): use the inline .spec.replicas value.
-    //   - External: expect a DisaggregatedSetRoleScaler whose targetRef
-    //     points at this DisaggregatedSet + role. .spec.replicas is ignored.
+    //   - External: the DisaggregatedSet controller creates a
+    //     DisaggregatedSetRoleScaler named "<disaggregatedset>-<role>"
+    //     whose /scale subresource an external autoscaler drives.
+    //     .spec.replicas is ignored (and must be unset or zero).
     // +kubebuilder:validation:Enum=Static;External
     // +kubebuilder:default=Static
     // +optional
@@ -273,7 +284,9 @@ const (
 )
 ```
 
-The `Scaling` field is a sub-struct rather than a bare enum to leave room for per-role scaling policies (e.g., `PauseDuringRollout`, `MinReplicasAtBoot`) without a v2 bump. `Scaling: nil` is fully backward compatible: existing DisaggregatedSet objects behave exactly as before.
+The `Scaling` field is a sub-struct rather than a bare enum to leave room for future per-role scaling policies without a v2 API bump — following the Kubernetes convention that policy fields (like `Deployment.spec.strategy`, `StatefulSet.spec.updateStrategy`, `LeaderWorkerSet.spec.rolloutStrategy`) live in sub-structs even when they start with a single field.
+
+Backward compatibility: an omitted `scaling` block stays nil in storage (the `+kubebuilder:default=Static` marker on `Mode` only defaults the field when the sub-struct is present, not by materializing the sub-struct itself). The controller treats `Scaling == nil` and `Scaling.Mode == Static` as behaviorally identical — both read from the inline `spec.replicas`. Existing DisaggregatedSet objects therefore round-trip through the new schema unchanged and behave exactly as they did before.
 
 **Existing CEL rule change**: today's rule enforces that replicas is either zero for all roles or non-zero for all roles. It must become scaling-mode-aware — External roles are exempt from the all-or-nothing rule because their effective replicas live outside the DS spec:
 
@@ -289,21 +302,23 @@ A companion CEL rule on `DisaggregatedRoleSpec` forbids setting `replicas` when 
 
 ### Replica Resolution: DS reads replicas from HPA
 
-**This is the load-bearing change of this KEP.** The `DisaggregatedSet` controller no longer treats `.spec.roles[].spec.replicas` as the sole source of truth. For roles with `scaling.mode: External`, it delegates the replica count to the HPA via the scaler CR.
+**This is the load-bearing change of this KEP.** The `DisaggregatedSet` controller no longer treats `.spec.roles[].spec.replicas` as the sole source of truth. For roles with `scaling.mode: External`, it delegates the replica count to the HPA (or KEDA / any `/scale` writer) via the auto-created scaler CR.
 
 The resolution rule for a role's desired replica count is:
 
-- **`scaling.mode == External`** → read `scaler.spec.replicas` from the `DisaggregatedSetRoleScaler` whose `targetRef` matches this DS + role. If no scaler exists yet, or `scaler.spec.replicas` is unset, treat the role as "not ready" and surface a `WaitingForScaler` condition on the DS.
+- **`scaling.mode == External`** → read `scaler.spec.replicas` from the DisaggregatedSetRoleScaler named `<ds>-<role>` (deterministic). If the scaler does not exist yet, the controller creates it in the same reconcile pass. If `spec.replicas` is unset (no autoscaler has written), treat the role as "not ready" and surface a `WaitingForScaler` condition on the DS.
 - **`scaling.mode == Static` (or `scaling` unset)** → read `.spec.replicas` from the role, defaulting to `1` if unset. This is today's behavior, preserved unchanged.
 
-The controller loads all scalers whose `targetRef.name` matches the DS name at the start of each reconcile (single list call) and uses that map for every replica-count lookup within the reconcile pass. The same map feeds the rolling-update planner so that scaler-driven values are consistent across scale-up, scale-down, and stability checks within one pass.
+At the top of each reconcile pass, the controller ensures a scaler exists for every External role (create-if-missing), then reads their current `spec.replicas` into a map keyed by role name. The same map feeds the rolling-update planner so that scaler-driven values are consistent across scale-up, scale-down, and stability checks within one pass.
 
 ### Controller Wiring
 
-The DS controller adds a watch on `DisaggregatedSetRoleScaler`. Scaler events are mapped to a reconcile request for the DS named in `targetRef` (same namespace as the scaler). This closes the write path end-to-end:
+The DS controller `Owns` the `DisaggregatedSetRoleScaler` type — same pattern as it already owns `LeaderWorkerSet`. Any change to a scaler (including autoscaler writes to `spec.replicas` via `/scale`) enqueues the parent DisaggregatedSet for reconciliation. No cross-CRD dependency on `autoscaling/v2` is needed.
+
+Write path end-to-end:
 
 ```
-HPA writes /scale → scaler.spec.replicas updates → watch fires → DS reconciles → LWS scaled
+Autoscaler writes /scale → scaler.spec.replicas updates → Owns() event fires → DS reconciles → LWS scaled
 ```
 
 Reconcile latency for a scaler-triggered event is a single controller hop.
@@ -315,7 +330,7 @@ The DS controller writes back to each scaler's status at the end of every reconc
 - `status.replicas`: pulled from the current new-revision LWS's `status.replicas` for that role.
 - `status.selector`: the label selector matching pods of the current new-revision LWS. Format: `leaderworkerset.sigs.k8s.io/name=<lws-name>`. **This value must be rewritten on every rolling update** because the LWS name changes with the revision hash. Missing this update is what breaks HPA-on-LWS today.
 - `status.observedGeneration`: `scaler.Generation`.
-- `status.conditions`: `Ready` / `TargetMissing` / `Conflicting`.
+- `status.conditions`: `Ready` — True when the scaler is bound to a live DS + role and `status.replicas` / `status.selector` reflect the current observed LeaderWorkerSet. False during transient reconcile errors.
 
 ### Rolling Update Interaction
 
@@ -340,24 +355,25 @@ This has three unresolved implications for scaler-driven roles:
 2. **`status.selector` across slices.** With N slices, a per-role scaler must select pods across N LWS objects that may be on different revisions during a rollout. The single `leaderworkerset.sigs.k8s.io/name=<lws>` selector no longer suffices.
 3. **N × R rollouts in flight.** The monotonicity guard would need to become per-(slice, role) since each slice rolls independently.
 
-**Alpha scope: `spec.slices` must be 1 (default).** The scaler webhook rejects creation of a `DisaggregatedSetRoleScaler` whose `targetRef` points at a DS with `slices > 1`. Symmetrically, the DS webhook rejects an increase of `slices` above 1 while any External-mode role exists. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.
+**Alpha scope: `spec.slices` must be 1 (default).** The DS webhook rejects a `spec.slices > 1` value while any role has `scaling.mode: External`. Since the scaler is auto-created only after this validation passes, no scaler ever exists in the multi-slice case. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.
 
 **Proposed direction for slices > 1** (out of scope for alpha, to be revisited in a follow-up KEP after production feedback): **per-slice scaler CR**. It is the most Kubernetes-idiomatic (one CR = one `/scale` target), has no math surprises, and lets users apply distinct scaling policies per slice (useful when slices map to different placement domains, per KEP-848). The cost — more CRs to manage — is opt-in and scales linearly with `roles × slices`.
 
 ### Validation
 
+Because the controller owns the scaler lifecycle end-to-end (create, update, delete), the API surface exposed to the user is small and most validation lives in CEL rules on the DisaggregatedSet.
+
 **Webhook (`DisaggregatedSetRoleScaler`)**:
 
-- `targetRef.name` and `targetRef.role` are non-empty.
-- The referenced DS need not exist at admission time (allow GitOps ordering); missing target surfaces as a `TargetMissing` status condition.
-- Reject if another scaler in the namespace already has the same `targetRef`.
-- Reject `spec.replicas < 0`.
-- Alpha: reject if the referenced DS has `spec.slices > 1` (see [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices)).
+- `spec.replicas >= 0` (also enforced by the OpenAPI schema).
+- User-authored scalers are unusual — the controller creates them — but the webhook does not forbid them. If a user hand-authors a scaler that clashes with a controller-managed name, the controller detects that the object lacks its expected ownerRef, refuses to adopt it, and reports a warning event on the DisaggregatedSet.
+- Alpha: reject creation if the DisaggregatedSet at the corresponding role (looked up by the scaler's `disaggregatedset.x-k8s.io/name` label) has `spec.slices > 1`. See [Interaction with DisaggregatedSet Slices](#interaction-with-disaggregatedset-slices).
 
 **Webhook (`DisaggregatedSet`)**:
 
 - For each role with `scaling.mode == External`, warn (not reject) if `spec.replicas` is set to a non-zero value — the CEL rule already enforces this, but the warning is friendlier.
 - Reject if two roles share a name (already validated by `+listType=map`).
+- For each role with `scaling.mode: External`, reject if `len(metadata.name) + 1 + len(role.name) > 253` (the derived scaler name `<ds>-<role>` would exceed the Kubernetes object-name limit). Error message names both the DS and the role so the user knows exactly which to shorten.
 - Alpha: reject increasing `spec.slices` above 1 while any role has `scaling.mode == External`.
 
 **CEL** (documented above): scaling-mode-aware refresh of the all-or-nothing rule, plus a role-level forbid-replicas-if-external rule.
@@ -366,14 +382,15 @@ This has three unresolved implications for scaler-driven roles:
 
 | Case | Behavior |
 |---|---|
-| DS references `External` role but no scaler exists yet | Role held at 0 replicas. DS condition `WaitingForScaler` set with a message pointing at the expected `targetRef`. |
-| Scaler exists with `spec.replicas` unset | Same as "no scaler exists". Waiting for HPA to set an initial value. |
-| Scaler exists but DS role has `scaling.mode == Static` (or `scaling` nil) | Scaler is ignored. Its status surfaces `TargetMissing` condition (the role is not `External`). |
-| Scaler deleted mid-run | On next reconcile, `WaitingForScaler` condition set. LWS is *not* scaled to 0; last-known target holds until the user acts. |
-| Two scalers created for the same (DS, role) | Second is rejected by webhook. If a race slips through, both get `Conflicting` conditions and neither is honored. |
-| DS deleted while scaler exists | Owner ref triggers GC of the scaler. |
+| Role newly created as `External`, no LWS exists yet | Controller creates the scaler with `spec.replicas: nil` and the LWS at 0 replicas. DS condition `WaitingForScaler` set. Clears on the first autoscaler write. |
+| Existing role flipped from `Static` to `External` (LWS running at N replicas) | Controller creates the scaler with `spec.replicas: nil`. LWS **holds at N** (planner clamps `targetNew` to current in-flight value; steady-state simple-reconcile skips scaling when scaler is not ready). DS reports `WaitingForScaler`. Once the autoscaler writes, the LWS moves to that value. No silent drain. |
+| User deletes the auto-created scaler | Controller recreates it on the next reconcile. The LWS holds at its last observed count (planner treats a fresh `spec.replicas: nil` scaler as "not ready" and holds; see Replica Resolution). To truly opt out, flip the role to `Static`. |
+| Role flipped from `External` back to `Static` | Controller deletes the auto-created scaler on the same reconcile pass; LWS drives from the inline `spec.replicas`. |
+| DS deleted while scaler exists | Standard Kubernetes GC via `Controller=true` ownerRef. Scaler is deleted first, then the DS. |
+| User hand-creates a scaler at the controller-managed name | Controller detects the missing ownerRef, refuses to adopt or overwrite it, emits a warning event on the DS. |
 | Rolling update starts while HPA is actively writing | Rollout targets the scaler's current value; further HPA writes are picked up on each stability window. A mid-rollout HPA scale-down does not reverse direction (see Rolling Update Interaction). |
 | Scaler `spec.replicas` = 0 | Role scales to 0 replicas. Consistent with `HPA min=0` semantics (e.g., KEDA scale-to-zero). |
+| Custom autoscaler that observes per-pod metrics AND has no min-replicas floor | Cannot bootstrap from 0. User runs a one-time `kubectl scale disaggregatedsetrolescaler <ds>-<role> --replicas=N` to unblock. Documented as an operator limitation. |
 
 ### Test Plan
 
@@ -417,15 +434,12 @@ to implement this enhancement.
 - Proven stability across a range of autoscalers (HPA v2, KEDA, custom)
 - No open bugs on the scaler pathway
 
-## Implementation History
-
-- 2026-07-03: Initial KEP draft
-
 ## Drawbacks
 
-1. **A second CRD to manage.** Users who want autoscaling must create one scaler per role plus their HPA/KEDA resource. Compared with pointing HPA directly at a resource that already exists, this is more objects.
-2. **`kubectl get ds` no longer shows the effective replica count for External roles.** Users must also `kubectl get dsrs` (short name for the scaler CRD) to see the desired count. Mitigated by including scaler status summary in `kubectl get ds -o wide` (post-alpha) and by requiring the explicit `scaling.mode: External` marker so the DS spec at least signals that replicas are managed externally.
-3. **Selector staleness window.** The scaler's `status.selector` is only refreshed at the DS controller's reconcile cadence. If a rolling update transitions the new-revision LWS just before the HPA reads the selector, the HPA could compute one round of metrics against the old LWS. This is a bounded and small window (single-digit seconds in practice) but is worth noting.
+1. **A second CRD kind for cluster admins to install.** Cluster admins now install `DisaggregatedSetRoleScaler` alongside `DisaggregatedSet` and `LeaderWorkerSet`. Users don't author instances directly, but the CRD schema still ships as part of the bundle.
+2. **`kubectl get ds` no longer shows the effective replica count for External roles.** Users must also `kubectl get dsrs` (short name for the scaler CRD) to see the desired count. Mitigated by requiring the explicit `scaling.mode: External` marker so the DS spec at least signals that replicas are managed externally; a printer-column summary can be added post-alpha.
+3. **Selector staleness window.** The scaler's `status.selector` is only refreshed at the DS controller's reconcile cadence. If a rolling update transitions the new-revision LWS just before the HPA reads the selector, the HPA could compute one round of metrics against the old LWS. Bounded (single-digit seconds in practice) but worth noting.
+4. **Cold-start blind spot for exotic autoscalers.** Autoscalers that need per-pod metrics AND have no min-replicas floor cannot bootstrap the role from 0 (documented in edge cases). Nearly every production autoscaler (HPA, KEDA, custom Mimir-based, etc.) either has a min-replicas floor or observes external metrics, so this is a narrow case.
 
 ## Alternatives
 
@@ -446,3 +460,26 @@ Add the `/scale` subresource to `DisaggregatedSet` itself.
 Skip the new CRD; instead embed autoscaling target/current fields on the role itself, and expose a virtual scale subresource on the DisaggregatedSet parameterized by role (e.g., `/scale?role=prefill`).
 
 **Rejected because**: virtual scale subresources parameterized by query strings are not supported by the Kubernetes API machinery. HPA/KEDA cannot target them. The only path to standard-shape `/scale` is a dedicated CRD.
+
+### Alternative 4: Require the user to author the scaler CR
+
+Same CRD shape, but with a `targetRef {name, role}` field the user fills in explicitly. The DS controller reads the scaler where present and attaches a non-controller ownerRef for GC.
+
+**Rejected because**:
+- Users have to write and name every scaler themselves (2N+1 manifests for N scalable roles instead of N+1).
+- Ownership is unconventional: the controller can't take `Controller=true` because the user owns the object.
+- Two consistency risks disappear with autocreate: (a) user-authored `targetRef` disagreeing with the intended DS/role (e.g. a typo); (b) users forgetting to create the scaler after flipping a role to `External` (leaves the role at 0 with no clear indication that a manifest is missing).
+- Kubernetes precedent: composite workloads own their subordinate objects (Deployment→ReplicaSet, DisaggregatedSet→LeaderWorkerSet), and no established API asks users to hand-author what is really an implementation-managed piece of the parent's lifecycle. The scaler being the /scale target rather than a "pure internal" like a ReplicaSet doesn't change the ownership argument — the controller still needs to create and clean it up in lockstep with the role's mode.
+
+The autocreate design keeps the same CRD schema — the target association just moves from an explicit `spec.targetRef` field to the deterministic name + controller ownerRef.
+
+### Alternative 5: Bootstrap seed field on the role
+
+Add `scaling.initialReplicas *int32` so the DS controller can seed the auto-created scaler at cold start (before any autoscaler has written).
+
+**Rejected because**:
+- Every real-world autoscaler bootstraps itself: HPA writes `minReplicas` unconditionally when the target is below the floor; KEDA does the same via `minReplicaCount`; custom Mimir-based autoscalers (e.g. mistral) have their own min-replicas config and write on their first tick.
+- The field would duplicate a value users already set on their HPA/KEDA object (`minReplicas` / `minReplicaCount`), which reviewers reject as "why does the same information live in two places?".
+- The only autoscalers it would help are those that observe per-pod metrics AND have no min-replicas floor — a narrow enough case that a one-time `kubectl scale` is an acceptable workaround.
+
+Keeping the API narrow (no `initialReplicas` field, no cross-CRD watch on HPA) is the preferred trade.
