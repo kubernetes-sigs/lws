@@ -289,7 +289,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", 3, nil)
+		existingLWS := buildManagerTestLWS("test-deploy-0-abc123-prefill", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -387,7 +387,7 @@ func TestManagerCreate(t *testing.T) {
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-rev1-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: "test-0-rev1-prefill", Namespace: "default"}, &lws))
 
 		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
 		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
@@ -527,5 +527,55 @@ func TestComputeRevision(t *testing.T) {
 
 		revision := disaggregatedsetutils.ComputeRevision(roles)
 		require.Len(t, revision, 8)
+	})
+}
+
+// TestManagerListSliceBucketing verifies that List buckets a label-less (legacy) LWS
+// into slice 0 and excludes it from other slices.
+func TestManagerListSliceBucketing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+
+	const ds = "test-deployment"
+	sliced := func(name, slice string) *leaderworkersetv1.LeaderWorkerSet {
+		return wrappers.BuildBasicLeaderWorkerSet(name, "default").Labels(map[string]string{
+			disaggregatedsetv1.SetNameLabelKey: ds,
+			disaggregatedsetv1.RoleLabelKey:    "prefill",
+			disaggregatedsetv1.SliceLabelKey:   slice,
+		}).Obj()
+	}
+	legacy := wrappers.BuildBasicLeaderWorkerSet("legacy", "default").Labels(map[string]string{
+		disaggregatedsetv1.SetNameLabelKey: ds,
+		disaggregatedsetv1.RoleLabelKey:    "prefill",
+	}).Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), legacy).Build()
+	manager := NewLeaderWorkerSetManager(fakeClient)
+
+	names := func(list []*leaderworkersetv1.LeaderWorkerSet) []string {
+		out := make([]string, 0, len(list))
+		for _, l := range list {
+			out = append(out, l.Name)
+		}
+		return out
+	}
+
+	t.Run("slice 0 includes label-less legacy", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, 0, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s0", "legacy"}, names(got))
+	})
+
+	t.Run("slice 1 excludes legacy", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, 1, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s1"}, names(got))
+	})
+
+	t.Run("all slices returns everything", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, -1, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s0", "s1", "legacy"}, names(got))
 	})
 }

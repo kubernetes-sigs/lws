@@ -4,6 +4,7 @@ metadata:
   name: disaggregatedset-sample
   namespace: default
 spec:
+  slices: 2
   roles:
     - name: prefill
       spec:

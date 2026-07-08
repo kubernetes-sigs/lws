@@ -111,6 +111,15 @@ DisaggregatedSet handles rollouts across roles.</p>
 Each role has a unique name and its own configuration.</p>
 </td>
 </tr>
+<tr><td><code>slices</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Slices is the number of independent copies of the whole role topology.
+Each slice is a complete set of all roles that rolls out independently.
+Changing Slices scales copies up or down and does not trigger a rollout.</p>
+</td>
+</tr>
 </tbody>
 </table>
 

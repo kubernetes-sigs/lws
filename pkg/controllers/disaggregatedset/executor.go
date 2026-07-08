@@ -56,13 +56,14 @@ type RollingUpdateExecutor struct {
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	revision string,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
-	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, revision)
+	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -76,15 +77,16 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	}
 
 	if newRevision == nil {
-		return executor.initRollingUpdate(ctx, disaggregatedSet, revision, roleNames, roleConfigs, oldRevisions)
+		return executor.initRollingUpdate(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, oldRevisions)
 	}
 
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldRevisions, *newRevision)
+	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision)
 }
 
 func (executor *RollingUpdateExecutor) initRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	revision string,
 	roleNames []string,
 	roleConfigs map[string]*disaggregatedsetv1.DisaggregatedRoleSpec,
@@ -99,14 +101,15 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	// annotation. The planner uses this as the baseline for proportional drain
 	// calculations, since Spec.Replicas changes as the rollout progresses.
 	for _, oldGrouped := range oldRevisions {
-		for roleName, roleLWS := range oldGrouped.Roles {
-			lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, roleName, oldGrouped.Revision)
+		for _, roleLWS := range oldGrouped.Roles {
 			replicas := 1
 			if roleLWS.Spec.Replicas != nil {
 				replicas = int(*roleLWS.Spec.Replicas)
 			}
-			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, lwsName, replicas); err != nil {
-				log.Error(err, "Failed to set initial-replicas annotation", "lws", lwsName)
+			// Address by the LWS's actual name so a legacy slice-0 object (whose name
+			// has no slice segment) is updated rather than missed.
+			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, roleLWS.Name, replicas); err != nil {
+				log.Error(err, "Failed to set initial-replicas annotation", "lws", roleLWS.Name)
 			}
 		}
 	}
@@ -114,7 +117,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 	// Create new LWS objects (one per role) for the target revision with 0
 	// replicas. The next reconcile loop will start scaling them up.
 	for _, roleName := range roleNames {
-		if _, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, revision, roleName, roleConfigs[roleName], 0); err != nil {
+		if _, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, slice, revision, roleName, roleConfigs[roleName], 0); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -130,6 +133,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
 ) (ctrl.Result, error) {
@@ -160,7 +164,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
@@ -306,6 +310,7 @@ func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList, ro
 func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	newRevision disaggregatedsetutils.RevisionRoles,
 	allRoleNames []string,
 	specRoleSet map[string]bool,
@@ -316,7 +321,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		if !specRoleSet[name] || current[i] >= target[i] {
 			continue
 		}
-		lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, newRevision.Revision)
+		lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, newRevision.Revision, name)
 		log.Info("Scaling up", "lws", lwsName, "from", current[i], "to", target[i])
 		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, target[i]); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
@@ -381,7 +386,8 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			if replicas <= newReplicas[name] {
 				continue
 			}
-			lwsName := disaggregatedsetutils.GenerateName(ds.Name, name, wl.Revision)
+			// Address by the LWS's actual name so a legacy slice-0 object drains too.
+			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
 			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
@@ -411,11 +417,12 @@ func allZero(s []int) bool {
 func (executor *RollingUpdateExecutor) ensureNewLWSExists(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
 	revision, role string,
 	config *disaggregatedsetv1.DisaggregatedRoleSpec,
 	initialReplicas int,
 ) (bool, error) {
-	lwsName := disaggregatedsetutils.GenerateName(ds.Name, role, revision)
+	lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
 	existing, err := executor.LWSManager.Get(ctx, ds.Namespace, lwsName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LWS %s: %w", lwsName, err)
@@ -427,9 +434,10 @@ func (executor *RollingUpdateExecutor) ensureNewLWSExists(
 	if err := executor.LWSManager.Create(ctx, disaggregatedsetutils.CreateParams{
 		DisaggregatedSet: ds,
 		Role:             role,
+		Slice:            slice,
 		Config:           config,
 		Revision:         revision,
-		Labels:           disaggregatedsetutils.GenerateLabels(ds.Name, role, revision),
+		Labels:           disaggregatedsetutils.GenerateLabels(ds.Name, slice, revision, role),
 		Replicas:         initialReplicas,
 	}); err != nil {
 		return false, fmt.Errorf("failed to create LWS %s: %w", lwsName, err)
