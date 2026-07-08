@@ -1,0 +1,25 @@
+title: "[LeaderWorkerSet] Topology-Aware Scheduling with Workload API"
+kep-number: 894
+authors:
+  - "Dasmat13"
+status: provisional
+creation-date: 2026-07-08
+reviewers:
+  - ahg-g
+  - yankay
+approvers:
+  - ahg-g
+  - yankay
+
+see-also:
+  - "/keps/407-gang-scheduling"
+  - "/keps/892-disaggregatedset-topology-aware-scheduling"
+
+stage: alpha
+
+latest-milestone: "v0.9"
+
+milestone:
+  alpha: "v0.9"
+  beta: "v1.0"
+  stable: "v1.1"
