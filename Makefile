@@ -412,3 +412,8 @@ crds: kustomize yq # update helm CRD files
 	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
 	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml \
 		|| { echo "ERROR: disaggregatedset CRD missing from kustomize output"; exit 1; }
+	$(KUSTOMIZE) build config/default \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "disaggregatedsetrolescalers.disaggregatedset.x-k8s.io")' \
+	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml
+	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml \
+		|| { echo "ERROR: disaggregatedsetrolescaler CRD missing from kustomize output"; exit 1; }

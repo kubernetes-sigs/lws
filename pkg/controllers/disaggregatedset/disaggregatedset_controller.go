@@ -42,11 +42,14 @@ type DisaggregatedSetReconciler struct {
 	Record         events.EventRecorder
 	LWSManager     *LeaderWorkerSetManager
 	ServiceManager *ServiceManager
+	ScalerManager  *ScalerManager
 }
 
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsetrolescalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsetrolescalers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -82,6 +85,17 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Auto-create / clean up per-role scalers so replica resolution below sees
+	// a settled scaler map. Missing scalers are created; scalers whose role is
+	// no longer External are deleted (in the same pass).
+	if r.ScalerManager == nil {
+		r.ScalerManager = NewScalerManager(r.Client, r.Record)
+	}
+	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to reconcile scalers: %w", err)
+	}
+
 	// Step 3: Reconcile LWS objects.
 	executor := r.createRollingUpdateExecutor()
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
@@ -107,7 +121,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	var result ctrl.Result
 	var errs []error
 	for slice := range sliceCount {
-		sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, roleNames)
+		sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, roleNames, scalers)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("slice %d: %w", slice, err))
 			continue
@@ -115,7 +129,38 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		result = earliestRequeue(result, sliceResult)
 	}
 
+	// Aggregate observed pod counts across all slices and revisions, then write
+	// scaler status. The aggregate matches the aggregate selector shape.
+	if err := r.updateScalerStatus(ctx, disaggregatedSet, scalers); err != nil {
+		errs = append(errs, err)
+	}
+
 	return result, errors.Join(errs...)
+}
+
+// updateScalerStatus sums pod counts across all slices/revisions per role and
+// writes the aggregate to each controlled scaler's status.
+func (r *DisaggregatedSetReconciler) updateScalerStatus(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+) error {
+	if len(scalers) == 0 {
+		return nil
+	}
+	all, err := r.LWSManager.List(ctx, ds.Namespace, ds.Name, -1, "")
+	if err != nil {
+		return fmt.Errorf("list LWS for scaler status: %w", err)
+	}
+	observed := make(map[string]int32, len(scalers))
+	for _, lws := range all {
+		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if _, ok := scalers[role]; !ok {
+			continue
+		}
+		observed[role] += lws.Status.Replicas
+	}
+	return r.ScalerManager.WriteStatus(ctx, ds, scalers, observed)
 }
 
 // reconcileSlice reconciles a single slice independently: it rolls the slice's LWS
@@ -128,6 +173,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	slice int,
 	revision string,
 	roleNames []string,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
 		return ctrl.Result{}, err
@@ -147,9 +193,9 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	// LWS objects directly for the target revision (steady-state path).
 	var result ctrl.Result
 	if len(oldRevisions) > 0 && totalOldReplicas > 0 {
-		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, slice, revision)
+		result, err = executor.ReconcileRollingUpdateNew(ctx, disaggregatedSet, slice, revision, scalers)
 	} else {
-		result, err = r.reconcileSimple(ctx, disaggregatedSet, slice, revision)
+		result, err = r.reconcileSimple(ctx, disaggregatedSet, slice, revision, scalers)
 	}
 	if err != nil {
 		return result, err
@@ -212,11 +258,11 @@ func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdat
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
-		if err := r.reconcileRoleSimple(ctx, disaggregatedSet, slice, role, config, revision); err != nil {
+		if err := r.reconcileRoleSimple(ctx, disaggregatedSet, slice, role, config, revision, scalers); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
 	}
@@ -224,7 +270,7 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string) error {
+func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
 	log := logf.FromContext(ctx)
 
 	// GetForRole adopts a legacy slice-0 LWS in place, so we do not create a
@@ -234,10 +280,12 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		return fmt.Errorf("failed to get LWS for role %s revision %s: %w", role, revision, err)
 	}
 
-	desiredReplicas := int32(1)
-	if config.Spec.Replicas != nil {
-		desiredReplicas = *config.Spec.Replicas
+	// External roles pull replicas from the scaler; Static roles use spec.replicas.
+	currentReplicas := int32(0)
+	if existing != nil && existing.Spec.Replicas != nil {
+		currentReplicas = *existing.Spec.Replicas
 	}
+	desiredReplicas := int32(getTargetReplicas(disaggregatedSet, role, scalers, int(currentReplicas)))
 
 	if existing == nil {
 		lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role)
@@ -381,9 +429,14 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.ServiceManager = NewServiceManager(mgr.GetClient(), mgr.GetScheme())
 	}
 
+	if r.ScalerManager == nil {
+		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
+		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
 		Named("disaggregatedset").
 		Complete(r)
 }

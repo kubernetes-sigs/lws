@@ -43,6 +43,31 @@ const (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// RoleScalingMode controls the source of the replica count for a role.
+// +kubebuilder:validation:Enum=Static;External
+type RoleScalingMode string
+
+const (
+	// RoleScalingStatic uses the inline .spec.replicas value on the role.
+	RoleScalingStatic RoleScalingMode = "Static"
+
+	// RoleScalingExternal delegates replicas to an external autoscaler via an
+	// auto-created DisaggregatedSetRoleScaler named "<disaggregatedset>-<role>".
+	// .spec.replicas on the role is ignored.
+	RoleScalingExternal RoleScalingMode = "External"
+)
+
+// RoleScaling configures how replicas are determined for a role. Sub-struct
+// (not a bare enum) so future per-role scaling policies can be added without
+// a v2 API bump.
+type RoleScaling struct {
+	// Mode controls the source of the replica count. Static (default) uses
+	// inline spec.replicas; External uses the auto-created scaler CR.
+	// +kubebuilder:default=Static
+	// +optional
+	Mode RoleScalingMode `json:"mode,omitempty"`
+}
+
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
@@ -55,6 +80,12 @@ type DisaggregatedRoleSpec struct {
 	// +required
 	Name string `json:"name"`
 
+	// Scaling configures how replicas are determined. Omit for inline Static
+	// scaling (default). When set to External, the DisaggregatedSet controller
+	// auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.
+	// +optional
+	Scaling *RoleScaling `json:"scaling,omitempty"`
+
 	// LeaderWorkerSetTemplateSpec defines the LWS template for this role.
 	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
@@ -62,8 +93,13 @@ type DisaggregatedRoleSpec struct {
 	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 
-// DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="self.roles.all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
+// DisaggregatedSetSpec defines the desired state of DisaggregatedSet.
+//
+// The all-or-nothing replicas rule (either every role has replicas > 0, or
+// every role has replicas == 0) applies only to non-External roles. External
+// roles are exempt because their effective replicas live outside the DS spec —
+// they are driven via DisaggregatedSetRoleScaler.spec.replicas.
+// +kubebuilder:validation:XValidation:rule="self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all non-External roles or non-zero for all non-External roles"
 type DisaggregatedSetSpec struct {
 	// Roles defines the list of roles (at least 2 required).
 	// Each role has a unique name and its own configuration.

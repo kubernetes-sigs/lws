@@ -58,6 +58,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
@@ -80,7 +81,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 		return executor.initRollingUpdate(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, oldRevisions)
 	}
 
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision)
+	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision, scalers)
 }
 
 func (executor *RollingUpdateExecutor) initRollingUpdate(
@@ -136,6 +137,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
@@ -151,8 +153,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
-	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision, scalers)
+	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, scalers)
 
 	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
 	if nextStep == nil {
@@ -206,6 +208,7 @@ func buildPlannerState(
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
 	n := len(allRoleNames)
 	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
@@ -218,25 +221,54 @@ func buildPlannerState(
 			if lws := newRevision.Roles[roleName]; lws != nil {
 				currentNew[i] = int(getLWSReplicas(lws))
 			}
-			targetNew[i] = getTargetReplicas(ds, roleName)
+			targetNew[i] = getTargetReplicas(ds, roleName, scalers, currentNew[i])
+			// No-shrink guard: an External role mid-rollout must not shrink the
+			// new-revision fleet if HPA writes a smaller value while the old
+			// revision is still draining. Releases once the rollout completes.
+			if isExternal(ds, roleName) && len(oldRevisions) > 0 && targetNew[i] < currentNew[i] {
+				targetNew[i] = currentNew[i]
+			}
 		}
 	}
 	return
 }
 
-func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) int {
+// getTargetReplicas resolves the desired replica count. External + no scaler
+// write yet holds at currentNew (0 for a fresh role, or the previous count for
+// a Static→External flip), avoiding an unwanted drain.
+func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, currentNew int) int {
 	for _, p := range ds.Spec.Roles {
-		if p.Name == roleName {
-			if p.Spec.Replicas == nil {
-				return 1
-			}
-			return int(*p.Spec.Replicas)
+		if p.Name != roleName {
+			continue
 		}
+		if p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+			if s := scalers[roleName]; s != nil && s.Spec.Replicas != nil {
+				return int(*s.Spec.Replicas)
+			}
+			return currentNew
+		}
+		if p.Spec.Replicas == nil {
+			return 1
+		}
+		return int(*p.Spec.Replicas)
 	}
 	return 1
 }
 
-func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) []RollingUpdateConfig {
+func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
+	for _, p := range ds.Spec.Roles {
+		if p.Name == roleName {
+			return p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal
+		}
+	}
+	return false
+}
+
+func extractRollingUpdateConfig(
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	allRoleNames []string,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+) []RollingUpdateConfig {
 	config := DefaultRollingUpdateConfig(len(allRoleNames))
 
 	roleIndex := make(map[string]int, len(allRoleNames))
@@ -247,7 +279,10 @@ func extractRollingUpdateConfig(ds *disaggregatedsetv1.DisaggregatedSet, allRole
 	for _, role := range ds.Spec.Roles {
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
 			i := roleIndex[role.Name]
-			replicas := getTargetReplicas(ds, role.Name)
+			// For External roles this returns the scaler value (or currentNew=0
+			// if none is available); percentages against 0 collapse to 0, which
+			// matches how a paused rollout should behave.
+			replicas := getTargetReplicas(ds, role.Name, scalers, 0)
 			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
 			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)

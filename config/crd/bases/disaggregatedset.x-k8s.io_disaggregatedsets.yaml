@@ -76,6 +76,22 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    scaling:
+                      description: |-
+                        Scaling configures how replicas are determined. Omit for inline Static
+                        scaling (default). When set to External, the DisaggregatedSet controller
+                        auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.
+                      properties:
+                        mode:
+                          default: Static
+                          description: |-
+                            Mode controls the source of the replica count. Static (default) uses
+                            inline spec.replicas; External uses the auto-created scaler CR.
+                          enum:
+                          - Static
+                          - External
+                          type: string
+                      type: object
                     spec:
                       description: spec defines the behavior of an LWS.
                       properties:
@@ -18335,10 +18351,12 @@ spec:
             - roles
             type: object
             x-kubernetes-validations:
-            - message: replicas must be zero for all roles or non-zero for all roles
-              rule: self.roles.all(r, !has(r.spec.replicas) || r.spec.replicas ==
-                0) || self.roles.all(r, has(r.spec.replicas) && r.spec.replicas >
-                0)
+            - message: replicas must be zero for all non-External roles or non-zero
+                for all non-External roles
+              rule: self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r,
+                !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r,
+                !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas)
+                && r.spec.replicas > 0)
           status:
             description: status defines the observed state of DisaggregatedSet
             properties:

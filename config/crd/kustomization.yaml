@@ -4,6 +4,7 @@
 resources:
 - bases/leaderworkerset.x-k8s.io_leaderworkersets.yaml
 - bases/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+- bases/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:
