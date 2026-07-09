@@ -30,6 +30,9 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
 
+	// SliceLabelKey records which slice the resource belongs to.
+	SliceLabelKey string = "disaggregatedset.x-k8s.io/slice"
+
 	// RevisionLabelKey records the revision hash for the resource.
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
@@ -70,6 +73,15 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +required
 	Roles []DisaggregatedRoleSpec `json:"roles"`
+
+	// Slices is the number of independent copies of the whole role topology.
+	// Each slice is a complete set of all roles that rolls out independently.
+	// Changing Slices scales copies up or down and does not trigger a rollout.
+	// +optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	Slices *int32 `json:"slices,omitempty"`
 }
 
 // RoleStatus defines the observed state of a single role.
@@ -120,6 +132,7 @@ type DisaggregatedSetStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // DisaggregatedSet is the Schema for the disaggregatedsets API
 type DisaggregatedSet struct {
@@ -127,7 +140,7 @@ type DisaggregatedSet struct {
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// spec defines the desired state of DisaggregatedSet
 	// +required
@@ -135,7 +148,7 @@ type DisaggregatedSet struct {
 
 	// status defines the observed state of DisaggregatedSet
 	// +optional
-	Status DisaggregatedSetStatus `json:"status,omitzero"`
+	Status DisaggregatedSetStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -143,7 +156,7 @@ type DisaggregatedSet struct {
 // DisaggregatedSetList contains a list of DisaggregatedSet
 type DisaggregatedSetList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DisaggregatedSet `json:"items"`
 }
 

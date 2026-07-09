@@ -1,0 +1,18 @@
+title: DisaggregatedSet Slices
+kep-number: 846
+authors:
+  - "BenjaminBraunDev"
+status: implementable
+creation-date: 2026-06-10
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

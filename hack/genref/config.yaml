@@ -7,6 +7,10 @@ apis:
     title: LeaderWorkerSet API
     package: sigs.k8s.io/lws
     path: api/leaderworkerset/v1
+  - name: disaggregatedset
+    title: DisaggregatedSet API
+    package: sigs.k8s.io/lws
+    path: api/disaggregatedset/v1
 
 externalPackages:
   - match: ^k8s\.io/(api|apimachinery/pkg/apis)/

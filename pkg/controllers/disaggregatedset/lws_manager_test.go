@@ -136,171 +136,6 @@ func TestGetLWSReplicas(t *testing.T) {
 	}
 }
 
-// TestManagerGetInitialReplicas tests the manager's disaggregatedsetutils.GetInitialReplicas method.
-func TestManagerGetInitialReplicas(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
-
-	testCases := []struct {
-		name          string
-		existingLWS   *leaderworkersetv1.LeaderWorkerSet
-		expectError   bool
-		expectedValue *int
-	}{
-		{
-			name:          "returns nil when annotation not set",
-			existingLWS:   buildManagerTestLWS("test-lws", 3, nil),
-			expectError:   false,
-			expectedValue: nil,
-		},
-		{
-			name: "returns value when annotation is set",
-			existingLWS: buildManagerTestLWS(
-				"test-lws", 3,
-				map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-			),
-			expectError:   false,
-			expectedValue: ptr.To(5),
-		},
-		{
-			name:          "returns error when LWS not found",
-			existingLWS:   nil,
-			expectError:   true,
-			expectedValue: nil,
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			var objects []runtime.Object
-			if testCase.existingLWS != nil {
-				objects = append(objects, testCase.existingLWS)
-			}
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				Build()
-
-			manager := NewLeaderWorkerSetManager(fakeClient)
-			result, err := manager.GetInitialReplicas(context.Background(), "default", "test-lws")
-
-			if testCase.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-				if testCase.expectedValue == nil {
-					require.Nil(t, result)
-				} else {
-					require.NotNil(t, result)
-					require.Equal(t, *testCase.expectedValue, *result)
-				}
-			}
-		})
-	}
-}
-
-// TestManagerGetOrSetInitialReplicas tests the manager's GetOrSetInitialReplicas method.
-func TestManagerGetOrSetInitialReplicas(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
-
-	t.Run("returns existing value without modifying when annotation exists", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
-			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-		)
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithRuntimeObjects(existingLWS).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		result, err := manager.GetOrSetInitialReplicas(context.Background(), "default", "test-lws", 10)
-
-		require.NoError(t, err)
-		require.Equal(t, 5, result) // Should return existing value, not default
-	})
-
-	t.Run("sets and returns default value when annotation missing", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithRuntimeObjects(existingLWS).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		result, err := manager.GetOrSetInitialReplicas(context.Background(), "default", "test-lws", 10)
-
-		require.NoError(t, err)
-		require.Equal(t, 10, result) // Should return default value
-	})
-
-	t.Run("returns error when LWS not found", func(t *testing.T) {
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		_, err := manager.GetOrSetInitialReplicas(context.Background(), "default", "nonexistent", 10)
-
-		require.Error(t, err)
-	})
-}
-
-// TestManagerUpdateInitialReplicasAnnotation tests the manager's UpdateInitialReplicasAnnotation method.
-func TestManagerUpdateInitialReplicasAnnotation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
-
-	t.Run("updates annotation when value differs", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
-			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-		)
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithRuntimeObjects(existingLWS).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.UpdateInitialReplicasAnnotation(context.Background(), "default", "test-lws", 10)
-
-		require.NoError(t, err)
-	})
-
-	t.Run("skips update when annotation already has correct value", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
-			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-		)
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithRuntimeObjects(existingLWS).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.UpdateInitialReplicasAnnotation(context.Background(), "default", "test-lws", 5)
-
-		require.NoError(t, err)
-	})
-
-	t.Run("returns error when LWS not found", func(t *testing.T) {
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.UpdateInitialReplicasAnnotation(context.Background(), "default", "nonexistent", 10)
-
-		require.Error(t, err)
-	})
-}
-
 // TestManagerDelete tests the manager's Delete method.
 func TestManagerDelete(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -454,7 +289,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
 	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-deploy-abc123-prefill", 3, nil)
+		existingLWS := buildManagerTestLWS("test-deploy-0-abc123-prefill", 3, nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -552,7 +387,7 @@ func TestManagerCreate(t *testing.T) {
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-rev1-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: "test-0-rev1-prefill", Namespace: "default"}, &lws))
 
 		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
 		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
@@ -692,5 +527,55 @@ func TestComputeRevision(t *testing.T) {
 
 		revision := disaggregatedsetutils.ComputeRevision(roles)
 		require.Len(t, revision, 8)
+	})
+}
+
+// TestManagerListSliceBucketing verifies that List buckets a label-less (legacy) LWS
+// into slice 0 and excludes it from other slices.
+func TestManagerListSliceBucketing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+
+	const ds = "test-deployment"
+	sliced := func(name, slice string) *leaderworkersetv1.LeaderWorkerSet {
+		return wrappers.BuildBasicLeaderWorkerSet(name, "default").Labels(map[string]string{
+			disaggregatedsetv1.SetNameLabelKey: ds,
+			disaggregatedsetv1.RoleLabelKey:    "prefill",
+			disaggregatedsetv1.SliceLabelKey:   slice,
+		}).Obj()
+	}
+	legacy := wrappers.BuildBasicLeaderWorkerSet("legacy", "default").Labels(map[string]string{
+		disaggregatedsetv1.SetNameLabelKey: ds,
+		disaggregatedsetv1.RoleLabelKey:    "prefill",
+	}).Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), legacy).Build()
+	manager := NewLeaderWorkerSetManager(fakeClient)
+
+	names := func(list []*leaderworkersetv1.LeaderWorkerSet) []string {
+		out := make([]string, 0, len(list))
+		for _, l := range list {
+			out = append(out, l.Name)
+		}
+		return out
+	}
+
+	t.Run("slice 0 includes label-less legacy", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, 0, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s0", "legacy"}, names(got))
+	})
+
+	t.Run("slice 1 excludes legacy", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, 1, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s1"}, names(got))
+	})
+
+	t.Run("all slices returns everything", func(t *testing.T) {
+		got, err := manager.List(context.Background(), "default", ds, -1, "")
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"s0", "s1", "legacy"}, names(got))
 	})
 }
