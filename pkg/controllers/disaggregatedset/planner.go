@@ -31,9 +31,16 @@ limitations under the License.
 //   - NEW: ceil(roleSize × k / totalSteps)
 //   - OLD: ceil(roleSize × (totalSteps−k) / totalSteps)
 //
-// Ceil on the OLD side is the aliveness invariant: every role holds at ≥1
-// while any other role is still draining. All roles reach 0 in the same
-// final tick, never before.
+// Role ratio (5:2 stays ≈5:2 at every tick) is protected by two functions
+// working together:
+//   - sideProgress() returns min(step reached across roles) so the side
+//     can't advance past its slowest role.
+//   - wantReplicas() then gives each role its proportional share at that
+//     shared step k (ceil × k / totalSteps).
+//
+// Ceil on the OLD side additionally enforces the aliveness invariant:
+// every role holds at ≥1 while any other role is still draining. All
+// roles reach 0 in the same final tick, never before.
 //
 // # Capacity envelope
 //
@@ -288,7 +295,6 @@ func anyChange(roleNames []string, past, now map[string]RoleStepState, curOld, c
 	}
 	return false
 }
-
 
 // projectBudget converts a side-level minUnit multiplier (maxSurge or
 // maxUnavailable) into a per-role pod count: ceil(roleSize × mult / totalSteps).

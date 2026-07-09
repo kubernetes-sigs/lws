@@ -653,4 +653,3 @@ func TestWantReplicas(t *testing.T) {
 	assert.Equal(t, 0, wantReplicas(8, 0, 0, false))
 	assert.Equal(t, 8, wantReplicas(8, 0, 0, true))
 }
-
