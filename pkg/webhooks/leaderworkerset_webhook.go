@@ -128,8 +128,13 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
-	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+	if lws.Spec.Replicas != nil {
+		if *lws.Spec.Replicas < 0 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+		}
+		if *lws.Spec.Replicas > 1000000 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
+		}
 	}
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))

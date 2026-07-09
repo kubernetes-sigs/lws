@@ -57,7 +57,7 @@ func copyAnnotations(annotations map[string]string) map[string]string {
 }
 
 func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disaggregatedsetutils.CreateParams) error {
-	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Role, params.Revision)
+	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Slice, params.Revision, params.Role)
 	replicas := int32(params.Replicas)
 	config := params.Config
 
@@ -126,26 +126,6 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, namespace, nam
 	return nil
 }
 
-func (manager *LeaderWorkerSetManager) UpdateInitialReplicasAnnotation(ctx context.Context, namespace, name string, replicas int) error {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return fmt.Errorf("failed to get LeaderWorkerSet %s for annotation update: %w", name, err)
-	}
-
-	currentValue, ok := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
-	if ok && int(currentValue) == replicas {
-		return nil
-	}
-
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
-	disaggregatedsetutils.SetInitialReplicas(leaderWorkerSet, int32(replicas))
-	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
-		return fmt.Errorf("failed to update annotation on LeaderWorkerSet %s: %w", name, err)
-	}
-
-	return nil
-}
-
 func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
 	lws := &leaderworkersetv1.LeaderWorkerSet{}
 	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, lws)
@@ -158,7 +138,11 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name 
 	return lws, nil
 }
 
-func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
+// List returns the LWS for a DisaggregatedSet, filtered to one slice. A slice < 0
+// matches all slices. Slice 0 also matches legacy (pre-slices) LWS that carry no
+// slice label, so they are reconciled as slice 0. Filtering is client-side because
+// "slice label == 0 OR absent" cannot be expressed as a label selector.
+func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disaggDeploymentName string, slice int, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggDeploymentName}
@@ -170,11 +154,27 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, namespace, disa
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", namespace, disaggDeploymentName, err)
 	}
 
-	result := make([]*leaderworkersetv1.LeaderWorkerSet, len(lwsObjList.Items))
+	result := make([]*leaderworkersetv1.LeaderWorkerSet, 0, len(lwsObjList.Items))
 	for i := range lwsObjList.Items {
-		result[i] = &lwsObjList.Items[i]
+		if disaggregatedsetutils.SliceLabelMatches(lwsObjList.Items[i].Labels, slice) {
+			result = append(result, &lwsObjList.Items[i])
+		}
 	}
 	return result, nil
+}
+
+// GetForRole returns the existing LWS for (slice, revision, role), or nil if none.
+// It looks up the slice-aware name and, for slice 0, falls back to the legacy
+// (pre-slices) name so a legacy object is adopted in place rather than duplicated.
+func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision, role string) (*leaderworkersetv1.LeaderWorkerSet, error) {
+	lws, err := manager.Get(ctx, ds.Namespace, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
+	if err != nil {
+		return nil, err
+	}
+	if lws != nil || slice != 0 {
+		return lws, nil
+	}
+	return manager.Get(ctx, ds.Namespace, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
 }
 
 func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, name string) error {
@@ -208,9 +208,9 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 // exist for the target revision yet.
 func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
-	namespace, disaggDeploymentName, revision string,
+	namespace, disaggDeploymentName string, slice int, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	lwsList, err := manager.List(ctx, namespace, disaggDeploymentName, "")
+	lwsList, err := manager.List(ctx, namespace, disaggDeploymentName, slice, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
@@ -297,37 +297,4 @@ func (manager *LeaderWorkerSetManager) SetInitialReplicas(
 	}
 
 	return oldValue, nil
-}
-
-func (manager *LeaderWorkerSetManager) GetInitialReplicas(
-	ctx context.Context,
-	namespace, name string,
-) (*int, error) {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
-	}
-
-	return parseInitialReplicasAnnotation(leaderWorkerSet), nil
-}
-
-func (manager *LeaderWorkerSetManager) GetOrSetInitialReplicas(
-	ctx context.Context,
-	namespace, name string,
-	defaultValue int,
-) (int, error) {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return 0, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
-	}
-
-	if existing := parseInitialReplicasAnnotation(leaderWorkerSet); existing != nil {
-		return *existing, nil
-	}
-
-	if err := manager.patchInitialReplicasAnnotation(ctx, leaderWorkerSet, defaultValue); err != nil {
-		return 0, fmt.Errorf("failed to set initial-replicas annotation on %s: %w", name, err)
-	}
-
-	return defaultValue, nil
 }
