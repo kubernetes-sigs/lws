@@ -14,87 +14,51 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package disaggregatedset provides rolling update planning and execution for DisaggregatedSet.
+// Package disaggregatedset plans and executes rolling updates for DisaggregatedSet.
 //
 // # Rolling update algorithm
 //
-// A DisaggregatedSet rollout has several roles (e.g. prefill, decode) running
-// at two revisions: the OLD one (being drained) and the NEW one (being scaled
-// up). The planner decides, on every reconcile, how many replicas to add to
-// the new revision and how many to drain from the old one for each role.
+// A rollout has two sides — OLD (draining) and NEW (scaling up) — that
+// advance independently in discrete minUnit ticks. Per side:
 //
-// ## The two sides
+//	totalSteps = max(role_sizes)   // finest granularity: one pod of the largest role
+//	minUnit    = 1 / totalSteps    // side-level fraction per tick
 //
-// We treat the rollout as two independent "sides":
-//   - NEW: scales from 0 up to its target replica count.
-//   - OLD: drains from its initial replica count down to 0.
+// Example: on a 5P/2D side, minUnit = 20%. Prefill moves one pod per tick;
+// decode holds at its current count for several ticks between its own moves.
 //
-// They are coupled only through the per-role capacity envelope below
-// (surge ceiling, unavailable floor).
+// wantReplicas for a role at step k uses CEIL on both sides:
+//   - NEW: ceil(roleSize × k / totalSteps)
+//   - OLD: ceil(roleSize × (totalSteps−k) / totalSteps)
 //
-// ## minUnit and side ticks
+// Ceil on the OLD side is the aliveness invariant: every role holds at ≥1
+// while any other role is still draining. All roles reach 0 in the same
+// final tick, never before.
 //
-// The side advances in discrete minUnit ticks:
+// # Capacity envelope
 //
-//	minUnit    = 1 / max(role_sizes in side)
-//	totalSteps = max(role_sizes in side)
+// maxSurge and maxUnavailable are side-level minUnit multipliers, projected
+// per-role so smaller roles get proportionally smaller absolute slack:
 //
-// max (not min) so the tick matches the FINEST atomic move on the side —
-// one pod of the largest role. Smaller roles absorb the tick via ceil-rounding
-// and hold at their current count for multiple ticks between their own moves.
-//
-// For a 5P/2D side, minUnit = 1/5 = 20%. Side ticks at 0/20/40/60/80/100%.
-// Prefill advances one pod per tick (0→1→2→3→4→5). Decode holds at 1
-// through several ticks, jumping 0→1 at tick 1 and 1→2 at tick 3.
-//
-// ## Aliveness invariant
-//
-// OLD-side wantReplicas uses ceil (not floor) so a role with a small target
-// holds at ≥1 while larger roles still have replicas to drain. All roles
-// reach 0 simultaneously at the final tick, when the ideal remaining rounds
-// to 0. This prevents the "half-populated revision" state (e.g. prefill=1,
-// decode=0) which would break serving.
-//
-// ## Capacity envelope
-//
-// maxSurge and maxUnavailable are user-declared safety budgets, expressed as
-// minUnit multipliers (side-level fractions), NOT raw per-role pod counts.
-// Per role, they project as:
-//
-//	surge_pods   = ceil(role_size × maxSurge       / totalSteps)
-//	unavail_pods = ceil(role_size × maxUnavailable / totalSteps)
+//	surge_pods   = ceil(roleSize × maxSurge       / totalSteps)
+//	unavail_pods = ceil(roleSize × maxUnavailable / totalSteps)
 //	ceiling      = max(initialOld, target) + surge_pods
 //	floor        = max(0, min(initialOld, target) - unavail_pods)
 //
-// Smaller roles get proportionally smaller absolute slack; the largest role
-// (which sets totalSteps) gets the full multiplier. This keeps the budget
-// balanced against the side as a whole rather than granting each role the
-// same absolute slack regardless of its size.
+// # Per-tick step
 //
-// ## Per-tick step model
+// Each tick advances the baseline step by 1 (progressStep), then targets a
+// spec step further ahead by the full budget so one reconcile fills the
+// whole pipeline:
 //
-// Two step concepts coexist:
+//	specTargetStep_new = progressStep + maxSurge
+//	specTargetStep_old = progressStep + maxUnavail
 //
-//   - progressStep  = sideProgress + 1                          (baseline advance)
-//   - specTargetStep_new = min(progressStep + maxSurge, N)      (NEW-side)
-//   - specTargetStep_old = min(progressStep + maxUnavail, N)    (OLD-side)
-//
-// progressStep governs completion detection. specTargetStep drives wantNew /
-// wantOld so each tick asks for the full surge / unavail budget's worth of
-// deltas. addBudget / drainBudget still cap the actual per-tick delta:
-//
-//	total       = currentNew + currentOld
-//	addBudget   = ceiling - total          (max new pods to add)
-//	drainBudget = total - floor            (max old pods to drain)
-//
-// Baseline (surge=0, unavail=0) advances 1 minUnit per tick. With larger
-// budgets, each tick fills the full pipeline in one API round-trip.
+// addBudget = ceiling − total and drainBudget = total − floor cap the
+// actual per-tick move.
 package disaggregatedset
 
 // RoleStepState reports the target replica count for one role at one step.
-// (Earlier revisions of this package also exposed sync-window indices here;
-// they were removed when the planner switched to a side-progress model where
-// sync windows are implicit in the replica counts.)
 type RoleStepState struct {
 	Replicas int
 }
@@ -109,15 +73,6 @@ type UpdateStep struct {
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
-}
-
-func DefaultRollingUpdateConfig(numRoles int) []RollingUpdateConfig {
-	configs := make([]RollingUpdateConfig, numRoles)
-	for i := range numRoles {
-		configs[i].MaxSurge = 1
-		configs[i].MaxUnavailable = 0
-	}
-	return configs
 }
 
 // sideSize returns the side's total step count = max(replica count across
@@ -136,47 +91,48 @@ func sideSize(replicas map[string]int) int {
 
 // sideProgress returns the step the slowest role on the side has reached —
 // i.e. min across roles of "max step k for which the role's current count
-// still matches wantReplicas at step k".
+// still matches wantReplicas at step k". `sizes` gives each role's anchor
+// count (target for NEW, initial for OLD), matching wantReplicas' roleSize.
 //
 // Both sides use ceil in wantReplicas, so:
-//   - NEW: role at step k iff current >= ceil(target*k/totalSteps). Max
-//     reached = floor(current * totalSteps / target).
-//   - OLD: role at step k iff current <= ceil(initial*(totalSteps-k)/totalSteps).
+//   - NEW: role at step k iff current >= ceil(size*k/totalSteps). Max
+//     reached = floor(current * totalSteps / size).
+//   - OLD: role at step k iff current <= ceil(size*(totalSteps-k)/totalSteps).
 //     A small role can "hold" at its current count for multiple consecutive
 //     steps (its ideal remaining rounds the same). Max reached solves for
 //     largest k where the ceil-want is still >= current, closed-form:
-//     floor((totalSteps*(initial - current + 1) - 1) / initial).
-func sideProgress(roles []string, current, total map[string]int, totalSteps int, drained bool) int {
+//     floor((totalSteps*(size - current + 1) - 1) / size).
+func sideProgress(roles []string, current, sizes map[string]int, totalSteps int, drained bool) int {
 	if totalSteps == 0 {
 		return 0
 	}
-	minStep := totalSteps
+	minStepReached := totalSteps
 	for _, role := range roles {
-		denom := total[role]
-		if denom == 0 {
+		size := sizes[role]
+		if size == 0 {
 			continue
 		}
-		cur := current[role]
-		var s int
+		count := current[role]
+		var stepReached int
 		if drained {
-			if cur > denom {
-				cur = denom
+			if count > size {
+				count = size
 			}
-			s = (totalSteps*(denom-cur+1) - 1) / denom
-			if s < 0 {
-				s = 0
+			stepReached = (totalSteps*(size-count+1) - 1) / size
+			if stepReached < 0 {
+				stepReached = 0
 			}
-			if s > totalSteps {
-				s = totalSteps
+			if stepReached > totalSteps {
+				stepReached = totalSteps
 			}
 		} else {
-			s = cur * totalSteps / denom
+			stepReached = count * totalSteps / size
 		}
-		if s < minStep {
-			minStep = s
+		if stepReached < minStepReached {
+			minStepReached = stepReached
 		}
 	}
-	return minStep
+	return minStepReached
 }
 
 // wantReplicas returns the smallest replica count for a role to be considered
@@ -277,9 +233,9 @@ func ComputeNextStep(
 		addBudget := max(0, ceiling-total)
 		drainBudget := max(0, total-floor)
 
-		addNewMap[role] = clamp(wantNew-currentNew[role], 0, addBudget)
+		addNewMap[role] = min(max(wantNew-currentNew[role], 0), addBudget)
 		drainWantMap[role] = max(0, currentOld[role]-wantOld)
-		drainOldMap[role] = clamp(drainWantMap[role], 0, drainBudget)
+		drainOldMap[role] = min(max(drainWantMap[role], 0), drainBudget)
 	}
 
 	// Aliveness cap: if some role wants to drain but is budget-blocked, and
@@ -333,15 +289,6 @@ func anyChange(roleNames []string, past, now map[string]RoleStepState, curOld, c
 	return false
 }
 
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
 
 // projectBudget converts a side-level minUnit multiplier (maxSurge or
 // maxUnavailable) into a per-role pod count: ceil(roleSize × mult / totalSteps).

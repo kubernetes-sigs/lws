@@ -654,19 +654,3 @@ func TestWantReplicas(t *testing.T) {
 	assert.Equal(t, 8, wantReplicas(8, 0, 0, true))
 }
 
-// =============================================================================
-// Default Config Tests
-// =============================================================================
-
-func TestDefaultRollingUpdateConfig(t *testing.T) {
-	for _, numRoles := range []int{2, 3, 4, 5} {
-		t.Run(fmt.Sprintf("%d_roles", numRoles), func(t *testing.T) {
-			cfg := DefaultRollingUpdateConfig(numRoles)
-			assert.Equal(t, numRoles, len(cfg))
-			for i := 0; i < numRoles; i++ {
-				assert.Equal(t, 1, cfg[i].MaxSurge)
-				assert.Equal(t, 0, cfg[i].MaxUnavailable)
-			}
-		})
-	}
-}
