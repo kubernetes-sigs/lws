@@ -317,6 +317,90 @@ func TestValidateCreate(t *testing.T) {
 			expectError: true,
 			errorMsg:    "exclusive-topology",
 		},
+		{
+			name: "invalid placement policy combined with LWS subgroup-exclusive-topology annotation",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
+		{
+			name: "invalid placement policy with subgroup-exclusive-topology on the leader template",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+										LeaderTemplate: &corev1.PodTemplateSpec{
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+										},
+									},
+								},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
+		{
+			name: "invalid placement policy with subgroup-exclusive-topology on the worker template",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+										WorkerTemplate: corev1.PodTemplateSpec{
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+										},
+									},
+								},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
 	}
 
 	for _, tt := range tests {

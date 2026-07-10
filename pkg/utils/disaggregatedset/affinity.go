@@ -70,14 +70,28 @@ func SetPlacementAffinities(podSpec *corev1.PodSpec, dsName string, slice int, p
 
 	// Spread this DisaggregatedSet's slices: repel same-set pods of a different slice.
 	// Other DisaggregatedSets (different name) are not matched, so they may share.
+	//
+	// NotIn also matches pods missing the slice label entirely, which is what we want
+	// for slices != 0: pods created before the slices feature carry no slice label and
+	// are semantically slice 0, so they must repel other slices. For slice 0 itself the
+	// opposite holds, an unlabeled legacy pod is the same slice, not a different one,
+	// so the term additionally requires the label to exist. Without that, a slice-0 pod
+	// with placement enabled is repelled by its own legacy predecessor and never
+	// schedules during upgrade.
+	spreadExprs := []metav1.LabelSelectorRequirement{
+		{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{dsName}},
+	}
+	if slice == 0 {
+		spreadExprs = append(spreadExprs,
+			metav1.LabelSelectorRequirement{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpExists})
+	}
+	spreadExprs = append(spreadExprs,
+		metav1.LabelSelectorRequirement{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpNotIn, Values: []string{sliceStr}})
 	affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(
 		affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{dsName}},
-				{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpNotIn, Values: []string{sliceStr}},
-			}},
-			TopologyKey: topologyKey,
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: spreadExprs},
+			TopologyKey:   topologyKey,
 		})
 
 	// ExclusiveTopology also excludes every other DisaggregatedSet's slice from the

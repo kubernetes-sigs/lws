@@ -94,35 +94,45 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj *disaggv1.DisaggregatedS
 
 	rolesPath := field.NewPath("spec", "roles")
 	for i, role := range obj.Spec.Roles {
-		if roleHasExclusiveTopology(role) {
+		if key, found := roleExclusiveTopologyAnnotation(role); found {
 			allErrs = append(allErrs, field.Forbidden(
 				rolesPath.Index(i),
 				fmt.Sprintf("the %q annotation must not be combined with a non-None spec.placementPolicy.type (%s)",
-					leaderworkerset.ExclusiveKeyAnnotationKey, policy.Type)))
+					key, policy.Type)))
 		}
 	}
 
 	return allErrs
 }
 
-// roleHasExclusiveTopology reports whether a role carries the LWS group-level
-// exclusive-topology annotation anywhere it takes effect: the LWS metadata, or the
-// leader/worker pod templates (the LWS pod webhook reads it from the pod, so a
-// template-level annotation would enable LWS exclusive placement too).
-func roleHasExclusiveTopology(role disaggv1.DisaggregatedRoleSpec) bool {
-	if _, ok := role.ObjectMeta.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
-		return true
-	}
+// exclusiveTopologyAnnotationKeys are the LWS annotations that make the LWS pod
+// webhook inject its own exclusive-placement affinity, at the group and subgroup
+// level respectively. Either one conflicts with a DisaggregatedSet placement policy.
+var exclusiveTopologyAnnotationKeys = []string{
+	leaderworkerset.ExclusiveKeyAnnotationKey,
+	leaderworkerset.SubGroupExclusiveKeyAnnotationKey,
+}
+
+// roleExclusiveTopologyAnnotation returns the first LWS exclusive-topology annotation
+// (group or subgroup level) a role carries anywhere it takes effect: the LWS metadata,
+// or the leader/worker pod templates (the LWS pod webhook reads these from the pod, so
+// a template-level annotation would enable LWS exclusive placement too).
+func roleExclusiveTopologyAnnotation(role disaggv1.DisaggregatedRoleSpec) (string, bool) {
 	template := role.Spec.LeaderWorkerTemplate
-	if template.LeaderTemplate != nil {
-		if _, ok := template.LeaderTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
-			return true
+	for _, key := range exclusiveTopologyAnnotationKeys {
+		if _, ok := role.ObjectMeta.Annotations[key]; ok {
+			return key, true
+		}
+		if template.LeaderTemplate != nil {
+			if _, ok := template.LeaderTemplate.Annotations[key]; ok {
+				return key, true
+			}
+		}
+		if _, ok := template.WorkerTemplate.Annotations[key]; ok {
+			return key, true
 		}
 	}
-	if _, ok := template.WorkerTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; ok {
-		return true
-	}
-	return false
+	return "", false
 }
 
 // validateRoleRolloutStrategy validates the RolloutStrategy fields for a role.

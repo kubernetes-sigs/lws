@@ -81,6 +81,26 @@ func TestSetPlacementAffinities(t *testing.T) {
 		}, antiTerms[0].LabelSelector.MatchExpressions)
 	})
 
+	t.Run("slice 0 spread requires the slice label to exist", func(t *testing.T) {
+		// Legacy pods created before the slices feature carry no slice label and are
+		// semantically slice 0. NotIn alone matches label-less pods, so without the
+		// Exists requirement a slice-0 pod would be repelled by its own legacy
+		// predecessor during upgrade and never schedule.
+		podSpec := &corev1.PodSpec{}
+		SetPlacementAffinities(podSpec, dsName, 0, &disaggregatedsetv1.PlacementPolicy{
+			Type: disaggregatedsetv1.PlacementExclusiveSlice, Topology: topo,
+		})
+		require.NotNil(t, podSpec.Affinity)
+
+		antiTerms := podSpec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+		require.Len(t, antiTerms, 1)
+		assert.Equal(t, []metav1.LabelSelectorRequirement{
+			{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{dsName}},
+			{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpExists},
+			{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpNotIn, Values: []string{"0"}},
+		}, antiTerms[0].LabelSelector.MatchExpressions)
+	})
+
 	t.Run("ExclusiveTopology adds cross-set exclusion", func(t *testing.T) {
 		podSpec := &corev1.PodSpec{}
 		SetPlacementAffinities(podSpec, dsName, 0, &disaggregatedsetv1.PlacementPolicy{
