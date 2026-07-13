@@ -165,17 +165,24 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
 	}
 
-	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
-	if err != nil {
+	if _, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false); err != nil {
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
 	}
-	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true)
-	if err != nil {
+	if _, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true); err != nil {
 		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
 	}
-	if maxUnavailableValue == 0 && maxSurgeValue == 0 && *lws.Spec.Replicas != 0 {
+	// Reject only literal zero for both budgets, mirroring Deployment validation.
+	// Percentage values that scale to zero at the current replica count (e.g.
+	// maxUnavailable=20% with 3 replicas) are allowed: the controller bumps the
+	// resolved maxUnavailable to 1, like the Deployment controller's
+	// ResolveFenceposts, and replicas may change via the scale subresource anyway.
+	if getIntOrPercentValue(maxUnavailable) == 0 && getIntOrPercentValue(maxSurge) == 0 {
 		// Both MaxSurge and MaxUnavailable cannot be zero.
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
+	}
+
+	if v, ok := lws.Annotations[v1.RolloutViaDeleteAnnotationKey]; ok && v != "true" && v != "false" {
+		allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.RolloutViaDeleteAnnotationKey), v, "must be \"true\" or \"false\""))
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
@@ -228,6 +235,15 @@ func getPercentValue(intOrStringValue intstr.IntOrString) (int, bool) {
 	}
 	value, _ := strconv.Atoi(intOrStringValue.StrVal[:len(intOrStringValue.StrVal)-1])
 	return value, true
+}
+
+// getIntOrPercentValue returns the raw numeric value regardless of whether it is a
+// percentage, matching how Deployment validation checks for literal zeros.
+func getIntOrPercentValue(intOrStringValue intstr.IntOrString) int {
+	if value, isPercent := getPercentValue(intOrStringValue); isPercent {
+		return value
+	}
+	return intOrStringValue.IntValue()
 }
 
 // validateNonnegativeField validates that given value is not negative.

@@ -82,6 +82,45 @@ func TestGetPercentValue(t *testing.T) {
 	}
 }
 
+func TestGetIntOrPercentValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		input intstr.IntOrString
+		want  int
+	}{
+		{
+			name:  "int value",
+			input: intstr.FromInt32(3),
+			want:  3,
+		},
+		{
+			name:  "literal zero",
+			input: intstr.FromInt32(0),
+			want:  0,
+		},
+		{
+			// A nonzero percentage is nonzero even if it would scale to zero at the
+			// current replica count; the controller resolves it with a floor of 1.
+			name:  "percentage returns raw value",
+			input: intstr.FromString("20%"),
+			want:  20,
+		},
+		{
+			name:  "zero percentage",
+			input: intstr.FromString("0%"),
+			want:  0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := getIntOrPercentValue(tc.input); got != tc.want {
+				t.Errorf("getIntOrPercentValue(%v)=%d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateNonnegativeOrZeroField(t *testing.T) {
 	tests := []struct {
 		name       string

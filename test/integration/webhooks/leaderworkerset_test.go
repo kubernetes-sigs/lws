@@ -497,14 +497,31 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to non-zero should be failed", &testValidationCase{
+		// A percentage maxUnavailable that scales to zero at the current replica count is
+		// allowed (mirroring Deployment validation on raw values); the controller bumps
+		// the resolved budget to 1 so the rolling update cannot stall.
+		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to a percentage scaling to 0 should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
 				return lws
 			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("rollout-via-delete annotation with invalid value should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Annotations[leaderworkerset.RolloutViaDeleteAnnotationKey] = "enabled"
+				return lws
+			},
 			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("rollout-via-delete annotation set to false should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RolloutViaDelete(false)
+			},
+			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with negative partition should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {

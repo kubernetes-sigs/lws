@@ -437,7 +437,14 @@ func ExpectStatefulsetPartitionEqualTo(ctx context.Context, k8sClient client.Cli
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts); err != nil {
 			return -1
 		}
-		return *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+		// The leader statefulset runs with the OnDelete update strategy, so the
+		// rolling-update partition is tracked in an annotation instead of
+		// spec.updateStrategy.rollingUpdate.partition.
+		p, err := strconv.Atoi(sts.Annotations[leaderworkerset.UpdatePartitionAnnotationKey])
+		if err != nil {
+			return -1
+		}
+		return int32(p)
 	}, Timeout, Interval).Should(gomega.Equal(partition))
 }
 

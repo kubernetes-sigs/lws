@@ -660,7 +660,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// soon updated to 3 (replicas-maxUnavailable), it's fine here.
 						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsUpdating, corev1.EventTypeNormal, "Updating replica 3", lws.Namespace)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale leader pod in the update window (index 3) is deleted by the
+						// controller, so only the 3 groups below the partition remain ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -675,7 +677,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ValidateEvent(ctx, k8sClient, controllers.GroupsUpdating, corev1.EventTypeNormal, "Updating replica 2", lws.Namespace)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						// Group 2 is now inside the update window, so its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{
@@ -689,7 +692,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						// Group 2's leader pod is still deleted (recreated only when set ready).
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
 					},
 				},
 				{
@@ -705,8 +709,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-						// 3-index status is unready but template already updated.
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
+						// 3-index status is unready but template already updated; group 2's
+						// stale leader pod remains deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},
 				{
@@ -721,6 +726,152 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+					},
+				},
+			},
+		}),
+		// Toggling rollout-via-delete on a live lws is the per-pool enablement (and
+		// rollback) operation: it must switch the leader statefulset's update strategy
+		// without disturbing pods or creating a new revision.
+		ginkgo.Entry("toggling rollout-via-delete switches update strategy without disturbing pods", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).RolloutViaDelete(false)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition; statefulset-driven updates by default.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+							g.Expect(sts.Spec.UpdateStrategy.Type).To(gomega.Equal(appsv1.RollingUpdateStatefulSetStrategyType))
+							g.Expect(sts.Spec.UpdateStrategy.RollingUpdate).NotTo(gomega.BeNil())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+				{
+					// Enable rollout-via-delete.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func() error {
+							var fetched leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &fetched); err != nil {
+								return err
+							}
+							fetched.Annotations[leaderworkerset.RolloutViaDeleteAnnotationKey] = "true"
+							return k8sClient.Update(ctx, &fetched)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+							g.Expect(sts.Spec.UpdateStrategy.Type).To(gomega.Equal(appsv1.OnDeleteStatefulSetStrategyType))
+							g.Expect(sts.Spec.UpdateStrategy.RollingUpdate).To(gomega.BeNil())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						// Pods are untouched and no new revision is created.
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					// Disable it again (the rollback operation).
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func() error {
+							var fetched leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &fetched); err != nil {
+								return err
+							}
+							fetched.Annotations[leaderworkerset.RolloutViaDeleteAnnotationKey] = "false"
+							return k8sClient.Update(ctx, &fetched)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+							g.Expect(sts.Spec.UpdateStrategy.Type).To(gomega.Equal(appsv1.RollingUpdateStatefulSetStrategyType))
+							g.Expect(sts.Spec.UpdateStrategy.RollingUpdate).NotTo(gomega.BeNil())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
+		// Without the rollout-via-delete annotation, updates keep the upstream shape:
+		// the leader statefulset uses the RollingUpdate strategy driven by the partition
+		// field, and the lws controller never deletes leader pods. Groups are updated by
+		// flipping revision labels in place, so ready counts stay at full replicas.
+		ginkgo.Entry("workerTemplate changed without rollout-via-delete keeps statefulset-driven updates", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2).RolloutViaDelete(false)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+							g.Expect(sts.Spec.UpdateStrategy.Type).To(gomega.Equal(appsv1.RollingUpdateStatefulSetStrategyType))
+							g.Expect(sts.Spec.UpdateStrategy.RollingUpdate).NotTo(gomega.BeNil())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+				{
+					// Update the worker template.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						// No pods are deleted: all 4 groups stay ready even though the two in
+						// the update window still run the old revision.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+					},
+				},
+				{
+					// Rolling update index-3 replica.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+					},
+				},
+				{
+					// Rolling update the rest of the replicas.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-2", lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-0", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
@@ -755,7 +906,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The two stale leader pods in the update window (indexes 2, 3) are
+						// deleted by the controller.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
 					},
 				},
 				{
@@ -769,7 +922,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						// Group 1 enters the update window and its stale leader pod is deleted;
+						// group 2's leader pod is still deleted as well.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 1)
 					},
 				},
 				{
@@ -783,7 +938,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						// Groups 2, 3 are updated and ready; groups 0, 1 had their stale leader
+						// pods deleted once the partition reached 0.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},
 				{
@@ -833,7 +990,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// maxUnavailable exceeds replicas, so all stale leader pods are deleted at once.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 0, 0)
 					},
 				},
 				{
@@ -942,7 +1100,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale leader pod in the update window (index 3) is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -956,7 +1115,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						// Group 2 enters the update window and its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{
@@ -985,7 +1145,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 3)
+						// Group 2's stale leader pod stays deleted until it is set ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 3)
 					},
 				},
 				{
@@ -1041,7 +1202,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 5)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
+						// The stale leader pod in the update window (index 5) is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 0)
 					},
 				},
 				{
@@ -1065,7 +1227,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						// Group 2 is inside the update window and its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
 					},
 				},
 				{
@@ -1140,7 +1303,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 1)
+						// Group 3 enters the update window and its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
 					},
 				},
 				{
@@ -1154,7 +1318,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 2)
+						// Group 2's stale leader pod is deleted once the partition reaches 2.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
 					},
 				},
 				{
@@ -1168,7 +1333,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 3)
+						// Group 1's stale leader pod is deleted once the partition reaches 1.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 3)
 					},
 				},
 				{
@@ -1182,7 +1348,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 4)
+						// Group 0's stale leader pod is deleted once the partition reaches 0.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
 					},
 				},
 				{
@@ -1245,7 +1412,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale pods in the update window (index 3 and the surge pod 4,
+						// which was created at the old revision) are deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -1259,7 +1428,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 1)
+						// Groups 2, 3 are deleted for update; groups 0, 1, 4 are ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{
@@ -1273,7 +1443,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 2)
+						// Groups 1, 2 are deleted for update; groups 0, 3, 4 are ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
 					},
 				},
 				{
@@ -1287,7 +1458,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 3)
+						// Groups 0, 1 are deleted for update; groups 2, 3, 4 are ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 3)
 					},
 				},
 				{
@@ -1303,7 +1475,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 3)
+						// Group 0 is still deleted for update; the surge group 4 is reclaimed.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 3)
 					},
 				},
 				{
@@ -1365,8 +1538,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						// partition drops to replicas - maxUnavailable = 4 - 2 = 2
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
-						// none of the new pods are updated and ready yet
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// All stale pods in the update window are deleted: groups 2, 3 and the
+						// surge pods 4, 5 (created at the old revision).
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
 					},
 				},
 				{
@@ -1380,7 +1554,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						// Groups 0, 1 are deleted for update once the partition reaches 0.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},
 				{
@@ -1647,7 +1822,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale pods in the update window (group 3 and the surge pods 4, 5,
+						// which were created at the old revision) are deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -1673,8 +1850,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						// The last 2 replicas are updated but not ready.
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						// The last 2 replicas are updated but not ready; groups 3, 4, 5 remain
+						// deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
 					},
 				},
 				{
@@ -1689,7 +1867,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
+						// Groups 3, 4, 5 remain deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 2)
 					},
 				},
 				{
@@ -1713,7 +1892,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						// Groups 1, 2 are deleted for update; only group 0 remains ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 0)
 					},
 				},
 				{
@@ -1727,7 +1907,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
+						// Groups 0, 1 are deleted for update; group 2 is updated and ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 1)
 					},
 				},
 				{
@@ -1743,7 +1924,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 1)
+						// Group 0 remains deleted for update; the surge group 2 is reclaimed.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 1)
 					},
 				},
 				{
@@ -1805,7 +1987,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale pods in the update window (group 3 and the surge pods 4, 5,
+						// which were created at the old revision) are deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
 					},
 				},
@@ -1821,7 +2005,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
+						// Groups 1, 2, 3 are deleted for update; groups 0, 4, 5 are ready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 2)
 						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
 					},
 				},
@@ -1844,7 +2029,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						// Partition will transit from 4 to 3.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
+						// Groups 1, 2 are still deleted from the first update; groups 4, 5 are
+						// deleted again for the second revision.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 1, 0)
 						testing.ExpectRevisions(ctx, k8sClient, lws, 3)
 					},
 				},
@@ -1903,7 +2090,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale leader pod in the update window (index 3) is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
 					},
 				},
@@ -1922,7 +2110,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						// Group 2 enters the update window and its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{
@@ -1991,7 +2180,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+						// The stale leader pod in the update window (index 3) is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
 					},
 				},
 				{
@@ -2004,7 +2194,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						// Group 2 enters the update window and its stale leader pod is deleted.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 1)
 					},
 				},
 				{ // The workerPods are deleted to update them. This should not delete the leaderPod
@@ -2176,7 +2367,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// the number of unavailable pods to 3 (while MaxUnavailable=2).
 						// This is the key test for the bugfix.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						// Group 3's stale leader pod is deleted; group 1 is already unready.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
 					},
 				},
 				{
@@ -2337,7 +2529,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 5)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 0)
+						// Group 5's stale leader pod is deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 0)
 					},
 				},
 				{
@@ -2350,7 +2543,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 1)
+						// Group 4's stale leader pod is deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 1)
 					},
 				},
 				{
@@ -2375,7 +2569,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
+						// Group 3's stale leader pod is deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 2)
 					},
 				},
 				{
@@ -2388,7 +2583,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 3)
+						// Group 2's stale leader pod is deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 5, 3)
 					},
 				},
 				{
@@ -2433,7 +2629,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 3, 0)
+						// Group 2's stale leader pod is deleted for update.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
 					},
 				},
 				{
@@ -2464,10 +2661,14 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
-						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						// UpdateInProgress cannot be asserted here: both remaining stale groups
+						// (0, 1) have their leader pods deleted for update, and with no
+						// statefulset controller in envtest to recreate them there are no
+						// pending-update pods left to keep the condition true.
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 2)
+						// Groups 0, 1 are deleted for update once the partition reaches 0.
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
 					},
 				},
 				{

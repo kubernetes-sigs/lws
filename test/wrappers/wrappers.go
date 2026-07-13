@@ -118,6 +118,14 @@ func (lwsWrapper *LeaderWorkerSetWrapper) Annotation(annotations map[string]stri
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) RolloutViaDelete(enabled bool) *LeaderWorkerSetWrapper {
+	if lwsWrapper.Annotations == nil {
+		lwsWrapper.Annotations = map[string]string{}
+	}
+	lwsWrapper.Annotations[leaderworkerset.RolloutViaDeleteAnnotationKey] = strconv.FormatBool(enabled)
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) Conditions(conditions []metav1.Condition) *LeaderWorkerSetWrapper {
 	lwsWrapper.Status.Conditions = conditions
 	return lwsWrapper
@@ -227,6 +235,9 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws := leaderworkerset.LeaderWorkerSet{}
 	lws.Name = "test-sample"
 	lws.Namespace = nsName
+	// Most tests exercise controller-driven rolling updates; statefulset-driven
+	// updates (the default) are covered by dedicated entries.
+	lws.Annotations = map[string]string{leaderworkerset.RolloutViaDeleteAnnotationKey: "true"}
 	lws.Spec = leaderworkerset.LeaderWorkerSetSpec{}
 	lws.Spec.Replicas = ptr.To[int32](2)
 	lws.Spec.LeaderWorkerTemplate = leaderworkerset.LeaderWorkerTemplate{RestartPolicy: leaderworkerset.RecreateGroupOnPodRestart}

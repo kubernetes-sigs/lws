@@ -103,6 +103,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -174,16 +175,33 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
-	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
-		// An event is logged to track update progress.
-		oldPartition := *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition
-		var updateMsg string
-		if oldPartition-1 == partition {
-			updateMsg = fmt.Sprintf("Updating replica %d", partition)
-		} else {
-			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
+	} else if !lwsUpdated {
+		oldPartition, err := leaderStsUpdatePartition(leaderSts)
+		if err != nil {
+			log.Error(err, "Reading update partition from leader statefulset")
+			return ctrl.Result{}, err
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
+		if partition != oldPartition {
+			// An event is logged to track update progress.
+			var updateMsg string
+			if oldPartition-1 == partition {
+				updateMsg = fmt.Sprintf("Updating replica %d", partition)
+			} else {
+				updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
+			}
+			r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
+		}
+	}
+
+	// With rollout-via-delete enabled, rolling updates are driven by deleting stale
+	// leader pods, see deleteLeaderPodsForUpdate. Gate on the fetched statefulset
+	// already carrying the target revision so that recreated pods pick up the new
+	// template rather than racing against the template update applied above.
+	if revisionKey := revisionutils.GetRevisionKey(revision); rolloutViaDelete(lws) && leaderSts != nil && revisionutils.GetRevisionKey(leaderSts) == revisionKey {
+		if err := r.deleteLeaderPodsForUpdate(ctx, lws, revisionKey, partition, replicas); err != nil {
+			log.Error(err, "Deleting stale leader pods for rolling update")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Create headless service if it does not exist.
@@ -307,6 +325,14 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if maxSurge > int(lwsReplicas) {
 		maxSurge = int(lwsReplicas)
 	}
+	// maxUnavailable percentages round down, so both budgets can resolve to zero even
+	// though the webhook rejects literal 0/0 (e.g. maxUnavailable=20% with 3 replicas,
+	// or after the scale subresource shrinks replicas mid-flight). Mirror the Deployment
+	// controller's ResolveFenceposts and bump maxUnavailable to 1 so the rolling update
+	// cannot stall.
+	if maxUnavailable == 0 && maxSurge == 0 {
+		maxUnavailable = 1
+	}
 	burstReplicas := lwsReplicas + int32(maxSurge)
 
 	// wantReplicas calculates the final replicas if needed.
@@ -331,7 +357,10 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return partition, wantReplicas(lwsReplicas), nil
 	}
 
-	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+	partition, err := leaderStsUpdatePartition(sts)
+	if err != nil {
+		return 0, 0, err
+	}
 	rollingUpdateCompleted := partition == 0 && stsReplicas == lwsReplicas
 	// Case 3:
 	// In normal cases, return the values directly.
@@ -640,6 +669,85 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 	return states, nil
 }
 
+// rolloutViaDelete reports whether rolling updates for this LeaderWorkerSet are driven
+// by controller-side leader pod deletion (OnDelete leader statefulset) instead of the
+// statefulset controller's RollingUpdate machinery. The annotation value is validated
+// by the webhook.
+func rolloutViaDelete(lws *leaderworkerset.LeaderWorkerSet) bool {
+	return lws.Annotations[leaderworkerset.RolloutViaDeleteAnnotationKey] == "true"
+}
+
+// leaderStsUpdatePartition returns the rolling-update partition recorded on the leader
+// statefulset. The partition annotation is written in both rollout modes (OnDelete
+// forbids spec.updateStrategy.rollingUpdate, and keeping one source makes switching
+// modes on a live object seamless). For statefulsets created by pre-fork controller
+// versions the annotation does not exist yet, so fall back to the rollingUpdate
+// partition field; 0 (the at-rest value) otherwise.
+func leaderStsUpdatePartition(sts *appsv1.StatefulSet) (int32, error) {
+	if v, ok := sts.Annotations[leaderworkerset.UpdatePartitionAnnotationKey]; ok {
+		p, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("parsing %s annotation value %q of statefulset %s: %w", leaderworkerset.UpdatePartitionAnnotationKey, v, sts.Name, err)
+		}
+		return int32(p), nil
+	}
+	if sts.Spec.UpdateStrategy.RollingUpdate != nil && sts.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
+		return *sts.Spec.UpdateStrategy.RollingUpdate.Partition, nil
+	}
+	return 0, nil
+}
+
+// deleteLeaderPodsForUpdate deletes leader pods that are inside the update window
+// [partition, replicas) but still carry a stale revision. The leader statefulset uses
+// the OnDelete update strategy with Parallel pod management, so the statefulset
+// controller recreates all deleted pods immediately with the updated template, and the
+// pod controller then rebuilds each group's worker statefulset at the new revision.
+//
+// This replaces driving the update through the statefulset controller's RollingUpdate
+// machinery, which recreates leaders strictly one at a time unless the alpha
+// MaxUnavailableStatefulSet feature gate is enabled (it is unavailable on managed
+// clusters). Deletion is level-triggered: the window is recomputed from live state on
+// every reconcile, so the group-level maxUnavailable budget encoded in the partition
+// is never exceeded.
+func (r *LeaderWorkerSetReconciler) deleteLeaderPodsForUpdate(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, partition, replicas int32) error {
+	if partition >= replicas {
+		return nil
+	}
+	log := ctrl.LoggerFrom(ctx)
+
+	podSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, podSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		if pod.DeletionTimestamp != nil || revisionutils.GetRevisionKey(pod) == revisionKey {
+			continue
+		}
+		index, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
+		if err != nil {
+			return fmt.Errorf("parsing group index of leader pod %s: %w", pod.Name, err)
+		}
+		if int32(index) < partition || int32(index) >= replicas {
+			continue
+		}
+		if err := r.Delete(ctx, pod); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		log.V(2).Info("Deleted leader pod for rolling update", "pod", klog.KObj(pod))
+		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsUpdating, Delete, fmt.Sprintf("Deleted leader pod %s to update group %d", pod.Name, index))
+	}
+	return nil
+}
+
 func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingStep int32, currentPartition int32) int32 {
 	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
 
@@ -808,26 +916,21 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
-	lwsReplicas := int(*lws.Spec.Replicas)
-	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
-	if err != nil {
-		return nil, err
+	// With rollout-via-delete enabled, the statefulset uses the OnDelete update
+	// strategy: rolling updates are driven by the lws controller deleting stale leader
+	// pods (see deleteLeaderPodsForUpdate). Otherwise the statefulset controller drives
+	// updates through RollingUpdate with the partition field, as upstream does. The
+	// partition annotation is written in both modes.
+	updateStrategy := appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.OnDeleteStatefulSetStrategyType)
+	if !rolloutViaDelete(lws) {
+		stsMaxUnavailable, err := legacyStsMaxUnavailable(lws)
+		if err != nil {
+			return nil, err
+		}
+		updateStrategy = appsapplyv1.StatefulSetUpdateStrategy().
+			WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).
+			WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(stsMaxUnavailable).WithPartition(partition))
 	}
-	lwsMaxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
-	if err != nil {
-		return nil, err
-	}
-	if lwsMaxSurge > lwsReplicas {
-		lwsMaxSurge = lwsReplicas
-	}
-	stsMaxUnavailableInt := int32(lwsMaxUnavailable + lwsMaxSurge)
-	// lwsMaxUnavailable=0 and lwsMaxSurge=0 together should be blocked by webhook,
-	// but just in case, we'll make sure that stsMaxUnavailable is at least 1.
-	// This also handles the case when lws.Spec.Replicas is 0.
-	if stsMaxUnavailableInt < 1 {
-		stsMaxUnavailableInt = 1
-	}
-	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
@@ -836,9 +939,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			WithReplicas(replicas).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
-			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
-				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(stsMaxUnavailable).WithPartition(partition),
-			)).
+			WithUpdateStrategy(updateStrategy).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(map[string]string{
 					leaderworkerset.SetNameLabelKey:     lws.Name,
@@ -849,7 +950,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 			leaderworkerset.RevisionKey:     revisionKey,
 		}).
 		WithAnnotations(map[string]string{
-			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
+			leaderworkerset.ReplicasAnnotationKey:        strconv.Itoa(int(*lws.Spec.Replicas)),
+			leaderworkerset.UpdatePartitionAnnotationKey: strconv.Itoa(int(partition)),
 		})
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(lws)
@@ -865,6 +967,32 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
 	}
 	return statefulSetConfig, nil
+}
+
+// legacyStsMaxUnavailable computes the maxUnavailable applied to the leader statefulset
+// when the statefulset controller drives rolling updates (rollout-via-delete disabled).
+// It only takes effect when the alpha MaxUnavailableStatefulSet feature gate is enabled;
+// without it the statefulset controller recreates leaders one at a time.
+func legacyStsMaxUnavailable(lws *leaderworkerset.LeaderWorkerSet) (intstr.IntOrString, error) {
+	lwsReplicas := int(*lws.Spec.Replicas)
+	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
+	if err != nil {
+		return intstr.IntOrString{}, err
+	}
+	lwsMaxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
+	if err != nil {
+		return intstr.IntOrString{}, err
+	}
+	if lwsMaxSurge > lwsReplicas {
+		lwsMaxSurge = lwsReplicas
+	}
+	stsMaxUnavailable := int32(lwsMaxUnavailable + lwsMaxSurge)
+	// Percentages can scale both budgets to zero (also covers lws.Spec.Replicas == 0);
+	// make sure stsMaxUnavailable is at least 1.
+	if stsMaxUnavailable < 1 {
+		stsMaxUnavailable = 1
+	}
+	return intstr.FromInt32(stsMaxUnavailable), nil
 }
 
 func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet) metav1.Condition {

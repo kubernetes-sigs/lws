@@ -96,6 +96,22 @@ const (
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
+
+	// RolloutViaDelete opts a LeaderWorkerSet into controller-driven rolling updates:
+	// the leader statefulset uses the OnDelete update strategy and the lws controller
+	// deletes stale leader pods itself, at the concurrency allowed by the group-level
+	// maxUnavailable/maxSurge budget. Without it, updates are driven by the statefulset
+	// controller's RollingUpdate machinery, which recreates leaders one at a time
+	// unless the alpha MaxUnavailableStatefulSet feature gate is enabled.
+	// Must be "true" or "false"; defaults to "false".
+	RolloutViaDeleteAnnotationKey string = "leaderworkerset.sigs.k8s.io/rollout-via-delete"
+
+	// UpdatePartition is added to the leader statefulset to track the boundary of an
+	// in-flight rolling update: groups with index >= partition may be updated. The
+	// partition cannot live in spec.updateStrategy.rollingUpdate.partition when the
+	// statefulset uses the OnDelete update strategy (rollout-via-delete), so it is
+	// tracked here in both modes.
+	UpdatePartitionAnnotationKey string = "leaderworkerset.sigs.k8s.io/update-partition"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.

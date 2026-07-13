@@ -111,10 +111,23 @@ func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderw
 		index, _ := strconv.Atoi(leaders.Items[i].Name[len(leaders.Items[i].Name)-1:])
 		if index >= int(*leaderWorkerSet.Spec.Replicas) {
 			gomega.Expect(k8sClient.Delete(ctx, &leaders.Items[i])).To(gomega.Succeed())
-			// delete worker statefulset on behalf of kube-controller-manager
-			var sts appsv1.StatefulSet
-			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaders.Items[i].Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-			gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
+		}
+	}
+
+	// Delete worker statefulsets of removed groups on behalf of kube-controller-manager.
+	// Iterated separately from the pods above because the lws controller may have already
+	// deleted a stale leader pod for a rolling update while its worker statefulset (which
+	// envtest never garbage-collects) is still around.
+	var stsList appsv1.StatefulSetList
+	gomega.Expect(k8sClient.List(ctx, &stsList, client.InNamespace(lws.Namespace), &client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+	for i := range stsList.Items {
+		if stsList.Items[i].Name == lws.Name {
+			continue
+		}
+		index, err := strconv.Atoi(stsList.Items[i].Labels[leaderworkerset.GroupIndexLabelKey])
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		if index >= int(*leaderWorkerSet.Spec.Replicas) {
+			gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &stsList.Items[i]))).To(gomega.Succeed())
 		}
 	}
 
@@ -126,14 +139,23 @@ func DeleteLeaderPods(ctx context.Context, k8sClient client.Client, lws *leaderw
 }
 
 func DeleteLeaderPod(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, start, end int32) {
+	// Tolerate pods (and worker statefulsets) that no longer exist: the lws controller
+	// deletes stale leader pods for rolling updates itself, so an emulated statefulset
+	// scale-down may find them already gone.
 	for index := start; index < end; index++ {
 		name := lws.Name + "-" + strconv.Itoa(int(index))
 		var pod corev1.Pod
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &pod)).To(gomega.Succeed())
-		gomega.Expect(k8sClient.Delete(ctx, &pod)).To(gomega.Succeed())
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &pod); err != nil {
+			gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue())
+		} else {
+			gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &pod))).To(gomega.Succeed())
+		}
 		var sts appsv1.StatefulSet
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
-		gomega.Expect(k8sClient.Delete(ctx, &sts)).To(gomega.Succeed())
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &sts); err != nil {
+			gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue())
+		} else {
+			gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &sts))).To(gomega.Succeed())
+		}
 	}
 }
 
@@ -307,6 +329,29 @@ func GetStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, 
 
 // SetSuperPodToReady set all podGroups of the leaderWorkerSet to ready state.
 func SetSuperPodToReady(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, podGroupNumber int32) {
+	// Leader pods deleted by the lws controller during rolling updates are recreated by
+	// the statefulset controller in a real cluster (OnDelete strategy); emulate that
+	// first so the worker statefulsets can be recreated and marked ready below.
+	gomega.Eventually(func() error {
+		var leaderSts appsv1.StatefulSet
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
+			return err
+		}
+		for i := int32(0); i < podGroupNumber; i++ {
+			podName := lws.Name + "-" + strconv.Itoa(int(i))
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &pod); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return err
+				}
+				if err := recreateLeaderPod(ctx, k8sClient, leaderSts, lws, podName); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+
 	stsSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	})
@@ -330,14 +375,21 @@ func SetSuperPodToReady(ctx context.Context, k8sClient client.Client, lws *leade
 
 func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
-		var leaderPod corev1.Pod
-		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &leaderPod); err != nil {
-			return err
-		}
-
 		var leaderSts appsv1.StatefulSet
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
 			return err
+		}
+
+		var leaderPod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &leaderPod); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return err
+			}
+			// The lws controller deletes stale leader pods during rolling updates and
+			// relies on the statefulset controller (OnDelete strategy) to recreate them
+			// with the updated template. There is no statefulset controller in envtest,
+			// so emulate the recreation here.
+			return recreateLeaderPod(ctx, k8sClient, leaderSts, lws, podName)
 		}
 		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(&leaderSts)
 		return k8sClient.Update(ctx, &leaderPod)
@@ -358,6 +410,24 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
 		return k8sClient.Status().Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// recreateLeaderPod emulates the statefulset controller recreating a deleted leader pod
+// from the current (updated) template, as happens in a real cluster with the OnDelete
+// update strategy.
+func recreateLeaderPod(ctx context.Context, k8sClient client.Client, leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, podName string) error {
+	index, err := strconv.Atoi(podName[len(lws.Name)+1:])
+	if err != nil {
+		return fmt.Errorf("parsing group index from pod name %s: %w", podName, err)
+	}
+	pod, err := makeLeaderPod(leaderSts, lws, revisionutils.GetRevisionKey(&leaderSts), index)
+	if err != nil {
+		return err
+	}
+	if err := k8sClient.Create(ctx, pod); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
 }
 
 func SetPodToRunning(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet) {
