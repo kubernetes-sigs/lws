@@ -180,6 +180,10 @@ test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	USE_CERT_MANAGER=true CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: kustomize manifests fmt vet envtest ginkgo kind-image-build
+	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-upgrade-test.sh
+
 # Gang scheduling E2E tests with different schedulers
 VOLCANO_VERSION ?= v1.12.1
 
