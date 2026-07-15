@@ -20,6 +20,7 @@ This KEP proposes adding a placement policy to DisaggregatedSet that co-locates 
   - [Affinity Construction](#affinity-construction)
   - [Topology](#topology)
   - [Where Injection Happens](#where-injection-happens)
+  - [Update Semantics](#update-semantics)
   - [Interaction With LWS Exclusive Placement](#interaction-with-lws-exclusive-placement)
   - [Behavior Without Gang Scheduling](#behavior-without-gang-scheduling)
   - [Accelerator Portability](#accelerator-portability)
@@ -175,6 +176,17 @@ Required podAntiAffinity terms are evaluated together, so a domain must be free 
 
 The controller injects the affinity into the LeaderWorkerSet leader and worker pod templates at creation time, the same place it already injects the DisaggregatedSet labels. Injection needs no new mutating webhook, is deterministic, and rides on the existing template-construction path. The placement validation uses the DisaggregatedSet's existing validating webhook. The pods carry the `name` and `slice` labels (already injected), so the selectors resolve correctly.
 
+### Update Semantics
+
+`PlacementPolicy` is a top-level spec field and is excluded from the revision hash, which covers only the role names and their `LeaderWorkerTemplate`s. Changing the policy therefore **never triggers a rollout**, and the controller **never patches existing LeaderWorkerSets or pods**: mutating a running LeaderWorkerSet's pod template would itself force an LWS-level rolling update, turning a placement tweak into an implicit, uncoordinated restart of every slice at once.
+
+Instead, because injection happens only when the controller creates a LeaderWorkerSet (see [Where Injection Happens](#where-injection-happens)), an updated policy takes effect lazily:
+
+- **Newly created slices** (scaling `slices` up) get the new policy immediately.
+- **Existing slices** pick it up on their next rollout, when a template change creates a new revision and the replacement LeaderWorkerSets are built with the current policy.
+
+Until then, existing slices keep serving under the affinity they were created with. An operator who wants the new policy applied needs to trigger a rollout explicitly (any pod-template change).
+
 ### Interaction With LWS Exclusive Placement
 
 LWS has its own exclusive-placement feature (the `leaderworkerset.sigs.k8s.io/exclusive-topology` annotation), which operates at the **group** granularity: one leader-worker group per domain, exclusive to that group. DisaggregatedSet placement operates one level up, at the **slice** granularity, and `ExclusiveTopology` is the slice-level analog (one slice per domain). The two conflict when applied to the same role at the same topology level, because both DisaggregatedSet options co-locate a slice's roles while group-exclusivity wants each group apart, so the slice never schedules. They can still compose at *different* levels (for example a slice per rack via DisaggregatedSet placement and a group per host via the LWS annotation). The controller never sets the annotation itself, and admission validation will reject a non-`None` `PlacementPolicy` together with the `exclusive-topology` annotation on a role.
@@ -224,6 +236,7 @@ Placement policy graduates together with DisaggregatedSet slices ([KEP-846](/kep
 
 - 2026-06-29: Initial KEP draft.
 - 2026-07-01: Consolidated to a single PlacementPolicy.Type enum.
+- 2026-07-15: Clarified update semantics (policy changes never trigger a rollout and apply on the next LeaderWorkerSet creation).
 
 ## Drawbacks
 
