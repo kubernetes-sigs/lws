@@ -112,9 +112,11 @@ func TestSetPlacementAffinities(t *testing.T) {
 		antiTerms := podSpec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 		require.Len(t, antiTerms, 2)
 		// The first anti-affinity term is the same-set spread; the second excludes
-		// every other DisaggregatedSet's slice.
+		// every other DisaggregatedSet's slice. Requiring the name label to exist
+		// keeps the NotIn from matching unrelated pods that lack the label entirely.
 		assert.Equal(t, topo, antiTerms[1].TopologyKey)
 		assert.Equal(t, []metav1.LabelSelectorRequirement{
+			{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpExists},
 			{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpNotIn, Values: []string{dsName}},
 			{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpExists},
 		}, antiTerms[1].LabelSelector.MatchExpressions)

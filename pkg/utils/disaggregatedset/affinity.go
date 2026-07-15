@@ -95,13 +95,15 @@ func SetPlacementAffinities(podSpec *corev1.PodSpec, dsName string, slice int, p
 		})
 
 	// ExclusiveTopology also excludes every other DisaggregatedSet's slice from the
-	// domain, giving a 1:1 domain-to-slice mapping. slice Exists scopes the term to
-	// DisaggregatedSet-managed pods, so unrelated workloads may still share the domain.
+	// domain, giving a 1:1 domain-to-slice mapping. name Exists + slice Exists scopes
+	// the term to DisaggregatedSet-managed pods (NotIn alone would also match pods
+	// missing the name label), so unrelated workloads may still share the domain.
 	if policy.Type == disaggregatedsetv1.PlacementExclusiveTopology {
 		affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(
 			affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 			corev1.PodAffinityTerm{
 				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpExists},
 					{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpNotIn, Values: []string{dsName}},
 					{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpExists},
 				}},
