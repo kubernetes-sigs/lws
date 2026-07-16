@@ -167,7 +167,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "1",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -236,7 +239,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "2"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "2",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](2),
@@ -440,7 +446,10 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/replicas":                    "1",
+						"leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology": "topologyKey",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -754,6 +763,51 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				t.Errorf("unexpected StatefulSet apply configuration: %s", diff)
 			}
 		})
+	}
+}
+
+func TestLeaderStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Labels(map[string]string{
+			"app":                           "inference",
+			leaderworkerset.SetNameLabelKey: "user-value",
+		}).
+		Annotation(map[string]string{
+			"owner":                               "platform",
+			leaderworkerset.ReplicasAnnotationKey: "user-value",
+		}).
+		Replica(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+			},
+		}).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(1).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
+
+	stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, 0, 2, "revision-1")
+	if err != nil {
+		t.Fatalf("failed with error: %s", err.Error())
+	}
+
+	wantLabels := map[string]string{
+		"app":                           "inference",
+		leaderworkerset.SetNameLabelKey: "test-sample",
+		leaderworkerset.RevisionKey:     "revision-1",
+	}
+	if diff := cmp.Diff(wantLabels, stsApplyConfig.Labels); diff != "" {
+		t.Errorf("unexpected StatefulSet labels: %s", diff)
+	}
+
+	wantAnnotations := map[string]string{
+		"owner":                               "platform",
+		leaderworkerset.ReplicasAnnotationKey: "2",
+	}
+	if diff := cmp.Diff(wantAnnotations, stsApplyConfig.Annotations); diff != "" {
+		t.Errorf("unexpected StatefulSet annotations: %s", diff)
 	}
 }
 

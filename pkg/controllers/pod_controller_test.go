@@ -166,6 +166,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -242,6 +245,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -421,6 +427,59 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				t.Errorf("unexpected StatefulSet apply operation %s", diff)
 			}
 		})
+	}
+}
+
+func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Labels(map[string]string{
+			"app":                              "inference",
+			leaderworkerset.GroupIndexLabelKey: "user-value",
+		}).
+		Annotation(map[string]string{"owner": "platform"}).
+		Replica(1).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(2).
+		Obj()
+	revision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionKey := revisionutils.GetRevisionKey(revision)
+
+	leaderPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:         "test-sample",
+				leaderworkerset.GroupIndexLabelKey:      "1",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             revisionKey,
+			},
+		},
+	}
+
+	statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws, revision)
+	if err != nil {
+		t.Fatalf("failed with error %s", err.Error())
+	}
+
+	wantLabels := map[string]string{
+		"app":                                   "inference",
+		leaderworkerset.SetNameLabelKey:         "test-sample",
+		leaderworkerset.GroupIndexLabelKey:      "1",
+		leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+		leaderworkerset.RevisionKey:             revisionKey,
+	}
+	if diff := cmp.Diff(wantLabels, statefulSetConfig.Labels); diff != "" {
+		t.Errorf("unexpected StatefulSet labels: %s", diff)
+	}
+
+	wantAnnotations := map[string]string{"owner": "platform"}
+	if diff := cmp.Diff(wantAnnotations, statefulSetConfig.Annotations); diff != "" {
+		t.Errorf("unexpected StatefulSet annotations: %s", diff)
 	}
 }
 
