@@ -830,6 +830,13 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
 
 	// construct statefulset apply configuration
+	statefulSetLabels := mergeMetadata(lws.Labels, map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RevisionKey:     revisionKey,
+	})
+	statefulSetAnnotations := mergeMetadata(lws.Annotations, map[string]string{
+		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
+	})
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
@@ -844,13 +851,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
 				}))).
-		WithLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey: lws.Name,
-			leaderworkerset.RevisionKey:     revisionKey,
-		}).
-		WithAnnotations(map[string]string{
-			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
-		})
+		WithLabels(statefulSetLabels).
+		WithAnnotations(statefulSetAnnotations)
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(lws)
 	if len(pvcApplyConfiguration) > 0 {
