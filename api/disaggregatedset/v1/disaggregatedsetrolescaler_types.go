@@ -85,10 +85,18 @@ type DisaggregatedSetRoleScalerStatus struct {
 // /scale-aware controller) write spec.replicas; the DisaggregatedSet controller
 // reads it and drives the role's LeaderWorkerSet.
 type DisaggregatedSetRoleScaler struct {
-	metav1.TypeMeta   `json:",inline"`
+	metav1.TypeMeta `json:",inline"`
+
+	// metadata is a standard object metadata
+	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   DisaggregatedSetRoleScalerSpec   `json:"spec,omitempty"`
+	// spec defines the desired state of DisaggregatedSetRoleScaler
+	// +optional
+	Spec DisaggregatedSetRoleScalerSpec `json:"spec,omitempty"`
+
+	// status defines the observed state of DisaggregatedSetRoleScaler
+	// +optional
 	Status DisaggregatedSetRoleScalerStatus `json:"status,omitempty"`
 }
 

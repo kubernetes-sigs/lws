@@ -57,10 +57,7 @@ spec:
             metadata:
               type: object
             spec:
-              description: |-
-                DisaggregatedSetRoleScalerSpec is the desired state written by an external
-                autoscaler via the /scale subresource. The (DS, role) association is derived
-                from the scaler's controller ownerReference and its role label.
+              description: spec defines the desired state of DisaggregatedSetRoleScaler
               properties:
                 replicas:
                   default: 0
@@ -81,9 +78,7 @@ spec:
                 - replicas
               type: object
             status:
-              description: |-
-                DisaggregatedSetRoleScalerStatus is the observed state written back by the
-                DisaggregatedSet controller.
+              description: status defines the observed state of DisaggregatedSetRoleScaler
               properties:
                 conditions:
                   description: Conditions expose scaler-level state (Ready).

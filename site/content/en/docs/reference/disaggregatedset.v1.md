@@ -116,17 +116,19 @@ reads it and drives the role's LeaderWorkerSet.</p>
 <tbody>
     
   
-<tr><td><code>spec</code> <B>[Required]</B><br/>
+<tr><td><code>spec</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec"><code>DisaggregatedSetRoleScalerSpec</code></a>
 </td>
 <td>
-   <span class="text-muted">No description provided.</span></td>
+   <p>spec defines the desired state of DisaggregatedSetRoleScaler</p>
+</td>
 </tr>
-<tr><td><code>status</code> <B>[Required]</B><br/>
+<tr><td><code>status</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerStatus"><code>DisaggregatedSetRoleScalerStatus</code></a>
 </td>
 <td>
-   <span class="text-muted">No description provided.</span></td>
+   <p>status defines the observed state of DisaggregatedSetRoleScaler</p>
+</td>
 </tr>
 </tbody>
 </table>
