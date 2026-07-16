@@ -149,14 +149,18 @@ from the scaler's controller ownerReference and its role label.</p>
 <tbody>
     
   
-<tr><td><code>replicas</code><br/>
+<tr><td><code>replicas</code> <B>[Required]</B><br/>
 <code>int32</code>
 </td>
 <td>
-   <p>Replicas is the desired replica count for the role. Nil means no
-autoscaler has written yet; the controller reports WaitingForScaler and
-holds the LWS at 0 (fresh role) or at its current count (previously
-Static role).</p>
+   <p>Replicas is the desired replica count for the role. The controller seeds
+this at scaler creation — 0 for a fresh role, or the LWS's current
+replica count for a Static→External flip so the role does not silently
+drain to zero. External autoscalers overwrite it on their first tick.</p>
+<p>Non-pointer with a default because kube-apiserver's CRD /scale handler
+extracts .spec.replicas at read time and errors (&quot;the spec replicas
+field does not exist&quot;) when the JSONPath resolves to nothing. HPA reads
+/scale before its first write; a missing field would deadlock the loop.</p>
 </td>
 </tr>
 </tbody>

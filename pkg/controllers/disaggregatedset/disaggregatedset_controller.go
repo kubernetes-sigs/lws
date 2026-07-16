@@ -87,11 +87,17 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Auto-create / clean up per-role scalers so replica resolution below sees
 	// a settled scaler map. Missing scalers are created; scalers whose role is
-	// no longer External are deleted (in the same pass).
+	// no longer External are deleted (in the same pass). New scalers are seeded
+	// with the role's current aggregate replica count so a Static→External flip
+	// on a running role does not drain to zero.
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(r.Client, r.Record)
 	}
-	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet)
+	seedFor, err := r.seedForRole(ctx, disaggregatedSet)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to compute scaler seeds: %w", err)
+	}
+	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, seedFor)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile scalers: %w", err)
 	}
@@ -136,6 +142,26 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return result, errors.Join(errs...)
+}
+
+// seedForRole returns a callback that yields the aggregate spec.replicas
+// across all LWS revisions for a role, used to seed a newly-created scaler so
+// a Static→External flip does not drain the running fleet to 0.
+func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(string) int32, error) {
+	all, err := r.LWSManager.List(ctx, ds.Namespace, ds.Name, -1, "")
+	if err != nil {
+		return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
+	}
+	sums := make(map[string]int32)
+	for _, lws := range all {
+		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if lws.Spec.Replicas != nil {
+			sums[role] += *lws.Spec.Replicas
+		} else {
+			sums[role]++
+		}
+	}
+	return func(role string) int32 { return sums[role] }, nil
 }
 
 // updateScalerStatus sums pod counts across all slices/revisions per role and

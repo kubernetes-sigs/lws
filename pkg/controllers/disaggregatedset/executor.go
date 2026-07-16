@@ -233,17 +233,18 @@ func buildPlannerState(
 	return
 }
 
-// getTargetReplicas resolves the desired replica count. External + no scaler
-// write yet holds at currentNew (0 for a fresh role, or the previous count for
-// a Static→External flip), avoiding an unwanted drain.
+// getTargetReplicas resolves the desired replica count. External roles read
+// spec.replicas from the scaler (always materialised since the CRD defaults it
+// to 0 and the controller seeds it at creation to avoid draining a running
+// Static→External flip).
 func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, currentNew int) int {
 	for _, p := range ds.Spec.Roles {
 		if p.Name != roleName {
 			continue
 		}
 		if p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
-			if s := scalers[roleName]; s != nil && s.Spec.Replicas != nil {
-				return int(*s.Spec.Replicas)
+			if s := scalers[roleName]; s != nil {
+				return int(s.Spec.Replicas)
 			}
 			return currentNew
 		}

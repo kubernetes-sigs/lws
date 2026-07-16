@@ -22,21 +22,25 @@ import (
 
 // DisaggregatedSetRoleScalerReady is set to True when the scaler is bound to a
 // live DisaggregatedSet + role and its status reflects the observed
-// LeaderWorkerSet(s). False (reason=WaitingForScaler) until an external
-// autoscaler sets spec.replicas.
+// LeaderWorkerSet(s).
 const DisaggregatedSetRoleScalerReady string = "Ready"
 
 // DisaggregatedSetRoleScalerSpec is the desired state written by an external
 // autoscaler via the /scale subresource. The (DS, role) association is derived
 // from the scaler's controller ownerReference and its role label.
 type DisaggregatedSetRoleScalerSpec struct {
-	// Replicas is the desired replica count for the role. Nil means no
-	// autoscaler has written yet; the controller reports WaitingForScaler and
-	// holds the LWS at 0 (fresh role) or at its current count (previously
-	// Static role).
-	// +optional
+	// Replicas is the desired replica count for the role. The controller seeds
+	// this at scaler creation — 0 for a fresh role, or the LWS's current
+	// replica count for a Static→External flip so the role does not silently
+	// drain to zero. External autoscalers overwrite it on their first tick.
+	//
+	// Non-pointer with a default because kube-apiserver's CRD /scale handler
+	// extracts .spec.replicas at read time and errors ("the spec replicas
+	// field does not exist") when the JSONPath resolves to nothing. HPA reads
+	// /scale before its first write; a missing field would deadlock the loop.
+	// +kubebuilder:default=0
 	// +kubebuilder:validation:Minimum=0
-	Replicas *int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas"`
 }
 
 // DisaggregatedSetRoleScalerStatus is the observed state written back by the

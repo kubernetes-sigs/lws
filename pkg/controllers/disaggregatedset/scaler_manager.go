@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -55,8 +56,15 @@ func NewScalerManager(c client.Client, r events.EventRecorder) *ScalerManager {
 func ScalerName(dsName, role string) string { return dsName + "-" + role }
 
 // Reconcile ensures a scaler exists for every External role and deletes scalers
-// owned by this DS whose role is no longer External. Returns role -> *Scaler.
-func (m *ScalerManager) Reconcile(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
+// owned by this DS whose role is no longer External. seedFor is called with a
+// role name to compute the initial spec.replicas for a new scaler — typically
+// the role's current LWS replica count so a Static→External flip does not
+// drain a running role to 0. Returns role -> *Scaler.
+func (m *ScalerManager) Reconcile(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	seedFor func(role string) int32,
+) (map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
 	log := logf.FromContext(ctx)
 
 	externalRoles := make(map[string]bool)
@@ -95,7 +103,11 @@ func (m *ScalerManager) Reconcile(ctx context.Context, ds *disaggregatedsetv1.Di
 		if _, ok := existing[role]; ok {
 			continue
 		}
-		s, err := m.create(ctx, ds, role)
+		seed := int32(0)
+		if seedFor != nil {
+			seed = seedFor(role)
+		}
+		s, err := m.create(ctx, ds, role, seed)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +118,7 @@ func (m *ScalerManager) Reconcile(ctx context.Context, ds *disaggregatedsetv1.Di
 	return existing, nil
 }
 
-func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, role string) (*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
+func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, role string, seed int32) (*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
 	name := ScalerName(ds.Name, role)
 	scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 		ObjectMeta: metav1.ObjectMeta{
@@ -125,6 +137,7 @@ func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.Disag
 				BlockOwnerDeletion: ptr.To(true),
 			}},
 		},
+		Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: seed},
 	}
 	if err := m.client.Create(ctx, scaler); err == nil {
 		logf.FromContext(ctx).Info("Created scaler", "scaler", name, "role", role)
@@ -164,10 +177,11 @@ func (m *ScalerManager) WriteStatus(
 			disaggregatedsetv1.SetNameLabelKey, ds.Name,
 			disaggregatedsetv1.RoleLabelKey, role)
 		desired.Status.ObservedGeneration = s.Generation
-		setReady(&desired.Status.Conditions, s.Spec.Replicas != nil, s.Generation)
-		if statusEqual(&s.Status, &desired.Status) {
-			continue
-		}
+		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+			Type: disaggregatedsetv1.DisaggregatedSetRoleScalerReady, Status: metav1.ConditionTrue,
+			ObservedGeneration: s.Generation, Reason: "Bound",
+			Message: "Scaler bound to a live DisaggregatedSet role",
+		})
 		if err := m.client.Status().Patch(ctx, desired, client.MergeFrom(s)); err != nil {
 			return fmt.Errorf("patch scaler %s status: %w", s.Name, err)
 		}
@@ -182,42 +196,4 @@ func isControlledBy(obj client.Object, uid types.UID) bool {
 		}
 	}
 	return false
-}
-
-func setReady(conds *[]metav1.Condition, hasWrite bool, gen int64) {
-	c := metav1.Condition{
-		Type: disaggregatedsetv1.DisaggregatedSetRoleScalerReady, Status: metav1.ConditionTrue,
-		ObservedGeneration: gen, Reason: "Bound",
-		Message: "Scaler bound to a live DisaggregatedSet role",
-	}
-	if !hasWrite {
-		c.Status, c.Reason = metav1.ConditionFalse, "WaitingForScaler"
-		c.Message = "spec.replicas not yet set by an external autoscaler"
-	}
-	for i, e := range *conds {
-		if e.Type == c.Type {
-			if e.Status == c.Status && e.Reason == c.Reason {
-				return
-			}
-			c.LastTransitionTime = metav1.Now()
-			(*conds)[i] = c
-			return
-		}
-	}
-	c.LastTransitionTime = metav1.Now()
-	*conds = append(*conds, c)
-}
-
-func statusEqual(a, b *disaggregatedsetv1.DisaggregatedSetRoleScalerStatus) bool {
-	if a.Replicas != b.Replicas || a.Selector != b.Selector || a.ObservedGeneration != b.ObservedGeneration || len(a.Conditions) != len(b.Conditions) {
-		return false
-	}
-	for i := range a.Conditions {
-		if a.Conditions[i].Type != b.Conditions[i].Type ||
-			a.Conditions[i].Status != b.Conditions[i].Status ||
-			a.Conditions[i].Reason != b.Conditions[i].Reason {
-			return false
-		}
-	}
-	return true
 }

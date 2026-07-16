@@ -56,7 +56,7 @@ func TestScalerManagerReconcileCreatesMissing(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).WithObjects(ds).Build()
 	m := NewScalerManager(cl, events.NewFakeRecorder(10))
 
-	scalers, err := m.Reconcile(context.TODO(), ds)
+	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
 	require.Contains(t, scalers, "prefill")
 	require.NotContains(t, scalers, "decode")
@@ -88,7 +88,7 @@ func TestScalerManagerReconcileDeletesOrphaned(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).WithObjects(ds, stale).Build()
 	m := NewScalerManager(cl, events.NewFakeRecorder(10))
 
-	_, err := m.Reconcile(context.TODO(), ds)
+	_, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
 
 	assert.True(t, apierrorsIsNotFound(cl.Get(context.TODO(), types.NamespacedName{Name: "myds-old-role", Namespace: "default"}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{})))
@@ -103,7 +103,7 @@ func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {
 	rec := events.NewFakeRecorder(10)
 	m := NewScalerManager(cl, rec)
 
-	scalers, err := m.Reconcile(context.TODO(), ds)
+	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, scalers, "prefill")
 
@@ -124,15 +124,15 @@ func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
 		name         string
 		role         disaggregatedsetv1.DisaggregatedRoleSpec
 		scalerHas    bool
-		scalerVal    *int32
+		scalerVal    int32
 		currentNew   int
 		wantReplicas int
 	}{
-		{"static default", staticRole("r"), false, nil, 0, 1},
-		{"static explicit", roleWithReplicas("r", 4), false, nil, 0, 4},
-		{"external with scaler write", externalRole("r"), true, ptr.To(int32(7)), 0, 7},
-		{"external without scaler write (fresh)", externalRole("r"), false, nil, 0, 0},
-		{"external without scaler write (hold)", externalRole("r"), true, nil, 3, 3},
+		{"static default", staticRole("r"), false, 0, 0, 1},
+		{"static explicit", roleWithReplicas("r", 4), false, 0, 0, 4},
+		{"external + scaler seeded at 0", externalRole("r"), true, 0, 0, 0},
+		{"external + scaler written to 7", externalRole("r"), true, 7, 0, 7},
+		{"external + scaler missing (transient) falls back to currentNew", externalRole("r"), false, 0, 3, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,7 +158,7 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 	ds := newDSWithRoles("myds", externalRole("prefill"))
 	scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 		ObjectMeta: metav1.ObjectMeta{Name: "myds-prefill", Namespace: "default", Generation: 2},
-		Spec:       disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: ptr.To(int32(5))},
+		Spec:       disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: 5},
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(wrappers.DisaggregatedSetTestScheme()).
