@@ -65,12 +65,16 @@ func batchSize(maxSurge, maxUnavailable int) int {
 	return max(1, maxUnavailable)
 }
 
+// computeTotalSteps returns the number of ideal scale-up batches the rollout needs.
+// Per-role: ceil(max(initialOld, target) / batchSize); takes the max across roles.
+// Distinct from reconcile iteration count: each step touches only old or new.
 func computeTotalSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) int {
 	totalSteps := 0
 	numRoles := len(initialOld)
 	for i := 0; i < numRoles; i++ {
 		maxReplicas := max(initialOld[i], target[i], 0)
 		roleBatchSize := batchSize(config[i].MaxSurge, config[i].MaxUnavailable)
+		// Integer ceil-div: ceil(maxReplicas / roleBatchSize)
 		roleSteps := (maxReplicas + roleBatchSize - 1) / roleBatchSize
 		totalSteps = max(totalSteps, roleSteps)
 	}

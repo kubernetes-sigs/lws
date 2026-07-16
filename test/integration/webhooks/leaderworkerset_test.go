@@ -240,6 +240,12 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
+		ginkgo.Entry("creation with replicas greater than 1000000 should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).Replica(1000001)
+			},
+			lwsCreationShouldFail: true,
+		}),
 		ginkgo.Entry("creation with invalid startpolicy should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).StartupPolicy("invalidValue")
@@ -336,6 +342,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				lws.Spec.Replicas = ptr.To[int32](3)
 			},
 			updateShouldFail: false,
+		}),
+		ginkgo.Entry("update with invalid replicas should fail (larger than 1000000)", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.Replicas = ptr.To[int32](1000001)
+			},
+			updateShouldFail: true,
 		}),
 		ginkgo.Entry("leader/workerTemplate can be updated", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {

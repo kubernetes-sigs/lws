@@ -10,7 +10,43 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 ## Resource Types 
 
 
+- [DisaggregatedSet](#disaggregatedset-x-k8s-io-v1-DisaggregatedSet)
   
+
+## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
+    
+
+**Appears in:**
+
+
+
+<p>DisaggregatedSet is the Schema for the disaggregatedsets API</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+<tr><td><code>apiVersion</code><br/>string</td><td><code>disaggregatedset.x-k8s.io/v1</code></td></tr>
+<tr><td><code>kind</code><br/>string</td><td><code>DisaggregatedSet</code></td></tr>
+    
+  
+<tr><td><code>spec</code> <B>[Required]</B><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
+</td>
+<td>
+   <p>spec defines the desired state of DisaggregatedSet</p>
+</td>
+</tr>
+<tr><td><code>status</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus"><code>DisaggregatedSetStatus</code></a>
+</td>
+<td>
+   <p>status defines the observed state of DisaggregatedSet</p>
+</td>
+</tr>
+</tbody>
+</table>
 
 ## `DisaggregatedRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec}
     
@@ -51,38 +87,6 @@ DisaggregatedSet handles rollouts across roles.</p>
 </tbody>
 </table>
 
-## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
-    
-
-**Appears in:**
-
-
-
-<p>DisaggregatedSet is the Schema for the disaggregatedsets API</p>
-
-
-<table class="table">
-<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
-<tbody>
-    
-  
-<tr><td><code>spec</code> <B>[Required]</B><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
-</td>
-<td>
-   <p>spec defines the desired state of DisaggregatedSet</p>
-</td>
-</tr>
-<tr><td><code>status,omitzero</code><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus"><code>DisaggregatedSetStatus</code></a>
-</td>
-<td>
-   <p>status defines the observed state of DisaggregatedSet</p>
-</td>
-</tr>
-</tbody>
-</table>
-
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
     
 
@@ -105,6 +109,15 @@ DisaggregatedSet handles rollouts across roles.</p>
 <td>
    <p>Roles defines the list of roles (at least 2 required).
 Each role has a unique name and its own configuration.</p>
+</td>
+</tr>
+<tr><td><code>slices</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Slices is the number of independent copies of the whole role topology.
+Each slice is a complete set of all roles that rolls out independently.
+Changing Slices scales copies up or down and does not trigger a rollout.</p>
 </td>
 </tr>
 </tbody>
