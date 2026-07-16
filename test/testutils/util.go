@@ -533,8 +533,12 @@ func CheckTPUContainerHasCorrectEnvVars(pod corev1.Pod, envVal string) error {
 				if subGroupSizeStr, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]; foundSubGroupSize {
 					workerIndex, _ := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
 					subGroupSize, _ := strconv.Atoi(subGroupSizeStr)
-					podWorkerIndex := (workerIndex) % subGroupSize
-					if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] != "true" {
+					var podWorkerIndex int
+					if workerIndex == 0 {
+						podWorkerIndex = 0
+					} else if pod.Annotations[acceleratorutils.LeaderRequestsTPUsAnnotationKey] == "true" {
+						podWorkerIndex = workerIndex % subGroupSize
+					} else {
 						podWorkerIndex = (workerIndex - 1) % subGroupSize
 					}
 					expectedIndex = podWorkerIndex*numTPUContainers + i

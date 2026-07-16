@@ -122,6 +122,18 @@ rules:
 - apiGroups:
   - leaderworkerset.x-k8s.io
   resources:
+  - leaderworkersets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
   - leaderworkersets/finalizers
   verbs:
   - update
@@ -133,22 +145,3 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - leaderworkerset.x-k8s.io
-  - leaderworkersetv1.x-k8s.io
-  resources:
-  - leaderworkersets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - leaderworkersetv1.x-k8s.io
-  resources:
-  - leaderworkersets/status
-  verbs:
-  - get

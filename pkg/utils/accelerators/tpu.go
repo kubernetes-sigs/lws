@@ -123,9 +123,12 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
-	tpuWorkerId := (workerIndex) % subGroupSize
-
-	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
+	var tpuWorkerId int
+	if workerIndex == 0 {
+		tpuWorkerId = 0
+	} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
+		tpuWorkerId = workerIndex % subGroupSize
+	} else {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
 	}
 

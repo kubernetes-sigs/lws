@@ -470,6 +470,51 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			expectedTpuProcessPort:      "8478",
 		},
 		{
+			name: "Leader requests TPU resources, subgroup size = 1",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "0",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:           "true",
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "test-sample-1.default",
+			expectedTpuName:             "test-sample-1",
+			expectedTpuProcessAddresses: "test-sample-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Leader does not request TPU resources, subgroup size = 1",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "0",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "test-sample-1.default",
+			expectedTpuName:             "test-sample-1",
+			expectedTpuProcessAddresses: "test-sample-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
 			name: "Invalid size",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{

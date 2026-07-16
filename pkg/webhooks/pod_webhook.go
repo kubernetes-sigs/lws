@@ -247,6 +247,9 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 }
 
 func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+	if podCount%subGroupSize == 0 {
+		return fmt.Sprint(workerIndex / subGroupSize)
+	}
 	if (podCount-1)%subGroupSize == 0 {
 		// Leader is considered as extra pod, it is part of the first group
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)

@@ -292,6 +292,20 @@ func TestGetSubGroupIndex(t *testing.T) {
 			workerIndex:           2,
 			expectedSubGroupIndex: "0",
 		},
+		{
+			name:                  "Subgroup size 1, pod count 3, worker index 1",
+			podCount:              3,
+			subGroupSize:          1,
+			workerIndex:           1,
+			expectedSubGroupIndex: "1",
+		},
+		{
+			name:                  "Subgroup size 1, pod count 3, worker index 2",
+			podCount:              3,
+			subGroupSize:          1,
+			workerIndex:           2,
+			expectedSubGroupIndex: "2",
+		},
 	}
 
 	for _, tc := range tests {
