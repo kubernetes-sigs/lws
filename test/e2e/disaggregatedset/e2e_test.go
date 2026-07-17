@@ -526,6 +526,13 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 		AfterEach(func() {
 			kubectl.CleanupDeployment(deploymentName)
+			// The cascading delete can race with the child StatefulSets
+			// recreating force-deleted pods, and terminating ExclusiveTopology
+			// pods still repel other sets' pods. Wait until the pods are fully
+			// gone so later specs can schedule on a single-node cluster.
+			Eventually(func() int {
+				return kubectl.CountPods(deploymentName)
+			}, 90*time.Second, time.Second).Should(Equal(0))
 		})
 
 		It("should inject placement affinity into the managed LWS pod templates", func() {
