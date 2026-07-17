@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -428,6 +429,117 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 // template change, the legacy slice-0 LWS is at the old revision (not the target), so no
 // same-revision migration runs and the sibling slice is created right away at the new
 // revision.
+// TestStatusPopulatedOnFreshDeployment: a fresh DisaggregatedSet has just created its
+// LWS objects, which have not yet reported any ready/updated replicas. Status should
+// reflect that: zero counts per role and a Progressing condition, not empty (#868).
+func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("fresh-status", "default").
+		WithRole(testControllerRolePrefill, 3, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	require.Len(t, got.Status.RoleStatuses, 2, "one RoleStatus per role")
+	assert.Equal(t, testControllerRolePrefill, got.Status.RoleStatuses[0].Name, "RoleStatuses order matches spec.roles")
+	assert.Equal(t, testControllerRoleDecode, got.Status.RoleStatuses[1].Name, "RoleStatuses order matches spec.roles")
+	for _, rs := range got.Status.RoleStatuses {
+		assert.Zero(t, rs.Replicas, "freshly created LWS has not reported replicas yet")
+		assert.Zero(t, rs.ReadyReplicas)
+		assert.Zero(t, rs.UpdatedReplicas)
+	}
+
+	assert.Equal(t, got.Generation, got.Status.ObservedGeneration, "observedGeneration should track .metadata.generation")
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, cond, "Progressing condition should be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "Available should not be set yet")
+}
+
+// TestStatusAvailableWhenAllRolesReady: when every role's LWS already reports the
+// desired replicas as ready and updated, status should report Available with the
+// matching per-role counts (#868).
+func TestStatusAvailableWhenAllRolesReady(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("ready-status", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	readyLWS := func(role string) *leaderworkersetv1.LeaderWorkerSet {
+		return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role), disaggregatedSet.Namespace).
+			Labels(disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, 0, revision, role)).
+			Replica(2).
+			Size(1).
+			StatusReplicas(2).
+			ReadyReplicas(2).
+			UpdatedReplicas(2).
+			OwnerReference(metav1.OwnerReference{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
+			}).
+			WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
+			Obj()
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		readyLWS(testControllerRolePrefill),
+		readyLWS(testControllerRoleDecode),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	for _, rs := range got.Status.RoleStatuses {
+		assert.EqualValues(t, 2, rs.Replicas, "role %s replicas", rs.Name)
+		assert.EqualValues(t, 2, rs.ReadyReplicas, "role %s readyReplicas", rs.Name)
+		assert.EqualValues(t, 2, rs.UpdatedReplicas, "role %s updatedReplicas", rs.Name)
+	}
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
+	require.NotNil(t, cond, "Available condition should be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+
+	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	if progressing != nil {
+		assert.Equal(t, metav1.ConditionFalse, progressing.Status, "Progressing must not also be true once Available")
+	}
+}
+
 func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()

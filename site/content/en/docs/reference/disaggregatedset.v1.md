@@ -292,6 +292,13 @@ created, so changing it takes effect on the next rollout.</p>
 <tbody>
     
   
+<tr><td><code>observedGeneration</code><br/>
+<code>int64</code>
+</td>
+<td>
+   <p>observedGeneration is the most recent generation observed for this DisaggregatedSet.</p>
+</td>
+</tr>
 <tr><td><code>roleStatuses</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>
@@ -310,7 +317,6 @@ Each condition has a unique type and reflects the status of a specific aspect of
 <ul>
 <li>&quot;Available&quot;: the resource is fully functional</li>
 <li>&quot;Progressing&quot;: the resource is being created or updated</li>
-<li>&quot;Degraded&quot;: the resource failed to reach or maintain its desired state</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
 </td>

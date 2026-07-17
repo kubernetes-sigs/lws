@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -134,14 +136,127 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		result = earliestRequeue(result, sliceResult)
 	}
+	reconcileErr := errors.Join(errs...)
 
 	// Aggregate observed pod counts across all slices and revisions, then write
 	// scaler status. The aggregate matches the aggregate selector shape.
 	if err := r.updateScalerStatus(ctx, disaggregatedSet, scalers); err != nil {
-		errs = append(errs, err)
+		reconcileErr = errors.Join(reconcileErr, err)
 	}
 
-	return result, errors.Join(errs...)
+	// Status reflects the state observed above regardless of per-slice errors, so
+	// a role that failed to reconcile is still visible to clients instead of being
+	// silently left out of .status.
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision); statusErr != nil {
+		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))
+	}
+
+	return result, reconcileErr
+}
+
+// updateStatus recomputes per-role replica counts and the Available/Progressing
+// condition from the LWS objects the DisaggregatedSet owns (aggregated across all
+// slices and revisions), and persists the result if anything changed.
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string) error {
+	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
+	available := true
+
+	for _, role := range roleNames {
+		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, -1, role)
+		if err != nil {
+			return fmt.Errorf("failed to list LWS for role %s status: %w", role, err)
+		}
+
+		roleStatus := disaggregatedsetv1.RoleStatus{Name: role}
+		for _, lws := range lwsList {
+			roleStatus.Replicas += lws.Status.Replicas
+			roleStatus.ReadyReplicas += lws.Status.ReadyReplicas
+			// Only LWS at the target revision contribute to UpdatedReplicas; a
+			// draining old-revision LWS is by definition not updated.
+			if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+				roleStatus.UpdatedReplicas += lws.Status.UpdatedReplicas
+			}
+		}
+		roleStatuses = append(roleStatuses, roleStatus)
+
+		if roleStatus.Replicas == 0 || roleStatus.ReadyReplicas != roleStatus.Replicas || roleStatus.UpdatedReplicas != roleStatus.Replicas {
+			available = false
+		}
+	}
+
+	changed := setRoleStatuses(disaggregatedSet, roleStatuses)
+	if setDisaggregatedSetCondition(disaggregatedSet, disaggregatedSetCondition(disaggregatedSet, available)) {
+		changed = true
+	}
+	if disaggregatedSet.Status.ObservedGeneration != disaggregatedSet.Generation {
+		disaggregatedSet.Status.ObservedGeneration = disaggregatedSet.Generation
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+	if err := r.Status().Update(ctx, disaggregatedSet); err != nil {
+		return fmt.Errorf("failed to update DisaggregatedSet status: %w", err)
+	}
+	return nil
+}
+
+func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) bool {
+	if slices.Equal(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
+		return false
+	}
+	disaggregatedSet.Status.RoleStatuses = roleStatuses
+	return true
+}
+
+func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool) metav1.Condition {
+	condType := disaggregatedsetv1.DisaggregatedSetProgressing
+	reason, message := "RolloutInProgress", "Not all roles have reached the desired, ready, and updated replica count"
+	if available {
+		condType = disaggregatedsetv1.DisaggregatedSetAvailable
+		reason, message = "AllRolesReady", "All roles have reached the desired, ready, and updated replica count"
+	}
+
+	return metav1.Condition{
+		Type:               string(condType),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: disaggregatedSet.Generation,
+		Reason:             reason,
+		Message:            message,
+	}
+}
+
+// setDisaggregatedSetCondition records newCondition as true and, since Available and
+// Progressing are mutually exclusive, marks any other true condition as false.
+// Returns whether the status changed.
+func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, newCondition metav1.Condition) bool {
+	newCondition.LastTransitionTime = metav1.Now()
+	changed, found := false, false
+
+	for i, cond := range disaggregatedSet.Status.Conditions {
+		if cond.Type == newCondition.Type {
+			found = true
+			if cond.Status != newCondition.Status || cond.ObservedGeneration != newCondition.ObservedGeneration {
+				disaggregatedSet.Status.Conditions[i] = newCondition
+				changed = true
+			}
+			continue
+		}
+		if cond.Status == metav1.ConditionTrue {
+			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
+			disaggregatedSet.Status.Conditions[i].LastTransitionTime = newCondition.LastTransitionTime
+			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+			changed = true
+		}
+	}
+
+	if !found {
+		disaggregatedSet.Status.Conditions = append(disaggregatedSet.Status.Conditions, newCondition)
+		changed = true
+	}
+
+	return changed
 }
 
 // seedForRole returns a callback that yields the initial spec.replicas value
