@@ -20,27 +20,33 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-type LeaderWorkerSetWebhook struct{}
+type LeaderWorkerSetWebhook struct {
+	client client.Client
+}
 
 // SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
 func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
+	webhook := &LeaderWorkerSetWebhook{client: mgr.GetClient()}
 	return ctrl.NewWebhookManagedBy(mgr, &v1.LeaderWorkerSet{}).
-		WithDefaulter(&LeaderWorkerSetWebhook{}).
-		WithValidator(&LeaderWorkerSetWebhook{}).
+		WithDefaulter(webhook).
+		WithValidator(webhook).
 		Complete()
 }
 
@@ -110,6 +116,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
+	}
+	if (newLws.Spec.GangScheduling == nil) != (oldLws.Spec.GangScheduling == nil) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("gangScheduling"), newLws.Spec.GangScheduling, "gangScheduling is immutable"))
 	}
 
 	return nil, allErrs.ToAggregate()
@@ -183,6 +192,33 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	} else {
 		if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
+		}
+	}
+
+	if lws.Spec.GangScheduling != nil {
+		workerTemplate := lws.Spec.LeaderWorkerTemplate.WorkerTemplate
+		if workerTemplate.Spec.SchedulingGroup == nil || workerTemplate.Spec.SchedulingGroup.PodGroupName == nil || *workerTemplate.Spec.SchedulingGroup.PodGroupName == "" {
+			allErrs = append(allErrs, field.Required(specPath.Child("leaderWorkerTemplate", "workerTemplate", "spec", "schedulingGroup", "podGroupName"), "schedulingGroup.podGroupName is required when gangScheduling is enabled"))
+		}
+		if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+			leaderTemplate := lws.Spec.LeaderWorkerTemplate.LeaderTemplate
+			if leaderTemplate.Spec.SchedulingGroup == nil || leaderTemplate.Spec.SchedulingGroup.PodGroupName == nil || *leaderTemplate.Spec.SchedulingGroup.PodGroupName == "" {
+				allErrs = append(allErrs, field.Required(specPath.Child("leaderWorkerTemplate", "leaderTemplate", "spec", "schedulingGroup", "podGroupName"), "schedulingGroup.podGroupName is required when gangScheduling is enabled"))
+			} else if workerTemplate.Spec.SchedulingGroup != nil && workerTemplate.Spec.SchedulingGroup.PodGroupName != nil &&
+				*leaderTemplate.Spec.SchedulingGroup.PodGroupName != *workerTemplate.Spec.SchedulingGroup.PodGroupName {
+				allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "leaderTemplate", "spec", "schedulingGroup", "podGroupName"), *leaderTemplate.Spec.SchedulingGroup.PodGroupName, "schedulingGroup.podGroupName in leaderTemplate must match workerTemplate"))
+			}
+		}
+
+		if r.client != nil && r.client.RESTMapper() != nil && os.Getenv("LWS_SKIP_API_DISCOVERY") != "true" {
+			workloadGK := schema.GroupKind{Group: "scheduling.k8s.io", Kind: "Workload"}
+			if _, err := r.client.RESTMapper().RESTMapping(workloadGK, "v1alpha2"); err != nil {
+				allErrs = append(allErrs, field.Invalid(specPath.Child("gangScheduling"), lws.Spec.GangScheduling, fmt.Sprintf("required GVK scheduling.k8s.io/v1alpha2, Kind=Workload is missing: %v", err)))
+			}
+			podGroupGK := schema.GroupKind{Group: "scheduling.k8s.io", Kind: "PodGroup"}
+			if _, err := r.client.RESTMapper().RESTMapping(podGroupGK, "v1alpha2"); err != nil {
+				allErrs = append(allErrs, field.Invalid(specPath.Child("gangScheduling"), lws.Spec.GangScheduling, fmt.Sprintf("required GVK scheduling.k8s.io/v1alpha2, Kind=PodGroup is missing: %v", err)))
+			}
 		}
 	}
 

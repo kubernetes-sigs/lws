@@ -52,6 +52,8 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
+	// gangScheduling defines the gang scheduling policy of the group.
+	GangScheduling *leaderworkersetv1.GangSchedulingPolicy `json:"gangScheduling,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -97,5 +99,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderwo
 // If called multiple times, the NetworkConfig field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *NetworkConfigApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.NetworkConfig = value
+	return b
+}
+
+// WithGangScheduling sets the GangScheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GangScheduling field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithGangScheduling(value leaderworkersetv1.GangSchedulingPolicy) *LeaderWorkerSetSpecApplyConfiguration {
+	b.GangScheduling = &value
 	return b
 }

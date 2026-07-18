@@ -140,6 +140,10 @@ type LeaderWorkerSetSpec struct {
 	// networkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+
+	// gangScheduling defines the gang scheduling policy of the group.
+	// +optional
+	GangScheduling *GangSchedulingPolicy `json:"gangScheduling,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -248,6 +252,10 @@ type NetworkConfig struct {
 	// the headless service, defaults to shared
 	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
+}
+
+// GangSchedulingPolicy defines the gang scheduling policy.
+type GangSchedulingPolicy struct {
 }
 
 type SubdomainPolicy string

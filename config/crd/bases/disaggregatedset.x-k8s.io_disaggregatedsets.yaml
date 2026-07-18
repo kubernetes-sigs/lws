@@ -118,6 +118,10 @@ spec:
                     spec:
                       description: spec defines the behavior of an LWS.
                       properties:
+                        gangScheduling:
+                          description: gangScheduling defines the gang scheduling
+                            policy of the group.
+                          type: object
                         leaderWorkerTemplate:
                           description: leaderWorkerTemplate defines the template for
                             leader/worker pods

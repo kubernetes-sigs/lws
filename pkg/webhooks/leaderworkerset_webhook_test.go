@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -234,5 +235,123 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 			},
 		}
 		_, _ = webhook.ValidateCreate(ctx, lws)
+	})
+
+	t.Run("gang scheduling enabled - missing scheduling group on worker should fail", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					WorkerTemplate: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{},
+					},
+				},
+				GangScheduling: &v1.GangSchedulingPolicy{},
+			},
+		}
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Errorf("expected error when worker template lacks scheduling group, got nil")
+		}
+	})
+
+	t.Run("gang scheduling enabled - scheduling group set on worker should succeed", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					WorkerTemplate: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							SchedulingGroup: &corev1.PodSchedulingGroup{
+								PodGroupName: ptr.To("my-pod-group"),
+							},
+						},
+					},
+				},
+				GangScheduling: &v1.GangSchedulingPolicy{},
+			},
+		}
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("gang scheduling enabled - mismatched scheduling group between leader and worker should fail", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					LeaderTemplate: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							SchedulingGroup: &corev1.PodSchedulingGroup{
+								PodGroupName: ptr.To("leader-group"),
+							},
+						},
+					},
+					WorkerTemplate: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							SchedulingGroup: &corev1.PodSchedulingGroup{
+								PodGroupName: ptr.To("worker-group"),
+							},
+						},
+					},
+				},
+				GangScheduling: &v1.GangSchedulingPolicy{},
+			},
+		}
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Errorf("expected error due to mismatched scheduling group names, got nil")
+		}
+	})
+
+	t.Run("gang scheduling is immutable on update", func(t *testing.T) {
+		oldLws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+			},
+		}
+		newLws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					WorkerTemplate: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							SchedulingGroup: &corev1.PodSchedulingGroup{
+								PodGroupName: ptr.To("my-pod-group"),
+							},
+						},
+					},
+				},
+				GangScheduling: &v1.GangSchedulingPolicy{},
+			},
+		}
+		_, err := webhook.ValidateUpdate(ctx, oldLws, newLws)
+		if err == nil {
+			t.Errorf("expected error when modifying immutable gangScheduling field, got nil")
+		}
 	})
 }

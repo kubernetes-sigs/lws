@@ -583,5 +583,37 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
+		ginkgo.Entry("creation with gangScheduling but no worker schedulingGroup should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.GangScheduling = &leaderworkerset.GangSchedulingPolicy{}
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulingGroup = nil
+				return lws
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("creation with gangScheduling and worker/leader schedulingGroup should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.GangScheduling = &leaderworkerset.GangSchedulingPolicy{}
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+					PodGroupName: ptr.To("my-group"),
+				}
+				lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+					PodGroupName: ptr.To("my-group"),
+				}
+				return lws
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("updating gangScheduling should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.GangScheduling = &leaderworkerset.GangSchedulingPolicy{}
+			},
+			updateShouldFail: true,
+		}),
 	)
 })
