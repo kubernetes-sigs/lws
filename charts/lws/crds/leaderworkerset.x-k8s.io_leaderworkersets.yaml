@@ -69,6 +69,9 @@ spec:
             spec:
               description: spec defines the desired behavior of LeaderWorkerSet.
               properties:
+                gangScheduling:
+                  description: gangScheduling defines the gang scheduling policy of the group.
+                  type: object
                 leaderWorkerTemplate:
                   description: leaderWorkerTemplate defines the template for leader/worker pods
                   properties:
