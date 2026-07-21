@@ -82,6 +82,43 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
+
+	// PlacementPolicy controls how a slice's roles are co-located and how the
+	// DisaggregatedSet's slices are spread across topology domains. When set, the
+	// controller injects pod affinity and anti-affinity into the managed
+	// LeaderWorkerSet pod templates. Placement is applied when a LeaderWorkerSet is
+	// created, so changing it takes effect on the next rollout.
+	// +optional
+	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// PlacementType selects the DisaggregatedSet placement guarantee.
+type PlacementType string
+
+const (
+	// PlacementNone injects no affinity. This is the default.
+	PlacementNone PlacementType = "None"
+	// PlacementExclusiveSlice co-locates a slice's roles in one topology domain and
+	// spreads this DisaggregatedSet's slices across domains. Other DisaggregatedSets
+	// may share a domain.
+	PlacementExclusiveSlice PlacementType = "ExclusiveSlice"
+	// PlacementExclusiveTopology is ExclusiveSlice plus domain exclusivity: a domain
+	// holds at most one slice across all DisaggregatedSets (a 1:1 domain-to-slice mapping).
+	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
+)
+
+// PlacementPolicy controls topology placement of a DisaggregatedSet's slices.
+type PlacementPolicy struct {
+	// Type selects the placement guarantee. Defaults to None.
+	// +optional
+	// +kubebuilder:default=None
+	// +kubebuilder:validation:Enum=None;ExclusiveSlice;ExclusiveTopology
+	Type PlacementType `json:"type,omitempty"`
+
+	// Topology is the node-label key that defines a domain, used as the affinity
+	// topologyKey. Required when Type is not None.
+	// +optional
+	Topology string `json:"topology,omitempty"`
 }
 
 // RoleStatus defines the observed state of a single role.

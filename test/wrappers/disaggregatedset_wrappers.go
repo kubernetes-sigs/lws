@@ -99,6 +99,43 @@ func (w *DisaggregatedSetWrapper) WithRollout(role string, surge, unavail intstr
 	return w
 }
 
+func (w *DisaggregatedSetWrapper) WithPlacementPolicy(policyType disaggregatedsetv1.PlacementType, topology string) *DisaggregatedSetWrapper {
+	w.Spec.PlacementPolicy = &disaggregatedsetv1.PlacementPolicy{
+		Type:     policyType,
+		Topology: topology,
+	}
+	return w
+}
+
+// WithRoleAnnotation sets an annotation on the role's LWS metadata.
+func (w *DisaggregatedSetWrapper) WithRoleAnnotation(role, key, value string) *DisaggregatedSetWrapper {
+	for i := range w.Spec.Roles {
+		if w.Spec.Roles[i].Name == role {
+			if w.Spec.Roles[i].ObjectMeta.Annotations == nil {
+				w.Spec.Roles[i].ObjectMeta.Annotations = map[string]string{}
+			}
+			w.Spec.Roles[i].ObjectMeta.Annotations[key] = value
+			break
+		}
+	}
+	return w
+}
+
+// WithWorkerTemplateAnnotation sets an annotation on the role's worker pod template.
+func (w *DisaggregatedSetWrapper) WithWorkerTemplateAnnotation(role, key, value string) *DisaggregatedSetWrapper {
+	for i := range w.Spec.Roles {
+		if w.Spec.Roles[i].Name == role {
+			template := &w.Spec.Roles[i].Spec.LeaderWorkerTemplate.WorkerTemplate
+			if template.Annotations == nil {
+				template.Annotations = map[string]string{}
+			}
+			template.Annotations[key] = value
+			break
+		}
+	}
+	return w
+}
+
 // --- Role spec builder ---
 
 func MakeRoleSpec(

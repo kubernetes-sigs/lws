@@ -44,6 +44,11 @@ type Config struct {
 	Name      string
 	Namespace string
 	Roles     []Role
+	// PlacementType, when non-empty, adds a spec.placementPolicy block
+	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
+	// topologyKey and is required for a non-None type.
+	PlacementType     string
+	PlacementTopology string
 }
 
 // YAML generates a DisaggregatedSet YAML from config.
@@ -61,6 +66,14 @@ metadata:
   namespace: %s
 spec:
 `, c.Name, ns))
+
+	if c.PlacementType != "" {
+		sb.WriteString("  placementPolicy:\n")
+		sb.WriteString(fmt.Sprintf("    type: %s\n", c.PlacementType))
+		if c.PlacementTopology != "" {
+			sb.WriteString(fmt.Sprintf("    topology: %s\n", c.PlacementTopology))
+		}
+	}
 
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {
