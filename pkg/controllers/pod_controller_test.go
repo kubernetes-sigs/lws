@@ -38,9 +38,68 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+type stubSchedulerProvider struct {
+	createErr error
+	calls     int
+}
+
+func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(context.Context, *leaderworkerset.LeaderWorkerSet, *corev1.Pod) error {
+	s.calls++
+	return s.createErr
+}
+
+func (*stubSchedulerProvider) InjectPodGroupMetadata(*corev1.Pod) error {
+	return nil
+}
+
+func TestPodReconcilerRequeuesWhenPodGroupIsNotReady(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+
+	lws := &leaderworkerset.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: leaderworkerset.LeaderWorkerSetSpec{
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](1)},
+		},
+	}
+	leaderPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+			},
+		},
+	}
+	provider := &stubSchedulerProvider{createErr: schedulerprovider.ErrPodGroupNotReady}
+	reconciler := &PodReconciler{
+		Client:            fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lws, leaderPod).Build(),
+		Scheme:            testScheme,
+		SchedulerProvider: provider,
+	}
+
+	result, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leaderPod, false))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != podGroupRequeueDelay {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, podGroupRequeueDelay)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("CreatePodGroupIfNotExists() calls = %d, want 1", provider.calls)
+	}
+}
 
 func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
