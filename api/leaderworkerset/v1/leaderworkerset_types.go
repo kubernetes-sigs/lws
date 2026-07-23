@@ -96,6 +96,10 @@ const (
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
+
+	// Enables or disables gang scheduling for a specific LeaderWorkerSet when a scheduler provider is enabled globally.
+	// Defaults to "true". Set to "false" to disable PodGroup creation and pod metadata injection.
+	EnableGangSchedulingAnnotationKey string = "leaderworkerset.sigs.k8s.io/enable-gang-scheduling"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.

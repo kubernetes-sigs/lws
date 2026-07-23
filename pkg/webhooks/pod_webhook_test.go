@@ -303,3 +303,61 @@ func TestGetSubGroupIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldInjectPodGroup(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "No annotation defaults to true",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: true,
+		},
+		{
+			name: "Annotation true",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "true",
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Annotation false",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "false",
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Invalid annotation defaults to true",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "invalid",
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldInjectPodGroup(tc.pod)
+			if result != tc.expected {
+				t.Errorf("Expected %t, got %t", tc.expected, result)
+			}
+		})
+	}
+}

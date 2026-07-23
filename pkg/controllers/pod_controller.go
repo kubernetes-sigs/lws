@@ -127,7 +127,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if r.SchedulerProvider != nil {
+	if r.SchedulerProvider != nil && shouldCreatePodGroup(&leaderWorkerSet) {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -418,6 +418,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
+	if lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.EnableGangSchedulingAnnotationKey] = lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]
+	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
@@ -471,4 +474,14 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return false
 		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+}
+
+func shouldCreatePodGroup(lws *leaderworkerset.LeaderWorkerSet) bool {
+	if val, ok := lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]; ok {
+		enabled, err := strconv.ParseBool(val)
+		if err == nil {
+			return enabled
+		}
+	}
+	return true
 }
