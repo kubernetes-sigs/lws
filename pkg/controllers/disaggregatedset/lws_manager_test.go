@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -392,6 +393,92 @@ func TestManagerCreate(t *testing.T) {
 		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
 		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
 		require.Equal(t, "val", lws.Annotations["note"])                // user annotation
+	})
+
+	t.Run("injects placement affinity into leader and worker templates", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
+			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
+				Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggregatedsetv1.PlacementPolicy{
+						Type:     disaggregatedsetv1.PlacementExclusiveTopology,
+						Topology: "topology.example.com/rack",
+					},
+				},
+			},
+			Role: "prefill", Slice: 1, Revision: "abc123", Replicas: 2,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: "test-deploy",
+				disaggregatedsetv1.RoleLabelKey:    "prefill",
+				disaggregatedsetv1.SliceLabelKey:   "1",
+			},
+			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+						Size:           ptr.To(int32(2)),
+						LeaderTemplate: &corev1.PodTemplateSpec{},
+						WorkerTemplate: corev1.PodTemplateSpec{},
+					},
+				}},
+			},
+		})
+		require.NoError(t, err)
+
+		var lws leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(),
+			client.ObjectKey{Name: "test-deploy-1-abc123-prefill", Namespace: "default"}, &lws))
+
+		// Both the leader and worker templates must carry the injected placement terms.
+		for name, tmpl := range map[string]*corev1.PodTemplateSpec{
+			"leader": lws.Spec.LeaderWorkerTemplate.LeaderTemplate,
+			"worker": &lws.Spec.LeaderWorkerTemplate.WorkerTemplate,
+		} {
+			require.NotNil(t, tmpl.Spec.Affinity, "%s affinity", name)
+			require.NotNil(t, tmpl.Spec.Affinity.PodAffinity, "%s podAffinity", name)
+			require.NotNil(t, tmpl.Spec.Affinity.PodAntiAffinity, "%s podAntiAffinity", name)
+
+			affTerms := tmpl.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+			require.Len(t, affTerms, 1, "%s podAffinity terms", name)
+			require.Equal(t, "topology.example.com/rack", affTerms[0].TopologyKey, "%s topologyKey", name)
+			require.Equal(t, []metav1.LabelSelectorRequirement{
+				{Key: disaggregatedsetv1.SetNameLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{"test-deploy"}},
+				{Key: disaggregatedsetv1.SliceLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{"1"}},
+			}, affTerms[0].LabelSelector.MatchExpressions, "%s podAffinity selector", name)
+
+			// ExclusiveTopology => same-set spread + cross-set exclusion = two anti-affinity terms.
+			require.Len(t, tmpl.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 2, "%s podAntiAffinity terms", name)
+		}
+	})
+
+	t.Run("no affinity injected without a placement policy", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
+			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
+			},
+			Role: "prefill", Slice: 0, Revision: "abc123", Replicas: 1,
+			Labels: map[string]string{disaggregatedsetv1.SetNameLabelKey: "test-deploy"},
+			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+						Size:           ptr.To(int32(2)),
+						LeaderTemplate: &corev1.PodTemplateSpec{},
+					},
+				}},
+			},
+		})
+		require.NoError(t, err)
+
+		var lws leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(),
+			client.ObjectKey{Name: "test-deploy-0-abc123-prefill", Namespace: "default"}, &lws))
+		require.Nil(t, lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Affinity, "worker affinity")
+		require.Nil(t, lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Affinity, "leader affinity")
 	})
 }
 

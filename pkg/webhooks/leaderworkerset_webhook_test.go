@@ -177,7 +177,7 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testPath := field.NewPath("test")
-			output := isNotMoreThan100Percent(tc.input, testPath)
+			output := IsNotMoreThan100Percent(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
 			}

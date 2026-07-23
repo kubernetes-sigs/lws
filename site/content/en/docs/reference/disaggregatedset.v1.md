@@ -258,6 +258,17 @@ Each slice is a complete set of all roles that rolls out independently.
 Changing Slices scales copies up or down and does not trigger a rollout.</p>
 </td>
 </tr>
+<tr><td><code>placementPolicy</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-PlacementPolicy"><code>PlacementPolicy</code></a>
+</td>
+<td>
+   <p>PlacementPolicy controls how a slice's roles are co-located and how the
+DisaggregatedSet's slices are spread across topology domains. When set, the
+controller injects pod affinity and anti-affinity into the managed
+LeaderWorkerSet pod templates. Placement is applied when a LeaderWorkerSet is
+created, so changing it takes effect on the next rollout.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -302,6 +313,54 @@ Each condition has a unique type and reflects the status of a specific aspect of
 </tr>
 </tbody>
 </table>
+
+## `PlacementPolicy`     {#disaggregatedset-x-k8s-io-v1-PlacementPolicy}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec)
+
+
+<p>PlacementPolicy controls topology placement of a DisaggregatedSet's slices.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>type</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-PlacementType"><code>PlacementType</code></a>
+</td>
+<td>
+   <p>Type selects the placement guarantee. Defaults to None.</p>
+</td>
+</tr>
+<tr><td><code>topology</code><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Topology is the node-label key that defines a domain, used as the affinity
+topologyKey. Required when Type is not None.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `PlacementType`     {#disaggregatedset-x-k8s-io-v1-PlacementType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [PlacementPolicy](#disaggregatedset-x-k8s-io-v1-PlacementPolicy)
+
+
+<p>PlacementType selects the DisaggregatedSet placement guarantee.</p>
+
+
+
 
 ## `RoleScaling`     {#disaggregatedset-x-k8s-io-v1-RoleScaling}
     

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -113,7 +114,8 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									RolloutStrategy: leaderworkerset.RolloutStrategy{
 										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-											Partition: ptr.To(int32(0)),
+											Partition:      ptr.To(int32(0)),
+											MaxUnavailable: intstr.FromInt32(1),
 										},
 									},
 								},
@@ -230,6 +232,310 @@ func TestValidateCreate(t *testing.T) {
 			expectError: true,
 			errorMsg:    "type",
 		},
+		{
+			name: "valid placement policy ExclusiveSlice with topology",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{Name: "prefill", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid placement policy missing topology",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{Type: disaggv1.PlacementExclusiveTopology},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{Name: "prefill", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "topology",
+		},
+		{
+			name: "invalid placement policy combined with LWS exclusive-topology annotation",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
+								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "exclusive-topology",
+		},
+		{
+			name: "invalid placement policy with exclusive-topology on the worker template",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+										WorkerTemplate: corev1.PodTemplateSpec{
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
+										},
+									},
+								},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "exclusive-topology",
+		},
+		{
+			name: "invalid placement policy combined with LWS subgroup-exclusive-topology annotation",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
+		{
+			name: "invalid placement policy with subgroup-exclusive-topology on the leader template",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+										LeaderTemplate: &corev1.PodTemplateSpec{
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+										},
+									},
+								},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
+		{
+			name: "invalid placement policy with subgroup-exclusive-topology on the worker template",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "cloud.google.com/gke-nodepool",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+										WorkerTemplate: corev1.PodTemplateSpec{
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+										},
+									},
+								},
+							},
+						},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subgroup-exclusive-topology",
+		},
+		{
+			name: "invalid: maxSurge=0 and maxUnavailable=0 with replicas > 0 (int literal)",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											MaxSurge:       intstr.FromInt32(0),
+											MaxUnavailable: intstr.FromInt32(0),
+										},
+									},
+								},
+							},
+						},
+						{
+							Name: "decode",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must not be 0 when `maxSurge` is 0",
+		},
+		{
+			name: "invalid: maxSurge=0% and maxUnavailable=0% with replicas > 0 (percentage)",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											MaxSurge:       intstr.FromString("0%"),
+											MaxUnavailable: intstr.FromString("0%"),
+										},
+									},
+								},
+							},
+						},
+						{
+							Name: "decode",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must not be 0 when `maxSurge` is 0",
+		},
+		{
+			name: "valid: maxSurge=0 and maxUnavailable=1 (only one is zero)",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											MaxSurge:       intstr.FromInt32(0),
+											MaxUnavailable: intstr.FromInt32(1),
+										},
+									},
+								},
+							},
+						},
+						{
+							Name: "decode",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(2)),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid: maxSurge=0 and maxUnavailable=0 but replicas=0 (zero-replica exemption)",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "prefill",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(0)),
+									RolloutStrategy: leaderworkerset.RolloutStrategy{
+										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+											MaxSurge:       intstr.FromInt32(0),
+											MaxUnavailable: intstr.FromInt32(0),
+										},
+									},
+								},
+							},
+						},
+						{
+							Name: "decode",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{
+									Replicas: ptr.To(int32(0)),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -311,6 +617,41 @@ func TestValidateUpdate(t *testing.T) {
 		_, err := webhook.ValidateUpdate(ctx, validObj, invalidObj)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "partition")
+	})
+
+	t.Run("invalid update: maxSurge=0 and maxUnavailable=0 with replicas > 0", func(t *testing.T) {
+		bothZero := &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Roles: []disaggv1.DisaggregatedRoleSpec{
+					{
+						Name: "prefill",
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+							Spec: leaderworkerset.LeaderWorkerSetSpec{
+								Replicas: ptr.To(int32(2)),
+								RolloutStrategy: leaderworkerset.RolloutStrategy{
+									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+										MaxSurge:       intstr.FromInt32(0),
+										MaxUnavailable: intstr.FromInt32(0),
+									},
+								},
+							},
+						},
+					},
+					{
+						Name: "decode",
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+							Spec: leaderworkerset.LeaderWorkerSetSpec{
+								Replicas: ptr.To(int32(2)),
+							},
+						},
+					},
+				},
+			},
+		}
+		_, err := webhook.ValidateUpdate(ctx, validObj, bothZero)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "must not be 0 when `maxSurge` is 0")
 	})
 }
 

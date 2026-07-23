@@ -72,6 +72,8 @@ INTEGRATION_TARGET ?= ./test/integration/...
 E2E_KIND_VERSION ?= kindest/node:v1.36.1
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
+LWS_UPGRADE_FROM_VERSION ?= v0.9.0
+UPGRADE_KIND_CLUSTER_NAME ?= lws-upgrade
 
 # For local testing, we should allow user to use different kind cluster name
 # Default will delete default kind cluster
@@ -175,6 +177,13 @@ test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 .PHONY: test-e2e
 test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: test-e2e-upgrade-manifests
+
+.PHONY: test-e2e-upgrade-manifests
+test-e2e-upgrade-manifests: kustomize manifests fmt vet ginkgo kind-image-build
+	LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-cert-manager
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build

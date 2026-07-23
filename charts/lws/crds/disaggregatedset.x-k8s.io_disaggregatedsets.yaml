@@ -41,6 +41,28 @@ spec:
             spec:
               description: spec defines the desired state of DisaggregatedSet
               properties:
+                placementPolicy:
+                  description: |-
+                    PlacementPolicy controls how a slice's roles are co-located and how the
+                    DisaggregatedSet's slices are spread across topology domains. When set, the
+                    controller injects pod affinity and anti-affinity into the managed
+                    LeaderWorkerSet pod templates. Placement is applied when a LeaderWorkerSet is
+                    created, so changing it takes effect on the next rollout.
+                  properties:
+                    topology:
+                      description: |-
+                        Topology is the node-label key that defines a domain, used as the affinity
+                        topologyKey. Required when Type is not None.
+                      type: string
+                    type:
+                      default: None
+                      description: Type selects the placement guarantee. Defaults to None.
+                      enum:
+                        - None
+                        - ExclusiveSlice
+                        - ExclusiveTopology
+                      type: string
+                  type: object
                 roles:
                   description: |-
                     Roles defines the list of roles (at least 2 required).
