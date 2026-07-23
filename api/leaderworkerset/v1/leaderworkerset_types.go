@@ -113,6 +113,10 @@ const (
 	// in both group identity modes, so that pod admission can inject
 	// LWS_LEADER_ADDRESS without recomputing it.
 	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
+
+	// Enables or disables gang scheduling for a specific LeaderWorkerSet when a scheduler provider is enabled globally.
+	// Defaults to "true". Set to "false" to disable PodGroup creation and pod metadata injection.
+	EnableGangSchedulingAnnotationKey string = "leaderworkerset.sigs.k8s.io/enable-gang-scheduling"
 )
 
 // GroupReadyConditionType is the pod readiness gate condition set on leader pods when
