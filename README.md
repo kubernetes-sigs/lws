@@ -21,9 +21,9 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
   - **Parallel creation:** Pods in the group will have the same lifecycle and be created in parallel.
   - **Gang Scheduling:** Each replica with a group of pods can be scheduled in an all-or-nothing manner (Alpha level, API may change in the future).
-- **Dual-template, one for leader and one for the workers:** A replica is a group of a single leader and a set of workers, and allow to specify a template for the workers and optionally use a second one for the leader pod.
-- **Multiple groups with identical specifications:** Supports creating multiple “replicas” of the above mentioned group. Each group is a single unit for rolling update, scaling, and maps to a single exclusive topology for placement.
-- **A scale subresource:** A scale endpoint is exposed for HPA to dynamically scale the number replicas (aka number of groups)
+- **Dual-template, one for leader and one for the workers:** A replica is a group of a single leader and a set of workers, and allows specifying a template for the workers and optionally using a second one for the leader pod.
+- **Multiple groups with identical specifications:** Supports creating multiple “replicas” of the above-mentioned group. Each group is a single unit for rolling update, scaling, and maps to a single exclusive topology for placement.
+- **A scale subresource:** A scale endpoint is exposed for HPA to dynamically scale the number of replicas (aka number of groups)
 - **Rollout and Rolling update:** Supports performing rollout and rolling update at the group level, which means the groups are upgraded one by one as a unit (i.e. the pods within a group are updated together).
 - **Topology-aware placement:** Opt-in support for pods in the same group to be co-located in the same topology.
 - **All-or-nothing restart for failure handling:** Opt-in support for all pods in the group to be recreated if one pod in the group failed or one container in the pods is restarted.
