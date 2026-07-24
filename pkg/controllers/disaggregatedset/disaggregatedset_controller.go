@@ -229,29 +229,37 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 
 // setDisaggregatedSetCondition records newCondition as true and, since Available and
 // Progressing are mutually exclusive, marks any other true condition as false.
-// Returns whether the status changed.
+// LastTransitionTime is only touched when a condition's Status actually flips, per
+// the metav1.Condition contract; a same-Status update (e.g. only ObservedGeneration
+// changed) must not look like a fresh transition to clients. Returns whether the
+// status changed.
 func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, newCondition metav1.Condition) bool {
-	newCondition.LastTransitionTime = metav1.Now()
+	now := metav1.Now()
 	changed, found := false, false
 
 	for i, cond := range disaggregatedSet.Status.Conditions {
 		if cond.Type == newCondition.Type {
 			found = true
-			if cond.Status != newCondition.Status || cond.ObservedGeneration != newCondition.ObservedGeneration {
+			if cond.Status != newCondition.Status {
+				newCondition.LastTransitionTime = now
 				disaggregatedSet.Status.Conditions[i] = newCondition
+				changed = true
+			} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
+				disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
 				changed = true
 			}
 			continue
 		}
 		if cond.Status == metav1.ConditionTrue {
 			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
-			disaggregatedSet.Status.Conditions[i].LastTransitionTime = newCondition.LastTransitionTime
+			disaggregatedSet.Status.Conditions[i].LastTransitionTime = now
 			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
 			changed = true
 		}
 	}
 
 	if !found {
+		newCondition.LastTransitionTime = now
 		disaggregatedSet.Status.Conditions = append(disaggregatedSet.Status.Conditions, newCondition)
 		changed = true
 	}
