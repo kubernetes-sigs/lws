@@ -172,9 +172,13 @@ type LeaderWorkerTemplate struct {
 	// The former named Default policy is deprecated, will be removed in the future,
 	// replace with None policy for the same behavior.
 	// +kubebuilder:default=RecreateGroupOnPodRestart
-	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart,RecreateGroupAfterStart,None}
+	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart,RecreateGroupAfterStart,InPlaceGroupRestart,None}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// inPlaceGroupRestartConfig describes the configuration for InPlaceGroupRestart.
+	// +optional
+	InPlaceGroupRestartConfig *InPlaceGroupRestartConfig `json:"inPlaceGroupRestartConfig,omitempty"`
 
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
@@ -343,6 +347,10 @@ const (
 	// version of RecreateGroupOnPodRestart that waits for initial deployment stability.
 	RecreateGroupAfterStart RestartPolicyType = "RecreateGroupAfterStart"
 
+	// InPlaceGroupRestart will restart all containers in the group synchronously
+	// in place when a triggering container crashes, using K8s 1.36+ RestartAllContainers.
+	InPlaceGroupRestart RestartPolicyType = "InPlaceGroupRestart"
+
 	// Default will follow the same behavior as the StatefulSet where only the failed pod
 	// will be restarted on failure and other pods in the group will not be impacted.
 	//
@@ -353,6 +361,59 @@ const (
 	// will be restarted on failure and other pods in the group will not be impacted.
 	NoneRestartPolicy RestartPolicyType = "None"
 )
+
+// PodRole defines the role of the pod in the group.
+type PodRole string
+
+const (
+	// LeaderRole indicates the leader pod.
+	LeaderRole PodRole = "Leader"
+	// WorkerRole indicates the worker pod.
+	WorkerRole PodRole = "Worker"
+	// BothRole indicates both leader and worker pods.
+	BothRole PodRole = "Both"
+)
+
+// InPlaceGroupRestartTrigger defines which container exits trigger a group restart.
+type InPlaceGroupRestartTrigger struct {
+	// role indicates whether the container exists in the Leader, Worker, or Both.
+	// +kubebuilder:validation:Enum=Leader;Worker;Both
+	Role PodRole `json:"role"`
+
+	// containerName specifies which container's failure initiates a group restart.
+	ContainerName string `json:"containerName"`
+
+	// recoverableExitCodes are the exit codes that natively trigger RestartAllContainers.
+	// +kubebuilder:validation:MinItems=1
+	RecoverableExitCodes []int32 `json:"recoverableExitCodes"`
+}
+
+// InPlaceGroupRestartConfig configures the escalation behavior and triggers for InPlaceGroupRestart.
+type InPlaceGroupRestartConfig struct {
+	// triggers specify which container failures initiate a group restart.
+	// +optional
+	Triggers []InPlaceGroupRestartTrigger `json:"triggers,omitempty"`
+
+	// maxAttempts is the maximum number of in-place restarts a single group may undergo
+	// within the window before the controller escalates to full group recreation.
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxAttempts int32 `json:"maxAttempts,omitempty"`
+
+	// windowSeconds is the rolling time window in seconds over which MaxAttempts is counted.
+	// +kubebuilder:default=600
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	WindowSeconds int32 `json:"windowSeconds,omitempty"`
+
+	// recoveryTimeoutSeconds is the maximum duration in seconds allowed for one
+	// coordinated in-place restart attempt.
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RecoveryTimeoutSeconds int32 `json:"recoveryTimeoutSeconds,omitempty"`
+}
 
 type StartupPolicyType string
 

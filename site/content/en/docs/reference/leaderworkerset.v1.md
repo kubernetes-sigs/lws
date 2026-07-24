@@ -48,6 +48,95 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </tbody>
 </table>
 
+## `InPlaceGroupRestartConfig`     {#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartConfig}
+    
+
+**Appears in:**
+
+- [LeaderWorkerTemplate](#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate)
+
+
+<p>InPlaceGroupRestartConfig configures the escalation behavior and triggers for InPlaceGroupRestart.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>triggers</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartTrigger"><code>[]InPlaceGroupRestartTrigger</code></a>
+</td>
+<td>
+   <p>triggers specify which container failures initiate a group restart.</p>
+</td>
+</tr>
+<tr><td><code>maxAttempts</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>maxAttempts is the maximum number of in-place restarts a single group may undergo
+within the window before the controller escalates to full group recreation.</p>
+</td>
+</tr>
+<tr><td><code>windowSeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>windowSeconds is the rolling time window in seconds over which MaxAttempts is counted.</p>
+</td>
+</tr>
+<tr><td><code>recoveryTimeoutSeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>recoveryTimeoutSeconds is the maximum duration in seconds allowed for one
+coordinated in-place restart attempt.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `InPlaceGroupRestartTrigger`     {#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartTrigger}
+    
+
+**Appears in:**
+
+- [InPlaceGroupRestartConfig](#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartConfig)
+
+
+<p>InPlaceGroupRestartTrigger defines which container exits trigger a group restart.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>role</code> <B>[Required]</B><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PodRole"><code>PodRole</code></a>
+</td>
+<td>
+   <p>role indicates whether the container exists in the Leader, Worker, or Both.</p>
+</td>
+</tr>
+<tr><td><code>containerName</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>containerName specifies which container's failure initiates a group restart.</p>
+</td>
+</tr>
+<tr><td><code>recoverableExitCodes</code> <B>[Required]</B><br/>
+<code>[]int32</code>
+</td>
+<td>
+   <p>recoverableExitCodes are the exit codes that natively trigger RestartAllContainers.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
 
@@ -234,6 +323,13 @@ The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
 </tr>
+<tr><td><code>inPlaceGroupRestartConfig</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartConfig"><code>InPlaceGroupRestartConfig</code></a>
+</td>
+<td>
+   <p>inPlaceGroupRestartConfig describes the configuration for InPlaceGroupRestart.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
@@ -287,6 +383,20 @@ the headless service, defaults to shared</p>
 </tr>
 </tbody>
 </table>
+
+## `PodRole`     {#leaderworkerset-x-k8s-io-v1-PodRole}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [InPlaceGroupRestartTrigger](#leaderworkerset-x-k8s-io-v1-InPlaceGroupRestartTrigger)
+
+
+<p>PodRole defines the role of the pod in the group.</p>
+
+
+
 
 ## `RestartPolicyType`     {#leaderworkerset-x-k8s-io-v1-RestartPolicyType}
     

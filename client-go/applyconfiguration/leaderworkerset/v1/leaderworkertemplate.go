@@ -47,6 +47,8 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// The former named Default policy is deprecated, will be removed in the future,
 	// replace with None policy for the same behavior.
 	RestartPolicy *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	// inPlaceGroupRestartConfig describes the configuration for InPlaceGroupRestart.
+	InPlaceGroupRestartConfig *InPlaceGroupRestartConfigApplyConfiguration `json:"inPlaceGroupRestartConfig,omitempty"`
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
 	SubGroupPolicy *SubGroupPolicyApplyConfiguration `json:"subGroupPolicy,omitempty"`
@@ -95,6 +97,14 @@ func (b *LeaderWorkerTemplateApplyConfiguration) WithSize(value int32) *LeaderWo
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *LeaderWorkerTemplateApplyConfiguration) WithRestartPolicy(value leaderworkersetv1.RestartPolicyType) *LeaderWorkerTemplateApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithInPlaceGroupRestartConfig sets the InPlaceGroupRestartConfig field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the InPlaceGroupRestartConfig field is set to the value of the last call.
+func (b *LeaderWorkerTemplateApplyConfiguration) WithInPlaceGroupRestartConfig(value *InPlaceGroupRestartConfigApplyConfiguration) *LeaderWorkerTemplateApplyConfiguration {
+	b.InPlaceGroupRestartConfig = value
 	return b
 }
 

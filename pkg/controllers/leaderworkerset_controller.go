@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/lws/pkg/inplacerestart"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/utils"
@@ -779,6 +780,9 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	}
+
+	inplacerestart.InjectPodSpec(&podTemplateSpec.Spec, lws, leaderworkerset.LeaderRole)
+
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
