@@ -178,7 +178,10 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 }
 
 // updateScalerStatus sums pod counts across all slices/revisions per role and
-// writes the aggregate to each controlled scaler's status.
+// writes the aggregate to each controlled scaler's status. LWS status.replicas
+// counts groups, not pods, so we multiply by leaderWorkerTemplate.size to get
+// the pod count that HPA needs for per-pod-metric averaging (its selector
+// matches groups × size pods, so the count must too).
 func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
@@ -197,7 +200,11 @@ func (r *DisaggregatedSetReconciler) updateScalerStatus(
 		if _, ok := scalers[role]; !ok {
 			continue
 		}
-		observed[role] += lws.Status.Replicas
+		size := int32(1)
+		if lws.Spec.LeaderWorkerTemplate.Size != nil {
+			size = *lws.Spec.LeaderWorkerTemplate.Size
+		}
+		observed[role] += lws.Status.Replicas * size
 	}
 	return r.ScalerManager.WriteStatus(ctx, ds, scalers, observed)
 }
