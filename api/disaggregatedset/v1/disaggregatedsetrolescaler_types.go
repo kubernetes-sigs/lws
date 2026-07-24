@@ -46,16 +46,19 @@ type DisaggregatedSetRoleScalerSpec struct {
 // DisaggregatedSetRoleScalerStatus is the observed state written back by the
 // DisaggregatedSet controller.
 type DisaggregatedSetRoleScalerStatus struct {
-	// Replicas is the observed pod count for this role, aggregated across all
-	// revisions currently present. Read by HPA as the "current" replica count.
+	// Replicas is the observed replica count for this role — LWS groups
+	// (== leader pods), aggregated across all revisions currently present.
+	// Read by HPA as the "current" count for its ratio math.
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// Selector is a label selector (in string form) matching all pods for this
-	// role across all revisions:
-	//   disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>
-	// Aggregate (revision-agnostic) so HPA sees the actual serving fleet during
-	// a rolling update.
+	// Selector is a label selector (in string form) matching one pod per LWS
+	// group (the leader), across all revisions:
+	//   disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0
+	// Leader-only so HPA's per-pod-metric averaging divides by group count
+	// (matching spec.replicas that HPA writes), keeping the ratio math
+	// consistent for leaderWorkerTemplate.size > 1. Aggregate across
+	// revisions so HPA observes the serving fleet during a rolling update.
 	// +optional
 	Selector string `json:"selector,omitempty"`
 

@@ -189,19 +189,22 @@ DisaggregatedSet controller.</p>
 <code>int32</code>
 </td>
 <td>
-   <p>Replicas is the observed pod count for this role, aggregated across all
-revisions currently present. Read by HPA as the &quot;current&quot; replica count.</p>
+   <p>Replicas is the observed replica count for this role — LWS groups
+(== leader pods), aggregated across all revisions currently present.
+Read by HPA as the &quot;current&quot; count for its ratio math.</p>
 </td>
 </tr>
 <tr><td><code>selector</code><br/>
 <code>string</code>
 </td>
 <td>
-   <p>Selector is a label selector (in string form) matching all pods for this
-role across all revisions:
-disaggregatedset.x-k8s.io/name=<!-- raw HTML omitted -->,disaggregatedset.x-k8s.io/role=<!-- raw HTML omitted -->
-Aggregate (revision-agnostic) so HPA sees the actual serving fleet during
-a rolling update.</p>
+   <p>Selector is a label selector (in string form) matching one pod per LWS
+group (the leader), across all revisions:
+disaggregatedset.x-k8s.io/name=<!-- raw HTML omitted -->,disaggregatedset.x-k8s.io/role=<!-- raw HTML omitted -->,leaderworkerset.sigs.k8s.io/worker-index=0
+Leader-only so HPA's per-pod-metric averaging divides by group count
+(matching spec.replicas that HPA writes), keeping the ratio math
+consistent for leaderWorkerTemplate.size &gt; 1. Aggregate across
+revisions so HPA observes the serving fleet during a rolling update.</p>
 </td>
 </tr>
 <tr><td><code>observedGeneration</code><br/>

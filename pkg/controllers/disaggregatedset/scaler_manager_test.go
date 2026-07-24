@@ -172,7 +172,7 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
 	assert.EqualValues(t, 4, got.Status.Replicas)
-	assert.Equal(t, "disaggregatedset.x-k8s.io/name=myds,disaggregatedset.x-k8s.io/role=prefill", got.Status.Selector)
+	assert.Equal(t, "disaggregatedset.x-k8s.io/name=myds,disaggregatedset.x-k8s.io/role=prefill,leaderworkerset.sigs.k8s.io/worker-index=0", got.Status.Selector)
 	require.Len(t, got.Status.Conditions, 1)
 	assert.Equal(t, metav1.ConditionTrue, got.Status.Conditions[0].Status)
 }

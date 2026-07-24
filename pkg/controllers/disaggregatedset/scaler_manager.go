@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
@@ -173,9 +174,17 @@ func (m *ScalerManager) WriteStatus(
 	for role, s := range scalers {
 		desired := s.DeepCopy()
 		desired.Status.Replicas = observedReplicas[role]
-		desired.Status.Selector = fmt.Sprintf("%s=%s,%s=%s",
+		// Selector filters to leader pods only (worker-index=0), one per LWS
+		// group. HPA's per-pod-metric averaging divides its metric sum by the
+		// count of matching pods; because spec.replicas (what HPA writes) and
+		// status.replicas (what HPA reads) both count LWS groups, the selector
+		// must match one pod per group for the ratio math to stay consistent.
+		// Users typically want to scale on the leader's signal anyway (leader
+		// handles ingress; workers are downstream compute).
+		desired.Status.Selector = fmt.Sprintf("%s=%s,%s=%s,%s=0",
 			disaggregatedsetv1.SetNameLabelKey, ds.Name,
-			disaggregatedsetv1.RoleLabelKey, role)
+			disaggregatedsetv1.RoleLabelKey, role,
+			leaderworkersetv1.WorkerIndexLabelKey)
 		desired.Status.ObservedGeneration = s.Generation
 		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
 			Type: disaggregatedsetv1.DisaggregatedSetRoleScalerReady, Status: metav1.ConditionTrue,

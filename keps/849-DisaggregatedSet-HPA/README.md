@@ -333,16 +333,16 @@ Reconcile latency for a scaler-triggered event is a single controller hop.
 
 The DS controller writes back to each scaler's status at the end of every reconcile:
 
-- `status.replicas`: the total observed pod count for this role across all revisions currently present (new + any draining old). HPA reads this as the "current" pod count and computes desired replicas from it.
-- `status.selector`: a stable, aggregate selector matching all pods for this (DS, role) regardless of revision — `disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>`. Because the label set on the pods stays the same across revisions, this value is written once at scaler creation and never rewritten during a rollout.
+- `status.replicas`: the observed replica count for this role — LWS groups (== leader pods), aggregated across all revisions currently present (new + any draining old). HPA reads this as the "current" count. Same unit as `spec.replicas` (what HPA writes), so its ratio math stays consistent.
+- `status.selector`: a stable selector matching one pod per LWS group (the leader), across all revisions — `disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0`. Leader-only because HPA's per-pod-metric averaging divides the metric sum by the count of matching pods, and that divisor has to equal `status.replicas` (group count) for the ratio math to work when `leaderWorkerTemplate.size > 1`. Users typically want to scale on the leader's signal anyway (leader handles ingress, workers are downstream compute). Because the label set on leader pods stays the same across revisions, this value is written once at scaler creation and never rewritten during a rollout.
 - `status.observedGeneration`: `scaler.Generation`.
-- `status.conditions`: `Ready` — True when the scaler is bound to a live DS + role and `status.replicas` reflects the observed pod count. False during transient reconcile errors.
+- `status.conditions`: `Ready` — True when the scaler is bound to a live DS + role and `status.replicas` reflects the observed leader count. False during transient reconcile errors.
 
 ### Rolling Update Interaction
 
 `scaler.spec.replicas` is the target for the role's post-rollout steady state. The DS controller feeds it as the new-revision LeaderWorkerSet's target; old revisions continue to drain on the schedule the planner set at rollout start (the pre-existing `initial-replicas` annotation mechanism), independent of the scaler.
 
-Because `status.selector` is aggregate and `status.replicas` sums pods across all revisions, HPA sees the actual serving fleet during a rolling update and its math stays self-consistent — it computes desired from the same pod set it reads current from, and its write becomes the new-revision target as the old revision drains to zero.
+Because `status.selector` is leader-only and aggregate across revisions, HPA sees the serving fleet's leaders during a rolling update and its math stays self-consistent — the count HPA divides its metric by (`status.replicas`, LWS groups) matches the number of pods its selector matches (one leader per group), and the value it writes (`spec.replicas`, LWS groups) becomes the new-revision target as the old revision drains to zero.
 
 One safety guard: between planner iterations, the new-revision target is never allowed to fall below the current new-revision replica count. If an HPA scale-down arrives mid-rollout, its requested value is floored to what's already in flight — the new-revision fleet stops growing but does not shrink. Once the rollout completes, the guard releases and the target tracks the scaler exactly.
 
@@ -363,7 +363,7 @@ This has three unresolved implications for scaler-driven roles:
    - **Aggregate** — value is total across slices; controller divides among slices. Matches HPA's usual mental model.
    - **Per-slice scaler CR** — one scaler per (DS, role, slice). Explicit; combinatorial (`roles × slices` scalers per DS).
    - **Per-role, applied per-slice** — value is *per slice*, consistent with `spec.roles[].spec.replicas`. UX footgun: HPA sets N, gets N × slices pods.
-2. **`status.selector` across slices.** The aggregate selector used in the single-slice design (`disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>`) would match pods across all slices too. That's the right shape if the scaler covers all slices (aggregate scope), but wrong if per-slice scalers are chosen — those would need to add a `disaggregatedset.x-k8s.io/slice=<slice>` filter.
+2. **`status.selector` across slices.** The leader-only selector used in the single-slice design (`disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0`) would match leaders across all slices too. That's the right shape if the scaler covers all slices (aggregate scope), but wrong if per-slice scalers are chosen — those would need to add a `disaggregatedset.x-k8s.io/slice=<slice>` filter.
 3. **Concurrent per-slice rollouts.** Each slice runs its own rolling update on its own clock (that's the point of the slices feature), so a single role can be mid-rollout in one slice and steady-state in another simultaneously. The current no-shrink guard (which prevents the new-revision target from falling below the current in-flight count) tracks state per role; with slices it would have to track state per `(slice, role)` pair, or an HPA scale-up seen against one slice's in-flight count could incorrectly clamp another slice.
 
 **Alpha scope: `spec.slices` must be 1 (default).** The DS webhook rejects a `spec.slices > 1` value while any role has `scaling.mode: External`. Since the scaler is auto-created only after this validation passes, no scaler ever exists in the multi-slice case. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.
