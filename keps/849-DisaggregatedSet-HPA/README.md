@@ -152,7 +152,7 @@ An SRE pushes a new container image. A rolling update starts. Meanwhile, request
 
 **Risk**: Users configure inline `replicas` and set `scaling.mode: External` on the same role, causing confusion about which wins.
 
-**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. A CEL rule on `DisaggregatedRoleSpec` forbids `spec.replicas > 0` when `scaling.mode == External`. The all-or-nothing CEL rule on `DisaggregatedSetSpec` is scoped to non-External roles.
+**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. The webhook emits an admission warning when an External role sets `spec.replicas > 1` (values 0 and 1 are indistinguishable after CRD defaulting: `LeaderWorkerSetSpec.Replicas` carries `+kubebuilder:default=1` and defaulting runs before CEL, so a CEL rejection of `spec.replicas > 0` would fire on every External role). The all-or-nothing CEL rule on `DisaggregatedSetSpec` is scoped to non-External roles.
 
 **Risk**: The autoscaler is not yet applied (or has never written) when the DS is applied, or a role is flipped from `Static` to `External` while serving traffic — in production this must not silently drain the role to 0.
 
