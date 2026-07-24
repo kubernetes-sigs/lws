@@ -144,24 +144,37 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return result, errors.Join(errs...)
 }
 
-// seedForRole returns a callback that yields the aggregate spec.replicas
-// across all LWS revisions for a role, used to seed a newly-created scaler so
-// a Static→External flip does not drain the running fleet to 0.
+// seedForRole returns a callback that yields the initial spec.replicas value
+// for a newly-created scaler. For a Static→External flip the seed is the
+// role's current aggregate LWS replica count so the running fleet is not
+// drained to 0. For a fresh role (no LWS yet) the seed is 1 rather than 0 so
+// vanilla HPA can bootstrap via minReplicas — HPA parks in ScalingDisabled
+// when it reads current=0 from /scale, regardless of minReplicas, unless the
+// HPAScaleToZero feature gate is enabled. Autoscalers that support scale-from-
+// zero (KEDA, HPA with the gate flipped) can still take the role down to 0
+// after attach.
 func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(string) int32, error) {
 	all, err := r.LWSManager.List(ctx, ds.Namespace, ds.Name, -1, "")
 	if err != nil {
 		return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
 	}
 	sums := make(map[string]int32)
+	seen := make(map[string]bool)
 	for _, lws := range all {
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		seen[role] = true
 		if lws.Spec.Replicas != nil {
 			sums[role] += *lws.Spec.Replicas
 		} else {
 			sums[role]++
 		}
 	}
-	return func(role string) int32 { return sums[role] }, nil
+	return func(role string) int32 {
+		if !seen[role] {
+			return 1
+		}
+		return sums[role]
+	}, nil
 }
 
 // updateScalerStatus sums pod counts across all slices/revisions per role and

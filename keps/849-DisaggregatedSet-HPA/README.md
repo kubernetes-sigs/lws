@@ -87,7 +87,7 @@ To opt into external scaling, the user:
 1. Sets `scaling.mode: External` on the role inside the `DisaggregatedSet` spec.
 2. Creates an HPA (or KEDA `ScaledObject`) whose `scaleTargetRef` names the deterministic scaler (`<ds>-<role>`).
 
-That's it. The scaler CR appears on the next DS reconcile — the user does not author it. The autoscaler is responsible for the first write to `spec.replicas` (HPA enforces its `minReplicas` floor unconditionally; KEDA writes via its scale-from-zero paths; custom autoscalers with their own floor bootstrap themselves). Until that first write, the role is held at 0 replicas and the DS reports a `WaitingForScaler` condition.
+That's it. The scaler CR appears on the next DS reconcile — the user does not author it. The controller seeds `spec.replicas` at creation time so vanilla HPA can attach: a fresh role is seeded at `1` (HPA parks in `ScalingDisabled` when it reads `current=0` from `/scale`, so seeding at 0 would deadlock the bootstrap), and a role transitioning from `Static` to `External` is seeded at its current LWS replica count so the running fleet is not drained. Autoscalers that support scale-from-zero (KEDA, or HPA with the `HPAScaleToZero` feature gate) can still take the role down to 0 after attach.
 
 The DisaggregatedSet controller reads the desired replica count for each External role from its scaler's `spec.replicas` on every reconcile and writes back `scaler.status.replicas` and `scaler.status.selector` so the HPA loop closes.
 
@@ -134,7 +134,7 @@ spec:
         threshold: "10"
 ```
 
-The same layout works with vanilla HPA v2 — just swap the `ScaledObject` for a `HorizontalPodAutoscaler` targeting `my-llm-serving-prefill`. HPA enforces `minReplicas` unconditionally, so the role bootstraps from zero on the first HPA tick.
+The same layout works with vanilla HPA v2 — just swap the `ScaledObject` for a `HorizontalPodAutoscaler` targeting `my-llm-serving-prefill`. The controller seeds a fresh scaler at `spec.replicas: 1` (see the seeding note in the previous section), so HPA's first `/scale` read returns a non-zero current and HPA leaves `ScalingDisabled=False`.
 
 #### Story 2: Rolling update while HPA is active
 
@@ -156,11 +156,11 @@ An SRE pushes a new container image. A rolling update starts. Meanwhile, request
 
 **Risk**: The autoscaler is not yet applied (or has never written) when the DS is applied, or a role is flipped from `Static` to `External` while serving traffic — in production this must not silently drain the role to 0.
 
-**Mitigation**: The controller **never scales an existing LeaderWorkerSet down as a side effect of switching to `External`**. Concretely, when the scaler for an External role has `spec.replicas: nil` (no autoscaler write yet):
-- If the role's LWS **does not exist yet** (fresh DisaggregatedSet, or newly added role), it is created at 0 replicas and `WaitingForScaler` is reported.
-- If the role's LWS **already exists** (e.g. a role that was `Static` with 5 replicas is switched to `External`), the controller holds it at its current replica count. The rolling-update planner behaves the same way: it clamps `targetNew` to the current in-flight value rather than shrinking. `WaitingForScaler` is still reported so operators can see that an autoscaler is expected.
+**Mitigation**: The controller **never scales an existing LeaderWorkerSet down as a side effect of switching to `External`**. Concretely, when the controller creates the scaler for an External role it seeds `spec.replicas` based on the role's LWS state:
+- If the role's LWS **does not exist yet** (fresh DisaggregatedSet, or newly added role), the scaler is seeded at `1` and the LWS is created at `1` replica. Seeding at `1` (rather than `0`) is what lets vanilla HPA attach — HPA parks in `ScalingDisabled` if it reads `current=0` from `/scale`, regardless of `minReplicas`, unless the `HPAScaleToZero` feature gate is enabled.
+- If the role's LWS **already exists** (e.g. a role that was `Static` with 5 replicas is switched to `External`), the scaler is seeded at the current replica count and the controller holds the LWS there. The rolling-update planner behaves the same way: it clamps `targetNew` to the current in-flight value rather than shrinking.
 
-Once the autoscaler makes its first write, the LWS scales to that value on the next reconcile. HPA and KEDA both write `minReplicas` / `minReplicaCount` unconditionally when the target is below the floor, so the "hold" window closes quickly. Custom autoscalers that only observe per-pod metrics and lack a min-replicas floor must issue a one-time `kubectl scale` to bootstrap.
+Once the autoscaler attaches, HPA and KEDA both write `minReplicas` / `minReplicaCount` unconditionally when the target is below the floor, and the LWS scales to that value on the next reconcile. Autoscalers that support scale-from-zero (KEDA, or HPA with `HPAScaleToZero`) can take the role down to 0 after attach. Custom autoscalers that only observe per-pod metrics and lack a min-replicas floor must issue a one-time `kubectl scale` to bootstrap.
 
 **Risk**: A user deletes the auto-created scaler expecting it to stay gone.
 
