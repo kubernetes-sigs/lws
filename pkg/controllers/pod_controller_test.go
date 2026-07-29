@@ -231,7 +231,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Annotation(map[string]string{
 					leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
-				}).Size(2).SubGroupSize(2).Obj(),
+				}).Size(2).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).Obj(),
 			wantStatefulSetConfig: &appsapplyv1.StatefulSetApplyConfiguration{
 				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
 					Kind:       ptr.To[string]("StatefulSet"),
@@ -272,6 +272,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/leader-name":         "test-sample",
 								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   "LeaderExcluded",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
