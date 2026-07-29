@@ -8675,6 +8675,33 @@ spec:
                       subGroupPolicy describes the policy that will be applied when creating subgroups
                       in each replica.
                     properties:
+                      subGroupPlacement:
+                        description: |-
+                          subGroupPlacement explicitly assigns workers to subgroups and constrains
+                          each subgroup to nodes matching the given labels. This field is only
+                          supported with LeaderExcluded and is mutually exclusive with subGroupSize.
+                        items:
+                          description: SubGroupPlacement explicitly describes one
+                            subgroup's members and node labels.
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: matchLabels are merged into required node
+                                affinity for all workers in this subgroup.
+                              type: object
+                            workerIndexes:
+                              description: workerIndexes contains the worker indexes
+                                assigned to this subgroup.
+                              items:
+                                format: int32
+                                type: integer
+                              type: array
+                          required:
+                          - matchLabels
+                          - workerIndexes
+                          type: object
+                        type: array
                       subGroupPolicyType:
                         default: LeaderWorker
                         description: |-
