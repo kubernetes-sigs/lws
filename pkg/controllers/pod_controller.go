@@ -113,18 +113,18 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset or headless service
+	// this is critical to avoid race condition in all-or-nothing restart where resources may be created
+	// when the leader pod is being deleted
+	if pod.DeletionTimestamp != nil {
+		log.V(2).Info("skip creating worker sts and headless service since the leader pod is being deleted")
+		return ctrl.Result{}, nil
+	}
+
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-
-	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset
-	// this is critical to avoid race condition in all-or-nothing restart where the worker sts may be created
-	// when the leader pod is being deleted
-	if pod.DeletionTimestamp != nil {
-		log.V(2).Info("skip creating the worker sts since the leader pod is being deleted")
-		return ctrl.Result{}, nil
 	}
 
 	if r.SchedulerProvider != nil {
