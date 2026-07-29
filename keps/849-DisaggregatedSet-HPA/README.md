@@ -87,7 +87,7 @@ To opt into external scaling, the user:
 1. Sets `scaling.mode: External` on the role inside the `DisaggregatedSet` spec.
 2. Creates an HPA (or KEDA `ScaledObject`) whose `scaleTargetRef` names the deterministic scaler (`<ds>-<role>`).
 
-That's it. The scaler CR appears on the next DS reconcile — the user does not author it. The autoscaler is responsible for the first write to `spec.replicas` (HPA enforces its `minReplicas` floor unconditionally; KEDA writes via its scale-from-zero paths; custom autoscalers with their own floor bootstrap themselves). Until that first write, the role is held at 0 replicas and the DS reports a `WaitingForScaler` condition.
+That's it. The scaler CR appears on the next DS reconcile — the user does not author it. The controller seeds `spec.replicas` at creation time so vanilla HPA can attach: a fresh role is seeded at `1` (HPA parks in `ScalingDisabled` when it reads `current=0` from `/scale`, so seeding at 0 would deadlock the bootstrap), and a role transitioning from `Static` to `External` is seeded at its current LWS replica count so the running fleet is not drained. Autoscalers that support scale-from-zero (KEDA, or HPA with the `HPAScaleToZero` feature gate) can still take the role down to 0 after attach.
 
 The DisaggregatedSet controller reads the desired replica count for each External role from its scaler's `spec.replicas` on every reconcile and writes back `scaler.status.replicas` and `scaler.status.selector` so the HPA loop closes.
 
@@ -134,7 +134,7 @@ spec:
         threshold: "10"
 ```
 
-The same layout works with vanilla HPA v2 — just swap the `ScaledObject` for a `HorizontalPodAutoscaler` targeting `my-llm-serving-prefill`. HPA enforces `minReplicas` unconditionally, so the role bootstraps from zero on the first HPA tick.
+The same layout works with vanilla HPA v2 — just swap the `ScaledObject` for a `HorizontalPodAutoscaler` targeting `my-llm-serving-prefill`. The controller seeds a fresh scaler at `spec.replicas: 1` (see the seeding note in the previous section), so HPA's first `/scale` read returns a non-zero current and HPA leaves `ScalingDisabled=False`.
 
 #### Story 2: Rolling update while HPA is active
 
@@ -152,15 +152,15 @@ An SRE pushes a new container image. A rolling update starts. Meanwhile, request
 
 **Risk**: Users configure inline `replicas` and set `scaling.mode: External` on the same role, causing confusion about which wins.
 
-**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. A CEL rule on `DisaggregatedRoleSpec` forbids `spec.replicas > 0` when `scaling.mode == External`. The all-or-nothing CEL rule on `DisaggregatedSetSpec` is scoped to non-External roles.
+**Mitigation**: An explicit `scaling.mode` enum on the role makes intent visible in the DS spec. The webhook emits an admission warning when an External role sets `spec.replicas > 1` (values 0 and 1 are indistinguishable after CRD defaulting: `LeaderWorkerSetSpec.Replicas` carries `+kubebuilder:default=1` and defaulting runs before CEL, so a CEL rejection of `spec.replicas > 0` would fire on every External role). The all-or-nothing CEL rule on `DisaggregatedSetSpec` is scoped to non-External roles.
 
 **Risk**: The autoscaler is not yet applied (or has never written) when the DS is applied, or a role is flipped from `Static` to `External` while serving traffic — in production this must not silently drain the role to 0.
 
-**Mitigation**: The controller **never scales an existing LeaderWorkerSet down as a side effect of switching to `External`**. Concretely, when the scaler for an External role has `spec.replicas: nil` (no autoscaler write yet):
-- If the role's LWS **does not exist yet** (fresh DisaggregatedSet, or newly added role), it is created at 0 replicas and `WaitingForScaler` is reported.
-- If the role's LWS **already exists** (e.g. a role that was `Static` with 5 replicas is switched to `External`), the controller holds it at its current replica count. The rolling-update planner behaves the same way: it clamps `targetNew` to the current in-flight value rather than shrinking. `WaitingForScaler` is still reported so operators can see that an autoscaler is expected.
+**Mitigation**: The controller **never scales an existing LeaderWorkerSet down as a side effect of switching to `External`**. Concretely, when the controller creates the scaler for an External role it seeds `spec.replicas` based on the role's LWS state:
+- If the role's LWS **does not exist yet** (fresh DisaggregatedSet, or newly added role), the scaler is seeded at `1` and the LWS is created at `1` replica. Seeding at `1` (rather than `0`) is what lets vanilla HPA attach — HPA parks in `ScalingDisabled` if it reads `current=0` from `/scale`, regardless of `minReplicas`, unless the `HPAScaleToZero` feature gate is enabled.
+- If the role's LWS **already exists** (e.g. a role that was `Static` with 5 replicas is switched to `External`), the scaler is seeded at the current replica count and the controller holds the LWS there. The rolling-update planner behaves the same way: it clamps `targetNew` to the current in-flight value rather than shrinking.
 
-Once the autoscaler makes its first write, the LWS scales to that value on the next reconcile. HPA and KEDA both write `minReplicas` / `minReplicaCount` unconditionally when the target is below the floor, so the "hold" window closes quickly. Custom autoscalers that only observe per-pod metrics and lack a min-replicas floor must issue a one-time `kubectl scale` to bootstrap.
+Once the autoscaler attaches, HPA and KEDA both write `minReplicas` / `minReplicaCount` unconditionally when the target is below the floor, and the LWS scales to that value on the next reconcile. Autoscalers that support scale-from-zero (KEDA, or HPA with `HPAScaleToZero`) can take the role down to 0 after attach. Custom autoscalers that only observe per-pod metrics and lack a min-replicas floor must issue a one-time `kubectl scale` to bootstrap.
 
 **Risk**: A user deletes the auto-created scaler expecting it to stay gone.
 
@@ -333,16 +333,16 @@ Reconcile latency for a scaler-triggered event is a single controller hop.
 
 The DS controller writes back to each scaler's status at the end of every reconcile:
 
-- `status.replicas`: the total observed pod count for this role across all revisions currently present (new + any draining old). HPA reads this as the "current" pod count and computes desired replicas from it.
-- `status.selector`: a stable, aggregate selector matching all pods for this (DS, role) regardless of revision — `disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>`. Because the label set on the pods stays the same across revisions, this value is written once at scaler creation and never rewritten during a rollout.
+- `status.replicas`: the observed replica count for this role — LWS groups (== leader pods), aggregated across all revisions currently present (new + any draining old). HPA reads this as the "current" count. Same unit as `spec.replicas` (what HPA writes), so its ratio math stays consistent.
+- `status.selector`: a stable selector matching one pod per LWS group (the leader), across all revisions — `disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0`. Leader-only because HPA's per-pod-metric averaging divides the metric sum by the count of matching pods, and that divisor has to equal `status.replicas` (group count) for the ratio math to work when `leaderWorkerTemplate.size > 1`. Users typically want to scale on the leader's signal anyway (leader handles ingress, workers are downstream compute). Because the label set on leader pods stays the same across revisions, this value is written once at scaler creation and never rewritten during a rollout.
 - `status.observedGeneration`: `scaler.Generation`.
-- `status.conditions`: `Ready` — True when the scaler is bound to a live DS + role and `status.replicas` reflects the observed pod count. False during transient reconcile errors.
+- `status.conditions`: `Ready` — True when the scaler is bound to a live DS + role and `status.replicas` reflects the observed leader count. False during transient reconcile errors.
 
 ### Rolling Update Interaction
 
 `scaler.spec.replicas` is the target for the role's post-rollout steady state. The DS controller feeds it as the new-revision LeaderWorkerSet's target; old revisions continue to drain on the schedule the planner set at rollout start (the pre-existing `initial-replicas` annotation mechanism), independent of the scaler.
 
-Because `status.selector` is aggregate and `status.replicas` sums pods across all revisions, HPA sees the actual serving fleet during a rolling update and its math stays self-consistent — it computes desired from the same pod set it reads current from, and its write becomes the new-revision target as the old revision drains to zero.
+Because `status.selector` is leader-only and aggregate across revisions, HPA sees the serving fleet's leaders during a rolling update and its math stays self-consistent — the count HPA divides its metric by (`status.replicas`, LWS groups) matches the number of pods its selector matches (one leader per group), and the value it writes (`spec.replicas`, LWS groups) becomes the new-revision target as the old revision drains to zero.
 
 One safety guard: between planner iterations, the new-revision target is never allowed to fall below the current new-revision replica count. If an HPA scale-down arrives mid-rollout, its requested value is floored to what's already in flight — the new-revision fleet stops growing but does not shrink. Once the rollout completes, the guard releases and the target tracks the scaler exactly.
 
@@ -363,7 +363,7 @@ This has three unresolved implications for scaler-driven roles:
    - **Aggregate** — value is total across slices; controller divides among slices. Matches HPA's usual mental model.
    - **Per-slice scaler CR** — one scaler per (DS, role, slice). Explicit; combinatorial (`roles × slices` scalers per DS).
    - **Per-role, applied per-slice** — value is *per slice*, consistent with `spec.roles[].spec.replicas`. UX footgun: HPA sets N, gets N × slices pods.
-2. **`status.selector` across slices.** The aggregate selector used in the single-slice design (`disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>`) would match pods across all slices too. That's the right shape if the scaler covers all slices (aggregate scope), but wrong if per-slice scalers are chosen — those would need to add a `disaggregatedset.x-k8s.io/slice=<slice>` filter.
+2. **`status.selector` across slices.** The leader-only selector used in the single-slice design (`disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0`) would match leaders across all slices too. That's the right shape if the scaler covers all slices (aggregate scope), but wrong if per-slice scalers are chosen — those would need to add a `disaggregatedset.x-k8s.io/slice=<slice>` filter.
 3. **Concurrent per-slice rollouts.** Each slice runs its own rolling update on its own clock (that's the point of the slices feature), so a single role can be mid-rollout in one slice and steady-state in another simultaneously. The current no-shrink guard (which prevents the new-revision target from falling below the current in-flight count) tracks state per role; with slices it would have to track state per `(slice, role)` pair, or an HPA scale-up seen against one slice's in-flight count could incorrectly clamp another slice.
 
 **Alpha scope: `spec.slices` must be 1 (default).** The DS webhook rejects a `spec.slices > 1` value while any role has `scaling.mode: External`. Since the scaler is auto-created only after this validation passes, no scaler ever exists in the multi-slice case. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.

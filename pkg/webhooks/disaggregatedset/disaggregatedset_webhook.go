@@ -46,16 +46,16 @@ var _ admission.Validator[*disaggv1.DisaggregatedSet] = &DisaggregatedSetWebhook
 
 // ValidateCreate implements admission.Validator for create operations.
 func (w *DisaggregatedSetWebhook) ValidateCreate(ctx context.Context, disagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
-	allErrs := w.validateRoles(disagg)
+	warnings, allErrs := w.validate(disagg)
 	allErrs = append(allErrs, w.validatePlacement(disagg)...)
-	return nil, allErrs.ToAggregate()
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator for update operations.
 func (w *DisaggregatedSetWebhook) ValidateUpdate(ctx context.Context, oldDisagg, newDisagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
-	allErrs := w.validateRoles(newDisagg)
+	warnings, allErrs := w.validate(newDisagg)
 	allErrs = append(allErrs, w.validatePlacement(newDisagg)...)
-	return nil, allErrs.ToAggregate()
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateDelete implements admission.Validator for delete operations.
@@ -63,17 +63,45 @@ func (w *DisaggregatedSetWebhook) ValidateDelete(ctx context.Context, disagg *di
 	return nil, nil
 }
 
-// validateRoles validates all roles in the DisaggregatedSet spec.
-func (w *DisaggregatedSetWebhook) validateRoles(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
+	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
 
+	hasExternal := false
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
+
+		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
+			continue
+		}
+		hasExternal = true
+
+		// Scaler name is "<ds>-<role>" and must fit within the Kubernetes 253-character limit.
+		if scalerName := obj.Name + "-" + role.Name; len(scalerName) > 253 {
+			allErrs = append(allErrs, field.Invalid(rolePath.Child("name"), role.Name,
+				fmt.Sprintf("would produce scaler name %q exceeding 253 characters", scalerName)))
+		}
+
+		// spec.replicas is ignored for External roles; explicit values > 1
+		// almost certainly indicate confusion about which knob takes effect.
+		if role.Spec.Replicas != nil && *role.Spec.Replicas > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"role %q sets scaling.mode: External and spec.replicas: %d — spec.replicas is ignored; drive replicas via DisaggregatedSetRoleScaler %q instead",
+				role.Name, *role.Spec.Replicas, obj.Name+"-"+role.Name))
+		}
 	}
 
-	return allErrs
+	// Alpha: External scaling and slices > 1 are incompatible. The scaler
+	// design for multi-slice is deferred to a follow-up KEP.
+	if hasExternal && obj.Spec.Slices != nil && *obj.Spec.Slices > 1 {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "slices"),
+			"spec.slices > 1 is not supported while any role has scaling.mode: External (alpha restriction)"))
+	}
+
+	return warnings, allErrs
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy

@@ -666,3 +666,51 @@ func TestValidateDelete(t *testing.T) {
 	_, err := webhook.ValidateDelete(ctx, obj)
 	require.NoError(t, err)
 }
+
+func TestValidateExternalScalingRules(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+	external := &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+
+	t.Run("warns when External + replicas > 1", func(t *testing.T) {
+		obj := &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{
+				{Name: "prefill", Scaling: external, LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(3))}}},
+			}},
+		}
+		warnings, err := webhook.ValidateCreate(ctx, obj)
+		require.NoError(t, err)
+		require.Len(t, warnings, 1)
+		require.Contains(t, warnings[0], "spec.replicas is ignored")
+	})
+
+	t.Run("rejects External + spec.slices > 1", func(t *testing.T) {
+		obj := &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Slices: ptr.To(int32(2)),
+				Roles:  []disaggv1.DisaggregatedRoleSpec{{Name: "prefill", Scaling: external}},
+			},
+		}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "spec.slices > 1")
+	})
+
+	t.Run("rejects when scaler name would exceed 253 chars", func(t *testing.T) {
+		longDS := ""
+		for i := 0; i < 250; i++ {
+			longDS += "a"
+		}
+		obj := &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: longDS, Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{
+				{Name: "prefill", Scaling: external},
+			}},
+		}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "253 characters")
+	})
+}

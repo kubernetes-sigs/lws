@@ -74,6 +74,15 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
    <p>Name is the unique identifier for this role.</p>
 </td>
 </tr>
+<tr><td><code>scaling</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RoleScaling"><code>RoleScaling</code></a>
+</td>
+<td>
+   <p>Scaling configures how replicas are determined. Omit for inline Static
+scaling (default). When set to External, the DisaggregatedSet controller
+auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.</p>
+</td>
+</tr>
 <tr><td><code>LeaderWorkerSetTemplateSpec</code> <B>[Required]</B><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetTemplateSpec"><code>LeaderWorkerSetTemplateSpec</code></a>
 </td>
@@ -87,6 +96,135 @@ DisaggregatedSet handles rollouts across roles.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetRoleScaler`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScaler}
+    
+
+**Appears in:**
+
+
+
+<p>DisaggregatedSetRoleScaler exposes the /scale subresource for a single role
+of a DisaggregatedSet. Instances are auto-created by the DisaggregatedSet
+controller for every role with scaling.mode: External and are named
+&quot;<!-- raw HTML omitted -->-<!-- raw HTML omitted -->&quot;. External autoscalers (HPA, KEDA, or any
+/scale-aware controller) write spec.replicas; the DisaggregatedSet controller
+reads it and drives the role's LeaderWorkerSet.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>spec</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec"><code>DisaggregatedSetRoleScalerSpec</code></a>
+</td>
+<td>
+   <p>spec defines the desired state of DisaggregatedSetRoleScaler</p>
+</td>
+</tr>
+<tr><td><code>status</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerStatus"><code>DisaggregatedSetRoleScalerStatus</code></a>
+</td>
+<td>
+   <p>status defines the observed state of DisaggregatedSetRoleScaler</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSetRoleScalerSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetRoleScaler](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScaler)
+
+
+<p>DisaggregatedSetRoleScalerSpec is the desired state written by an external
+autoscaler via the /scale subresource. The (DS, role) association is derived
+from the scaler's controller ownerReference and its role label.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>replicas</code> <B>[Required]</B><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas is the desired replica count for the role. The controller seeds
+this at scaler creation — 1 for a fresh role (0 would deadlock vanilla
+HPA in ScalingDisabled), or the LWS's current replica count for a
+Static→External flip so the role does not silently drain to zero.
+External autoscalers overwrite it on their first tick.</p>
+<p>Non-pointer with a default because kube-apiserver's CRD /scale handler
+extracts .spec.replicas at read time and errors (&quot;the spec replicas
+field does not exist&quot;) when the JSONPath resolves to nothing. HPA reads
+/scale before its first write; a missing field would deadlock the loop.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSetRoleScalerStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerStatus}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetRoleScaler](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScaler)
+
+
+<p>DisaggregatedSetRoleScalerStatus is the observed state written back by the
+DisaggregatedSet controller.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>replicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas is the observed replica count for this role — LWS groups
+(== leader pods), aggregated across all revisions currently present.
+Read by HPA as the &quot;current&quot; count for its ratio math.</p>
+</td>
+</tr>
+<tr><td><code>selector</code><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Selector is a label selector (in string form) matching one pod per LWS
+group (the leader), across all revisions:
+disaggregatedset.x-k8s.io/name=<!-- raw HTML omitted -->,disaggregatedset.x-k8s.io/role=<!-- raw HTML omitted -->,leaderworkerset.sigs.k8s.io/worker-index=0
+Leader-only so HPA's per-pod-metric averaging divides by group count
+(matching spec.replicas that HPA writes), keeping the ratio math
+consistent for leaderWorkerTemplate.size &gt; 1. Aggregate across
+revisions so HPA observes the serving fleet during a rolling update.</p>
+</td>
+</tr>
+<tr><td><code>observedGeneration</code><br/>
+<code>int64</code>
+</td>
+<td>
+   <p>ObservedGeneration is the .metadata.generation the status reflects.</p>
+</td>
+</tr>
+<tr><td><code>conditions</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
+</td>
+<td>
+   <p>Conditions expose scaler-level state (Ready).</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
     
 
@@ -95,7 +233,11 @@ DisaggregatedSet handles rollouts across roles.</p>
 - [DisaggregatedSet](#disaggregatedset-x-k8s-io-v1-DisaggregatedSet)
 
 
-<p>DisaggregatedSetSpec defines the desired state of DisaggregatedSet</p>
+<p>DisaggregatedSetSpec defines the desired state of DisaggregatedSet.</p>
+<p>The all-or-nothing replicas rule (either every role has replicas &gt; 0, or
+every role has replicas == 0) applies only to non-External roles. External
+roles are exempt because their effective replicas live outside the DS spec —
+they are driven via DisaggregatedSetRoleScaler.spec.replicas.</p>
 
 
 <table class="table">
@@ -220,6 +362,49 @@ topologyKey. Required when Type is not None.</p>
 
 
 <p>PlacementType selects the DisaggregatedSet placement guarantee.</p>
+
+
+
+
+## `RoleScaling`     {#disaggregatedset-x-k8s-io-v1-RoleScaling}
+    
+
+**Appears in:**
+
+- [DisaggregatedRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec)
+
+
+<p>RoleScaling configures how replicas are determined for a role. Sub-struct
+(not a bare enum) so future per-role scaling policies can be added without
+a v2 API bump.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>mode</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RoleScalingMode"><code>RoleScalingMode</code></a>
+</td>
+<td>
+   <p>Mode controls the source of the replica count. Static (default) uses
+inline spec.replicas; External uses the auto-created scaler CR.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `RoleScalingMode`     {#disaggregatedset-x-k8s-io-v1-RoleScalingMode}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [RoleScaling](#disaggregatedset-x-k8s-io-v1-RoleScaling)
+
+
+<p>RoleScalingMode controls the source of the replica count for a role.</p>
 
 
 

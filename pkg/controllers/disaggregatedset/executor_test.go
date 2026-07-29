@@ -61,12 +61,14 @@ func testSchemeForUnit() *runtime.Scheme {
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 	scheme := testSchemeForUnit()
+	recorder := events.NewFakeRecorder(100)
 	return &DisaggregatedSetReconciler{
 		Client:         fakeClient,
 		Scheme:         scheme,
 		LWSManager:     NewLeaderWorkerSetManager(fakeClient),
 		ServiceManager: NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		ScalerManager:  NewScalerManager(fakeClient, recorder),
+		Record:         recorder,
 	}
 }
 
@@ -680,7 +682,7 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames)
+			config := extractRollingUpdateConfig(ds, roleNames, nil)
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
@@ -789,7 +791,7 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames)
+			config := extractRollingUpdateConfig(ds, roleNames, nil)
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
@@ -1228,7 +1230,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				testRolePrefill: makeLWS(withReplicas(int(tc.cPrefill)), withReadyReplicas(int(tc.cPrefill))),
 				testRoleDecode:  makeLWS(withReplicas(int(tc.cDecode)), withReadyReplicas(int(tc.cDecode)))}}
 
-			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision)
+			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision, nil)
 			require.NoError(t, err)
 
 			if tc.aPrefill > 0 || tc.aDecode > 0 {
