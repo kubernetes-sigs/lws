@@ -30,9 +30,10 @@ const DisaggregatedSetRoleScalerReady string = "Ready"
 // from the scaler's controller ownerReference and its role label.
 type DisaggregatedSetRoleScalerSpec struct {
 	// Replicas is the desired replica count for the role. The controller seeds
-	// this at scaler creation — 0 for a fresh role, or the LWS's current
-	// replica count for a Static→External flip so the role does not silently
-	// drain to zero. External autoscalers overwrite it on their first tick.
+	// this at scaler creation — 1 for a fresh role (0 would deadlock vanilla
+	// HPA in ScalingDisabled), or the LWS's current replica count for a
+	// Static→External flip so the role does not silently drain to zero.
+	// External autoscalers overwrite it on their first tick.
 	//
 	// Non-pointer with a default because kube-apiserver's CRD /scale handler
 	// extracts .spec.replicas at read time and errors ("the spec replicas
