@@ -313,18 +313,13 @@ func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *c
 }
 
 func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Pod, topologyKey string) (string, error) {
-	log := ctrl.LoggerFrom(ctx)
-
 	nodeName := pod.Spec.NodeName
 	ns := pod.Namespace
 
 	// Get node the leader pod is running on.
 	var node corev1.Node
 	if err := r.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: ns}, &node); err != nil {
-		// We'll ignore not-found errors, since there is nothing we can do here.
-		// A node may not exist temporarily due to a maintenance event or other scenarios.
-		log.Error(err, fmt.Sprintf("getting node %s", nodeName))
-		return "", client.IgnoreNotFound(err)
+		return "", fmt.Errorf("getting node %q: %w", nodeName, err)
 	}
 
 	// Get topology (e.g. node pool name) from node labels.

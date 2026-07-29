@@ -430,6 +430,29 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	}
 }
 
+func TestSetNodeSelectorForWorkerPodsReturnsNotFoundWhenLeaderNodeIsMissing(t *testing.T) {
+	reconciler := PodReconciler{Client: fake.NewClientBuilder().Build()}
+	leaderPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec:       corev1.PodSpec{NodeName: "missing-node"},
+	}
+	workerStatefulSet := &appsapplyv1.StatefulSetApplyConfiguration{
+		Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+			Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+				Spec: &coreapplyv1.PodSpecApplyConfiguration{},
+			},
+		},
+	}
+
+	err := reconciler.setNodeSelectorForWorkerPods(context.Background(), leaderPod, workerStatefulSet, "topology.kubernetes.io/zone")
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("setNodeSelectorForWorkerPods() error = %v, want NotFound", err)
+	}
+	if workerStatefulSet.Spec.Template.Spec.NodeSelector != nil {
+		t.Fatalf("setNodeSelectorForWorkerPods() set a node selector after a missing leader node: %v", workerStatefulSet.Spec.Template.Spec.NodeSelector)
+	}
+}
+
 func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
