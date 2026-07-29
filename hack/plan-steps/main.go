@@ -39,8 +39,8 @@ import (
 )
 
 type updateStep struct {
-	Past []int
-	New  []int
+	Past map[string]int
+	New  map[string]int
 }
 
 func main() {
@@ -71,40 +71,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	sourceSlice := make([]int, len(roleNames))
-	targetSlice := make([]int, len(roleNames))
-	surgeSlice := make([]int, len(roleNames))
-	unavailableSlice := make([]int, len(roleNames))
-	for i, name := range roleNames {
-		sourceSlice[i] = getOrDefault(source, name, 0)
-		targetSlice[i] = getOrDefault(target, name, 0)
-		surgeSlice[i] = getOrDefault(surge, name, 1)
-		unavailableSlice[i] = getOrDefault(unavailable, name, 0)
+	sourceMap := make(map[string]int, len(roleNames))
+	targetMap := make(map[string]int, len(roleNames))
+	configMap := make(map[string]disaggregatedset.RollingUpdateConfig, len(roleNames))
+	for _, name := range roleNames {
+		sourceMap[name] = getOrDefault(source, name, 0)
+		targetMap[name] = getOrDefault(target, name, 0)
+		configMap[name] = disaggregatedset.RollingUpdateConfig{
+			MaxSurge:       getOrDefault(surge, name, 1),
+			MaxUnavailable: getOrDefault(unavailable, name, 0),
+		}
 	}
 
 	fmt.Printf("Roles: %v\n", roleNames)
-	fmt.Printf("Source: %s\n", formatRoleValues(roleNames, sourceSlice))
-	fmt.Printf("Target: %s\n", formatRoleValues(roleNames, targetSlice))
-	fmt.Printf("Config: %s\n\n", formatRoleConfig(roleNames, surgeSlice, unavailableSlice))
+	fmt.Printf("Source: %s\n", formatRoleMap(roleNames, sourceMap))
+	fmt.Printf("Target: %s\n", formatRoleMap(roleNames, targetMap))
+	fmt.Printf("Config: %s\n\n", formatConfigMap(roleNames, configMap))
 
-	steps := computeAllSteps(sourceSlice, targetSlice, surgeSlice, unavailableSlice)
+	steps := computeSteps(roleNames, sourceMap, targetMap, configMap)
 	printSteps(os.Stdout, roleNames, steps)
 }
 
-func computeAllSteps(source, target, surge, unavailable []int) []updateStep {
-	config := make([]disaggregatedset.RollingUpdateConfig, len(source))
-	for i := range config {
-		config[i].MaxSurge = surge[i]
-		config[i].MaxUnavailable = unavailable[i]
-	}
-
-	plannerSteps := disaggregatedset.ComputeAllSteps(source, target, config)
+func computeSteps(roleNames []string, source, target map[string]int, config map[string]disaggregatedset.RollingUpdateConfig) []updateStep {
+	plannerSteps := disaggregatedset.ComputeAllSteps(roleNames, source, target, config)
 	steps := make([]updateStep, len(plannerSteps))
 	for i, step := range plannerSteps {
-		steps[i] = updateStep{
-			Past: step.Past,
-			New:  step.New,
+		past := make(map[string]int, len(roleNames))
+		new := make(map[string]int, len(roleNames))
+		for _, role := range roleNames {
+			past[role] = step.Past[role].Replicas
+			new[role] = step.New[role].Replicas
 		}
+		steps[i] = updateStep{Past: past, New: new}
 	}
 	return steps
 }
@@ -144,18 +142,19 @@ func getOrDefault(m map[string]int, key string, defaultVal int) int {
 	return defaultVal
 }
 
-func formatRoleValues(names []string, values []int) string {
+func formatRoleMap(names []string, values map[string]int) string {
 	parts := make([]string, len(names))
 	for i, name := range names {
-		parts[i] = fmt.Sprintf("%s=%d", name, values[i])
+		parts[i] = fmt.Sprintf("%s=%d", name, values[name])
 	}
 	return strings.Join(parts, ", ")
 }
 
-func formatRoleConfig(names []string, surge, unavailable []int) string {
+func formatConfigMap(names []string, config map[string]disaggregatedset.RollingUpdateConfig) string {
 	parts := make([]string, len(names))
 	for i, name := range names {
-		parts[i] = fmt.Sprintf("%s(surge=%d, unavailable=%d)", name, surge[i], unavailable[i])
+		c := config[name]
+		parts[i] = fmt.Sprintf("%s(surge=%d, unavailable=%d)", name, c.MaxSurge, c.MaxUnavailable)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -174,11 +173,13 @@ func printSteps(out *os.File, roleNames []string, steps []updateStep) {
 	for i, step := range steps {
 		row := []string{strconv.Itoa(i)}
 		total := 0
-		for _, v := range step.Past {
+		for _, name := range roleNames {
+			v := step.Past[name]
 			row = append(row, strconv.Itoa(v))
 			total += v
 		}
-		for _, v := range step.New {
+		for _, name := range roleNames {
+			v := step.New[name]
 			row = append(row, strconv.Itoa(v))
 			total += v
 		}
@@ -236,14 +237,14 @@ func describeAction(stepIndex int, steps []updateStep, roleNames []string) strin
 	curr := steps[stepIndex]
 	var actions []string
 
-	for i, name := range roleNames {
-		if curr.New[i] > prev.New[i] {
-			actions = append(actions, fmt.Sprintf("new %s +%d", name, curr.New[i]-prev.New[i]))
+	for _, name := range roleNames {
+		if curr.New[name] > prev.New[name] {
+			actions = append(actions, fmt.Sprintf("new %s +%d", name, curr.New[name]-prev.New[name]))
 		}
 	}
-	for i, name := range roleNames {
-		if curr.Past[i] < prev.Past[i] {
-			actions = append(actions, fmt.Sprintf("old %s -%d", name, prev.Past[i]-curr.Past[i]))
+	for _, name := range roleNames {
+		if curr.Past[name] < prev.Past[name] {
+			actions = append(actions, fmt.Sprintf("old %s -%d", name, prev.Past[name]-curr.Past[name]))
 		}
 	}
 	if len(actions) == 0 {

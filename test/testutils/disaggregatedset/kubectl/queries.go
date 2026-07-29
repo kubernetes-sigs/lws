@@ -44,7 +44,7 @@ func LWSByRevision(deploymentName, revision string) *Builder {
 func LWSNotRevision(deploymentName, revision string) *Builder {
 	return Get("lws").
 		Label(labelName, deploymentName).
-		Label(labelRevision+"!=", revision).
+		LabelNot(labelRevision, revision).
 		Namespace(defaultNS)
 }
 
