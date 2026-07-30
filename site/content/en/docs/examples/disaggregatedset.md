@@ -14,6 +14,12 @@ description: >
   - [Apply and Verify](#apply-and-verify-1)
 - [Understanding Child LWS Names](#understanding-child-lws-names)
 - [Checking Status](#checking-status)
+- [Operating a DisaggregatedSet](#operating-a-disaggregatedset)
+  - [Scaling slices](#scaling-slices)
+  - [Scaling replicas within a role](#scaling-replicas-within-a-role)
+  - [Rolling updates](#rolling-updates)
+  - [Placement policy](#placement-policy)
+  - [External scaling with HPA or KEDA](#external-scaling-with-hpa-or-keda)
 - [Cleanup](#cleanup)
 <!-- /toc -->
 
@@ -124,9 +130,9 @@ kubectl apply -f disagg-nginx-demo.yaml
 kubectl get leaderworkerset -n default -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo
 
 # Expected output (revision hash in name is generated dynamically):
-# NAME                                      REPLICAS   READY   AGE
-# disagg-nginx-demo-58f79fdb78-prefill      2          2       30s
-# disagg-nginx-demo-58f79fdb78-decode       1          1       30s
+# NAME                                        REPLICAS   READY   AGE
+# disagg-nginx-demo-0-58f79fdb78-prefill      2          2       30s
+# disagg-nginx-demo-0-58f79fdb78-decode       1          1       30s
 
 # Check all pods are running
 kubectl get pods -n default -l component=disaggregation
@@ -234,29 +240,31 @@ kubectl apply -f disagg-3role-demo.yaml
 
 # All three child LWS resources should appear (revision hash generated dynamically)
 kubectl get leaderworkerset -n default -l disaggregatedset.x-k8s.io/name=disagg-3role-demo
-# NAME                                   REPLICAS   READY   AGE
-# disagg-3role-demo-58f79fdb78-prefill   4          4       30s
-# disagg-3role-demo-58f79fdb78-decode    2          2       30s
-# disagg-3role-demo-58f79fdb78-encode    2          2       30s
+# NAME                                     REPLICAS   READY   AGE
+# disagg-3role-demo-0-58f79fdb78-prefill   4          4       30s
+# disagg-3role-demo-0-58f79fdb78-decode    2          2       30s
+# disagg-3role-demo-0-58f79fdb78-encode    2          2       30s
 ```
 
 ---
 
 ## Understanding Child LWS Names
 
-The DisaggregatedSet controller names each child `LeaderWorkerSet` using a **revision hash** to track
-rollouts. The naming format is:
+The DisaggregatedSet controller names each child `LeaderWorkerSet` using a **slice index** and a
+**revision hash** to track rollouts. The naming format is:
 
 ```
-<DisaggregatedSet-name>-<revision-hash>-<role-name>
+<DisaggregatedSet-name>-<slice>-<revision-hash>-<role-name>
 ```
 
-For example, a `DisaggregatedSet` named `my-inference` with roles `prefill` and `decode` creates:
-- `my-inference-58f79fdb78-prefill`
-- `my-inference-58f79fdb78-decode`
+For example, a `DisaggregatedSet` named `my-inference` with roles `prefill` and `decode` (and the
+default single slice) creates:
+- `my-inference-0-58f79fdb78-prefill`
+- `my-inference-0-58f79fdb78-decode`
 
 > **Note:** The revision hash is dynamic and changes on each rollout. Never rely on hardcoded
-> child LWS names — always use label selectors to query them.
+> child LWS names — always use label selectors to query them. Controllers at `v0.9.0` or older
+> predate slices and omit the `<slice>` segment.
 
 You can list all child LWS resources for a given DisaggregatedSet with:
 
@@ -280,6 +288,124 @@ kubectl describe disaggregatedset disagg-nginx-demo
 kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo \
   -l disaggregatedset.x-k8s.io/role=prefill
 ```
+
+## Operating a DisaggregatedSet
+
+> **Note:** `spec.slices`, `spec.placementPolicy`, and `scaling.mode: External` were added after
+> the `v0.9.0` release and ship in the next release. Controllers at `v0.9.0` or older reject
+> these fields.
+
+### Scaling slices
+
+`spec.slices` replicates the entire role topology into N independent copies. Each slice is a
+complete set of all roles with its own rollout clock and a stable identity
+(`disaggregatedset.x-k8s.io/slice` label). Because `slices` is excluded from the revision hash,
+changing it is a pure scale operation: new slices come up at the current revision and existing
+slices are never touched.
+
+```shell
+# Add a third complete copy of the topology
+kubectl patch disaggregatedset disagg-nginx-demo --type merge -p '{"spec":{"slices":3}}'
+```
+
+Scaling down deletes the highest-indexed slices' resources directly. Lower slices are untouched.
+
+### Scaling replicas within a role
+
+Per-role `spec.replicas` is a **per-slice** count: the role runs that many groups in every slice,
+so the ratio between roles is defined once and holds in each slice. With 2 slices, raising prefill
+replicas from 2 to 3 yields 6 prefill groups in total.
+
+```shell
+kubectl patch disaggregatedset disagg-nginx-demo --type json \
+  -p '[{"op": "replace", "path": "/spec/roles/0/spec/replicas", "value": 3}]'
+```
+
+### Rolling updates
+
+Any change to a role's pod template creates a new revision, and each slice rolls to it
+independently, always keeping a complete same-version set of all roles serving per slice. While a
+slice is mid-rollout you will see two revisions of its LWS at once (old draining, new filling). A
+stuck slice degrades only itself. Watch a single slice with:
+
+```shell
+kubectl get leaderworkerset \
+  -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo,disaggregatedset.x-k8s.io/slice=0 -w
+```
+
+### Placement policy
+
+`spec.placementPolicy` confines each slice to a single topology domain and spreads slices across
+domains, so cross-role traffic (for example prefill-to-decode KV-cache transfer) stays within a
+low-latency domain:
+
+```yaml
+spec:
+  placementPolicy:
+    type: ExclusiveSlice  # or ExclusiveTopology for a 1:1 domain-to-slice mapping across all DisaggregatedSets
+    topology: topology.kubernetes.io/zone  # any node-label key: zone, rack, NVLink domain, ...
+```
+
+`ExclusiveSlice` co-locates each slice in one domain. `ExclusiveTopology` additionally guarantees
+at most one slice per domain across all DisaggregatedSets. The controller injects the affinity
+when it creates a LeaderWorkerSet, so changing the policy takes effect on each slice's next
+rollout. See [KEP-848](https://github.com/kubernetes-sigs/lws/tree/main/keps/848-disaggregatedset-placement-policy)
+for the full design.
+
+### External scaling with HPA or KEDA
+
+By default a role's replica count is static, coming from its `spec.replicas`. Setting
+`scaling.mode: External` on a role delegates the count to an external autoscaler instead:
+
+```yaml
+spec:
+  roles:
+  - name: prefill
+    scaling:
+      mode: External   # spec.replicas is ignored for this role
+    spec:
+      ...
+```
+
+The controller auto-creates a `DisaggregatedSetRoleScaler` named `<DisaggregatedSet-name>-<role-name>`
+that exposes the `/scale` subresource. Point an HPA (or KEDA ScaledObject) at it:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: disagg-nginx-demo-prefill
+spec:
+  scaleTargetRef:
+    apiVersion: disaggregatedset.x-k8s.io/v1
+    kind: DisaggregatedSetRoleScaler
+    name: disagg-nginx-demo-prefill
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+```
+
+The autoscaler writes the desired count through `/scale`, and the controller drives the role's
+LeaderWorkerSets from it. The scaler's `status.selector` matches one pod per group (the leader),
+so per-pod metric averaging divides by the group count and the ratio math stays consistent for
+multi-pod groups. See [KEP-849](https://github.com/kubernetes-sigs/lws/tree/main/keps/849-DisaggregatedSet-HPA)
+for the full design.
+
+Resource metrics like the CPU example above require metrics-server. See the
+[HPA example's metrics-server setup](/docs/examples/hpa/#1-install-metrics-server) (that page
+targets a standalone LeaderWorkerSet, while a DisaggregatedSet role is scaled through its
+DisaggregatedSetRoleScaler as shown here).
+
+> **Note:** `scaling.mode: External` currently requires the default single slice
+> (`spec.slices: 1`). Multi-slice support, where the scaler value is the total across all
+> slices, is proposed in
+> [KEP-948](https://github.com/kubernetes-sigs/lws/issues/948).
 
 ## Cleanup
 
