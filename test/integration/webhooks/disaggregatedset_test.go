@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -146,5 +147,59 @@ var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
 		err := k8sClient.Update(ctx, &fetched)
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(leaderworkerset.ExclusiveKeyAnnotationKey))
+	})
+})
+
+var _ = ginkgo.Describe("disaggregatedset external scaling with slices", func() {
+
+	var ns *corev1.Namespace
+	ginkgo.BeforeEach(func() {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ns-",
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+	})
+
+	buildDisaggregatedSet := func() *wrappers.DisaggregatedSetWrapper {
+		disagg := wrappers.BuildDisaggregatedSet("scaling-test", ns.Name).
+			WithRole("prefill", 1, "nginx:1.14.2").
+			WithRole("decode", 1, "nginx:1.14.2")
+		// The DisaggregatedSet CRD enum-validates these fields but has no
+		// defaulting webhook to fill them in, so set them explicitly.
+		for i := range disagg.Spec.Roles {
+			disagg.Spec.Roles[i].Spec.RolloutStrategy.Type = leaderworkerset.RollingUpdateStrategyType
+			disagg.Spec.Roles[i].Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+		}
+		return disagg
+	}
+
+	ginkgo.It("allows creating a multi-slice DisaggregatedSet with an External role", func() {
+		ctx := context.Background()
+		disagg := buildDisaggregatedSet().Slices(2).WithExternalScaling("prefill").Obj()
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+	})
+
+	ginkgo.It("allows raising slices on a DisaggregatedSet with an External role", func() {
+		ctx := context.Background()
+		disagg := buildDisaggregatedSet().WithExternalScaling("prefill").Obj()
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+
+		var fetched disaggregatedset.DisaggregatedSet
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: disagg.Namespace}, &fetched)).To(gomega.Succeed())
+		fetched.Spec.Slices = ptr.To(int32(3))
+		gomega.Expect(k8sClient.Update(ctx, &fetched)).To(gomega.Succeed())
+	})
+
+	ginkgo.It("allows flipping a role to External on a multi-slice DisaggregatedSet", func() {
+		ctx := context.Background()
+		disagg := buildDisaggregatedSet().Slices(2).Obj()
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+
+		var fetched disaggregatedset.DisaggregatedSet
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: disagg.Namespace}, &fetched)).To(gomega.Succeed())
+		fetched.Spec.Roles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
+		gomega.Expect(k8sClient.Update(ctx, &fetched)).To(gomega.Succeed())
 	})
 })

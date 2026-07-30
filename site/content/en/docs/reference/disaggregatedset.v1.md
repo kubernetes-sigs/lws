@@ -155,11 +155,13 @@ from the scaler's controller ownerReference and its role label.</p>
 <code>int32</code>
 </td>
 <td>
-   <p>Replicas is the desired replica count for the role. The controller seeds
-this at scaler creation — 1 for a fresh role (0 would deadlock vanilla
-HPA in ScalingDisabled), or the LWS's current replica count for a
-Static→External flip so the role does not silently drain to zero.
-External autoscalers overwrite it on their first tick.</p>
+   <p>Replicas is the desired total replica count for the role, summed across
+all slices. The controller seeds this at scaler creation — the slice
+count for a fresh role, one group per slice (0 would deadlock vanilla
+HPA in ScalingDisabled), or the current replica count summed across the
+role's LWS objects for a Static→External flip so the role is not
+resized by the flip. External autoscalers overwrite it on their first
+tick.</p>
 <p>Non-pointer with a default because kube-apiserver's CRD /scale handler
 extracts .spec.replicas at read time and errors (&quot;the spec replicas
 field does not exist&quot;) when the JSONPath resolves to nothing. HPA reads

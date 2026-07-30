@@ -139,4 +139,66 @@ var _ = Describe("DisaggregatedSet HPA External Scaling", Ordered, func() {
 			g.Expect(strings.TrimSpace(out)).To(BeEmpty())
 		}).Should(Succeed())
 	})
+
+	// KEP-948: the scaler value is an aggregate across slices, split by
+	// distribute() with the remainder on the lowest slice indices. Slice-count
+	// changes rebalance the same total rather than multiplying it.
+	It("distributes an aggregate /scale write across slices and rebalances on slice-count changes", func() {
+		By("creating a 2-slice DisaggregatedSet with an External prefill role")
+		cfg := fixtures.PrefillDecode(dsName,
+			fixtures.Role{External: true},
+			fixtures.Role{Replicas: 1},
+		)
+		cfg.Slices = 2
+		Expect(applyYAML(cfg.YAML())).To(Succeed())
+
+		By("waiting for the scaler, seeded to the slice count (one group per slice)")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName,
+				"-o", "jsonpath={.spec.replicas}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal("2"))
+		}).Should(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 0)).To(Equal(1))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 1)).To(Equal(1))
+		}).Should(Succeed())
+
+		By("writing an aggregate of 5 via /scale and expecting a 3/2 split, remainder on slice 0")
+		_, err := utils.Run(exec.Command("kubectl", "scale",
+			"disaggregatedsetrolescaler/"+scalerName, "--replicas=5"))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 0)).To(Equal(3))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 1)).To(Equal(2))
+		}).Should(Succeed())
+
+		By("verifying scaler status converges to the aggregate")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName,
+				"-o", "jsonpath={.status.replicas}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal("5"))
+		}).Should(Succeed())
+
+		By("raising slices to 3 and expecting the same total rebalanced to 2/2/1")
+		_, err = utils.Run(exec.Command("kubectl", "patch", "disaggregatedset", dsName,
+			"--type=merge", "-p", `{"spec":{"slices":3}}`))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 0)).To(Equal(2))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 1)).To(Equal(2))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 2)).To(Equal(1))
+		}).Should(Succeed())
+
+		By("dropping slices back to 2 and expecting the remaining slices to absorb the total")
+		_, err = utils.Run(exec.Command("kubectl", "patch", "disaggregatedset", dsName,
+			"--type=merge", "-p", `{"spec":{"slices":2}}`))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 0)).To(Equal(3))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 1)).To(Equal(2))
+			g.Expect(kubectl.GetRoleReplicasBySlice(dsName, "prefill", 2)).To(Equal(0))
+		}).Should(Succeed())
+	})
 })
