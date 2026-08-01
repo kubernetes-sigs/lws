@@ -48,6 +48,13 @@ OptimizationJobs.
 
 [**llm-d**](https://github.com/llm-d/llm-d): llm-d is a Kubernetes-native, high-performance distributed LLM inference framework. It integrates open technologies such as vLLM for model serving and [Gateway API Inference extension (GIE)](https://github.com/kubernetes-sigs/gateway-api-inference-extension) for request scheduling and load balancing, and uses LeaderWorkerSet for scalable multi-node deployments. Key features include P/D Disaggregated serving and prefix caching.
 
+{{% alert title="Tip" color="info" %}}
+For first-party multi-role (prefill/decode) orchestration on Kubernetes, see the
+[DisaggregatedSet concepts](/docs/concepts/disaggregatedset/),
+[installation notes](/docs/installation/#disaggregatedset), and
+[examples](/docs/examples/disaggregatedset/).
+{{% /alert %}}
+
 [**llmaz**](https://github.com/InftyAI/llmaz): llmaz, serving as an easy to use and advanced inference platform, uses LeaderWorkerSet as the underlying workload to support both single-host and multi-host inference scenarios.
 
 [**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo): NVIDIA Dynamo is a high-throughput low-latency inference framework designed for serving generative AI and reasoning models in multi-node distributed environments especially the disaggregated prefill & decode inference. It uses LeaderWorkerSet to support multi-node deployment on Kubernetes.

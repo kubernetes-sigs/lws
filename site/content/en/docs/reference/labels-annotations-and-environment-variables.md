@@ -18,6 +18,7 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/subgroup-key`           | Pods that are part of the same subgroup will have the same unique hash value.     | 92904e74...801                 | Pod (only if SubGroup is set)  |
 | `disaggregatedset.x-k8s.io/name`                     | The name of the DisaggregatedSet object to which these resources belong.          | disaggregatedset-sample        | LeaderWorkerSet, Service, Pod  |
 | `disaggregatedset.x-k8s.io/role`                     | The DisaggregatedSet role for the resource.                                       | prefill                        | LeaderWorkerSet, Service, Pod  |
+| `disaggregatedset.x-k8s.io/slice`                    | Slice index for the resource within the DisaggregatedSet.                         | 0                              | LeaderWorkerSet, Service, Pod  |
 | `disaggregatedset.x-k8s.io/revision`                 | Revision hash used to track a DisaggregatedSet rollout.                           | a1b2c3d4                       | LeaderWorkerSet, Service, Pod  |
 
 # Annotations
