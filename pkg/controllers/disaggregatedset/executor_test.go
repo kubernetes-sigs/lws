@@ -972,7 +972,11 @@ func TestScaleDownOld(t *testing.T) {
 				testRolePrefill: {Replicas: current[testRolePrefill] - tc.prefillBudget},
 				testRoleDecode:  {Replicas: current[testRoleDecode] - tc.decodeBudget},
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target)
+			maxSafeDrain := map[string]int{
+				testRolePrefill: tc.prefillBudget,
+				testRoleDecode:  tc.decodeBudget,
+			}
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target, maxSafeDrain, true)
 			require.NoError(t, err)
 
 			for _, workload := range tc.workloads {
@@ -985,6 +989,53 @@ func TestScaleDownOld(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScaleDownOldWaitsForRetiredRevisionTermination(t *testing.T) {
+	baseTime := time.Now()
+	newerTime := baseTime.Add(time.Hour)
+	roleNames := testRoleNames()
+
+	objects := []client.Object{
+		buildTestLWS("test-0-old-prefill", testNamespace, testRolePrefill, "old").
+			Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
+		buildTestLWS("test-0-old-decode", testNamespace, testRoleDecode, "old").
+			Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
+		buildTestLWS("test-0-retired-prefill", testNamespace, testRolePrefill, "retired").
+			Replica(0).StatusReplicas(1).ReadyReplicas(0).CreationTimestamp(newerTime).Obj(),
+		buildTestLWS("test-0-retired-decode", testNamespace, testRoleDecode, "retired").
+			Replica(0).StatusReplicas(1).ReadyReplicas(0).CreationTimestamp(newerTime).Obj(),
+	}
+
+	retiredPrefill := makeLWS(withName("test-0-retired-prefill"), withReplicas(0), withCreationTimestamp(newerTime))
+	retiredPrefill.Status.Replicas = 1
+	retiredDecode := makeLWS(withName("test-0-retired-decode"), withReplicas(0), withCreationTimestamp(newerTime))
+	retiredDecode.Status.Replicas = 1
+	grouped := disaggregatedsetutils.RevisionRolesList{
+		{Revision: "old", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testRolePrefill: makeLWS(withName("test-0-old-prefill"), withReplicas(4), withCreationTimestamp(baseTime)),
+			testRoleDecode:  makeLWS(withName("test-0-old-decode"), withReplicas(4), withCreationTimestamp(baseTime)),
+		}},
+		{Revision: "retired", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testRolePrefill: retiredPrefill,
+			testRoleDecode:  retiredDecode,
+		}},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
+	executor := newTestExecutor(fakeClient)
+	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+	current := map[string]int{testRolePrefill: 4, testRoleDecode: 4}
+	target := map[string]RoleStepState{
+		testRolePrefill: {Replicas: 3},
+		testRoleDecode:  {Replicas: 3},
+	}
+
+	maxSafeDrain := map[string]int{testRolePrefill: 1, testRoleDecode: 1}
+	require.NoError(t, executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target, maxSafeDrain, true))
+	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, testNamespace, "test-0-old-prefill"))
+	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, testNamespace, "test-0-old-decode"))
 }
 
 // TestScaleDownOldWithMissingRole tests that roles not present in
@@ -1022,16 +1073,15 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			expectedDecode:  3,
 		},
 		{
-			// Aliveness skips the orphaning P drain first (canRetire false
-			// because D budget=0 < D replicas=4). Since NO drain happens
-			// and budget remains, the deadlock fallback fires and force-
-			// retires the newest revision.
-			name:            "deadlock fallback retires when aliveness blocks all",
+			// Aliveness would suppress the P drain because D remains. Since
+			// that would make the rollout a permanent no-op, execute only the
+			// planner-approved P drain; never retire D outside its zero budget.
+			name:            "budgeted drain progresses when aliveness blocks all",
 			prefillBudget:   4,
 			decodeBudget:    0,
 			encodeBudget:    0,
 			expectedPrefill: 0,
-			expectedDecode:  0,
+			expectedDecode:  4,
 		},
 	}
 
@@ -1074,7 +1124,12 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 				"decode":  {Replicas: current["decode"] - tc.decodeBudget},
 				"encode":  {Replicas: current["encode"] - tc.encodeBudget},
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target)
+			maxSafeDrain := map[string]int{
+				"prefill": tc.prefillBudget,
+				"decode":  tc.decodeBudget,
+				"encode":  tc.encodeBudget,
+			}
+			err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target, maxSafeDrain, true)
 			require.NoError(t, err)
 
 			// Verify prefill and decode were scaled correctly

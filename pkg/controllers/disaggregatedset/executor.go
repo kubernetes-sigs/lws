@@ -169,13 +169,21 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	nextStep := plan.Step
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
+	maxSafeDrain := buildMaxSafeDrain(allRoleNames, oldRevisions, currentNew, initialOld, targetNew, config)
+	allowUncoordinatedDrain := true
+	for _, name := range allRoleNames {
+		if nextStep.New[name].Replicas > currentNew[name] {
+			allowUncoordinatedDrain = false
+			break
+		}
+	}
 
 	// Scale down old replicas before scaling up new ones. This ordering ensures
 	// the total replica count never exceeds the surge limit between the two
 	// API calls: e.g. with surge=0, scaling up first would briefly make
 	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
 	// currentOld down.
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past, maxSafeDrain, allowUncoordinatedDrain); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New, initialOld, targetNew, config); err != nil {
@@ -339,6 +347,33 @@ func maxRoleSize(sizes map[string]int) int {
 	return maxN
 }
 
+// buildMaxSafeDrain returns the maximum number of old replicas that may be
+// removed per role without crossing the raw MaxUnavailable availability
+// floor. Old and new ReadyReplicas are used because availability, unlike the
+// surge ceiling, is a serving-capacity constraint.
+func buildMaxSafeDrain(
+	roleNames []string,
+	oldRevisions disaggregatedsetutils.RevisionRolesList,
+	currentNew, initialOld, targetNew map[string]int,
+	config map[string]RollingUpdateConfig,
+) map[string]int {
+	oldReady := make(map[string]int, len(roleNames))
+	for _, revision := range oldRevisions {
+		for _, name := range roleNames {
+			if lws := revision.Roles[name]; lws != nil {
+				oldReady[name] += int(lws.Status.ReadyReplicas)
+			}
+		}
+	}
+
+	maxSafeDrain := make(map[string]int, len(roleNames))
+	for _, name := range roleNames {
+		floor := max(0, min(initialOld[name], targetNew[name])-config[name].MaxUnavailable)
+		maxSafeDrain[name] = max(0, oldReady[name]+currentNew[name]-floor)
+	}
+	return maxSafeDrain
+}
+
 func maxTimestamp(wl disaggregatedsetutils.RevisionRoles) time.Time {
 	var maxTS time.Time
 	for _, lws := range wl.Roles {
@@ -419,14 +454,15 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	roleNames []string,
 	currentOld map[string]int,
 	targetOld map[string]RoleStepState,
+	maxSafeDrain map[string]int,
+	allowUncoordinatedDrain bool,
 ) error {
 	budget := make(map[string]int, len(roleNames))
 	for _, name := range roleNames {
-		budget[name] = currentOld[name] - targetOld[name].Replicas
+		budget[name] = max(0, min(currentOld[name]-targetOld[name].Replicas, maxSafeDrain[name]))
 	}
 
 	log := logf.FromContext(ctx)
-	drainedAny := false
 	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
 		allDone := true
 		for _, name := range roleNames {
@@ -462,9 +498,10 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		if specAllZero && anyStillTerminating {
 			log.V(1).Info("Waiting for retired revision's pods to terminate before draining older revisions",
 				"revision", wl.Revision)
-			break
+			return nil
 		}
 
+		budgetedDrain := make(map[string]int, len(roleNames))
 		plannedDrain := make(map[string]int, len(roleNames))
 		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
@@ -472,17 +509,18 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			plannedDrain[name] = min(budget[name], replicas)
+			budgetedDrain[name] = min(budget[name], replicas)
+			plannedDrain[name] = budgetedDrain[name]
 		}
 
 		// Per-revision aliveness: if the planned drain would take some role
 		// to 0 while another role stays > 0, choose between:
-		//   - Retire the whole revision atomically (when budget allows for
-		//     every role — planner clearly wants retirement).
+		//   - Retire the whole revision atomically when ReadyReplicas leave
+		//     enough room above every role's raw availability floor.
 		//   - Skip drains that would hit 0 (keep those roles alive; budget
 		//     rolls to the next revision or next reconcile). Preserves
 		//     ratio and avoids over-draining ready pods below floor.
-		anyAliveAfter, wouldOrphan, canRetire := false, false, true
+		anyAliveAfter, wouldOrphan, canRetireSafely := false, false, true
 		for _, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
@@ -496,8 +534,8 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			if after > 0 {
 				anyAliveAfter = true
 			}
-			if replicas > budget[name] {
-				canRetire = false
+			if replicas > maxSafeDrain[name] {
+				canRetireSafely = false
 			}
 		}
 		for _, name := range roleNames {
@@ -516,7 +554,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 		if wouldOrphan {
-			if canRetire {
+			if canRetireSafely {
 				for _, name := range roleNames {
 					lws, exists := wl.Roles[name]
 					if !exists {
@@ -536,6 +574,23 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 					}
 				}
 			}
+		}
+
+		// Aliveness is a coordination preference, while the raw availability
+		// floor is the safety boundary. If orphan prevention suppressed every
+		// otherwise budgeted drain and whole-revision retirement is unsafe, wait
+		// when NEW can grow. If no growth is possible, use only the original
+		// budgeted move rather than force-retiring the revision or wedging forever.
+		if !hasPositiveDrain(plannedDrain) && hasPositiveDrain(budgetedDrain) {
+			if !allowUncoordinatedDrain {
+				// Do not spill the budget into an older revision. Scaling NEW in
+				// this reconcile may make whole-revision retirement safe on the
+				// next pass.
+				return nil
+			}
+			log.V(1).Info("Applying budgeted drain to avoid an aliveness deadlock",
+				"revision", wl.Revision)
+			plannedDrain = budgetedDrain
 		}
 
 		revisionDrained := false
@@ -559,7 +614,6 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas)
 			budget[name] -= drain
-			drainedAny = true
 			revisionDrained = true
 		}
 		// Newest-first drain-order invariant: once we've touched a revision,
@@ -573,55 +627,16 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 		}
 	}
 
-	// Deadlock fallback: aliveness may have skipped every revision (no drain
-	// applied) even though planner still has budget to spend. This happens
-	// when no revision can safely partial-drain AND no revision can be
-	// fully retired within budget. Force-retire the newest non-empty revision
-	// to unstick; the aliveness invariant is briefly broken, but progress
-	// resumes next reconcile.
-	if !drainedAny {
-		remaining := false
-		for _, name := range roleNames {
-			if budget[name] > 0 {
-				remaining = true
-				break
-			}
-		}
-		if remaining {
-			for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
-				anyReplicas := false
-				for _, name := range roleNames {
-					if lws, ok := wl.Roles[name]; ok && getLWSReplicas(lws) > 0 {
-						anyReplicas = true
-						break
-					}
-				}
-				if !anyReplicas {
-					continue
-				}
-				for _, name := range roleNames {
-					lws, exists := wl.Roles[name]
-					if !exists {
-						continue
-					}
-					replicas := int(getLWSReplicas(lws))
-					if replicas == 0 {
-						continue
-					}
-					// Address by the LWS's actual name so a legacy slice-0 object drains too.
-					lwsName := lws.Name
-					log.Info("Scaling down (deadlock fallback: full retire)", "lws", lwsName, "from", replicas)
-					if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, 0); err != nil {
-						return fmt.Errorf("failed to scale %s: %w", lwsName, err)
-					}
-					executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
-						"Update", "Scaling down %s LWS %s from %d to 0 replicas (deadlock fallback)", name, lwsName, replicas)
-				}
-				break
-			}
+	return nil
+}
+
+func hasPositiveDrain(drains map[string]int) bool {
+	for _, drain := range drains {
+		if drain > 0 {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 // --- LWS creation ---
