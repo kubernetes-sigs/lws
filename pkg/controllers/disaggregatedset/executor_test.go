@@ -565,6 +565,7 @@ func TestSortByNewestTimestamp(t *testing.T) {
 
 func TestIsRevisionStable(t *testing.T) {
 	roleNames := testRoleNames()
+	const budgetSteps = 6
 
 	// Tolerance is MaxSurge + MaxUnavailable. With surge=1 unavail=0 → tol=1
 	// (allow 1 pending: a surge-added pod still becoming ready).
@@ -615,7 +616,7 @@ func TestIsRevisionStable(t *testing.T) {
 					testRoleDecode:  makeLWS(withReplicas(tc.decodeReplicas), withReadyReplicas(tc.decodeReady)),
 				},
 			}
-			assert.Equal(t, tc.expected, isRevisionStable(workload, roleNames, tc.cfg))
+			assert.Equal(t, tc.expected, isRevisionStable(workload, roleNames, budgetSteps, tc.cfg))
 		})
 	}
 }
@@ -646,9 +647,21 @@ func TestIsRevisionStable_PerRoleTolerance(t *testing.T) {
 				testRolePrefill: makeLWS(withReplicas(tc.pSpec), withReadyReplicas(tc.pReady)),
 				testRoleDecode:  makeLWS(withReplicas(tc.dSpec), withReadyReplicas(tc.dReady)),
 			}}
-			assert.Equal(t, tc.expected, isRevisionStable(wl, testRoleNames(), cfg))
+			assert.Equal(t, tc.expected, isRevisionStable(wl, testRoleNames(), 5, cfg))
 		})
 	}
+}
+
+func TestIsRevisionStable_UsesRolloutSizeForPartialRevision(t *testing.T) {
+	roles := testRoleNames()
+	cfg := makeConfig(roles, []int{1, 1}, []int{1, 1})
+	partial := disaggregatedsetutils.RevisionRoles{Revision: "h", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: makeLWS(withReplicas(2), withReadyReplicas(0)),
+		testRoleDecode:  makeLWS(withReplicas(1), withReadyReplicas(0)),
+	}}
+
+	assert.False(t, isRevisionStable(partial, roles, 8, cfg),
+		"a partial 2P/1D revision with zero ready pods must not consume the full rollout tolerance")
 }
 
 // =============================================================================
@@ -1215,6 +1228,37 @@ func TestScaleUpNew(t *testing.T) {
 			assert.Equal(t, tc.expectedDecode, getTestLWSReplicas(fakeClient, namespace, "test-0-newhash-decode"))
 		})
 	}
+}
+
+func TestScaleUpNewUsesRawPerRoleSurgeCeiling(t *testing.T) {
+	baseTime := time.Now()
+	roleNames := testRoleNames()
+	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithObjects(
+			buildTestLWS("test-0-newhash-prefill", testNamespace, testRolePrefill, "newhash").
+				Replica(8).StatusReplicas(8).ReadyReplicas(8).CreationTimestamp(baseTime).Obj(),
+			buildTestLWS("test-0-newhash-decode", testNamespace, testRoleDecode, "newhash").
+				Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
+		).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
+	executor := newTestExecutor(fakeClient)
+	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+	newRevision := disaggregatedsetutils.RevisionRoles{Revision: "newhash", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: makeLWS(withReplicas(8)),
+		testRoleDecode:  makeLWS(withReplicas(4)),
+	}}
+	current := map[string]int{testRolePrefill: 8, testRoleDecode: 4}
+	target := map[string]RoleStepState{
+		testRolePrefill: {Replicas: 8},
+		testRoleDecode:  {Replicas: 6},
+	}
+	initialOld := map[string]int{testRolePrefill: 8, testRoleDecode: 4}
+	targetSpec := map[string]int{testRolePrefill: 8, testRoleDecode: 4}
+	cfg := makeConfig(roleNames, []int{2, 2}, []int{0, 0})
+
+	require.NoError(t, executor.scaleUpNew(context.TODO(), ds, 0, newRevision, roleNames,
+		map[string]bool{testRolePrefill: true, testRoleDecode: true}, current, target, initialOld, targetSpec, cfg))
+	assert.Equal(t, int32(6), getTestLWSReplicas(fakeClient, testNamespace, "test-0-newhash-decode"),
+		"decode may use its raw maxSurge=2 even though ratio planning normally requests less")
 }
 
 // =============================================================================

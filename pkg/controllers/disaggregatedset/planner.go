@@ -44,13 +44,17 @@ limitations under the License.
 //
 // # Capacity envelope
 //
-// maxSurge and maxUnavailable are side-level minUnit multipliers, projected
-// per-role so smaller roles get proportionally smaller absolute slack:
+// maxSurge and maxUnavailable remain absolute per-role API limits. The planner
+// projects them onto the shared minUnit scale to choose ratio-preserving moves;
+// consequently a role may intentionally use less than its allowed maximum:
 //
-//	surge_pods   = ceil(roleSize × maxSurge       / totalSteps)
-//	unavail_pods = ceil(roleSize × maxUnavailable / totalSteps)
-//	ceiling      = max(initialOld, target) + surge_pods
-//	floor        = max(0, min(initialOld, target) - unavail_pods)
+//	surge_pods      = ceil(roleSize × maxSurge       / totalSteps)
+//	unavail_pods    = ceil(roleSize × maxUnavailable / totalSteps)
+//	planning_ceiling = max(initialOld, target) + surge_pods
+//	planning_floor   = max(0, min(initialOld, target) - unavail_pods)
+//
+// The executor independently enforces the raw per-role MaxSurge ceiling and
+// MaxUnavailable floor as hard safety bounds.
 //
 // # Per-tick step
 //
@@ -61,8 +65,8 @@ limitations under the License.
 //	specTargetStep_new = progressStep + maxSurge
 //	specTargetStep_old = progressStep + maxUnavail
 //
-// addBudget = ceiling − total and drainBudget = total − floor cap the
-// actual per-tick move.
+// addBudget = planningCeiling − total and drainBudget = total −
+// planningFloor cap the actual per-tick move.
 package disaggregatedset
 
 // RoleStepState reports the target replica count for one role at one step.
@@ -241,21 +245,21 @@ func ComputeNextStep(
 
 		cfg := config[role]
 		roleSize := max(initialOld[role], targetNew[role])
-		// Project MaxSurge/MaxUnavailable minUnit multipliers onto per-role
-		// pod counts. Largest role gets the full multiplier; smaller roles
-		// get proportionally less absolute slack.
+		// Project the per-role API limits onto the shared minUnit scale.
+		// Largest role can use the full allowance; smaller roles intentionally
+		// use less to keep the planned move proportional.
 		surgePods := projectBudget(roleSize, cfg.MaxSurge, budgetSteps)
 		unavailPods := projectBudget(roleSize, cfg.MaxUnavailable, budgetSteps)
-		ceiling := roleSize + surgePods
-		floor := max(0, min(initialOld[role], targetNew[role])-unavailPods)
+		planningCeiling := roleSize + surgePods
+		planningFloor := max(0, min(initialOld[role], targetNew[role])-unavailPods)
 		if cfg.MaxSurge == 0 && cfg.MaxUnavailable == 0 {
 			// Default: allow +1 above target so rollouts can still progress.
-			ceiling = roleSize + 1
+			planningCeiling = roleSize + 1
 		}
 
 		total := currentNew[role] + currentOld[role]
-		addBudget := max(0, ceiling-total)
-		drainBudget := max(0, total-floor)
+		addBudget := max(0, planningCeiling-total)
+		drainBudget := max(0, total-planningFloor)
 
 		addNewMap[role] = min(max(wantNew-currentNew[role], 0), addBudget)
 		drainWantMap[role] = max(0, currentOld[role]-wantOld)
@@ -324,11 +328,9 @@ func anyChange(roleNames []string, past, now map[string]RoleStepState, curOld, c
 	return false
 }
 
-// projectBudget converts a side-level minUnit multiplier (maxSurge or
-// maxUnavailable) into a per-role pod count: ceil(roleSize × mult / totalSteps).
-// The largest role (roleSize == totalSteps) gets the full multiplier;
-// smaller roles get proportionally less absolute slack, keeping the budget
-// balanced against the side as a whole.
+// projectBudget converts an absolute per-role API limit into the proportional
+// allowance used to plan a coordinated P:D move: ceil(roleSize × limit /
+// totalSteps). The raw limit remains the executor's hard safety bound.
 func projectBudget(roleSize, mult, totalSteps int) int {
 	if totalSteps <= 0 || mult <= 0 || roleSize <= 0 {
 		return 0

@@ -143,17 +143,17 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoleSet, specRoleSet)...)
 	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
+	budgetSteps := max(sideSize(initialOld), sideSize(targetNew))
 
-	// A revision is "stable enough" to advance when each role has at most
-	// (MaxSurge + MaxUnavailable) pending replicas — the full in-flight slack
-	// the user authorized. This lets the rollout keep progressing when one
-	// slow-starting pod would otherwise gate everything. See isRevisionStable.
-	if !isRevisionStable(newRevision, specRoleNames, config) {
+	// A revision is "stable enough" to advance when each role stays within its
+	// proportional share of the combined MaxSurge + MaxUnavailable budget. This
+	// lets the rollout tolerate bounded slow starts without granting a partial
+	// revision the full rollout allowance. See isRevisionStable.
+	if !isRevisionStable(newRevision, specRoleNames, budgetSteps, config) {
 		log.V(1).Info("Waiting for new revision to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
-
-	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
 
 	plan := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
 	if plan.Status == PlanComplete {
@@ -300,18 +300,10 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 // isRevisionStable returns true when the new revision is "stable enough" to
 // advance the rollout: each role's pending count (Spec.Replicas - ReadyReplicas)
 // must be within its per-role slack budget, which is the sum of the surge and
-// unavail budgets projected onto this role's size. See planner package doc for
-// the minUnit-multiplier semantics.
-func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string, config map[string]RollingUpdateConfig) bool {
-	// totalSteps for the projection = max role size across the new revision.
-	roleSizes := make(map[string]int, len(roleNames))
-	for _, name := range roleNames {
-		if lws := rev.Roles[name]; lws != nil {
-			roleSizes[name] = int(getLWSReplicas(lws))
-		}
-	}
-	totalSteps := maxRoleSize(roleSizes)
-
+// unavailable limits projected against the rollout's fixed step count. Using a
+// fixed denominator prevents a small partial revision from receiving the full
+// rollout tolerance too early.
+func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string, budgetSteps int, config map[string]RollingUpdateConfig) bool {
 	for _, name := range roleNames {
 		lws := rev.Roles[name]
 		if lws == nil {
@@ -325,7 +317,7 @@ func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []strin
 		}
 		var tolerance int32
 		if cfg, ok := config[name]; ok {
-			slack := projectBudget(int(spec), cfg.MaxSurge+cfg.MaxUnavailable, totalSteps)
+			slack := projectBudget(int(spec), cfg.MaxSurge+cfg.MaxUnavailable, budgetSteps)
 			tolerance = int32(slack)
 		}
 		if pending > tolerance {
@@ -333,18 +325,6 @@ func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []strin
 		}
 	}
 	return true
-}
-
-// maxRoleSize returns the largest replica count across roles (used as
-// totalSteps for minUnit projections). Returns 0 if the map is empty.
-func maxRoleSize(sizes map[string]int) int {
-	maxN := 0
-	for _, n := range sizes {
-		if n > maxN {
-			maxN = n
-		}
-	}
-	return maxN
 }
 
 // buildMaxSafeDrain returns the maximum number of old replicas that may be
@@ -421,14 +401,11 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		currentSpec := int(getLWSReplicas(lws))
 		desiredSpec := targetNew[name].Replicas
 
-		// Spec-footprint guard: cap desired spec at the per-role surge ceiling.
-		// MaxSurge is a minUnit multiplier at the side level; project onto
-		// this role's pod count so smaller roles get proportionally less
-		// absolute slack. See planner package doc.
-		totalSteps := maxRoleSize(targetSpec)
+		// Spec-footprint guard: the API value is the absolute per-role outer
+		// bound. The planner may choose a smaller proportional move, but this
+		// executor guard must not redefine MaxSurge.
 		roleSize := max(initialOld[name], targetSpec[name])
-		surgePods := projectBudget(roleSize, config[name].MaxSurge, totalSteps)
-		ceiling := roleSize + surgePods
+		ceiling := roleSize + config[name].MaxSurge
 		if desiredSpec > ceiling {
 			desiredSpec = ceiling
 		}
