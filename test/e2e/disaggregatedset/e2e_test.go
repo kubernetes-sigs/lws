@@ -572,18 +572,16 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				// Expected steps from percentage-block planner (each revision follows its own curve)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 9, OldDecode: 1, NewPrefill: 1, NewDecode: 1},  // step 1
-					{OldPrefill: 8, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 2
-					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 3},  // step 3
-					{OldPrefill: 7, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 4
-					{OldPrefill: 6, OldDecode: 0, NewPrefill: 4, NewDecode: 5},  // step 5
-					{OldPrefill: 5, OldDecode: 0, NewPrefill: 5, NewDecode: 6},  // step 6
-					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 7},  // step 7
-					{OldPrefill: 4, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 8
-					{OldPrefill: 3, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 9
-					{OldPrefill: 2, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10
-					{OldPrefill: 1, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 11
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 12
+					{OldPrefill: 9, OldDecode: 2, NewPrefill: 2, NewDecode: 3},  // step 1
+					{OldPrefill: 8, OldDecode: 2, NewPrefill: 3, NewDecode: 5},  // step 2
+					{OldPrefill: 7, OldDecode: 2, NewPrefill: 4, NewDecode: 7},  // step 3
+					{OldPrefill: 6, OldDecode: 2, NewPrefill: 5, NewDecode: 8},  // step 4
+					{OldPrefill: 5, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 5
+					{OldPrefill: 4, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 6
+					{OldPrefill: 3, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 7
+					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 8
+					{OldPrefill: 1, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10
 				},
 			},
 			{
@@ -692,7 +690,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				Expect(observedStates[len(observedStates)-1]).To(Equal(finalState), "final state should match")
 
 				// Verify invariants throughout rollout
-				By("verifying surge limits were respected")
+				By("verifying raw surge limits were respected")
 				maxPrefillSurge := tc.PrefillSurge.IntValue()
 				maxDecodeSurge := tc.DecodeSurge.IntValue()
 				for _, state := range observedStates {
@@ -721,8 +719,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		// (faster role parked at boundary waiting for slower role) become
 		// observable.
 		//
-		// Config: 8P/4D, minimalUnit = max(1/8, 1/4) = 1/4 → 4 sync points.
-		// Per sync window: prefill +2 replicas (2 sub-steps), decode +1.
+		// Config: 8P/4D, planner minUnit = 1/max(8,4) = 1/8. Decode
+		// absorbs every other tick, so its observable rounding window is 1/4.
 		// Expected rollout time: ~60-90s.
 		const deploymentName = "test-slow-rollout"
 		const (
