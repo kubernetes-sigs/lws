@@ -235,4 +235,45 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 		}
 		_, _ = webhook.ValidateCreate(ctx, lws)
 	})
+
+	t.Run("missing subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size:           ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{},
+				},
+			},
+		}
+
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Fatal("expected validation error for missing subGroupSize")
+		}
+	})
+
+	t.Run("zero subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{
+						SubGroupSize: ptr.To[int32](0),
+					},
+				},
+			},
+		}
+
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Fatal("expected validation error for zero subGroupSize")
+		}
+	})
+
 }
