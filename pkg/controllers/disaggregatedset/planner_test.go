@@ -200,6 +200,63 @@ func TestCapacityNeverExceedsTarget(t *testing.T) {
 	}
 }
 
+func TestRolloutSafetyInvariantsExhaustive(t *testing.T) {
+	roles := []string{"p", "d"}
+	configs := []struct {
+		name             string
+		surgeP, unavailP int
+		surgeD, unavailD int
+	}{
+		{name: "surge1", surgeP: 1, surgeD: 1},
+		{name: "unavailable1", unavailP: 1, unavailD: 1},
+		{name: "surge1_unavailable1", surgeP: 1, surgeD: 1, unavailP: 1, unavailD: 1},
+		{name: "surge2", surgeP: 2, surgeD: 2},
+		{name: "unavailable2", unavailP: 2, unavailD: 2},
+		{name: "asymmetric_budgets", surgeP: 2, surgeD: 1, unavailP: 1, unavailD: 2},
+	}
+
+	for initialP := 0; initialP <= 5; initialP++ {
+		for initialD := 0; initialD <= 5; initialD++ {
+			for targetP := 0; targetP <= 5; targetP++ {
+				for targetD := 0; targetD <= 5; targetD++ {
+					initial := map[string]int{"p": initialP, "d": initialD}
+					target := map[string]int{"p": targetP, "d": targetD}
+					for _, tc := range configs {
+						cfg := makeConfig(roles,
+							[]int{tc.surgeP, tc.surgeD},
+							[]int{tc.unavailP, tc.unavailD})
+						steps := ComputeAllSteps(roles, initial, target, cfg)
+						scenario := fmt.Sprintf("%s initial=%v target=%v", tc.name, initial, target)
+						if !completes(steps, roles, target) {
+							t.Fatalf("rollout did not complete: %s; steps=%+v", scenario, steps)
+						}
+
+						for i, step := range steps {
+							for _, role := range roles {
+								oldCount := step.Past[role].Replicas
+								newCount := step.New[role].Replicas
+								total := oldCount + newCount
+								ceiling := max(initial[role], target[role]) + cfg[role].MaxSurge
+								floor := max(0, min(initial[role], target[role])-cfg[role].MaxUnavailable)
+								if oldCount < 0 || newCount < 0 || total > ceiling || total < floor {
+									t.Fatalf("unsafe step %d for %s role=%s: old=%d new=%d floor=%d ceiling=%d",
+										i, scenario, role, oldCount, newCount, floor, ceiling)
+								}
+								if i > 0 {
+									previous := steps[i-1]
+									if oldCount > previous.Past[role].Replicas || newCount < previous.New[role].Replicas {
+										t.Fatalf("non-monotonic step %d for %s role=%s", i, scenario, role)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // =============================================================================
 // Sync Point Tests
 // =============================================================================
@@ -342,6 +399,16 @@ func TestComputeAllSteps_ImbalancedZeroSurgeDoesNotWedge(t *testing.T) {
 				"step %d role %s dropped below unavailable floor", i, role)
 		}
 	}
+}
+
+func TestComputeAllSteps_RatioRoundingOpensReplacementCapacity(t *testing.T) {
+	roles := []string{"p", "d"}
+	initial := makeRoles(roles, []int{1, 5})
+	target := makeRoles(roles, []int{1, 5})
+	cfg := makeConfig(roles, []int{0, 0}, []int{1, 1})
+
+	steps := ComputeAllSteps(roles, initial, target, cfg)
+	require.True(t, completes(steps, roles, target), "rollout stopped after %d steps", len(steps))
 }
 
 // =============================================================================

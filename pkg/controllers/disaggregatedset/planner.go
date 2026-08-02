@@ -40,7 +40,9 @@ limitations under the License.
 //
 // Ceil on the OLD side additionally enforces the aliveness invariant:
 // every role holds at ≥1 while any other role is still draining. All
-// roles reach 0 in the same final tick, never before.
+// roles normally reach 0 in the same final tick. A floor-safe replacement
+// drain may temporarily relax this coordination only when strict aliveness
+// would otherwise make a valid zero-surge rollout permanently immobile.
 //
 // # Capacity envelope
 //
@@ -237,6 +239,7 @@ func ComputeNextStep(
 	now := make(map[string]RoleStepState, len(roleNames))
 	drainOldMap := make(map[string]int, len(roleNames))
 	drainWantMap := make(map[string]int, len(roleNames))
+	drainBudgetMap := make(map[string]int, len(roleNames))
 	addNewMap := make(map[string]int, len(roleNames))
 
 	for _, role := range roleNames {
@@ -263,6 +266,7 @@ func ComputeNextStep(
 
 		addNewMap[role] = min(max(wantNew-currentNew[role], 0), addBudget)
 		drainWantMap[role] = max(0, currentOld[role]-wantOld)
+		drainBudgetMap[role] = drainBudget
 		drainOldMap[role] = min(max(drainWantMap[role], 0), drainBudget)
 	}
 
@@ -291,8 +295,20 @@ func ComputeNextStep(
 		past[role] = RoleStepState{Replicas: currentOld[role] - drainOldMap[role]}
 	}
 
-	// No-op detection: if nothing changes, signal "no work this reconcile".
+	// If ratio rounding and a zero-surge ceiling block both sides, drain one
+	// floor-safe old replica to open capacity for its replacement. Without this
+	// swap-opening move, imbalanced cases such as 1P/5D with unavailable=1 can
+	// remain permanently parked even though the user authorized a legal drain.
 	if !anyChange(roleNames, past, now, currentOld, currentNew) {
+		for _, role := range roleNames {
+			if currentOld[role] > 0 && currentNew[role] < targetNew[role] && drainBudgetMap[role] > 0 {
+				past[role] = RoleStepState{Replicas: currentOld[role] - 1}
+				return PlanResult{
+					Status: PlanProgress,
+					Step:   &UpdateStep{Past: past, New: now},
+				}
+			}
+		}
 		return PlanResult{Status: PlanBlocked}
 	}
 	return PlanResult{
