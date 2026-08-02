@@ -383,6 +383,21 @@ func TestComputeNextStep_FreshStart(t *testing.T) {
 	assert.Greater(t, result.Step.New["d"].Replicas, 0, "should create new d replicas")
 }
 
+func TestComputeNextStep_NewRecoversOldProgressLead(t *testing.T) {
+	roles := []string{"p", "d"}
+	initialOld := makeRoles(roles, []int{5, 5})
+	currentOld := makeRoles(roles, []int{3, 3})
+	currentNew := makeRoles(roles, []int{0, 0})
+	targetNew := makeRoles(roles, []int{5, 5})
+	cfg := makeConfig(roles, []int{0, 0}, []int{2, 2})
+
+	result := ComputeNextStep(roles, initialOld, currentOld, currentNew, targetNew, cfg)
+	require.Equal(t, PlanProgress, result.Status)
+	require.NotNil(t, result.Step)
+	assert.Equal(t, 2, result.Step.New["p"].Replicas)
+	assert.Equal(t, 2, result.Step.New["d"].Replicas)
+}
+
 func TestComputeAllSteps_ImbalancedZeroSurgeDoesNotWedge(t *testing.T) {
 	roles := []string{"p", "d"}
 	initial := makeRoles(roles, []int{1, 4})
@@ -607,7 +622,7 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 2: oldP=14 oldD=3 newP=6 newD=1
 3: oldP=11 oldD=3 newP=7 newD=2
 4: oldP=8 oldD=2 newP=10 newD=2
-5: oldP=5 oldD=1 newP=10 newD=3
+5: oldP=5 oldD=1 newP=11 newD=3
 6: oldP=2 oldD=1 newP=12 newD=4
 7: oldP=0 oldD=0 newP=12 newD=4
 `,
@@ -618,10 +633,9 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 			surge: []int{0, 0}, unavail: []int{2, 2},
 			want: `0: oldP=4 oldD=4 newP=0 newD=0
 1: oldP=2 oldD=2 newP=0 newD=0
-2: oldP=2 oldD=2 newP=1 newD=1
-3: oldP=1 oldD=1 newP=2 newD=2
-4: oldP=0 oldD=0 newP=3 newD=3
-5: oldP=0 oldD=0 newP=4 newD=4
+2: oldP=2 oldD=2 newP=2 newD=2
+3: oldP=0 oldD=0 newP=2 newD=2
+4: oldP=0 oldD=0 newP=4 newD=4
 `,
 		},
 		{

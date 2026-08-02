@@ -220,8 +220,14 @@ func ComputeNextStep(
 	// can reach *this tick*: baseline + surge (NEW) / + unavail (OLD). This
 	// lets each tick fill the full surge/unavail budget in one round-trip
 	// instead of leaving it on the table.
-	newProgressStep := min(sideProgress(roleNames, currentNew, targetNew, newTotalSteps, false)+1, newTotalSteps)
-	oldProgressStep := min(sideProgress(roleNames, currentOld, initialOld, oldTotalSteps, true)+1, oldTotalSteps)
+	newProgress := sideProgress(roleNames, currentNew, targetNew, newTotalSteps, false)
+	oldProgress := sideProgress(roleNames, currentOld, initialOld, oldTotalSteps, true)
+	// OLD may already be ahead because MaxUnavailable was spent on an earlier
+	// reconcile. Let NEW recover that earned lead immediately instead of
+	// rebuilding one tick at a time while capacity remains below target.
+	newCatchUpStep := projectProgressStep(oldProgress, oldTotalSteps, newTotalSteps)
+	newProgressStep := min(max(newProgress+1, newCatchUpStep), newTotalSteps)
+	oldProgressStep := min(oldProgress+1, oldTotalSteps)
 	newSurge, oldUnavail := 0, 0
 	for _, role := range roleNames {
 		if s := config[role].MaxSurge; s > newSurge {
@@ -352,6 +358,16 @@ func projectBudget(roleSize, mult, totalSteps int) int {
 		return 0
 	}
 	return (roleSize*mult + totalSteps - 1) / totalSteps
+}
+
+// projectProgressStep maps a completed step count from one side's scale onto
+// the other side's scale, rounding up so NEW can recover capacity already
+// released by OLD.
+func projectProgressStep(step, fromTotalSteps, toTotalSteps int) int {
+	if step <= 0 || fromTotalSteps <= 0 || toTotalSteps <= 0 {
+		return 0
+	}
+	return min((step*toTotalSteps+fromTotalSteps-1)/fromTotalSteps, toTotalSteps)
 }
 
 // ComputeAllSteps simulates a full rollout by repeatedly calling ComputeNextStep.

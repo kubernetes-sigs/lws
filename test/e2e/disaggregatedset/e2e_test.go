@@ -594,12 +594,13 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				DecodeSurge:    intstr.FromInt(0),
 				PrefillUnavail: intstr.FromInt(2),
 				DecodeUnavail:  intstr.FromInt(2),
-				// Expected steps from percentage-block planner (1-at-a-time with sync points)
+				// Expected steps from percentage-block planner. NEW catches up
+				// immediately after OLD spends the unavailable budget.
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 4, OldDecode: 4, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 3, OldDecode: 3, NewPrefill: 1, NewDecode: 1}, // step 1
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1
 					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2
-					{OldPrefill: 1, OldDecode: 1, NewPrefill: 3, NewDecode: 3}, // step 3
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3
 					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4
 				},
 			},
