@@ -76,6 +76,24 @@ type UpdateStep struct {
 	New  map[string]RoleStepState // new revision target counts (scale up to here)
 }
 
+// PlanStatus describes whether a planner invocation made progress, completed
+// the rollout, or could not find a legal state transition from the observed
+// state. Callers must not treat a blocked plan as completion.
+type PlanStatus string
+
+const (
+	PlanProgress PlanStatus = "Progress"
+	PlanComplete PlanStatus = "Complete"
+	PlanBlocked  PlanStatus = "Blocked"
+)
+
+// PlanResult is the outcome of one planner invocation. Step is populated only
+// when Status is PlanProgress.
+type PlanResult struct {
+	Status PlanStatus
+	Step   *UpdateStep
+}
+
 // RollingUpdateConfig holds the per-role surge/unavailable budgets.
 type RollingUpdateConfig struct {
 	MaxSurge       int
@@ -167,8 +185,7 @@ func wantReplicas(roleSize, step, totalSteps int, drained bool) int {
 	return (num + totalSteps - 1) / totalSteps
 }
 
-// ComputeNextStep returns the per-role deltas for the next reconcile, or nil
-// if the rollout has reached its target.
+// ComputeNextStep returns the outcome of planning the next reconcile.
 //
 // See the package doc for the algorithm. In short:
 //  1. Find each side's progress (the slowest role's fraction-done step).
@@ -179,9 +196,9 @@ func ComputeNextStep(
 	roleNames []string,
 	initialOld, currentOld, currentNew, targetNew map[string]int,
 	config map[string]RollingUpdateConfig,
-) *UpdateStep {
+) PlanResult {
 	if isComplete(roleNames, currentOld, currentNew, targetNew) {
-		return nil
+		return PlanResult{Status: PlanComplete}
 	}
 
 	// 1. Each side's total step count = max role size on that side.
@@ -246,11 +263,10 @@ func ComputeNextStep(
 	}
 
 	// Aliveness cap: if some role wants to drain but is budget-blocked, and
-	// another role is actually draining this tick, hold both back to keep
-	// old-side roles in step. Prevents the executor from having to see
-	// past[X]=0 while past[Y]>0 (which would over-drain via coordinated
-	// retirement). Next tick, addNew grows total → drainBudget grows →
-	// the blocked role can join in.
+	// another role is actually draining this tick, hold both back while NEW is
+	// growing. The added replicas open drain budget for the blocked role on the
+	// next tick. If NEW cannot grow, keep the already budget-capped drain: it is
+	// the only legal progress available and prevents a permanent no-op wedge.
 	anyBlocked, anyDraining := false, false
 	for _, role := range roleNames {
 		if drainWantMap[role] > 0 && drainOldMap[role] == 0 {
@@ -260,7 +276,7 @@ func ComputeNextStep(
 			anyDraining = true
 		}
 	}
-	if anyBlocked && anyDraining {
+	if anyBlocked && anyDraining && anyPositive(addNewMap) {
 		for role := range drainOldMap {
 			drainOldMap[role] = 0
 		}
@@ -273,9 +289,21 @@ func ComputeNextStep(
 
 	// No-op detection: if nothing changes, signal "no work this reconcile".
 	if !anyChange(roleNames, past, now, currentOld, currentNew) {
-		return nil
+		return PlanResult{Status: PlanBlocked}
 	}
-	return &UpdateStep{Past: past, New: now}
+	return PlanResult{
+		Status: PlanProgress,
+		Step:   &UpdateStep{Past: past, New: now},
+	}
+}
+
+func anyPositive(values map[string]int) bool {
+	for _, value := range values {
+		if value > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func isComplete(roleNames []string, currentOld, currentNew, targetNew map[string]int) bool {
@@ -339,10 +367,11 @@ func ComputeAllSteps(
 	steps := []UpdateStep{initial}
 
 	for range maxSteps {
-		next := ComputeNextStep(roleNames, initialOld, currentOld, currentNew, target, config)
-		if next == nil {
+		result := ComputeNextStep(roleNames, initialOld, currentOld, currentNew, target, config)
+		if result.Status != PlanProgress {
 			break
 		}
+		next := result.Step
 		steps = append(steps, *next)
 		for _, role := range roleNames {
 			currentOld[role] = next.Past[role].Replicas

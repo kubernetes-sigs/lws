@@ -155,13 +155,18 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 
 	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
 
-	nextStep := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
-	if nextStep == nil {
+	plan := ComputeNextStep(allRoleNames, initialOld, currentOld, currentNew, targetNew, config)
+	if plan.Status == PlanComplete {
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
 			"Update", "Completed rolling update to revision %s", newRevision.Revision)
 		return ctrl.Result{}, nil
 	}
+	if plan.Status == PlanBlocked {
+		log.Info("Rolling update is temporarily blocked; waiting for state to change")
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	nextStep := plan.Step
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 

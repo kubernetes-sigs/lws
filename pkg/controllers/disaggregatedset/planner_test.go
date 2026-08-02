@@ -75,8 +75,8 @@ func totalPerRole(s UpdateStep, role string) int {
 // =============================================================================
 
 // TestSideSize verifies the step-count helper: number of steps a side has =
-// smallest non-zero role replica count (so the slowest role can express each
-// step boundary). 0 indicates an empty side.
+// the largest role replica count, giving one-pod granularity to the largest
+// role. 0 indicates an empty side.
 func TestSideSize(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -277,7 +277,7 @@ func TestPerRoleGranularity_DecodeStepping(t *testing.T) {
 // ComputeNextStep Tests
 // =============================================================================
 
-func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
+func TestComputeNextStep_ReturnsCompleteWhenDone(t *testing.T) {
 	roles := []string{"p", "d"}
 	cfg := defaultConfig(roles)
 
@@ -305,7 +305,8 @@ func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			initialOld := makeRoles(roles, []int{3, 6})
 			result := ComputeNextStep(roles, initialOld, tc.currentOld, tc.currentNew, tc.targetNew, cfg)
-			assert.Nil(t, result, "should return nil when rollout is complete")
+			assert.Equal(t, PlanComplete, result.Status)
+			assert.Nil(t, result.Step)
 		})
 	}
 }
@@ -319,9 +320,28 @@ func TestComputeNextStep_FreshStart(t *testing.T) {
 	targetNew := makeRoles(roles, []int{4, 4})
 
 	result := ComputeNextStep(roles, initialOld, currentOld, currentNew, targetNew, cfg)
-	require.NotNil(t, result)
-	assert.Greater(t, result.New["p"].Replicas, 0, "should create new p replicas")
-	assert.Greater(t, result.New["d"].Replicas, 0, "should create new d replicas")
+	require.Equal(t, PlanProgress, result.Status)
+	require.NotNil(t, result.Step)
+	assert.Greater(t, result.Step.New["p"].Replicas, 0, "should create new p replicas")
+	assert.Greater(t, result.Step.New["d"].Replicas, 0, "should create new d replicas")
+}
+
+func TestComputeAllSteps_ImbalancedZeroSurgeDoesNotWedge(t *testing.T) {
+	roles := []string{"p", "d"}
+	initial := makeRoles(roles, []int{1, 4})
+	target := makeRoles(roles, []int{1, 4})
+	cfg := makeConfig(roles, []int{0, 0}, []int{1, 1})
+
+	steps := ComputeAllSteps(roles, initial, target, cfg)
+	require.True(t, completes(steps, roles, target), "rollout stopped after %d steps", len(steps))
+
+	for i, step := range steps {
+		for _, role := range roles {
+			floor := target[role] - cfg[role].MaxUnavailable
+			assert.GreaterOrEqual(t, totalPerRole(step, role), floor,
+				"step %d role %s dropped below unavailable floor", i, role)
+		}
+	}
 }
 
 // =============================================================================
