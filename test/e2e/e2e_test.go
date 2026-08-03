@@ -348,6 +348,130 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 	})
 
+	ginkgo.It("publishNotReadyAddresses propagates to LWS-owned Services on spec update (UniquePerReplica)", func() {
+		// KEP-820: flipping publishNotReadyAddresses must converge on already-created
+		// per-replica headless services, not only on freshly created ones.
+		unique := leaderworkerset.SubdomainUniquePerReplica
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(2).Size(2).
+			RestartPolicy(v1.RecreateGroupOnPodRestart).
+			SubdomainPolicy(unique).PublishNotReadyAddresses(false).
+			Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 2)
+		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
+
+		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, true)
+		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, true)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, false)
+		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
+	})
+
+	ginkgo.It("publishNotReadyAddresses propagates to the shared headless Service (Shared)", func() {
+		shared := leaderworkerset.SubdomainShared
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(1).Size(2).
+			RestartPolicy(v1.RecreateGroupOnPodRestart).
+			SubdomainPolicy(shared).PublishNotReadyAddresses(false).
+			Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
+
+		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, true)
+		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, true)
+	})
+
+	ginkgo.It("maxGroupRestarts surfaces Failed condition after budget is exhausted", func() {
+		// KEP-820: a worker pod deletion under RecreateGroupOnPodRestart must
+		// consult the group-restart budget. With maxGroupRestarts=0 the very
+		// first recreation attempt should trip the terminal Failed condition
+		// and stop further group deletion.
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(1).Size(2).
+			RestartPolicy(v1.RecreateGroupOnPodRestart).
+			MaxGroupRestarts(0).
+			Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		// Deleting a worker pod triggers the RecreateGroupOnPodRestart path
+		// in pod_controller. With maxGroupRestarts=0 the budget is already
+		// exhausted, so the controller must refuse to recreate the group and
+		// surface Failed=True with reason MaxGroupRestartsExceeded.
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})).To(gomega.Succeed())
+
+		testing.ExpectFailedCondition(ctx, k8sClient, lws, "MaxGroupRestartsExceeded")
+	})
+
+	ginkgo.It("maxGroupRestarts allows one recreate before surfacing Failed", func() {
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(1).Size(2).
+			RestartPolicy(v1.RecreateGroupOnPodRestart).
+			MaxGroupRestarts(1).
+			Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		initialPods := &corev1.PodList{}
+		testing.ExpectValidPods(ctx, k8sClient, lws, initialPods)
+		initialPodUIDs := make(map[types.UID]struct{}, len(initialPods.Items))
+		for _, p := range initialPods.Items {
+			initialPodUIDs[p.UID] = struct{}{}
+		}
+
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})).To(gomega.Succeed())
+
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectNoFailedCondition(ctx, k8sClient, lws)
+		gomega.Eventually(func() (int, error) {
+			currentPods := &corev1.PodList{}
+			if err := k8sClient.List(ctx, currentPods, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+				return -1, err
+			}
+			if len(currentPods.Items) != len(initialPods.Items) {
+				return -1, nil
+			}
+			numberOfPodsInCommon := 0
+			for _, p := range currentPods.Items {
+				if _, ok := initialPodUIDs[p.UID]; ok {
+					numberOfPodsInCommon++
+				}
+			}
+			return numberOfPodsInCommon, nil
+		}, timeout, interval).Should(gomega.Equal(0))
+		gomega.Eventually(func() (string, error) {
+			var leader corev1.Pod
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &leader); err != nil {
+				return "", err
+			}
+			return leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey], nil
+		}, timeout, interval).Should(gomega.Equal("1"))
+
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}})).To(gomega.Succeed())
+
+		testing.ExpectFailedCondition(ctx, k8sClient, lws, "MaxGroupRestartsExceeded")
+		gomega.Eventually(func() (int, error) {
+			var leader corev1.Pod
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &leader); err != nil {
+				return -1, err
+			}
+			raw := leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey]
+			if raw == "" {
+				return -1, nil
+			}
+			v, err := strconv.Atoi(raw)
+			if err != nil {
+				return -1, err
+			}
+			return v, nil
+		}, timeout, interval).Should(gomega.BeNumerically(">", 1))
+	})
+
 	ginkgo.It("Doesn't add env vars to containers when not using TPU", func() {
 		leaderPodSpec := wrappers.MakeLeaderPodSpec()
 		workerPodSpec := wrappers.MakeWorkerPodSpec()

@@ -71,18 +71,27 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return false, fmt.Errorf("expected %d headless services, got %d", numHeadlessServices, len(headlessServiceList.Items))
 		}
 
-		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		wantPublishNotReady := false
+		subdomainPolicy := leaderworkerset.SubdomainShared
+		if lws.Spec.NetworkConfig != nil {
+			wantPublishNotReady = lws.Spec.NetworkConfig.PublishNotReadyAddresses
+			if lws.Spec.NetworkConfig.SubdomainPolicy != nil {
+				subdomainPolicy = *lws.Spec.NetworkConfig.SubdomainPolicy
+			}
+		}
+
+		if subdomainPolicy == leaderworkerset.SubdomainShared {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
-			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
+			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, wantPublishNotReady)
 		}
 
 		for i := 0; i < int(*lws.Spec.Replicas); i++ {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
-			if _, err := validateService(headlessService, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}); err != nil {
+			if _, err := validateService(headlessService, fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(i)}, wantPublishNotReady); err != nil {
 				return false, err
 			}
 		}
@@ -90,12 +99,12 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 	}, Timeout, Interval).Should(gomega.Equal(true))
 }
 
-func validateService(headlessService corev1.Service, serviceName string, wantSelector map[string]string) (bool, error) {
+func validateService(headlessService corev1.Service, serviceName string, wantSelector map[string]string, wantPublishNotReady bool) (bool, error) {
 	if headlessService.Spec.ClusterIP != "None" {
 		return false, errors.New("service type mismatch")
 	}
-	if !headlessService.Spec.PublishNotReadyAddresses {
-		return false, errors.New("service publish not ready should be true")
+	if headlessService.Spec.PublishNotReadyAddresses != wantPublishNotReady {
+		return false, fmt.Errorf("service PublishNotReadyAddresses mismatch, want %v got %v", wantPublishNotReady, headlessService.Spec.PublishNotReadyAddresses)
 	}
 	if headlessService.OwnerReferences[0].Name != serviceName {
 		return false, fmt.Errorf("service name is %s, expected %s", headlessService.OwnerReferences[0].Name, serviceName)
