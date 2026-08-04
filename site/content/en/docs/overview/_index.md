@@ -47,6 +47,13 @@ Key features of DisaggregatedSet include:
 - **Automatic Service Orchestration:** Automatically creates and manages headless services for each role to facilitate discovery and revision-aware routing.
 - **Advanced Failure Handling:** Coordinated drain and restart policies across all roles in the disaggregated set.
 
+Learn more:
+- [Concepts: DisaggregatedSet](../concepts/disaggregatedset/) — how it relates to LeaderWorkerSet and when to use it
+- [Installation](../installation/#disaggregatedset) — DisaggregatedSet ships with the LWS operator (v0.9.0+)
+- [Examples](../examples/disaggregatedset/) — minimal multi-role demos and day-2 operations
+- [API reference](../reference/disaggregatedset.v1/) — `disaggregatedset.x-k8s.io/v1` field reference
+- [KEP-766](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet) — design document
+
 ## Community, Discussion, Contribution, and Support
 
 Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).

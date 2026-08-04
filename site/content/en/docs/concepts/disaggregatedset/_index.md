@@ -21,6 +21,8 @@ DisaggregatedSet was introduced in
 [KEP-766](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet) to address
 these multi-role, multi-resource serving patterns with a single, declarative Kubernetes resource.
 
+![DisaggregatedSet concept](/images/ds-concept.svg)
+
 ## Relationship to LeaderWorkerSet
 
 DisaggregatedSet does **not** replace LeaderWorkerSet — it **orchestrates multiple LeaderWorkerSets**.
@@ -34,17 +36,25 @@ in the same namespace. This means:
 | Use case | Uniform inference or training | Disaggregated prefill/decode/encode serving |
 | CRD version | `leaderworkerset.x-k8s.io/v1` | `disaggregatedset.x-k8s.io/v1` |
 | Controller namespace | `lws-system` | `lws-system` |
-| Dependency | None | None (bundled in LWS) |
+| Dependency | None | None (bundled in LWS from v0.9.0) |
+
+Child LeaderWorkerSets use a **slice index** and a **revision hash** in their names:
 
 ```
-DisaggregatedSet
-├── roles[0]: prefill  →  creates LeaderWorkerSet "disaggdeployment-xxx-prefill"
-├── roles[1]: decode   →  creates LeaderWorkerSet "disaggdeployment-xxx-decode"
-└── roles[2]: encode   →  creates LeaderWorkerSet "disaggdeployment-xxx-encode"
+DisaggregatedSet "my-inference"
+├── roles[0]: prefill  →  LeaderWorkerSet "my-inference-0-<rev>-prefill"
+├── roles[1]: decode   →  LeaderWorkerSet "my-inference-0-<rev>-decode"
+└── roles[2]: encode   →  LeaderWorkerSet "my-inference-0-<rev>-encode"
 ```
 
-Each child LWS inherits all standard LWS capabilities: rolling updates, subgroup policies,
-exclusive placement, volume claim templates, and health monitoring.
+Naming format: `<DisaggregatedSet-name>-<slice>-<revision-hash>-<role-name>`.
+The revision hash is dynamic — always select child resources with labels
+(`disaggregatedset.x-k8s.io/name`, `disaggregatedset.x-k8s.io/role`,
+`disaggregatedset.x-k8s.io/slice`) rather than hardcoding names.
+
+Each child LWS inherits standard LWS capabilities such as subgroup policies,
+exclusive placement, volume claim templates, and health monitoring. Rollout
+strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 ## Roles in DisaggregatedSet
 
@@ -53,13 +63,18 @@ A `DisaggregatedSet` spec contains a `roles` list. Each role defines:
 | Field | Description |
 |---|---|
 | `name` | Unique name for this role (e.g., `prefill`, `decode`) |
-| `replicas` | Number of LWS replicas (pod groups) for this role |
+| `replicas` | Number of LWS replicas (pod groups) for this role (per slice) |
 | `rolloutStrategy` | Rolling update config for this role (DisaggregatedSet coordinates rollouts across roles; `partition`-based rollout is not supported) |
 | `leaderWorkerTemplate` | Pod template defining leader + worker containers |
+| `scaling` | Optional external scaling mode (for example HPA via `DisaggregatedSetRoleScaler`) |
 
 DisaggregatedSet coordinates lifecycle and rollouts across roles. Each role's replica count,
 rollout strategy, and pod template can be configured independently, while the controller manages
 them as a single cohesive unit.
+
+Optional top-level fields such as `slices` (replicate the full role topology) and
+`placementPolicy` (topology co-location / spread) are covered in the
+[examples and operations guide](/docs/examples/disaggregatedset/).
 
 ## When to Use DisaggregatedSet vs Plain LWS
 
@@ -87,4 +102,6 @@ Use **DisaggregatedSet** when:
 - [KEP-766: DisaggregatedSet design document](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet)
 - [Installation guide](/docs/installation/#disaggregatedset)
 - [API Reference](/docs/reference/disaggregatedset.v1/)
-- [Examples](/docs/examples/)
+- [Labels and annotations](/docs/reference/labels-annotations-and-environment-variables/)
+- [Examples and operations](/docs/examples/disaggregatedset/)
+- In-repo samples: [`config/samples/disaggregatedset_v1_disaggregatedset.yaml`](https://github.com/kubernetes-sigs/lws/blob/main/config/samples/disaggregatedset_v1_disaggregatedset.yaml), [`config/samples/disaggregatedset_v1_3role.yaml`](https://github.com/kubernetes-sigs/lws/blob/main/config/samples/disaggregatedset_v1_3role.yaml)
