@@ -318,6 +318,7 @@ Each condition has a unique type and reflects the status of a specific aspect of
 <ul>
 <li>&quot;Available&quot;: the resource is fully functional</li>
 <li>&quot;Progressing&quot;: the resource is being created or updated</li>
+<li>&quot;Degraded&quot;: the resource failed to reach or maintain its desired state</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
 </td>

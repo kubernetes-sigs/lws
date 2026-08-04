@@ -25,7 +25,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -154,14 +153,13 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return result, reconcileErr
 }
 
-// updateStatus recomputes per-role replica counts and the Available/Progressing
-// condition from the LWS objects the DisaggregatedSet owns (aggregated across all
-// slices and revisions), and persists the result if anything changed. roleNames is
-// always the current spec.roles: a role removed from spec has no RoleStatuses entry
-// even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
+// updateStatus recomputes per-role replica counts from the LWS objects the
+// DisaggregatedSet owns (aggregated across all slices and revisions), and
+// persists the result if anything changed. roleNames is always the current
+// spec.roles: a role removed from spec has no RoleStatuses entry even while its
+// old LWS objects are still draining down to 0 (see RoleStatuses doc).
 func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string) error {
 	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
-	available := true
 
 	for _, role := range roleNames {
 		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, role)
@@ -180,16 +178,9 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 			}
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
-
-		if roleStatus.Replicas == 0 || roleStatus.ReadyReplicas != roleStatus.Replicas || roleStatus.UpdatedReplicas != roleStatus.Replicas {
-			available = false
-		}
 	}
 
 	changed := setRoleStatuses(disaggregatedSet, roleStatuses)
-	if setDisaggregatedSetCondition(disaggregatedSet, disaggregatedSetCondition(disaggregatedSet, available)) {
-		changed = true
-	}
 	if disaggregatedSet.Status.ObservedGeneration != disaggregatedSet.Generation {
 		disaggregatedSet.Status.ObservedGeneration = disaggregatedSet.Generation
 		changed = true
@@ -210,63 +201,6 @@ func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role
 	}
 	disaggregatedSet.Status.RoleStatuses = roleStatuses
 	return true
-}
-
-func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool) metav1.Condition {
-	condType := disaggregatedsetv1.DisaggregatedSetProgressing
-	reason, message := "RolloutInProgress", "Not all roles have reached the desired, ready, and updated replica count"
-	if available {
-		condType = disaggregatedsetv1.DisaggregatedSetAvailable
-		reason, message = "AllRolesReady", "All roles have reached the desired, ready, and updated replica count"
-	}
-
-	return metav1.Condition{
-		Type:               string(condType),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: disaggregatedSet.Generation,
-		Reason:             reason,
-		Message:            message,
-	}
-}
-
-// setDisaggregatedSetCondition records newCondition as true and, since Available and
-// Progressing are mutually exclusive, marks any other true condition as false.
-// LastTransitionTime is only touched when a condition's Status actually flips, per
-// the metav1.Condition contract; a same-Status update (e.g. only ObservedGeneration
-// changed) must not look like a fresh transition to clients. Returns whether the
-// status changed.
-func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, newCondition metav1.Condition) bool {
-	now := metav1.Now()
-	changed, found := false, false
-
-	for i, cond := range disaggregatedSet.Status.Conditions {
-		if cond.Type == newCondition.Type {
-			found = true
-			if cond.Status != newCondition.Status {
-				newCondition.LastTransitionTime = now
-				disaggregatedSet.Status.Conditions[i] = newCondition
-				changed = true
-			} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
-				disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-				changed = true
-			}
-			continue
-		}
-		if cond.Status == metav1.ConditionTrue {
-			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
-			disaggregatedSet.Status.Conditions[i].LastTransitionTime = now
-			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-			changed = true
-		}
-	}
-
-	if !found {
-		newCondition.LastTransitionTime = now
-		disaggregatedSet.Status.Conditions = append(disaggregatedSet.Status.Conditions, newCondition)
-		changed = true
-	}
-
-	return changed
 }
 
 // seedForRole returns a callback that yields the initial spec.replicas value

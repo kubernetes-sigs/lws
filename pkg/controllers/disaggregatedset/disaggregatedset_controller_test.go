@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -435,7 +434,7 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 // revision.
 // TestStatusPopulatedOnFreshDeployment: a fresh DisaggregatedSet has just created its
 // LWS objects, which have not yet reported any ready/updated replicas. Status should
-// reflect that: zero counts per role and a Progressing condition, not empty (#868).
+// reflect that with zero counts per role, not stay empty (#868).
 func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
@@ -471,17 +470,11 @@ func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 	}
 
 	assert.Equal(t, got.Generation, got.Status.ObservedGeneration, "observedGeneration should track .metadata.generation")
-
-	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
-	require.NotNil(t, cond, "Progressing condition should be set")
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "Available should not be set yet")
 }
 
-// TestStatusAvailableWhenAllRolesReady: when every role's LWS already reports the
-// desired replicas as ready and updated, status should report Available with the
-// matching per-role counts (#868).
-func TestStatusAvailableWhenAllRolesReady(t *testing.T) {
+// TestStatusRoleCountsAggregateFromOwnedLWS: roleStatuses sums replicas/ready/updated
+// from the LWS objects each role owns (#868).
+func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
 
@@ -529,19 +522,11 @@ func TestStatusAvailableWhenAllRolesReady(t *testing.T) {
 	var got disaggregatedsetv1.DisaggregatedSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
 
+	require.Len(t, got.Status.RoleStatuses, 2)
 	for _, rs := range got.Status.RoleStatuses {
 		assert.EqualValues(t, 2, rs.Replicas, "role %s replicas", rs.Name)
 		assert.EqualValues(t, 2, rs.ReadyReplicas, "role %s readyReplicas", rs.Name)
 		assert.EqualValues(t, 2, rs.UpdatedReplicas, "role %s updatedReplicas", rs.Name)
-	}
-
-	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
-	require.NotNil(t, cond, "Available condition should be set")
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-
-	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
-	if progressing != nil {
-		assert.Equal(t, metav1.ConditionFalse, progressing.Status, "Progressing must not also be true once Available")
 	}
 }
 
