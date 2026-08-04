@@ -623,21 +623,36 @@ func TestManagerListSliceBucketing(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
-	const ds = "test-deployment"
+	ds := wrappers.BuildDisaggregatedSet("test-deployment", "default").Obj()
+	ownerRef := metav1.OwnerReference{
+		APIVersion: disaggregatedsetv1.GroupVersion.String(),
+		Kind:       "DisaggregatedSet",
+		Name:       ds.Name,
+		UID:        ds.UID,
+		Controller: ptr.To(true),
+	}
 	sliced := func(name, slice string) *leaderworkersetv1.LeaderWorkerSet {
 		return wrappers.BuildBasicLeaderWorkerSet(name, "default").Labels(map[string]string{
-			disaggregatedsetv1.SetNameLabelKey: ds,
+			disaggregatedsetv1.SetNameLabelKey: ds.Name,
 			disaggregatedsetv1.RoleLabelKey:    "prefill",
 			disaggregatedsetv1.SliceLabelKey:   slice,
-		}).Obj()
+		}).OwnerReference(ownerRef).Obj()
 	}
 	legacy := wrappers.BuildBasicLeaderWorkerSet("legacy", "default").Labels(map[string]string{
-		disaggregatedsetv1.SetNameLabelKey: ds,
+		disaggregatedsetv1.SetNameLabelKey: ds.Name,
 		disaggregatedsetv1.RoleLabelKey:    "prefill",
+	}).OwnerReference(ownerRef).Obj()
+	// Same name/role labels, but not actually owned by ds (e.g. a leftover from a
+	// same-named DisaggregatedSet that was deleted and recreated) — must never be
+	// counted as one of ds's own replicas.
+	unowned := wrappers.BuildBasicLeaderWorkerSet("unowned", "default").Labels(map[string]string{
+		disaggregatedsetv1.SetNameLabelKey: ds.Name,
+		disaggregatedsetv1.RoleLabelKey:    "prefill",
+		disaggregatedsetv1.SliceLabelKey:   "0",
 	}).Obj()
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), legacy).Build()
+		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), legacy, unowned).Build()
 	manager := NewLeaderWorkerSetManager(fakeClient)
 
 	names := func(list []*leaderworkersetv1.LeaderWorkerSet) []string {
@@ -648,20 +663,20 @@ func TestManagerListSliceBucketing(t *testing.T) {
 		return out
 	}
 
-	t.Run("slice 0 includes label-less legacy", func(t *testing.T) {
-		got, err := manager.List(context.Background(), "default", ds, 0, "")
+	t.Run("slice 0 includes label-less legacy, excludes unowned", func(t *testing.T) {
+		got, err := manager.List(context.Background(), ds, 0, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s0", "legacy"}, names(got))
 	})
 
 	t.Run("slice 1 excludes legacy", func(t *testing.T) {
-		got, err := manager.List(context.Background(), "default", ds, 1, "")
+		got, err := manager.List(context.Background(), ds, 1, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s1"}, names(got))
 	})
 
-	t.Run("all slices returns everything", func(t *testing.T) {
-		got, err := manager.List(context.Background(), "default", ds, -1, "")
+	t.Run("all slices returns everything owned, excludes unowned", func(t *testing.T) {
+		got, err := manager.List(context.Background(), ds, -1, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s0", "s1", "legacy"}, names(got))
 	})

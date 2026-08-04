@@ -303,8 +303,9 @@ created, so changing it takes effect on the next rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>
 <td>
-   <p>RoleStatuses contains the status for each role.
-The order matches spec.roles.</p>
+   <p>RoleStatuses contains the status for each role currently in spec.roles.
+The order matches spec.roles. A role removed from spec.roles has no entry
+here, even if LeaderWorkerSets for that role still exist while draining.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
