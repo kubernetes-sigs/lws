@@ -19,8 +19,10 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -69,9 +71,73 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 	rolesPath := field.NewPath("spec", "roles")
 
 	hasExternal := false
+	generatedScalerNames := make(map[string]*field.Path)
+	generatedServiceSuffixes := make(map[string]*field.Path)
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
+		allErrs = append(allErrs, validateReservedSubRoleLabel(role, rolePath)...)
+		allErrs = append(allErrs, validateGeneratedServiceNames(obj, role, rolePath)...)
+
+		if previous, found := generatedServiceSuffixes[role.Name]; found {
+			allErrs = append(allErrs, field.Duplicate(rolePath.Child("name"), previous.String()))
+		} else {
+			generatedServiceSuffixes[role.Name] = rolePath.Child("name")
+		}
+
+		if len(role.SubRoles) > 0 {
+			if role.Scaling != nil {
+				allErrs = append(allErrs, field.Forbidden(rolePath.Child("scaling"),
+					"parent scaling must be omitted when subRoles is present"))
+			}
+			if role.Spec.Replicas != nil && *role.Spec.Replicas > 1 {
+				warnings = append(warnings, fmt.Sprintf(
+					"role %q defines subRoles and spec.replicas: %d — parent spec.replicas is ignored; replicas are the sum of sub-role targets",
+					role.Name, *role.Spec.Replicas))
+			}
+
+			var staticReplicas int64
+			for j, subRole := range role.SubRoles {
+				subRolePath := rolePath.Child("subRoles").Index(j)
+				serviceSuffix := role.Name + "-" + subRole.Name
+				if previous, found := generatedServiceSuffixes[serviceSuffix]; found {
+					allErrs = append(allErrs, field.Invalid(subRolePath.Child("name"), subRole.Name,
+						fmt.Sprintf("generated sub-role Service name collides with %s", previous.String())))
+				} else {
+					generatedServiceSuffixes[serviceSuffix] = subRolePath.Child("name")
+				}
+
+				if subRole.Scaling == nil || subRole.Scaling.Mode != disaggv1.RoleScalingExternal {
+					if subRole.Replicas == nil {
+						staticReplicas++
+					} else {
+						staticReplicas += int64(*subRole.Replicas)
+					}
+					continue
+				}
+				hasExternal = true
+				if subRole.Replicas != nil {
+					allErrs = append(allErrs, field.Forbidden(subRolePath.Child("replicas"),
+						"replicas must be omitted when scaling.mode is External"))
+				}
+				scalerName := obj.Name + "-" + role.Name + "-" + subRole.Name
+				if len(scalerName) > 253 {
+					allErrs = append(allErrs, field.Invalid(subRolePath.Child("name"), subRole.Name,
+						fmt.Sprintf("would produce scaler name %q exceeding 253 characters", scalerName)))
+				}
+				if previous, found := generatedScalerNames[scalerName]; found {
+					allErrs = append(allErrs, field.Invalid(subRolePath.Child("name"), subRole.Name,
+						fmt.Sprintf("generated scaler name collides with %s", previous.String())))
+				} else {
+					generatedScalerNames[scalerName] = subRolePath.Child("name")
+				}
+			}
+			if staticReplicas > math.MaxInt32 {
+				allErrs = append(allErrs, field.Invalid(rolePath.Child("subRoles"), role.SubRoles,
+					fmt.Sprintf("static replica targets sum to %d, exceeding the maximum LWS replica count %d", staticReplicas, math.MaxInt32)))
+			}
+			continue
+		}
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
 			continue
@@ -79,9 +145,16 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		hasExternal = true
 
 		// Scaler name is "<ds>-<role>" and must fit within the Kubernetes 253-character limit.
-		if scalerName := obj.Name + "-" + role.Name; len(scalerName) > 253 {
+		scalerName := obj.Name + "-" + role.Name
+		if len(scalerName) > 253 {
 			allErrs = append(allErrs, field.Invalid(rolePath.Child("name"), role.Name,
 				fmt.Sprintf("would produce scaler name %q exceeding 253 characters", scalerName)))
+		}
+		if previous, found := generatedScalerNames[scalerName]; found {
+			allErrs = append(allErrs, field.Invalid(rolePath.Child("name"), role.Name,
+				fmt.Sprintf("generated scaler name collides with %s", previous.String())))
+		} else {
+			generatedScalerNames[scalerName] = rolePath.Child("name")
 		}
 
 		// spec.replicas is ignored for External roles; explicit values > 1
@@ -102,6 +175,60 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 	}
 
 	return warnings, allErrs
+}
+
+func validateGeneratedServiceNames(obj *disaggv1.DisaggregatedSet, role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	maxSlice := int32(0)
+	if obj.Spec.Slices != nil && *obj.Spec.Slices > 0 {
+		maxSlice = *obj.Spec.Slices - 1
+	}
+	base := fmt.Sprintf("%s-%d-aaaaaaaa-%s", obj.Name, maxSlice, role.Name)
+	if errs := utilvalidation.IsDNS1035Label(base + "-prv"); len(errs) > 0 {
+		allErrs = append(allErrs, field.Invalid(rolePath.Child("name"), role.Name,
+			fmt.Sprintf("would produce an invalid parent Service name: %s", errs[0])))
+	}
+	for i, subRole := range role.SubRoles {
+		if errs := utilvalidation.IsDNS1035Label(base + "-" + subRole.Name + "-prv"); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(rolePath.Child("subRoles").Index(i).Child("name"), subRole.Name,
+				fmt.Sprintf("would produce an invalid sub-role Service name: %s", errs[0])))
+		}
+	}
+	return allErrs
+}
+
+func validateReservedSubRoleLabel(role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	templatePath := rolePath.Child("spec", "leaderWorkerTemplate")
+	if _, found := role.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels[disaggv1.SubRoleLabelKey]; found {
+		allErrs = append(allErrs, field.Forbidden(templatePath.Child("workerTemplate", "metadata", "labels").Key(disaggv1.SubRoleLabelKey),
+			"label is reserved for controller-managed sub-role assignment"))
+	}
+	if role.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		if _, found := role.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels[disaggv1.SubRoleLabelKey]; found {
+			allErrs = append(allErrs, field.Forbidden(templatePath.Child("leaderTemplate", "metadata", "labels").Key(disaggv1.SubRoleLabelKey),
+				"label is reserved for controller-managed sub-role assignment"))
+		}
+	}
+	return allErrs
+}
+
+func validationReplicasForRole(role disaggv1.DisaggregatedRoleSpec) *int32 {
+	if len(role.SubRoles) == 0 {
+		return role.Spec.Replicas
+	}
+	var total int64
+	for _, subRole := range role.SubRoles {
+		if subRole.Scaling != nil && subRole.Scaling.Mode == disaggv1.RoleScalingExternal {
+			total++
+		} else if subRole.Replicas == nil {
+			total++
+		} else {
+			total += int64(*subRole.Replicas)
+		}
+	}
+	bounded := int32(min(total, int64(math.MaxInt32)))
+	return &bounded
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy
@@ -196,7 +323,7 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 
 		// Validate that maxSurge and maxUnavailable are not both zero when replicas > 0.
 		// This mirrors the identical check in the LWS webhook (leaderworkerset_webhook.go).
-		allErrs = append(allErrs, validateRoleMaxSurgeUnavailable(ruc, role.Spec.Replicas, rucPath)...)
+		allErrs = append(allErrs, validateRoleMaxSurgeUnavailable(ruc, validationReplicasForRole(role), rucPath)...)
 	}
 
 	return allErrs

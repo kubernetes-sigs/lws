@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -48,7 +49,9 @@ func readyLWS(dsName, revision, role string, ready int32) *leaderworkersetv1.Lea
 			Name:   disaggregatedsetutils.GenerateName(dsName, 0, revision, role),
 			Labels: disaggregatedsetutils.GenerateLabels(dsName, 0, revision, role),
 		},
+		Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(ready)},
 	}
+	lws.Status.Replicas = ready
 	lws.Status.ReadyReplicas = ready
 	return lws
 }
@@ -63,7 +66,7 @@ func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
 
-	t.Run("no service created when only one role is ready", func(t *testing.T) {
+	t.Run("services are created without cross-role readiness", func(t *testing.T) {
 		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
@@ -83,11 +86,11 @@ func TestServiceManager(t *testing.T) {
 		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
 		require.NoError(t, err)
 
-		// Verify no services created
+		// Services are compatibility objects and no longer gate on all roles.
 		serviceList := &corev1.ServiceList{}
 		err = fakeClient.List(ctx, serviceList)
 		require.NoError(t, err)
-		assert.Empty(t, serviceList.Items, "no services should be created when only one role is ready")
+		assert.Len(t, serviceList.Items, 2)
 	})
 
 	t.Run("services created when both roles have >= 1 ready replica", func(t *testing.T) {
@@ -490,5 +493,36 @@ func TestServiceManager(t *testing.T) {
 			Namespace: deployment.Namespace,
 		}, &corev1.Service{})
 		assert.Error(t, err, "old decode service should be deleted after drain")
+	})
+
+	t.Run("removed parent sub-role services remain until their revision drains", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+		oldLWS := readyLWS(deployment.Name, "old12345", "removed", 1)
+		subRoleService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+			Name:      oldLWS.Name + "-short-prv",
+			Namespace: deployment.Namespace,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+				disaggregatedsetv1.SliceLabelKey:    "0",
+				disaggregatedsetv1.RevisionLabelKey: "old12345",
+				disaggregatedsetv1.RoleLabelKey:     "removed",
+				disaggregatedsetv1.SubRoleLabelKey:  "short",
+			},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, subRoleService).Build()
+		serviceManager := NewServiceManager(fakeClient, scheme)
+		targetLWS := readyLWS(deployment.Name, "new12345", testServiceRoleDecode, 1)
+		revisions := disaggregatedsetutils.RevisionRolesList{
+			{Revision: "old12345", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{"removed": oldLWS}},
+			{Revision: "new12345", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{testServiceRoleDecode: targetLWS}},
+		}
+
+		require.NoError(t, serviceManager.ReconcileServices(ctx, deployment, 0, revisions, "new12345"))
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: subRoleService.Name, Namespace: deployment.Namespace}, &corev1.Service{}))
+
+		oldLWS.Spec.Replicas = ptr.To(int32(0))
+		require.NoError(t, serviceManager.ReconcileServices(ctx, deployment, 0, revisions, "new12345"))
+		err := fakeClient.Get(ctx, types.NamespacedName{Name: subRoleService.Name, Namespace: deployment.Namespace}, &corev1.Service{})
+		assert.Error(t, err)
 	})
 }

@@ -38,6 +38,15 @@ type Role struct {
 	Annotations    map[string]string // workerTemplate annotations (propagate to pods)
 	LWSLabels      map[string]string // LWS CR metadata labels (for Kueue, exclusive-topology)
 	LWSAnnotations map[string]string // LWS CR metadata annotations
+	SubRoles       []SubRole         // optional routing/scaling partitions sharing this role template
+}
+
+// SubRole holds one virtual role partition. A nil Replicas value exercises the
+// controller default of one for Static sub-roles.
+type SubRole struct {
+	Name     string
+	Replicas *int
+	External bool
 }
 
 // Config holds configuration for generating DisaggregatedSet YAML.
@@ -79,6 +88,19 @@ spec:
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
+		if len(p.SubRoles) > 0 {
+			sb.WriteString("    subRoles:\n")
+			for _, subRole := range p.SubRoles {
+				sb.WriteString(fmt.Sprintf("    - name: %s\n", subRole.Name))
+				if subRole.Replicas != nil {
+					sb.WriteString(fmt.Sprintf("      replicas: %d\n", *subRole.Replicas))
+				}
+				if subRole.External {
+					sb.WriteString("      scaling:\n")
+					sb.WriteString("        mode: External\n")
+				}
+			}
+		}
 
 		if p.External {
 			sb.WriteString("    scaling:\n")

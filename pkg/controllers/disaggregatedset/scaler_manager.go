@@ -32,6 +32,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 const (
@@ -53,8 +54,14 @@ func NewScalerManager(c client.Client, r events.EventRecorder) *ScalerManager {
 	return &ScalerManager{client: c, record: r}
 }
 
-// ScalerName is the deterministic name for a role's auto-created scaler.
-func ScalerName(dsName, role string) string { return dsName + "-" + role }
+// ScalerName is the deterministic name for a role or sub-role scaler.
+func ScalerName(dsName string, key disaggregatedsetutils.RoleKey) string {
+	name := dsName + "-" + key.Role
+	if key.SubRole != "" {
+		name += "-" + key.SubRole
+	}
+	return name
+}
 
 // Reconcile ensures a scaler exists for every External role and deletes scalers
 // owned by this DS whose role is no longer External. seedFor is called with a
@@ -64,14 +71,22 @@ func ScalerName(dsName, role string) string { return dsName + "-" + role }
 func (m *ScalerManager) Reconcile(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	seedFor func(role string) int32,
-) (map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
+	seedFor func(key disaggregatedsetutils.RoleKey, existing scalerMap) int32,
+) (scalerMap, error) {
 	log := logf.FromContext(ctx)
 
-	externalRoles := make(map[string]bool)
-	for _, r := range ds.Spec.Roles {
-		if r.Scaling != nil && r.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
-			externalRoles[r.Name] = true
+	externalRoles := make(map[disaggregatedsetutils.RoleKey]bool)
+	for _, role := range ds.Spec.Roles {
+		if len(role.SubRoles) == 0 {
+			if role.Scaling != nil && role.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+				externalRoles[disaggregatedsetutils.RoleKey{Role: role.Name}] = true
+			}
+			continue
+		}
+		for _, subRole := range role.SubRoles {
+			if subRole.Scaling != nil && subRole.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+				externalRoles[disaggregatedsetutils.RoleKey{Role: role.Name, SubRole: subRole.Name}] = true
+			}
 		}
 	}
 
@@ -81,54 +96,66 @@ func (m *ScalerManager) Reconcile(
 		return nil, fmt.Errorf("list scalers: %w", err)
 	}
 
-	existing := make(map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler)
+	existing := make(scalerMap)
 	for i := range list.Items {
 		s := &list.Items[i]
 		if !isControlledBy(s, ds.UID) {
 			continue
 		}
-		role := s.Labels[disaggregatedsetv1.RoleLabelKey]
-		if !externalRoles[role] {
-			log.Info("Deleting scaler for role no longer External", "scaler", s.Name, "role", role)
+		key := disaggregatedsetutils.RoleKey{
+			Role:    s.Labels[disaggregatedsetv1.RoleLabelKey],
+			SubRole: s.Labels[disaggregatedsetv1.SubRoleLabelKey],
+		}
+		if !externalRoles[key] {
+			log.Info("Deleting scaler for role no longer External", "scaler", s.Name, "role", key.String())
 			if err := m.client.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("delete scaler %s: %w", s.Name, err)
 			}
 			m.record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalerDeleted, "Delete",
-				"Deleted scaler %s (role %s is no longer External)", s.Name, role)
+				"Deleted scaler %s (role %s is no longer External)", s.Name, key.String())
 			continue
 		}
-		existing[role] = s
+		existing[key] = s
 	}
 
-	for role := range externalRoles {
-		if _, ok := existing[role]; ok {
+	seeds := make(map[disaggregatedsetutils.RoleKey]int32)
+	for key := range externalRoles {
+		if _, ok := existing[key]; ok {
 			continue
 		}
-		seed := int32(0)
 		if seedFor != nil {
-			seed = seedFor(role)
+			seeds[key] = seedFor(key, existing)
 		}
-		s, err := m.create(ctx, ds, role, seed)
+	}
+	for key := range externalRoles {
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		s, err := m.create(ctx, ds, key, seeds[key])
 		if err != nil {
 			return nil, err
 		}
 		if s != nil {
-			existing[role] = s
+			existing[key] = s
 		}
 	}
 	return existing, nil
 }
 
-func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, role string, seed int32) (*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
-	name := ScalerName(ds.Name, role)
+func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, key disaggregatedsetutils.RoleKey, seed int32) (*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
+	name := ScalerName(ds.Name, key)
+	labels := map[string]string{
+		disaggregatedsetv1.SetNameLabelKey: ds.Name,
+		disaggregatedsetv1.RoleLabelKey:    key.Role,
+	}
+	if key.SubRole != "" {
+		labels[disaggregatedsetv1.SubRoleLabelKey] = key.SubRole
+	}
 	scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ds.Namespace,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey: ds.Name,
-				disaggregatedsetv1.RoleLabelKey:    role,
-			},
+			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         disaggregatedsetv1.GroupVersion.String(),
 				Kind:               "DisaggregatedSet",
@@ -141,9 +168,9 @@ func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.Disag
 		Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: seed},
 	}
 	if err := m.client.Create(ctx, scaler); err == nil {
-		logf.FromContext(ctx).Info("Created scaler", "scaler", name, "role", role)
+		logf.FromContext(ctx).Info("Created scaler", "scaler", name, "role", key.String())
 		m.record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalerCreated,
-			"Create", "Created scaler %s for role %s", name, role)
+			"Create", "Created scaler %s for role %s", name, key.String())
 		return scaler, nil
 	} else if !apierrors.IsAlreadyExists(err) {
 		return nil, fmt.Errorf("create scaler %s: %w", name, err)
@@ -168,12 +195,12 @@ func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.Disag
 func (m *ScalerManager) WriteStatus(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
-	observedReplicas map[string]int32,
+	scalers scalerMap,
+	observedReplicas map[disaggregatedsetutils.RoleKey]int32,
 ) error {
-	for role, s := range scalers {
+	for key, s := range scalers {
 		desired := s.DeepCopy()
-		desired.Status.Replicas = observedReplicas[role]
+		desired.Status.Replicas = observedReplicas[key]
 		// Selector filters to leader pods only (worker-index=0), one per LWS
 		// group. HPA's per-pod-metric averaging divides its metric sum by the
 		// count of matching pods; because spec.replicas (what HPA writes) and
@@ -181,10 +208,13 @@ func (m *ScalerManager) WriteStatus(
 		// must match one pod per group for the ratio math to stay consistent.
 		// Users typically want to scale on the leader's signal anyway (leader
 		// handles ingress; workers are downstream compute).
-		desired.Status.Selector = fmt.Sprintf("%s=%s,%s=%s,%s=0",
+		desired.Status.Selector = fmt.Sprintf("%s=%s,%s=%s",
 			disaggregatedsetv1.SetNameLabelKey, ds.Name,
-			disaggregatedsetv1.RoleLabelKey, role,
-			leaderworkersetv1.WorkerIndexLabelKey)
+			disaggregatedsetv1.RoleLabelKey, key.Role)
+		if key.SubRole != "" {
+			desired.Status.Selector += fmt.Sprintf(",%s=%s", disaggregatedsetv1.SubRoleLabelKey, key.SubRole)
+		}
+		desired.Status.Selector += fmt.Sprintf(",%s=0", leaderworkersetv1.WorkerIndexLabelKey)
 		desired.Status.ObservedGeneration = s.Generation
 		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
 			Type: disaggregatedsetv1.DisaggregatedSetRoleScalerReady, Status: metav1.ConditionTrue,

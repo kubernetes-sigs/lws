@@ -66,8 +66,8 @@ func main() {
 	unavailable := parseRoleMap(*unavailableJSON, "unavailable")
 
 	roleNames := mergedSortedKeys(source, target)
-	if len(roleNames) < 2 {
-		fmt.Fprintln(os.Stderr, "Error: at least 2 roles required")
+	if len(roleNames) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: at least 1 role required")
 		os.Exit(1)
 	}
 

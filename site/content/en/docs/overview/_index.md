@@ -42,8 +42,9 @@ disaggregated workload deployment, with support for coordinated rollouts and fai
 
 Key features of DisaggregatedSet include:
 - **Disaggregated Architecture Support:** Specifically designed for workloads where different phases (e.g., prefill and decode) run on separate infrastructure.
-- **Coordinated N-Dimensional Rollouts:** Updates multiple roles (2–10) in lockstep, preserving capacity ratios throughout the update process.
-- **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.
+- **Coordinated N-Dimensional Rollouts:** Updates roles (1–10) in lockstep, preserving capacity ratios throughout the update process.
+- **Unified Lifecycle Management:** Manages one or more underlying LeaderWorkerSets as a single logical unit.
+- **Virtual Sub-Roles:** Partitions one role into independently scalable routing pools that share the same LWS configuration.
 - **Automatic Service Orchestration:** Automatically creates and manages headless services for each role to facilitate discovery and revision-aware routing.
 - **Advanced Failure Handling:** Coordinated drain and restart policies across all roles in the disaggregated set.
 
