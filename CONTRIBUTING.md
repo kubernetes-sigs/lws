@@ -16,6 +16,16 @@ If your repo has certain guidelines for contribution, put them here ahead of the
 - [Kubernetes Contributor Guide](https://k8s.dev/guide) - Main contributor documentation, or you can just jump directly to the [contributing page](https://k8s.dev/docs/guide/contributing/)
 - [Contributor Cheat Sheet](https://k8s.dev/cheatsheet) - Common resources for existing developers
 
+## Generated Helm manifests
+
+The manager RBAC templates under `charts/lws/templates/rbac` that contain a `Code generated` marker are generated from `config/rbac` and must not be edited directly. After changing controller RBAC markers or the canonical RBAC manifests, run:
+
+```shell
+make update-helm
+```
+
+Run `make helm-verify` to lint and render the chart with both the default and Volcano gang scheduling configurations. `make verify` runs both checks and fails when generated Helm manifests are out of date.
+
 ## Mentorship
 
 - [Mentoring Initiatives](https://k8s.dev/community/mentoring) - We have a diverse set of mentorship programs available that are always looking for volunteers!
