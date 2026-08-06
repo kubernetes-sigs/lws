@@ -590,3 +590,61 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldCreatePodGroup(t *testing.T) {
+	tests := []struct {
+		name     string
+		lws      *leaderworkerset.LeaderWorkerSet
+		expected bool
+	}{
+		{
+			name: "No annotation defaults to true",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: true,
+		},
+		{
+			name: "Annotation true",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "true",
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Annotation false",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "false",
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Invalid annotation defaults to true",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						leaderworkerset.EnableGangSchedulingAnnotationKey: "invalid",
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldCreatePodGroup(tc.lws)
+			if result != tc.expected {
+				t.Errorf("Expected %t, got %t", tc.expected, result)
+			}
+		})
+	}
+}
