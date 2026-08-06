@@ -99,6 +99,16 @@ func (w *DisaggregatedSetWrapper) WithRollout(role string, surge, unavail intstr
 	return w
 }
 
+// WithExternalScaling sets scaling.mode: External on the named role.
+func (w *DisaggregatedSetWrapper) WithExternalScaling(role string) *DisaggregatedSetWrapper {
+	for i := range w.Spec.Roles {
+		if w.Spec.Roles[i].Name == role {
+			w.Spec.Roles[i].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+		}
+	}
+	return w
+}
+
 func (w *DisaggregatedSetWrapper) WithPlacementPolicy(policyType disaggregatedsetv1.PlacementType, topology string) *DisaggregatedSetWrapper {
 	w.Spec.PlacementPolicy = &disaggregatedsetv1.PlacementPolicy{
 		Type:     policyType,

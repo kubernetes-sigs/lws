@@ -68,7 +68,6 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
 
-	hasExternal := false
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
@@ -76,7 +75,6 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
 			continue
 		}
-		hasExternal = true
 
 		// Scaler name is "<ds>-<role>" and must fit within the Kubernetes 253-character limit.
 		if scalerName := obj.Name + "-" + role.Name; len(scalerName) > 253 {
@@ -91,14 +89,6 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 				"role %q sets scaling.mode: External and spec.replicas: %d — spec.replicas is ignored; drive replicas via DisaggregatedSetRoleScaler %q instead",
 				role.Name, *role.Spec.Replicas, obj.Name+"-"+role.Name))
 		}
-	}
-
-	// Alpha: External scaling and slices > 1 are incompatible. The scaler
-	// design for multi-slice is deferred to a follow-up KEP.
-	if hasExternal && obj.Spec.Slices != nil && *obj.Spec.Slices > 1 {
-		allErrs = append(allErrs, field.Forbidden(
-			field.NewPath("spec", "slices"),
-			"spec.slices > 1 is not supported while any role has scaling.mode: External (alpha restriction)"))
 	}
 
 	return warnings, allErrs

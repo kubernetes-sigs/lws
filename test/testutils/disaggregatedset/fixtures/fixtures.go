@@ -45,6 +45,8 @@ type Config struct {
 	Name      string
 	Namespace string
 	Roles     []Role
+	// Slices, when > 0, emits spec.slices.
+	Slices int
 	// PlacementType, when non-empty, adds a spec.placementPolicy block
 	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
 	// topologyKey and is required for a non-None type.
@@ -67,6 +69,10 @@ metadata:
   namespace: %s
 spec:
 `, c.Name, ns))
+
+	if c.Slices > 0 {
+		sb.WriteString(fmt.Sprintf("  slices: %d\n", c.Slices))
+	}
 
 	if c.PlacementType != "" {
 		sb.WriteString("  placementPolicy:\n")

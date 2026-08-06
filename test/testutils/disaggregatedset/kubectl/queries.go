@@ -25,6 +25,7 @@ const (
 	labelName     = "disaggregatedset.x-k8s.io/name"
 	labelRole     = "disaggregatedset.x-k8s.io/role"
 	labelRevision = "disaggregatedset.x-k8s.io/revision"
+	labelSlice    = "disaggregatedset.x-k8s.io/slice"
 	defaultNS     = "default"
 )
 
@@ -146,6 +147,18 @@ func CountService(deploymentName string) int {
 // GetTotalReplicas returns total replicas across all LWS for a revision.
 func GetTotalReplicas(deploymentName, revision string) int {
 	output, err := LWSByRevision(deploymentName, revision).
+		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
+	if err != nil {
+		return 0
+	}
+	return sumInts(output)
+}
+
+// GetRoleReplicasBySlice returns total spec.replicas across a role's LWS
+// objects in a single slice (summed across revisions).
+func GetRoleReplicasBySlice(deploymentName, role string, slice int) int {
+	output, err := LWSByRole(deploymentName, role).
+		Label(labelSlice, strconv.Itoa(slice)).
 		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
 	if err != nil {
 		return 0
