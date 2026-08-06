@@ -64,7 +64,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
-	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, revision)
+	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

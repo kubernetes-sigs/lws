@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -64,6 +65,7 @@ func createOldLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggregated
 			Kind:       "DisaggregatedSet",
 			Name:       disaggregatedSet.Name,
 			UID:        disaggregatedSet.UID,
+			Controller: ptr.To(true),
 		}).
 		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
 		Obj()
@@ -90,6 +92,7 @@ func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggrega
 			Kind:       "DisaggregatedSet",
 			Name:       disaggregatedSet.Name,
 			UID:        disaggregatedSet.UID,
+			Controller: ptr.To(true),
 		}).
 		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
 		Obj()
@@ -180,6 +183,7 @@ func createSliceLWS(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice
 			Kind:       "DisaggregatedSet",
 			Name:       disaggregatedSet.Name,
 			UID:        disaggregatedSet.UID,
+			Controller: ptr.To(true),
 		}).
 		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
 		Obj()
@@ -428,6 +432,160 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 // template change, the legacy slice-0 LWS is at the old revision (not the target), so no
 // same-revision migration runs and the sibling slice is created right away at the new
 // revision.
+// TestStatusPopulatedOnFreshDeployment: a fresh DisaggregatedSet has just created its
+// LWS objects, which have not yet reported any ready/updated replicas. Status should
+// reflect that with zero counts per role, not stay empty (#868).
+func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("fresh-status", "default").
+		WithRole(testControllerRolePrefill, 3, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	require.Len(t, got.Status.RoleStatuses, 2, "one RoleStatus per role")
+	assert.Equal(t, testControllerRolePrefill, got.Status.RoleStatuses[0].Name, "RoleStatuses order matches spec.roles")
+	assert.Equal(t, testControllerRoleDecode, got.Status.RoleStatuses[1].Name, "RoleStatuses order matches spec.roles")
+	for _, rs := range got.Status.RoleStatuses {
+		assert.Zero(t, rs.Replicas, "freshly created LWS has not reported replicas yet")
+		assert.Zero(t, rs.ReadyReplicas)
+		assert.Zero(t, rs.UpdatedReplicas)
+	}
+
+	assert.Equal(t, got.Generation, got.Status.ObservedGeneration, "observedGeneration should track .metadata.generation")
+}
+
+// TestStatusRoleCountsAggregateFromOwnedLWS: roleStatuses sums replicas/ready/updated
+// from the LWS objects each role owns (#868).
+func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("ready-status", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	readyLWS := func(role string) *leaderworkersetv1.LeaderWorkerSet {
+		return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role), disaggregatedSet.Namespace).
+			Labels(disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, 0, revision, role)).
+			Replica(2).
+			Size(1).
+			StatusReplicas(2).
+			ReadyReplicas(2).
+			UpdatedReplicas(2).
+			OwnerReference(metav1.OwnerReference{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
+				Controller: ptr.To(true),
+			}).
+			WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
+			Obj()
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		readyLWS(testControllerRolePrefill),
+		readyLWS(testControllerRoleDecode),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	require.Len(t, got.Status.RoleStatuses, 2)
+	for _, rs := range got.Status.RoleStatuses {
+		assert.EqualValues(t, 2, rs.Replicas, "role %s replicas", rs.Name)
+		assert.EqualValues(t, 2, rs.ReadyReplicas, "role %s readyReplicas", rs.Name)
+		assert.EqualValues(t, 2, rs.UpdatedReplicas, "role %s updatedReplicas", rs.Name)
+	}
+}
+
+// TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains: roleStatuses mirrors the
+// current spec.roles contract (RoleStatuses doc, #868 review). Removing a role
+// from spec.roles must drop it from status.roleStatuses on the very next reconcile,
+// even though its old LWS is not itself deleted by this reconcile (nothing currently
+// scales down or removes a removed role's leftover LWS; that lifecycle gap is
+// pre-existing and out of scope here) — status must not keep reporting a role the
+// user no longer asked for.
+func TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("role-removal", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		WithRole("extra", 2, "nginx:1.0").
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+	require.Len(t, got.Status.RoleStatuses, 3, "all three roles should be reported before removal")
+
+	oldRevision := disaggregatedsetutils.ComputeRevision(got.Spec.Roles)
+	extraLWSName := disaggregatedsetutils.GenerateName(got.Name, 0, oldRevision, "extra")
+
+	// Remove "extra" from spec.roles, simulating a user edit.
+	got.Spec.Roles = got.Spec.Roles[:2]
+	require.NoError(t, fakeClient.Update(ctx, &got))
+
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+	require.Len(t, got.Status.RoleStatuses, 2, "removed role must disappear from roleStatuses")
+	for _, rs := range got.Status.RoleStatuses {
+		assert.NotEqual(t, "extra", rs.Name, "removed role must not reappear in roleStatuses")
+	}
+
+	// The old role's LWS is still there — status dropping it is a status-contract
+	// choice, not a side effect of the LWS actually being gone.
+	extraLWS, _ := controller.NewLeaderWorkerSetManager(fakeClient).Get(ctx, got.Namespace, extraLWSName)
+	assert.NotNil(t, extraLWS, "removed role's old LWS is expected to still exist; this test pins the status contract, not cleanup")
+}
+
 func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()

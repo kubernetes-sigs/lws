@@ -263,6 +263,7 @@ func setupABCScenario(
 		Kind:       "DisaggregatedSet",
 		Name:       "test",
 		UID:        "uid",
+		Controller: ptr.To(true),
 	}
 	makeLabels := func(role, revision string) map[string]string {
 		return map[string]string{disaggregatedsetv1.RoleLabelKey: role, disaggregatedsetv1.SetNameLabelKey: "test", disaggregatedsetv1.SliceLabelKey: "0", disaggregatedsetv1.RevisionLabelKey: revision}
@@ -422,6 +423,7 @@ func TestReconcilerIntegration(t *testing.T) {
 			ownerRef := metav1.OwnerReference{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet", Name: tc.deployName, UID: "uid",
+				Controller: ptr.To(true),
 			}
 			makeLabels := func(role, revision string) map[string]string {
 				return map[string]string{

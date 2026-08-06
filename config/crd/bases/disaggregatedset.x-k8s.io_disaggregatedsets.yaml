@@ -18452,10 +18452,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the most recent generation observed
+                  for this DisaggregatedSet.
+                format: int64
+                type: integer
               roleStatuses:
                 description: |-
-                  RoleStatuses contains the status for each role.
-                  The order matches spec.roles.
+                  RoleStatuses contains the status for each role currently in spec.roles.
+                  The order matches spec.roles. A role removed from spec.roles has no entry
+                  here, even if LeaderWorkerSets for that role still exist while draining.
                 items:
                   description: RoleStatus defines the observed state of a single role.
                   properties:
