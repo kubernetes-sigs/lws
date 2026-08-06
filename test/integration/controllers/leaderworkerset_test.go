@@ -1961,6 +1961,88 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Not updated worker gets recreated with old size if restarted during update that changes size", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).Size(4)
+			},
+			updates: []*update{
+				{
+					// Set lws to available condition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					// Trigger a rolling update that changes both the worker template and the size (4 -> 2).
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func() error {
+							var leaderworkerset leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+								return err
+							}
+							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "new-worker-name"
+							leaderworkerset.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+							return k8sClient.Update(ctx, &leaderworkerset)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Rolling update 1 replica so the partition keeps the 0-index group on the old revision.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-3")
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-0")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Delete the not-yet-updated 0-index leader pod and re-create it from the old
+					// revision, like the statefulset controller would while the pod is still below
+					// the partition.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.DeleteLeaderPod(ctx, k8sClient, lws, 0, 1)
+						var leaderSts appsv1.StatefulSet
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+						testing.CreateLeaderPodsFromRevisionNumber(ctx, leaderSts, k8sClient, lws, 0, 1, 1)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// The worker statefulset must be recreated entirely from the old revision:
+						// not only the old pod template, but also the old size, i.e. 4-1=3 worker
+						// replicas and a size annotation of 4. Mixing the old template with the
+						// live size breaks the still-not-updated group.
+						testing.ExpectNotUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-0")
+						gomega.Eventually(func() error {
+							var sts appsv1.StatefulSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &sts); err != nil {
+								return err
+							}
+							gotSize := sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]
+							if *sts.Spec.Replicas != 3 || gotSize != "4" {
+								return fmt.Errorf("worker statefulset %s should be rebuilt entirely from the old revision: want replicas=3 (old size 4 - 1) and size annotation=4, got replicas=%d and size annotation=%s", sts.Name, *sts.Spec.Replicas, gotSize)
+							}
+							return nil
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader with RecreateGroupOnPodRestart only gets restarted once during rolling update", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)

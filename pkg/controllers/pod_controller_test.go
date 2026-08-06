@@ -54,11 +54,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 		pod                   *corev1.Pod
 		lws                   *leaderworkerset.LeaderWorkerSet
 		wantStatefulSetConfig *appsapplyv1.StatefulSetApplyConfiguration
-		revision              *appsv1.ControllerRevision
 	}{
 		{
-			name:     "1 replica, size 1, exclusive placement disabled",
-			revision: updateRevision,
+			name: "1 replica, size 1, exclusive placement disabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -131,8 +129,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 2, exclusive placement enabled",
-			revision: updateRevision,
+			name: "1 replica, size 2, exclusive placement enabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -211,8 +208,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
-			revision: updateRevision,
+			name: "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -293,8 +289,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
-			revision: updateRevision,
+			name: "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -420,7 +415,18 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, tc.revision)
+			// Build the revision from this test case's lws, mirroring production where the
+			// revision snapshots the same spec: revision-covered fields (size, subGroupPolicy,
+			// networkConfig, volume claims) are read from the revision by the function under test.
+			revision, err := revisionutils.NewRevision(context.TODO(), client, tc.lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			revisionKey := revisionutils.GetRevisionKey(revision)
+			tc.pod.Labels[leaderworkerset.RevisionKey] = revisionKey
+			tc.wantStatefulSetConfig.Labels[leaderworkerset.RevisionKey] = revisionKey
+			tc.wantStatefulSetConfig.Spec.Template.Labels[leaderworkerset.RevisionKey] = revisionKey
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, revision)
 			if err != nil {
 				t.Errorf("failed with error %s", err.Error())
 			}
