@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -63,6 +64,7 @@ func TestControllers(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	gomega.Expect(os.Setenv("LWS_SKIP_API_DISCOVERY", "true")).To(gomega.Succeed())
 	ctx, cancel = context.WithCancel(context.Background())
 
 	By("bootstrapping test environment")
@@ -127,4 +129,5 @@ var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
+	Expect(os.Unsetenv("LWS_SKIP_API_DISCOVERY")).To(Succeed())
 })

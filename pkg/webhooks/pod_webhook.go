@@ -156,7 +156,7 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	if p.SchedulerProvider != nil {
+	if p.SchedulerProvider != nil && (pod.Spec.SchedulingGroup == nil || pod.Spec.SchedulingGroup.PodGroupName == nil || *pod.Spec.SchedulingGroup.PodGroupName == "") {
 		err = p.SchedulerProvider.InjectPodGroupMetadata(pod)
 		if err != nil {
 			return err

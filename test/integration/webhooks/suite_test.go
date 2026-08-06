@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -69,6 +70,7 @@ func TestAPIs(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
+	Expect(os.Setenv("LWS_SKIP_API_DISCOVERY", "true")).To(Succeed())
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	By("bootstrapping test environment")
@@ -174,4 +176,5 @@ var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
+	Expect(os.Unsetenv("LWS_SKIP_API_DISCOVERY")).To(Succeed())
 })

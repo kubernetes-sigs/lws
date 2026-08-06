@@ -48,6 +48,19 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </tbody>
 </table>
 
+## `GangSchedulingPolicy`     {#leaderworkerset-x-k8s-io-v1-GangSchedulingPolicy}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GangSchedulingPolicy defines the gang scheduling policy.</p>
+
+
+
+
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
 
@@ -112,6 +125,13 @@ when a revision is made to the leaderWorkerTemplate.</p>
 </td>
 <td>
    <p>networkConfig defines the network configuration of the group</p>
+</td>
+</tr>
+<tr><td><code>gangScheduling</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-GangSchedulingPolicy"><code>GangSchedulingPolicy</code></a>
+</td>
+<td>
+   <p>gangScheduling defines the gang scheduling policy of the group.</p>
 </td>
 </tr>
 </tbody>
