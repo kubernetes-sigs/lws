@@ -2,6 +2,10 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: lws-mutating-webhook-configuration
+{{ if .Values.enableCertManager }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/lws-serving-cert
+{{ end }}
 webhooks:
   - admissionReviewVersions:
       - v1
@@ -51,6 +55,10 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: lws-validating-webhook-configuration
+{{ if .Values.enableCertManager }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/lws-serving-cert
+{{ end }}
 webhooks:
   - admissionReviewVersions:
       - v1

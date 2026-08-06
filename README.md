@@ -1,11 +1,7 @@
 # The LeaderWorkerSet and DisaggregatedSet APIs
 
-[![GoReport Widget]][GoReport Status]
 [![Latest Release](https://img.shields.io/github/v/release/kubernetes-sigs/lws?include_prereleases)](https://github.com/kubernetes-sigs/lws/releases/latest)
 [![Coverage Status](https://coveralls.io/repos/github/kubernetes-sigs/lws/badge.svg?branch=test-coverage)](https://coveralls.io/github/kubernetes-sigs/lws?branch=test-coverage)
-
-[GoReport Widget]: https://goreportcard.com/badge/github.com/kubernetes-sigs/lws
-[GoReport Status]: https://goreportcard.com/report/github.com/kubernetes-sigs/lws
 
 <img src="site/static/images/lws-ds-logos.svg" width="300" alt="lws logo">
 

@@ -1,0 +1,15 @@
+title: DisaggregatedSet HPA support per role
+kep-number: 849
+authors:
+  - "hasB4K"
+status: provisional
+creation-date: 2026-07-03
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

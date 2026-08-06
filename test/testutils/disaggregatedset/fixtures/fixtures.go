@@ -33,6 +33,7 @@ type Role struct {
 	MaxUnavailable intstr.IntOrString
 	Partition      *int // nil = not set, 0 = valid, >0 = invalid (rejected by webhook)
 	HasRollout     bool
+	External       bool              // if true, emit scaling.mode: External (controller auto-creates a scaler)
 	Labels         map[string]string // workerTemplate labels (propagate to pods)
 	Annotations    map[string]string // workerTemplate annotations (propagate to pods)
 	LWSLabels      map[string]string // LWS CR metadata labels (for Kueue, exclusive-topology)
@@ -44,6 +45,11 @@ type Config struct {
 	Name      string
 	Namespace string
 	Roles     []Role
+	// PlacementType, when non-empty, adds a spec.placementPolicy block
+	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
+	// topologyKey and is required for a non-None type.
+	PlacementType     string
+	PlacementTopology string
 }
 
 // YAML generates a DisaggregatedSet YAML from config.
@@ -62,9 +68,22 @@ metadata:
 spec:
 `, c.Name, ns))
 
+	if c.PlacementType != "" {
+		sb.WriteString("  placementPolicy:\n")
+		sb.WriteString(fmt.Sprintf("    type: %s\n", c.PlacementType))
+		if c.PlacementTopology != "" {
+			sb.WriteString(fmt.Sprintf("    topology: %s\n", c.PlacementTopology))
+		}
+	}
+
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
+
+		if p.External {
+			sb.WriteString("    scaling:\n")
+			sb.WriteString("      mode: External\n")
+		}
 
 		// LWS CR metadata (labels/annotations on the LWS ObjectMeta) — at role level
 		if len(p.LWSLabels) > 0 || len(p.LWSAnnotations) > 0 {

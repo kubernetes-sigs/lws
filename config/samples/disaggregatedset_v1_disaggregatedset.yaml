@@ -4,6 +4,14 @@ metadata:
   name: disaggregatedset-sample
   namespace: default
 spec:
+  slices: 2
+  # placementPolicy co-locates each slice's roles in one topology domain and spreads
+  # this DisaggregatedSet's slices across domains. Requires nodes labeled with the
+  # topology key. Uncomment to enable (ExclusiveTopology also excludes other
+  # DisaggregatedSets' slices from a domain).
+  # placementPolicy:
+  #   type: ExclusiveSlice        # None | ExclusiveSlice | ExclusiveTopology
+  #   topology: cloud.google.com/gke-nodepool
   roles:
     - name: prefill
       spec:

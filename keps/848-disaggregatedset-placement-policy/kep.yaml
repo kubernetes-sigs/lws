@@ -1,0 +1,19 @@
+title: DisaggregatedSet Placement Policy
+kep-number: 848
+authors:
+  - "BenjaminBraunDev"
+status: provisional
+creation-date: 2026-06-29
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

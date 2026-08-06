@@ -521,6 +521,44 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
+	Context("Placement Policy", func() {
+		const deploymentName = "test-placement"
+
+		AfterEach(func() {
+			kubectl.CleanupDeployment(deploymentName)
+			// The cascading delete can race with the child StatefulSets
+			// recreating force-deleted pods, and terminating ExclusiveTopology
+			// pods still repel other sets' pods. Wait until the pods are fully
+			// gone so later specs can schedule on a single-node cluster.
+			Eventually(func() int {
+				return kubectl.CountPods(deploymentName)
+			}, 90*time.Second, time.Second).Should(Equal(0))
+		})
+
+		It("should inject placement affinity into the managed LWS pod templates", func() {
+			By("creating a DisaggregatedSet with an ExclusiveTopology placement policy")
+			cfg := fixtures.PrefillDecode(deploymentName,
+				fixtures.Role{Replicas: 1},
+				fixtures.Role{Replicas: 1},
+			)
+			cfg.PlacementType = "ExclusiveTopology"
+			cfg.PlacementTopology = "kubernetes.io/hostname"
+			Expect(applyYAML(cfg.YAML())).To(Succeed())
+
+			By("verifying the controller injected placement affinity into the prefill LWS worker template")
+			Eventually(func(g Gomega) {
+				output, err := kubectl.LWSByRole(deploymentName, "prefill").
+					JSONPath("{.items[0].spec.leaderWorkerTemplate.workerTemplate.spec.affinity}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("podAffinity"))
+				g.Expect(output).To(ContainSubstring("podAntiAffinity"))
+				g.Expect(output).To(ContainSubstring("kubernetes.io/hostname"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/slice"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+		})
+	})
+
 	Context("Cleanup and Deletion", func() {
 		const deploymentName = "test-cleanup"
 
