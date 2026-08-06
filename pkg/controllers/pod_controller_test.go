@@ -27,11 +27,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -588,5 +590,65 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 				t.Fatalf("leader pod should still exist, err = %v", err)
 			}
 		})
+	}
+}
+
+func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		SubdomainPolicy(subdomainPolicy).
+		Obj()
+
+	deletionTimestamp := metav1.Now()
+	leaderPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-sample-0",
+			Namespace:         "default",
+			DeletionTimestamp: &deletionTimestamp,
+			Finalizers:        []string{"leaderworkerset.sigs.k8s.io/test"},
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, &leaderPod).Build()
+	reconciler := PodReconciler{
+		Client: client,
+		Scheme: scheme,
+		Record: fakeEventRecorder{},
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      leaderPod.Name,
+			Namespace: leaderPod.Namespace,
+		},
+	}
+
+	res, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error during reconcile: %v", err)
+	}
+	if res.Requeue {
+		t.Errorf("expected no requeue, got %v", res)
+	}
+
+	var svcList corev1.ServiceList
+	if err := client.List(context.Background(), &svcList); err != nil {
+		t.Fatalf("failed to list services: %v", err)
+	}
+	if len(svcList.Items) != 0 {
+		t.Errorf("expected 0 services created for deleting leader pod, got %d", len(svcList.Items))
 	}
 }
