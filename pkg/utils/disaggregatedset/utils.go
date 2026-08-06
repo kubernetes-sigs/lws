@@ -28,7 +28,80 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
-const NumRequiredRoles = 2
+const NumRequiredRoles = 1
+
+// RoleKey identifies either a physical parent role (SubRole is empty) or one
+// virtual sub-role within it. A structured key avoids collisions between role
+// names and generated role/sub-role strings.
+type RoleKey struct {
+	Role    string
+	SubRole string
+}
+
+// String returns a human-readable identity for logs and errors.
+func (k RoleKey) String() string {
+	if k.SubRole == "" {
+		return k.Role
+	}
+	return k.Role + "/" + k.SubRole
+}
+
+// GetRoleKeys returns the logical planner/scaler identities in spec order.
+// Partitioned roles expand to their sub-roles; unpartitioned roles retain the
+// parent identity.
+func GetRoleKeys(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []RoleKey {
+	var keys []RoleKey
+	for _, role := range disaggregatedSet.Spec.Roles {
+		if len(role.SubRoles) == 0 {
+			keys = append(keys, RoleKey{Role: role.Name})
+			continue
+		}
+		for _, subRole := range role.SubRoles {
+			keys = append(keys, RoleKey{Role: role.Name, SubRole: subRole.Name})
+		}
+	}
+	return keys
+}
+
+// GetRoleKeysForParent returns the logical identities for one parent role in
+// spec order.
+func GetRoleKeysForParent(role *disaggregatedsetv1.DisaggregatedRoleSpec) []RoleKey {
+	if role == nil {
+		return nil
+	}
+	if len(role.SubRoles) == 0 {
+		return []RoleKey{{Role: role.Name}}
+	}
+	keys := make([]RoleKey, 0, len(role.SubRoles))
+	for _, subRole := range role.SubRoles {
+		keys = append(keys, RoleKey{Role: role.Name, SubRole: subRole.Name})
+	}
+	return keys
+}
+
+// GetRoleSpec returns a role by name.
+func GetRoleSpec(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, name string) *disaggregatedsetv1.DisaggregatedRoleSpec {
+	for i := range disaggregatedSet.Spec.Roles {
+		if disaggregatedSet.Spec.Roles[i].Name == name {
+			return &disaggregatedSet.Spec.Roles[i]
+		}
+	}
+	return nil
+}
+
+// GetSubRoleSpec returns a sub-role by its structured identity.
+func GetSubRoleSpec(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, key RoleKey) *disaggregatedsetv1.DisaggregatedSubRoleSpec {
+	role := GetRoleSpec(disaggregatedSet, key.Role)
+	if role == nil || key.SubRole == "" {
+		return nil
+	}
+	for i := range role.SubRoles {
+		if role.SubRoles[i].Name == key.SubRole {
+			return &role.SubRoles[i]
+		}
+	}
+	return nil
+}
 
 func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int32, bool) {
 	if leaderWorkerSet.Annotations == nil {

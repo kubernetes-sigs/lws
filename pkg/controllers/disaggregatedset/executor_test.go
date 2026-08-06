@@ -75,9 +75,10 @@ func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 // newTestExecutor creates a RollingUpdateExecutor with a FakeRecorder for testing.
 func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		Client:     fakeClient,
-		LWSManager: NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
+		Client:            fakeClient,
+		LWSManager:        NewLeaderWorkerSetManager(fakeClient),
+		AssignmentManager: NewAssignmentManager(fakeClient),
+		Record:            events.NewFakeRecorder(100),
 	}
 }
 
@@ -907,7 +908,7 @@ func TestScaleDownOld(t *testing.T) {
 				current[0] - tc.prefillBudget,
 				current[1] - tc.decodeBudget,
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target)
+			_, err := executor.scaleDownOld(context.TODO(), ds, grouped, roleNames, current, target, nil)
 			require.NoError(t, err)
 
 			for _, workload := range tc.workloads {
@@ -920,6 +921,55 @@ func TestScaleDownOld(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScaleDownOldPreparesSubRoleVictims(t *testing.T) {
+	const lwsName = "test-0-oldhash-decode"
+	lws := buildTestLWS(lwsName, testNamespace, testRoleDecode, "oldhash").
+		Replica(3).StatusReplicas(3).ReadyReplicas(3).Obj()
+	objects := []client.Object{
+		lws,
+		assignmentPod(lwsName, 0, 0, "short"),
+		assignmentPod(lwsName, 1, 0, "short"),
+		assignmentPod(lwsName, 2, 0, "long"),
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
+	executor := newTestExecutor(fakeClient)
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: testRoleDecode,
+			SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+				{Name: "short", Replicas: ptr.To(int32(1))},
+				{Name: "long", Replicas: ptr.To(int32(1))},
+			},
+		}}},
+	}
+	grouped := disaggregatedsetutils.RevisionRolesList{{
+		Revision: "oldhash",
+		Roles:    map[string]*leaderworkersetv1.LeaderWorkerSet{testRoleDecode: lws.DeepCopy()},
+	}}
+
+	prepared, err := executor.scaleDownOld(context.Background(), ds, grouped, []string{testRoleDecode}, RoleReplicaState{3}, RoleReplicaState{2}, nil)
+	require.NoError(t, err)
+	assert.True(t, prepared)
+	assert.Equal(t, int32(3), getTestLWSReplicas(fakeClient, testNamespace, lwsName), "labels must converge before scaling")
+
+	want := []string{"short", "long", "short"}
+	for group, subRole := range want {
+		pod := &corev1.Pod{}
+		require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+			Namespace: testNamespace,
+			Name:      fmt.Sprintf("%s-%d-0", lwsName, group),
+		}, pod))
+		assert.Equal(t, subRole, pod.Labels[disaggregatedsetv1.SubRoleLabelKey])
+	}
+
+	prepared, err = executor.scaleDownOld(context.Background(), ds, grouped, []string{testRoleDecode}, RoleReplicaState{3}, RoleReplicaState{2}, nil)
+	require.NoError(t, err)
+	assert.False(t, prepared)
+	assert.Equal(t, int32(2), getTestLWSReplicas(fakeClient, testNamespace, lwsName))
 }
 
 // TestScaleDownOldWithMissingRole tests that roles not present in
@@ -1005,7 +1055,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 				current[1] - tc.decodeBudget,
 				current[2] - tc.encodeBudget,
 			}
-			err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target)
+			_, err := executor.scaleDownOld(context.TODO(), ds, grouped, threeRoleNames, current, target, nil)
 			require.NoError(t, err)
 
 			// Verify prefill and decode were scaled correctly

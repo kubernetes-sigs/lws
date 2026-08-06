@@ -64,7 +64,7 @@ spec:
                 type: object
               roles:
                 description: |-
-                  Roles defines the list of roles (at least 2 required).
+                  Roles defines the list of roles (at least 1 required).
                   Each role has a unique name and its own configuration.
                 items:
                   description: |-
@@ -18351,11 +18351,58 @@ spec:
                       required:
                       - leaderWorkerTemplate
                       type: object
+                    subRoles:
+                      description: |-
+                        SubRoles partitions this role's configuration-identical LWS groups into
+                        independently scalable routing pools. When present, sub-role replica
+                        targets replace the parent role's replica target.
+                      items:
+                        description: |-
+                          DisaggregatedSubRoleSpec defines a routing and scaling partition within a
+                          configuration-identical parent role.
+                        properties:
+                          name:
+                            description: Name is unique within the parent role.
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          replicas:
+                            description: |-
+                              Replicas is the desired number of LWS groups assigned to this sub-role
+                              when scaling is Static or omitted. It defaults to 1 in the controller.
+                              It must be omitted for External scaling.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          scaling:
+                            description: Scaling configures how replicas are determined
+                              for this sub-role.
+                            properties:
+                              mode:
+                                default: Static
+                                description: |-
+                                  Mode controls the source of the replica count. Static (default) uses
+                                  inline spec.replicas; External uses the auto-created scaler CR.
+                                enum:
+                                - Static
+                                - External
+                                type: string
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                   required:
                   - name
                   type: object
                 maxItems: 10
-                minItems: 2
+                minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -18374,12 +18421,13 @@ spec:
             - roles
             type: object
             x-kubernetes-validations:
-            - message: replicas must be zero for all non-External roles or non-zero
-                for all non-External roles
-              rule: self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r,
-                !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r,
-                !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas)
-                && r.spec.replicas > 0)
+            - message: replicas must be zero for all non-External unpartitioned roles
+                or non-zero for all non-External unpartitioned roles
+              rule: self.roles.filter(r, (!has(r.subRoles) || size(r.subRoles) ==
+                0) && (!has(r.scaling) || r.scaling.mode != 'External')).all(r, !has(r.spec.replicas)
+                || r.spec.replicas == 0) || self.roles.filter(r, (!has(r.subRoles)
+                || size(r.subRoles) == 0) && (!has(r.scaling) || r.scaling.mode !=
+                'External')).all(r, has(r.spec.replicas) && r.spec.replicas > 0)
           status:
             description: status defines the observed state of DisaggregatedSet
             properties:
@@ -18472,6 +18520,37 @@ spec:
                         role.
                       format: int32
                       type: integer
+                    subRoleStatuses:
+                      description: SubRoleStatuses contains observed counts for this
+                        role's virtual sub-roles.
+                      items:
+                        description: SubRoleStatus defines the observed state of one
+                          virtual sub-role.
+                        properties:
+                          name:
+                            description: Name is the name of the sub-role.
+                            type: string
+                          readyReplicas:
+                            description: ReadyReplicas is the number of assigned groups
+                              whose leader Pod is Ready.
+                            format: int32
+                            type: integer
+                          replicas:
+                            description: Replicas is the number of assigned LWS groups.
+                            format: int32
+                            type: integer
+                          updatedReplicas:
+                            description: UpdatedReplicas is the number of assigned
+                              groups on the current revision.
+                            format: int32
+                            type: integer
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     updatedReplicas:
                       description: UpdatedReplicas is the number of replicas updated
                         to the latest revision.

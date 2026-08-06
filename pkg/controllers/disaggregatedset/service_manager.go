@@ -40,6 +40,11 @@ type ServiceManager struct {
 	scheme *runtime.Scheme
 }
 
+type serviceScope struct {
+	revision string
+	role     string
+}
+
 func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *ServiceManager {
 	return &ServiceManager{
 		client: k8sClient,
@@ -54,49 +59,50 @@ func (manager *ServiceManager) ReconcileServices(
 	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 ) error {
-	log := logf.FromContext(ctx)
-	roleNames := disaggregatedsetutils.GetRoleNames(deployment)
-
-	var targetGroup *disaggregatedsetutils.RevisionRoles
-	for i := range revisionRoles {
-		if revisionRoles[i].Revision == targetRevision {
-			targetGroup = &revisionRoles[i]
-			break
-		}
-	}
-
-	if targetGroup == nil || !revisionReadyOnAllRoles(*targetGroup, roleNames) {
-		log.V(1).Info("Target revision not ready on all roles, keeping existing services",
-			"targetRevision", targetRevision)
-		return nil
-	}
-
-	// Create one headless service per role, derived from the target revision's LWS so
-	// the selector matches that LWS's pods. A legacy slice-0 LWS yields a slice-agnostic
-	// service; a slice-aware LWS yields a slice-scoped one.
-	for _, roleName := range roleNames {
-		lws := targetGroup.Roles[roleName]
-		if lws == nil {
+	desiredNames := make(map[string]bool)
+	preserveRemovedRoleSubRoles := make(map[serviceScope]bool)
+	for _, group := range revisionRoles {
+		if group.Revision != targetRevision && revisionDrained(group) {
 			continue
 		}
-		if err := manager.ensureService(ctx, deployment, lws); err != nil {
-			return fmt.Errorf("failed to ensure service for %s: %w", roleName, err)
+		for roleName, lws := range group.Roles {
+			if lws == nil {
+				continue
+			}
+			service := manager.buildService(deployment, lws, "")
+			desiredNames[service.Name] = true
+			if err := manager.ensureService(ctx, service); err != nil {
+				return fmt.Errorf("failed to ensure service for %s: %w", roleName, err)
+			}
+
+			role := disaggregatedsetutils.GetRoleSpec(deployment, roleName)
+			if role == nil {
+				// A removed parent can still be serving on an old revision. Its
+				// sub-role Services cannot be reconstructed from the new spec, so
+				// retain any existing ones until that revision drains.
+				preserveRemovedRoleSubRoles[serviceScope{revision: group.Revision, role: roleName}] = true
+				continue
+			}
+			for _, subRole := range role.SubRoles {
+				service := manager.buildService(deployment, lws, subRole.Name)
+				desiredNames[service.Name] = true
+				if err := manager.ensureService(ctx, service); err != nil {
+					return fmt.Errorf("failed to ensure service for %s/%s: %w", roleName, subRole.Name, err)
+				}
+			}
 		}
 	}
 
-	if err := manager.cleanupDrainedServices(ctx, deployment, slice, revisionRoles, targetRevision, roleNames); err != nil {
+	if err := manager.cleanupDrainedServices(ctx, deployment, slice, desiredNames, preserveRemovedRoleSubRoles); err != nil {
 		return fmt.Errorf("failed to cleanup drained services: %w", err)
 	}
 
 	return nil
 }
 
-// revisionReadyOnAllRoles reports whether every role has a ready LWS
-// (ReadyReplicas >= 1) in the group.
-func revisionReadyOnAllRoles(group disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
-	for _, roleName := range roleNames {
-		lws, hasRole := group.Roles[roleName]
-		if !hasRole || lws.Status.ReadyReplicas < 1 {
+func revisionDrained(group disaggregatedsetutils.RevisionRoles) bool {
+	for _, lws := range group.Roles {
+		if lws != nil && getLWSReplicas(lws) > 0 {
 			return false
 		}
 	}
@@ -105,12 +111,9 @@ func revisionReadyOnAllRoles(group disaggregatedsetutils.RevisionRoles, roleName
 
 func (manager *ServiceManager) ensureService(
 	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
-	lws *leaderworkersetv1.LeaderWorkerSet,
+	service *corev1.Service,
 ) error {
 	log := logf.FromContext(ctx)
-
-	service := manager.buildService(deployment, lws)
 
 	if err := manager.client.Create(ctx, service); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -132,6 +135,7 @@ func (manager *ServiceManager) ensureService(
 func (manager *ServiceManager) buildService(
 	deployment *disaggregatedsetv1.DisaggregatedSet,
 	lws *leaderworkersetv1.LeaderWorkerSet,
+	subRole string,
 ) *corev1.Service {
 	selector := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
@@ -141,10 +145,15 @@ func (manager *ServiceManager) buildService(
 	if disaggregatedsetutils.HasSliceLabel(lws.Labels) {
 		selector[disaggregatedsetv1.SliceLabelKey] = lws.Labels[disaggregatedsetv1.SliceLabelKey]
 	}
+	name := lws.Name + "-prv"
+	if subRole != "" {
+		selector[disaggregatedsetv1.SubRoleLabelKey] = subRole
+		name = lws.Name + "-" + subRole + "-prv"
+	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      lws.Name + "-prv",
+			Name:      name,
 			Namespace: deployment.Namespace,
 			Labels:    maps.Clone(selector),
 			OwnerReferences: []metav1.OwnerReference{{
@@ -166,20 +175,10 @@ func (manager *ServiceManager) cleanupDrainedServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
-	revisionRoles disaggregatedsetutils.RevisionRolesList,
-	targetRevision string,
-	roleNames []string,
+	desiredNames map[string]bool,
+	preserveRemovedRoleSubRoles map[serviceScope]bool,
 ) error {
 	log := logf.FromContext(ctx)
-
-	readyRevisionSet := make(map[string]bool)
-	for _, group := range revisionRoles {
-		if revisionReadyOnAllRoles(group, roleNames) {
-			readyRevisionSet[group.Revision] = true
-		}
-	}
-
-	readyRevisionSet[targetRevision] = true
 
 	// List all of the DisaggregatedSet's services and filter to this slice client-side
 	// so a legacy slice-0 service (which has no slice label) is included in slice 0's
@@ -197,10 +196,14 @@ func (manager *ServiceManager) cleanupDrainedServices(
 		if !disaggregatedsetutils.SliceLabelMatches(service.Labels, slice) {
 			continue
 		}
-		serviceRevision := service.Labels[disaggregatedsetv1.RevisionLabelKey]
-
-		if !readyRevisionSet[serviceRevision] {
-			log.Info("Deleting drained Service", "service", service.Name, "revision", serviceRevision, "targetRevision", targetRevision)
+		if service.Labels[disaggregatedsetv1.SubRoleLabelKey] != "" && preserveRemovedRoleSubRoles[serviceScope{
+			revision: service.Labels[disaggregatedsetv1.RevisionLabelKey],
+			role:     service.Labels[disaggregatedsetv1.RoleLabelKey],
+		}] {
+			continue
+		}
+		if !desiredNames[service.Name] {
+			log.Info("Deleting drained or obsolete Service", "service", service.Name)
 			if err := manager.client.Delete(ctx, service); err != nil {
 				if apierrors.IsNotFound(err) {
 					continue
@@ -248,18 +251,34 @@ func (manager *ServiceManager) CleanupRemovedSlices(
 	return nil
 }
 
-// DeleteLegacyService deletes the pre-slices, slice-agnostic service for a role and
-// revision. Used during legacy slice-0 migration: the legacy service shares the target
-// revision, so per-revision drained cleanup never removes it.
-func (manager *ServiceManager) DeleteLegacyService(
+// DeleteLegacyServices deletes every pre-slices, slice-agnostic Service for a role and
+// revision, including its parent and sub-role Services. Used during legacy slice-0
+// migration: these Services share the target revision, so per-revision drained cleanup
+// never removes them before sibling slices are created.
+func (manager *ServiceManager) DeleteLegacyServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
 	revision, role string,
 ) error {
-	name := disaggregatedsetutils.GenerateLegacyName(deployment.Name, revision, role) + "-prv"
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: deployment.Namespace}}
-	if err := manager.client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete legacy service %s: %w", name, err)
+	services := &corev1.ServiceList{}
+	if err := manager.client.List(ctx, services,
+		client.InNamespace(deployment.Namespace),
+		client.MatchingLabels{
+			disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
+			disaggregatedsetv1.RevisionLabelKey: revision,
+			disaggregatedsetv1.RoleLabelKey:     role,
+		},
+	); err != nil {
+		return fmt.Errorf("failed to list legacy Services for role %s: %w", role, err)
+	}
+	for i := range services.Items {
+		service := &services.Items[i]
+		if disaggregatedsetutils.HasSliceLabel(service.Labels) {
+			continue
+		}
+		if err := manager.client.Delete(ctx, service); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete legacy Service %s: %w", service.Name, err)
+		}
 	}
 	return nil
 }

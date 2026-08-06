@@ -609,6 +609,28 @@ func TestComputeRevision(t *testing.T) {
 		require.NotEqual(t, revision1, revision2)
 	})
 
+	t.Run("sub-role membership and scaling do not change the template revision", func(t *testing.T) {
+		base := []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: "decode",
+			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+				Replicas: ptr.To(int32(7)),
+				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+					Size: ptr.To(int32(1)),
+				},
+			}},
+		}}
+		partitioned := []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: "decode",
+			SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+				{Name: "short", Replicas: ptr.To(int32(5))},
+				{Name: "long", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			},
+			LeaderWorkerSetTemplateSpec: base[0].LeaderWorkerSetTemplateSpec,
+		}}
+
+		require.Equal(t, disaggregatedsetutils.ComputeRevision(base), disaggregatedsetutils.ComputeRevision(partitioned))
+	})
+
 	t.Run("handles empty roles slice", func(t *testing.T) {
 		roles := []disaggregatedsetv1.DisaggregatedRoleSpec{}
 

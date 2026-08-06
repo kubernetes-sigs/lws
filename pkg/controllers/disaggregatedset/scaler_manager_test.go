@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -58,8 +60,8 @@ func TestScalerManagerReconcileCreatesMissing(t *testing.T) {
 
 	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
-	require.Contains(t, scalers, "prefill")
-	require.NotContains(t, scalers, "decode")
+	require.Contains(t, scalers, disaggregatedsetutils.RoleKey{Role: "prefill"})
+	require.NotContains(t, scalers, disaggregatedsetutils.RoleKey{Role: "decode"})
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
@@ -68,6 +70,39 @@ func TestScalerManagerReconcileCreatesMissing(t *testing.T) {
 	require.Len(t, got.OwnerReferences, 1)
 	assert.Equal(t, ds.UID, got.OwnerReferences[0].UID)
 	assert.Equal(t, ptr.To(true), got.OwnerReferences[0].Controller)
+}
+
+func TestScalerManagerReconcileCreatesSubRoleScalers(t *testing.T) {
+	ds := newDSWithRoles("myds", disaggregatedsetv1.DisaggregatedRoleSpec{
+		Name: "decode",
+		SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+			{Name: "short", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			{Name: "long", Replicas: ptr.To(int32(2))},
+			{Name: "batch", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+		},
+	})
+	cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).WithObjects(ds).Build()
+	m := NewScalerManager(cl, events.NewFakeRecorder(10))
+	shortKey := disaggregatedsetutils.RoleKey{Role: "decode", SubRole: "short"}
+	batchKey := disaggregatedsetutils.RoleKey{Role: "decode", SubRole: "batch"}
+
+	scalers, err := m.Reconcile(context.TODO(), ds, func(key disaggregatedsetutils.RoleKey, existing scalerMap) int32 {
+		assert.Empty(t, existing, "all seeds are computed before any scaler is created")
+		if key == shortKey {
+			return 3
+		}
+		return 1
+	})
+	require.NoError(t, err)
+	require.Contains(t, scalers, shortKey)
+	require.Contains(t, scalers, batchKey)
+
+	short := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-decode-short", Namespace: "default"}, short))
+	assert.EqualValues(t, 3, short.Spec.Replicas)
+	assert.Equal(t, "decode", short.Labels[disaggregatedsetv1.RoleLabelKey])
+	assert.Equal(t, "short", short.Labels[disaggregatedsetv1.SubRoleLabelKey])
+	assert.True(t, apierrorsIsNotFound(cl.Get(context.TODO(), types.NamespacedName{Name: "myds-decode", Namespace: "default"}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{})))
 }
 
 func TestScalerManagerReconcileDeletesOrphaned(t *testing.T) {
@@ -105,7 +140,7 @@ func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {
 
 	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
-	assert.NotContains(t, scalers, "prefill")
+	assert.NotContains(t, scalers, disaggregatedsetutils.RoleKey{Role: "prefill"})
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
@@ -137,15 +172,48 @@ func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newDSWithRoles("d", tc.role)
-			scalers := map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+			key := disaggregatedsetutils.RoleKey{Role: "r"}
+			scalers := scalerMap{}
 			if tc.scalerHas {
-				scalers["r"] = &disaggregatedsetv1.DisaggregatedSetRoleScaler{
+				scalers[key] = &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 					Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: tc.scalerVal},
 				}
 			}
-			assert.Equal(t, tc.wantReplicas, getTargetReplicas(ds, "r", scalers, tc.currentNew))
+			assert.Equal(t, tc.wantReplicas, getTargetReplicas(ds, key, scalers, tc.currentNew))
 		})
 	}
+}
+
+func TestMissingSubRoleScalerPreservesParentCapacity(t *testing.T) {
+	ds := newDSWithRoles("d", disaggregatedsetv1.DisaggregatedRoleSpec{
+		Name: "decode",
+		SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+			{Name: "short", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			{Name: "long", Replicas: ptr.To(int32(2))},
+		},
+	})
+	current := map[disaggregatedsetutils.RoleKey]int{
+		{Role: "decode"}:                  7,
+		{Role: "decode", SubRole: "long"}: 2,
+	}
+	assert.Equal(t, 7, getParentTargetReplicas(ds, "decode", nil, current))
+}
+
+func TestParentSubRoleTargetOverflowIsRejected(t *testing.T) {
+	ds := newDSWithRoles("d", disaggregatedsetv1.DisaggregatedRoleSpec{
+		Name: "decode",
+		SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+			{Name: "short", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			{Name: "long", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+		},
+	})
+	shortKey := disaggregatedsetutils.RoleKey{Role: "decode", SubRole: "short"}
+	longKey := disaggregatedsetutils.RoleKey{Role: "decode", SubRole: "long"}
+	scalers := scalerMap{
+		shortKey: {Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: math.MaxInt32}},
+		longKey:  {Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: 1}},
+	}
+	require.ErrorContains(t, validateParentReplicaTargets(ds, scalers), "exceeding the maximum LWS replica count")
 }
 
 func roleWithReplicas(name string, replicas int32) disaggregatedsetv1.DisaggregatedRoleSpec {
@@ -167,7 +235,8 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 		Build()
 	m := NewScalerManager(cl, events.NewFakeRecorder(10))
 
-	require.NoError(t, m.WriteStatus(context.TODO(), ds, map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{"prefill": scaler}, map[string]int32{"prefill": 4}))
+	key := disaggregatedsetutils.RoleKey{Role: "prefill"}
+	require.NoError(t, m.WriteStatus(context.TODO(), ds, scalerMap{key: scaler}, map[disaggregatedsetutils.RoleKey]int32{key: 4}))
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
@@ -175,6 +244,26 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 	assert.Equal(t, "disaggregatedset.x-k8s.io/name=myds,disaggregatedset.x-k8s.io/role=prefill,leaderworkerset.sigs.k8s.io/worker-index=0", got.Status.Selector)
 	require.Len(t, got.Status.Conditions, 1)
 	assert.Equal(t, metav1.ConditionTrue, got.Status.Conditions[0].Status)
+}
+
+func TestScalerManagerWriteSubRoleStatusSelector(t *testing.T) {
+	ds := newDSWithRoles("myds", staticRole("decode"))
+	scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "myds-decode-short", Namespace: "default", Generation: 2},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(wrappers.DisaggregatedSetTestScheme()).
+		WithObjects(scaler).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
+		Build()
+	m := NewScalerManager(cl, events.NewFakeRecorder(10))
+	key := disaggregatedsetutils.RoleKey{Role: "decode", SubRole: "short"}
+	require.NoError(t, m.WriteStatus(context.TODO(), ds, scalerMap{key: scaler}, map[disaggregatedsetutils.RoleKey]int32{key: 4}))
+
+	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: scaler.Name, Namespace: scaler.Namespace}, got))
+	assert.EqualValues(t, 4, got.Status.Replicas)
+	assert.Equal(t, "disaggregatedset.x-k8s.io/name=myds,disaggregatedset.x-k8s.io/role=decode,disaggregatedset.x-k8s.io/subrole=short,leaderworkerset.sigs.k8s.io/worker-index=0", got.Status.Selector)
 }
 
 // apierrorsIsNotFound is a tiny local helper to avoid importing apierrors just

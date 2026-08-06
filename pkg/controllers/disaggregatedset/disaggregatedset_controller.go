@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,7 +29,9 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -38,11 +41,12 @@ import (
 // DisaggregatedSetReconciler reconciles a DisaggregatedSet object
 type DisaggregatedSetReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	Record         events.EventRecorder
-	LWSManager     *LeaderWorkerSetManager
-	ServiceManager *ServiceManager
-	ScalerManager  *ScalerManager
+	Scheme            *runtime.Scheme
+	Record            events.EventRecorder
+	LWSManager        *LeaderWorkerSetManager
+	ServiceManager    *ServiceManager
+	ScalerManager     *ScalerManager
+	AssignmentManager *AssignmentManager
 }
 
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +57,7 @@ type DisaggregatedSetReconciler struct {
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -73,7 +78,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// 2. Clean up fully-drained old revisions (all roles at 0 replicas).
 	// 3. Reconcile LWS objects — either a rolling update (if old revisions with
 	//    replicas exist) or a simple create/scale to the target revision.
-	// 4. Reconcile services so that ready revisions get headless services.
+	// 4. Reconcile services for every live role revision.
 
 	// Step 1: Compute the target revision hash from the spec's role templates.
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
@@ -93,6 +98,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(r.Client, r.Record)
 	}
+	if r.AssignmentManager == nil {
+		r.AssignmentManager = NewAssignmentManager(r.Client)
+	}
 	seedFor, err := r.seedForRole(ctx, disaggregatedSet)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaler seeds: %w", err)
@@ -100,6 +108,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, seedFor)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile scalers: %w", err)
+	}
+	if err := validateParentReplicaTargets(disaggregatedSet, scalers); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Step 3: Reconcile LWS objects.
@@ -135,9 +146,21 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		result = earliestRequeue(result, sliceResult)
 	}
 
+	// Assign physical groups to virtual sub-roles after any LWS scale writes.
+	// A Pod watch requeues the set as new scale-up groups appear.
+	assignmentsConverged, assignmentErr := r.reconcileAssignments(ctx, disaggregatedSet, revision, scalers)
+	if assignmentErr != nil {
+		errs = append(errs, assignmentErr)
+	} else if !assignmentsConverged {
+		result = earliestRequeue(result, ctrl.Result{RequeueAfter: 250 * time.Millisecond})
+	}
+
 	// Aggregate observed pod counts across all slices and revisions, then write
 	// scaler status. The aggregate matches the aggregate selector shape.
 	if err := r.updateScalerStatus(ctx, disaggregatedSet, scalers); err != nil {
+		errs = append(errs, err)
+	}
+	if err := r.updateDisaggregatedSetStatus(ctx, disaggregatedSet, revision); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -153,13 +176,14 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // HPAScaleToZero feature gate is enabled. Autoscalers that support scale-from-
 // zero (KEDA, HPA with the gate flipped) can still take the role down to 0
 // after attach.
-func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(string) int32, error) {
+func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(disaggregatedsetutils.RoleKey, scalerMap) int32, error) {
 	all, err := r.LWSManager.List(ctx, ds.Namespace, ds.Name, -1, "")
 	if err != nil {
 		return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
 	}
 	sums := make(map[string]int32)
 	seen := make(map[string]bool)
+	observed := make(map[disaggregatedsetutils.RoleKey]int32)
 	for _, lws := range all {
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
 		seen[role] = true
@@ -168,12 +192,65 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 		} else {
 			sums[role]++
 		}
+		roleSpec := disaggregatedsetutils.GetRoleSpec(ds, role)
+		if roleSpec == nil || len(roleSpec.SubRoles) == 0 {
+			continue
+		}
+		_, valid := subRoleOrderAndSet(roleSpec)
+		summary, observeErr := r.AssignmentManager.Observe(ctx, ds.Namespace, lws.Name, valid)
+		if observeErr != nil {
+			return nil, fmt.Errorf("observe sub-role assignments for scaler seed: %w", observeErr)
+		}
+		for _, subRole := range roleSpec.SubRoles {
+			key := disaggregatedsetutils.RoleKey{Role: role, SubRole: subRole.Name}
+			observed[key] += int32(summary.Replicas[subRole.Name])
+		}
 	}
-	return func(role string) int32 {
-		if !seen[role] {
+	return func(key disaggregatedsetutils.RoleKey, existing scalerMap) int32 {
+		if !seen[key.Role] {
 			return 1
 		}
-		return sums[role]
+		role := disaggregatedsetutils.GetRoleSpec(ds, key.Role)
+		if role == nil || len(role.SubRoles) == 0 {
+			return sums[key.Role]
+		}
+
+		remaining := sums[key.Role]
+		missing := make([]disaggregatedsetutils.RoleKey, 0, len(role.SubRoles))
+		for _, subRole := range role.SubRoles {
+			subRoleKey := disaggregatedsetutils.RoleKey{Role: role.Name, SubRole: subRole.Name}
+			if subRole.Scaling == nil || subRole.Scaling.Mode != disaggregatedsetv1.RoleScalingExternal {
+				count := int32(1)
+				if subRole.Replicas != nil {
+					count = *subRole.Replicas
+				}
+				remaining -= count
+			} else if scaler := existing[subRoleKey]; scaler != nil {
+				remaining -= scaler.Spec.Replicas
+			} else {
+				missing = append(missing, subRoleKey)
+			}
+		}
+		remaining = max(remaining, 0)
+		seeds := make(map[disaggregatedsetutils.RoleKey]int32, len(missing))
+		// Preserve already-observed assignments first (for example when a
+		// Static sub-role becomes External), then deterministically distribute
+		// any unlabelled aggregate capacity among newly-created scalers.
+		for _, missingKey := range missing {
+			seed := min(observed[missingKey], remaining)
+			seeds[missingKey] = seed
+			remaining -= seed
+		}
+		for remaining > 0 && len(missing) > 0 {
+			for _, missingKey := range missing {
+				if remaining == 0 {
+					break
+				}
+				seeds[missingKey]++
+				remaining--
+			}
+		}
+		return seeds[key]
 	}, nil
 }
 
@@ -184,7 +261,7 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+	scalers scalerMap,
 ) error {
 	if len(scalers) == 0 {
 		return nil
@@ -193,13 +270,31 @@ func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	if err != nil {
 		return fmt.Errorf("list LWS for scaler status: %w", err)
 	}
-	observed := make(map[string]int32, len(scalers))
+	observed := make(map[disaggregatedsetutils.RoleKey]int32, len(scalers))
 	for _, lws := range all {
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
-		if _, ok := scalers[role]; !ok {
+		parentKey := disaggregatedsetutils.RoleKey{Role: role}
+		if _, ok := scalers[parentKey]; ok {
+			observed[parentKey] += lws.Status.Replicas
+		}
+		roleSpec := disaggregatedsetutils.GetRoleSpec(ds, role)
+		if roleSpec == nil || len(roleSpec.SubRoles) == 0 {
 			continue
 		}
-		observed[role] += lws.Status.Replicas
+		valid := make(map[string]bool, len(roleSpec.SubRoles))
+		for _, subRole := range roleSpec.SubRoles {
+			valid[subRole.Name] = true
+		}
+		summary, observeErr := r.AssignmentManager.Observe(ctx, ds.Namespace, lws.Name, valid)
+		if observeErr != nil {
+			return fmt.Errorf("observe sub-role assignments for scaler status: %w", observeErr)
+		}
+		for _, subRole := range roleSpec.SubRoles {
+			key := disaggregatedsetutils.RoleKey{Role: role, SubRole: subRole.Name}
+			if _, ok := scalers[key]; ok {
+				observed[key] += int32(summary.Replicas[subRole.Name])
+			}
+		}
 	}
 	return r.ScalerManager.WriteStatus(ctx, ds, scalers, observed)
 }
@@ -214,7 +309,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	slice int,
 	revision string,
 	roleNames []string,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+	scalers scalerMap,
 ) (ctrl.Result, error) {
 	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
 		return ctrl.Result{}, err
@@ -242,7 +337,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 		return result, err
 	}
 
-	// Step 4: Reconcile headless services for revisions that are ready on all roles.
+	// Step 4: Reconcile headless services for every live role revision. During
+	// deprecation, these Services are exposed without a cross-role readiness gate.
 	allLWS, err := r.LWSManager.List(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, "")
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list LWS for service reconciliation: %w", err)
@@ -292,14 +388,15 @@ func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, d
 
 func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		Client:     r.Client,
-		Record:     r.Record,
-		LWSManager: r.LWSManager,
+		Client:            r.Client,
+		Record:            r.Record,
+		LWSManager:        r.LWSManager,
+		AssignmentManager: r.AssignmentManager,
 	}
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, scalers scalerMap) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
@@ -311,7 +408,7 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
+func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers scalerMap) error {
 	log := logf.FromContext(ctx)
 
 	// GetForRole adopts a legacy slice-0 LWS in place, so we do not create a
@@ -326,7 +423,9 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	if existing != nil && existing.Spec.Replicas != nil {
 		currentReplicas = *existing.Spec.Replicas
 	}
-	desiredReplicas := int32(getTargetReplicas(disaggregatedSet, role, scalers, int(currentReplicas)))
+	desiredReplicas := int32(getParentTargetReplicas(disaggregatedSet, role, scalers, map[disaggregatedsetutils.RoleKey]int{
+		{Role: role}: int(currentReplicas),
+	}))
 
 	if existing == nil {
 		lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role)
@@ -346,6 +445,25 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	existingReplicas := int32(1)
 	if existing.Spec.Replicas != nil {
 		existingReplicas = *existing.Spec.Replicas
+	}
+	if len(config.SubRoles) > 0 && existingReplicas > desiredReplicas {
+		order, _ := subRoleOrderAndSet(config)
+		final := desiredSubRoleReplicas(disaggregatedSet, role, scalers, nil)
+		changed, _, err := r.AssignmentManager.Reconcile(ctx, disaggregatedSet.Namespace, existing.Name, order,
+			fitSubRoleTargets(order, final, int(existingReplicas)))
+		if err != nil {
+			return err
+		}
+		if changed {
+			return nil
+		}
+		changed, err = r.AssignmentManager.PrepareScaleDown(ctx, disaggregatedSet.Namespace, existing.Name, order, final)
+		if err != nil {
+			return err
+		}
+		if changed {
+			return nil
+		}
 	}
 	if existingReplicas != desiredReplicas {
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
@@ -417,7 +535,7 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 
 // TODO(0.11.0): remove legacy slice-0 handling once pre-slices DisaggregatedSets are no
 // longer supported. The related legacy-compat code to remove with it: GenerateLegacyName,
-// GetForRole's legacy-name fallback, DeleteLegacyService, and the label-less branch in
+// GetForRole's legacy-name fallback, DeleteLegacyServices, and the label-less branch in
 // SliceLabelMatches.
 //
 // recreateLegacySlice0 converts a pre-slices (label-less) slice-0 deployment to the
@@ -447,7 +565,7 @@ func (r *DisaggregatedSetReconciler) recreateLegacySlice0(
 		}
 
 		log.Info("Recreating legacy slice-0 in slice-aware form", "role", role, "name", lws.Name)
-		if err := r.ServiceManager.DeleteLegacyService(ctx, disaggregatedSet, revision, role); err != nil {
+		if err := r.ServiceManager.DeleteLegacyServices(ctx, disaggregatedSet, revision, role); err != nil {
 			return err
 		}
 		if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
@@ -474,10 +592,24 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)
 	}
 
+	if r.AssignmentManager == nil {
+		r.AssignmentManager = NewAssignmentManager(mgr.GetClient())
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
+		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.requestsForPod)).
 		Named("disaggregatedset").
 		Complete(r)
+}
+
+func (r *DisaggregatedSetReconciler) requestsForPod(_ context.Context, obj client.Object) []reconcile.Request {
+	name := obj.GetLabels()[disaggregatedsetv1.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: obj.GetNamespace(), Name: name}}}
 }
