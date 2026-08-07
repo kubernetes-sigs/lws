@@ -53,34 +53,6 @@ files:
         key: .subjects.[].namespace
         value: '"{{ .Release.Namespace }}"'
         onFileCondition: '.kind == "ClusterRoleBinding" or .kind == "RoleBinding"'
-      # Preserve the chart's existing Pod and Service permissions. The canonical
-      # manifest currently combines them and grants create on both resources.
-      - type: UPDATE
-        key: .rules.[].resources
-        value: '["pods"]'
-        onFileCondition: '.kind == "ClusterRole"'
-        onItemCondition: '.rules.[].resources | contains(["pods", "services"])'
-      - type: UPDATE
-        key: .rules.[].verbs
-        value: '["delete", "get", "list", "patch", "update", "watch"]'
-        onFileCondition: '.kind == "ClusterRole"'
-        onItemCondition: '.rules.[].resources | (length == 1 and .[0] == "pods")'
-      - type: INSERT_OBJECT
-        key: .rules
-        value: |
-          - apiGroups:
-              - ""
-            resources:
-              - services
-            verbs:
-              - create
-              - delete
-              - get
-              - list
-              - patch
-              - update
-              - watch
-        onFileCondition: '.kind == "ClusterRole"'
     postOperations:
       - type: INSERT_TEXT
         key: .metadata
