@@ -40,7 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/inplacerestart"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -127,7 +129,17 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if r.SchedulerProvider != nil {
+	if leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy == leaderworkerset.InPlaceGroupRestart {
+		result, handled, err := inplacerestart.HandleInPlaceGroupRestart(ctx, r.Client, r.Record, &leaderWorkerSet, &pod)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if handled {
+			return result, nil
+		}
+	}
+
+	if r.SchedulerProvider != nil && shouldCreatePodGroup(&leaderWorkerSet) {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -204,6 +216,51 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	policy := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy
+
+	var leader corev1.Pod
+	if !podutils.LeaderPod(pod) {
+		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		if ordinal == -1 {
+			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+		}
+		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
+			return false, nil
+		}
+		currentGroupWorkerPod, err := r.workerPodBelongsToLeader(ctx, pod, leader)
+		if err != nil {
+			return false, err
+		}
+		if !currentGroupWorkerPod {
+			return false, nil
+		}
+	} else {
+		leader = pod
+	}
+
+	if policy == leaderworkerset.InPlaceGroupRestart {
+		if podutils.PodDeleted(pod) {
+			// Cannot in-place restart a deleted pod. Escalate to group recreation immediately.
+			log.Info("Pod deleted under InPlaceGroupRestart policy. Escalating to RecreateGroupOnPodRestart.", "pod", pod.Name)
+			if !podutils.LeaderPod(pod) {
+				if err := r.Delete(ctx, &leader); err != nil {
+					return false, err
+				}
+				r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "LeaderPodDeleted", "pod %s deleted", leader.Name)
+			}
+			return true, nil
+		}
+		if podutils.ContainerRestarted(pod) {
+			log.Info("Container restarted under InPlaceGroupRestart policy. Initiating worker-to-leader Quiescing.", "pod", pod.Name)
+			if err := inplacerestart.InitiateRestartFromWorker(ctx, r.Client, &leaderWorkerSet, &leader, string(pod.UID)); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+
 	if policy != leaderworkerset.RecreateGroupOnPodRestart && policy != leaderworkerset.RecreateGroupAfterStart {
 		return false, nil
 	}
@@ -224,33 +281,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	var leader corev1.Pod
-	if !podutils.LeaderPod(pod) {
-		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-		if ordinal == -1 {
-			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
-		}
-		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
-			// If the error is not found, it is likely caused by the fact that the leader was deleted but the worker statefulset
-			// deletion hasn't deleted all the worker pods
-			return false, client.IgnoreNotFound(err)
-		}
-		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
-		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
-			return false, nil
-		}
-		// Ignore worker pods from a stale worker StatefulSet (or test-owned direct pod) so
-		// background deletion of the previous group does not recreate the replacement leader again.
-		currentGroupWorkerPod, err := r.workerPodBelongsToLeader(ctx, pod, leader)
-		if err != nil {
-			return false, err
-		}
-		if !currentGroupWorkerPod {
-			return false, nil
-		}
-	} else {
-		leader = pod
-	}
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, nil
@@ -389,6 +419,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		return nil, err
 	}
 	podTemplateSpec := *currentLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+
+	inplacerestart.InjectPodSpec(&podTemplateSpec.Spec, currentLws, leaderworkerset.WorkerRole)
+
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
@@ -417,6 +450,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	if lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.EnableGangSchedulingAnnotationKey] = lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
@@ -476,4 +512,14 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return false
 		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+}
+
+func shouldCreatePodGroup(lws *leaderworkerset.LeaderWorkerSet) bool {
+	if val, ok := lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]; ok {
+		enabled, err := strconv.ParseBool(val)
+		if err == nil {
+			return enabled
+		}
+	}
+	return true
 }

@@ -72,6 +72,60 @@ spec:
                 leaderWorkerTemplate:
                   description: leaderWorkerTemplate defines the template for leader/worker pods
                   properties:
+                    inPlaceGroupRestartConfig:
+                      description: inPlaceGroupRestartConfig describes the configuration for InPlaceGroupRestart.
+                      properties:
+                        maxAttempts:
+                          default: 5
+                          description: |-
+                            maxAttempts is the maximum number of in-place restarts a single group may undergo
+                            within the window before the controller escalates to full group recreation.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        recoveryTimeoutSeconds:
+                          default: 300
+                          description: |-
+                            recoveryTimeoutSeconds is the maximum duration in seconds allowed for one
+                            coordinated in-place restart attempt.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        triggers:
+                          description: triggers specify which container failures initiate a group restart.
+                          items:
+                            description: InPlaceGroupRestartTrigger defines which container exits trigger a group restart.
+                            properties:
+                              containerName:
+                                description: containerName specifies which container's failure initiates a group restart.
+                                type: string
+                              recoverableExitCodes:
+                                description: recoverableExitCodes are the exit codes that natively trigger RestartAllContainers.
+                                items:
+                                  format: int32
+                                  type: integer
+                                minItems: 1
+                                type: array
+                              role:
+                                description: role indicates whether the container exists in the Leader, Worker, or Both.
+                                enum:
+                                  - Leader
+                                  - Worker
+                                  - Both
+                                type: string
+                            required:
+                              - containerName
+                              - recoverableExitCodes
+                              - role
+                            type: object
+                          type: array
+                        windowSeconds:
+                          default: 600
+                          description: windowSeconds is the rolling time window in seconds over which MaxAttempts is counted.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      type: object
                     leaderTemplate:
                       description: leaderTemplate defines the pod template for leader pods.
                       properties:
@@ -8217,6 +8271,7 @@ spec:
                         - Default
                         - RecreateGroupOnPodRestart
                         - RecreateGroupAfterStart
+                        - InPlaceGroupRestart
                         - None
                       type: string
                     size:

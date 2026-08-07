@@ -1,0 +1,118 @@
+globalOptions:
+  boilerplatePath: ./hack/boilerplate.go.txt
+files:
+  - path: ./config/rbac/role.yaml
+    outputDir: ./charts/lws/templates/rbac/generated
+    removeComments: true
+    operations:
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-role"'
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+      - type: INSERT_TEXT
+        key: .rules
+        indentation: 2
+        value: |
+          {{- if and .Values.gangSchedulingManagement (hasKey .Values.gangSchedulingManagement "schedulerProvider") (eq .Values.gangSchedulingManagement.schedulerProvider "volcano") }}
+          - apiGroups:
+              - scheduling.volcano.sh
+            resources:
+              - podgroups
+            verbs:
+              - create
+              - get
+              - list
+              - watch
+          {{- end }}
+  - path: ./config/rbac/role_binding.yaml
+    outputDir: ./charts/lws/templates/rbac/generated
+    removeComments: true
+    operations:
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-rolebinding"'
+      - type: UPDATE
+        key: .roleRef.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-role"'
+      - type: UPDATE
+        key: .subjects.[].name
+        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+      - type: UPDATE
+        key: .subjects.[].namespace
+        value: '"{{ .Release.Namespace }}"'
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+  - path: ./config/rbac/service_account.yaml
+    outputDir: ./charts/lws/templates/rbac/generated
+    removeComments: true
+    operations:
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+      - type: UPDATE
+        key: .metadata.namespace
+        value: '"{{ .Release.Namespace }}"'
+        addKeyIfMissing: true
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+  - path: ./config/rbac/leader_election_role.yaml
+    outputDir: ./charts/lws/templates/rbac/generated
+    removeComments: true
+    operations:
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-role"'
+      - type: UPDATE
+        key: .metadata.namespace
+        value: '"{{ .Release.Namespace }}"'
+        addKeyIfMissing: true
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+  - path: ./config/rbac/leader_election_role_binding.yaml
+    outputDir: ./charts/lws/templates/rbac/generated
+    removeComments: true
+    operations:
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-rolebinding"'
+      - type: UPDATE
+        key: .metadata.namespace
+        value: '"{{ .Release.Namespace }}"'
+        addKeyIfMissing: true
+      - type: UPDATE
+        key: .roleRef.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-role"'
+      - type: UPDATE
+        key: .subjects.[].name
+        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+      - type: UPDATE
+        key: .subjects.[].namespace
+        value: '"{{ .Release.Namespace }}"'
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2

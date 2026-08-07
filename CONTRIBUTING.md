@@ -20,7 +20,13 @@ If your repo has certain guidelines for contribution, put them here ahead of the
 
 - [Mentoring Initiatives](https://k8s.dev/community/mentoring) - We have a diverse set of mentorship programs available that are always looking for volunteers!
 
+## Development & Verification
+
+- Before submitting a pull request, run `make verify` to ensure code formatting, API linting, module updates, and Helm manifest synchronization are all up to date.
+- If you modify RBAC permissions in `config/rbac/` or CRDs, run `make update-helm` to synchronize the generated manifests with the Helm chart templates in `charts/lws/`.
+
 ## Contact Information
 
 - [Slack channel](https://kubernetes.slack.com/messages/sig-apps) 
 - [Mailing list](https://groups.google.com/g/kubernetes-sig-apps)
+

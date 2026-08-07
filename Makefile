@@ -217,7 +217,7 @@ lint-api-fix: golangci-lint-kal
 
 PATHS_TO_VERIFY := config/components api client-go site/ charts/
 .PHONY: verify
-verify: gomod-verify lint lint-api fmt-verify toc-verify manifests generate prepare-release-branch
+verify: gomod-verify lint lint-api fmt-verify toc-verify manifests generate update-helm prepare-release-branch
 	git --no-pager diff --exit-code $(PATHS_TO_VERIFY)
 	if git ls-files --exclude-standard --others $(PATHS_TO_VERIFY) | grep -q . ; then exit 1; fi
 
@@ -410,7 +410,7 @@ hugo:
 	@GOBIN=$(PROJECT_DIR)/bin CGO_ENABLED=1 $(GO_CMD) install -tags extended github.com/gohugoio/hugo@v0.152.2
 
 .PHONY: crds
-crds: kustomize yq # update helm CRD files
+crds: manifests kustomize yq # update helm CRD files
 	$(KUSTOMIZE) build config/default \
 	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "leaderworkersets.leaderworkerset.x-k8s.io")' \
 	> charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml
@@ -426,3 +426,22 @@ crds: kustomize yq # update helm CRD files
 	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml
 	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml \
 		|| { echo "ERROR: disaggregatedsetrolescaler CRD missing from kustomize output"; exit 1; }
+
+YAML_PROCESSOR = $(PROJECT_DIR)/bin/yaml-processor
+.PHONY: yaml-processor
+yaml-processor:
+	cd hack/tools/yaml-processor && \
+	$(GO_BUILD_ENV) $(GO_CMD) build -ldflags="$(LD_FLAGS)" -o $(YAML_PROCESSOR)
+
+.PHONY: update-helm
+update-helm: crds yaml-processor
+	rm -rf charts/lws/templates/rbac/generated
+	mkdir -p charts/lws/templates/rbac/generated
+	$(YAML_PROCESSOR) hack/processing-plan.yaml
+	@test -s charts/lws/templates/rbac/generated/role.yaml
+	@test -s charts/lws/templates/rbac/generated/role_binding.yaml
+	@test -s charts/lws/templates/rbac/generated/service_account.yaml
+	@test -s charts/lws/templates/rbac/generated/leader_election_role.yaml
+	@test -s charts/lws/templates/rbac/generated/leader_election_role_binding.yaml
+
+

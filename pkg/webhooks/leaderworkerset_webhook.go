@@ -25,22 +25,47 @@ import (
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/client-go/discovery"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/lws/pkg/features"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-type LeaderWorkerSetWebhook struct{}
+type LeaderWorkerSetWebhook struct {
+	isK8s136Capable bool
+}
 
 // SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
 func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	isK8s136Capable := false
+	if err == nil {
+		serverVersion, err := discoveryClient.ServerVersion()
+		if err == nil {
+			parsedVersion, err := version.ParseGeneric(serverVersion.String())
+			if err == nil {
+				k8s136, _ := version.ParseGeneric("v1.36.0")
+				if parsedVersion.AtLeast(k8s136) {
+					isK8s136Capable = true
+				}
+			}
+		}
+	}
+
+	webhook := &LeaderWorkerSetWebhook{
+		isK8s136Capable: isK8s136Capable,
+	}
+
 	return ctrl.NewWebhookManagedBy(mgr, &v1.LeaderWorkerSet{}).
-		WithDefaulter(&LeaderWorkerSetWebhook{}).
-		WithValidator(&LeaderWorkerSetWebhook{}).
+		WithDefaulter(webhook).
+		WithValidator(webhook).
 		Complete()
 }
 
@@ -186,6 +211,171 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
+	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.InPlaceGroupRestart {
+		if !features.FeatureGate.Enabled(features.InPlaceGroupRestart) {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("leaderWorkerTemplate", "restartPolicy"), "InPlaceGroupRestart feature gate is not enabled"))
+		}
+		if !r.isK8s136Capable {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("leaderWorkerTemplate", "restartPolicy"), "InPlaceGroupRestart requires Kubernetes server version 1.36 or higher"))
+		}
+		if lws.Spec.StartupPolicy != v1.LeaderCreatedStartupPolicy {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("startupPolicy"), lws.Spec.StartupPolicy, "must be LeaderCreated when restartPolicy is InPlaceGroupRestart"))
+		}
+
+		if lws.Spec.LeaderWorkerTemplate.InPlaceGroupRestartConfig != nil {
+			configPath := specPath.Child("leaderWorkerTemplate", "inPlaceGroupRestartConfig")
+			config := lws.Spec.LeaderWorkerTemplate.InPlaceGroupRestartConfig
+
+			// Validate Triggers and Rule Limits
+			if len(config.Triggers) > 0 {
+				triggerNames := make(map[string]bool)
+				for i, trigger := range config.Triggers {
+					triggerPath := configPath.Child("triggers").Index(i)
+					key := string(trigger.Role) + "/" + trigger.ContainerName
+					if triggerNames[key] {
+						allErrs = append(allErrs, field.Duplicate(triggerPath, key))
+					}
+					triggerNames[key] = true
+
+					for _, code := range trigger.RecoverableExitCodes {
+						if code == 88 {
+							allErrs = append(allErrs, field.Invalid(triggerPath.Child("recoverableExitCodes"), code, "exit code 88 is reserved for the lws-restart-agent and cannot be used by workloads"))
+						}
+					}
+				}
+
+				// Verify trigger containers exist
+				for i, trigger := range config.Triggers {
+					triggerPath := configPath.Child("triggers").Index(i)
+
+					if trigger.Role == v1.LeaderRole || trigger.Role == v1.BothRole {
+						if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+							found := false
+							for _, c := range lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers {
+								if c.Name == trigger.ContainerName {
+									found = true
+									break
+								}
+							}
+							for _, c := range lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.InitContainers {
+								if c.Name == trigger.ContainerName {
+									found = true
+									break
+								}
+							}
+							if !found {
+								allErrs = append(allErrs, field.Invalid(triggerPath.Child("containerName"), trigger.ContainerName, "container not found in LeaderTemplate"))
+							}
+						}
+					}
+
+					if trigger.Role == v1.WorkerRole || trigger.Role == v1.BothRole {
+						found := false
+						for _, c := range lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers {
+							if c.Name == trigger.ContainerName {
+								found = true
+								break
+							}
+						}
+						for _, c := range lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.InitContainers {
+							if c.Name == trigger.ContainerName {
+								found = true
+								break
+							}
+						}
+						if !found {
+							allErrs = append(allErrs, field.Invalid(triggerPath.Child("containerName"), trigger.ContainerName, "container not found in WorkerTemplate"))
+						}
+					}
+				}
+
+				// Verify reserved names and conflicting rules
+				checkPodTemplate := func(podTemplate *corev1.PodTemplateSpec, role string) {
+					if podTemplate == nil {
+						return
+					}
+					path := specPath.Child("leaderWorkerTemplate", role)
+
+					for _, vol := range podTemplate.Spec.Volumes {
+						if vol.Name == "in-place-restart-state" || vol.Name == "lws-api" || vol.Name == "no-sa-token" {
+							allErrs = append(allErrs, field.Invalid(path.Child("volumes"), vol.Name, "volume name is reserved for lws-restart-agent"))
+						}
+					}
+
+					checkContainers := func(containers []corev1.Container, kind string) {
+						for _, c := range containers {
+							if c.Name == "lws-restart-marker" || c.Name == "lws-restart-agent" || c.Name == "lws-restart-barrier" {
+								allErrs = append(allErrs, field.Invalid(path.Child(kind), c.Name, "container name is reserved for lws-restart-agent"))
+							}
+							for _, r := range c.RestartPolicyRules {
+								if r.Action == corev1.ContainerRestartRuleActionRestartAllContainers {
+									for _, code := range r.ExitCodes.Values {
+										if code == 88 {
+											allErrs = append(allErrs, field.Invalid(path.Child(kind), c.Name, "exit code 88 is reserved for lws-restart-agent in RestartPolicyRules"))
+										}
+									}
+								}
+							}
+						}
+					}
+					checkContainers(podTemplate.Spec.Containers, "containers")
+					checkContainers(podTemplate.Spec.InitContainers, "initContainers")
+				}
+				checkPodTemplate(lws.Spec.LeaderWorkerTemplate.LeaderTemplate, "leaderTemplate")
+				checkPodTemplate(&lws.Spec.LeaderWorkerTemplate.WorkerTemplate, "workerTemplate")
+
+				// Validate max 20 restart rules per container
+				// The LWS controller injects rules per trigger, plus the agent gets 1.
+				if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+					for _, c := range lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers {
+						injected := 0
+						for _, t := range config.Triggers {
+							if (t.Role == v1.LeaderRole || t.Role == v1.BothRole) && t.ContainerName == c.Name {
+								injected++
+							}
+						}
+						if len(c.RestartPolicyRules)+injected > 20 {
+							allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "leaderTemplate"), c.Name, "the total number of RestartPolicyRules (including injected triggers) cannot exceed 20 per container"))
+						}
+					}
+					for _, c := range lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.InitContainers {
+						injected := 0
+						for _, t := range config.Triggers {
+							if (t.Role == v1.LeaderRole || t.Role == v1.BothRole) && t.ContainerName == c.Name {
+								injected++
+							}
+						}
+						if len(c.RestartPolicyRules)+injected > 20 {
+							allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "leaderTemplate"), c.Name, "the total number of RestartPolicyRules (including injected triggers) cannot exceed 20 per container"))
+						}
+					}
+				}
+
+				for _, c := range lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers {
+					injected := 0
+					for _, t := range config.Triggers {
+						if (t.Role == v1.WorkerRole || t.Role == v1.BothRole) && t.ContainerName == c.Name {
+							injected++
+						}
+					}
+					if len(c.RestartPolicyRules)+injected > 20 {
+						allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "workerTemplate"), c.Name, "the total number of RestartPolicyRules (including injected triggers) cannot exceed 20 per container"))
+					}
+				}
+				for _, c := range lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.InitContainers {
+					injected := 0
+					for _, t := range config.Triggers {
+						if (t.Role == v1.WorkerRole || t.Role == v1.BothRole) && t.ContainerName == c.Name {
+							injected++
+						}
+					}
+					if len(c.RestartPolicyRules)+injected > 20 {
+						allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "workerTemplate"), c.Name, "the total number of RestartPolicyRules (including injected triggers) cannot exceed 20 per container"))
+					}
+				}
+			}
+		}
+	}
 	return allErrs
 }
 
