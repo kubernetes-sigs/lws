@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -28,6 +29,8 @@ import (
 	utils "sigs.k8s.io/lws/test/testutils/disaggregatedset"
 )
 
+var lwsNamespace string
+
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting disaggregatedset e2e test suite\n")
@@ -35,10 +38,15 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	lwsNamespace = "lws-system"
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
+		lwsNamespace = ns
+	}
+
 	By("verifying LWS controller is ready")
 	Eventually(func() error {
 		cmd := exec.Command("kubectl", "get", "deployment", "lws-controller-manager",
-			"-n", "lws-system", "-o", "jsonpath={.status.availableReplicas}")
+			"-n", lwsNamespace, "-o", "jsonpath={.status.availableReplicas}")
 		output, err := utils.Run(cmd)
 		if err != nil {
 			return fmt.Errorf("LWS controller not found: %w", err)

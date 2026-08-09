@@ -32,9 +32,6 @@ import (
 	"sigs.k8s.io/lws/test/testutils/disaggregatedset/kubectl"
 )
 
-// Operator namespace where the controller is deployed
-const namespace = "lws-system"
-
 var controllerPodName string
 
 // applyYAML applies a YAML string using kubectl
@@ -50,7 +47,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
 			if controllerPodName != "" {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", lwsNamespace)
 				controllerLogs, err := utils.Run(cmd)
 				if err == nil {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s\n", controllerLogs)
@@ -73,7 +70,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should have the controller-manager running", func() {
 			By("checking if controller-manager is already deployed")
 			cmd := exec.Command("kubectl", "get", "deployment",
-				"lws-controller-manager", "-n", namespace, "-o", "name")
+				"lws-controller-manager", "-n", lwsNamespace, "-o", "name")
 			output, err := utils.Run(cmd)
 			if err == nil && strings.Contains(output, "deployment") {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller-manager already deployed, skipping deployment\n")
@@ -86,7 +83,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
 						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
+					"-n", lwsNamespace,
 				)
 
 				podOutput, err := utils.Run(cmd)
@@ -97,7 +94,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
 				cmd = exec.Command("kubectl", "get", "pods", controllerPodName,
-					"-o", "jsonpath={.status.phase}", "-n", namespace)
+					"-o", "jsonpath={.status.phase}", "-n", lwsNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
