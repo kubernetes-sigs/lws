@@ -117,7 +117,7 @@ func InstallLWS() error {
 	}
 
 	lwsNamespace := "lws-system"
-	if ns := os.LookupEnv("LWS_NAMESPACE"); ns != "" {
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
 		lwsNamespace = ns
 	}
 
@@ -153,7 +153,7 @@ func IsLWSInstalled() bool {
 // WaitForLWSReady waits for LWS webhook to be available by creating a test LWS.
 func WaitForLWSReady() error {
 	lwsNamespace := "lws-system"
-	if ns := os.LookupEnv("LWS_NAMESPACE"); ns != "" {
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
 		lwsNamespace = ns
 	}
 
