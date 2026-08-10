@@ -60,12 +60,12 @@ var _ = Describe("DisaggregatedSet HPA External Scaling", Ordered, func() {
 
 		By("waiting for the controller to auto-create the scaler")
 		Eventually(func(g Gomega) {
-			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-o", "name"))
+			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-n", "default", "-o", "name"))
 			g.Expect(err).NotTo(HaveOccurred())
 		}).Should(Succeed())
 
 		By("verifying the scaler carries the parent DS as controller ownerRef")
-		out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName,
+		out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-n", "default",
 			"-o", `jsonpath={.metadata.ownerReferences[?(@.controller==true)].name}`))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal(dsName))
@@ -98,13 +98,13 @@ var _ = Describe("DisaggregatedSet HPA External Scaling", Ordered, func() {
 
 		By("waiting for the scaler to exist")
 		Eventually(func(g Gomega) {
-			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-o", "name"))
+			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-n", "default", "-o", "name"))
 			g.Expect(err).NotTo(HaveOccurred())
 		}).Should(Succeed())
 
 		By("writing spec.replicas=3 via the /scale subresource (same call HPA/KEDA use)")
 		_, err := utils.Run(exec.Command("kubectl", "scale",
-			"disaggregatedsetrolescaler/"+scalerName, "--replicas=3"))
+			"disaggregatedsetrolescaler/"+scalerName, "-n", "default", "--replicas=3"))
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the LWS for prefill scales to 3")
@@ -123,17 +123,17 @@ var _ = Describe("DisaggregatedSet HPA External Scaling", Ordered, func() {
 
 		By("waiting for the scaler to exist")
 		Eventually(func(g Gomega) {
-			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-o", "name"))
+			_, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-n", "default", "-o", "name"))
 			g.Expect(err).NotTo(HaveOccurred())
 		}).Should(Succeed())
 
 		By("deleting the DisaggregatedSet")
-		_, err := kubectl.Delete("disaggregatedset", dsName).Run()
+		_, err := kubectl.Delete("disaggregatedset", dsName).Namespace("default").Run()
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the scaler is garbage-collected")
 		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName,
+			out, err := utils.Run(exec.Command("kubectl", "get", "dsrs", scalerName, "-n", "default",
 				"--ignore-not-found", "-o", "name"))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(BeEmpty())
