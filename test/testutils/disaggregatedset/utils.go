@@ -116,10 +116,15 @@ func InstallLWS() error {
 		return fmt.Errorf("failed to install LWS: %w", err)
 	}
 
+	lwsNamespace := "lws-system"
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
+		lwsNamespace = ns
+	}
+
 	// Wait for LWS controller deployment to be ready
 	cmd = exec.Command("kubectl", "wait", "deployment/lws-controller-manager",
 		"--for", "condition=Available",
-		"--namespace", "lws-system",
+		"--namespace", lwsNamespace,
 		"--timeout", "5m",
 	)
 	if _, err := Run(cmd); err != nil {
@@ -147,9 +152,14 @@ func IsLWSInstalled() bool {
 
 // WaitForLWSReady waits for LWS webhook to be available by creating a test LWS.
 func WaitForLWSReady() error {
+	lwsNamespace := "lws-system"
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
+		lwsNamespace = ns
+	}
+
 	// Check if LWS controller is ready
 	cmd := exec.Command("kubectl", "get", "deployment", "lws-controller-manager",
-		"-n", "lws-system", "-o", "jsonpath={.status.availableReplicas}")
+		"-n", lwsNamespace, "-o", "jsonpath={.status.availableReplicas}")
 	output, err := Run(cmd)
 	if err != nil {
 		return fmt.Errorf("LWS controller not found: %w", err)
