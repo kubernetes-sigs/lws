@@ -216,10 +216,6 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	roleNames []string,
 	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
-	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	oldRevisions, _, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -251,6 +247,12 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 
 	if err := r.ServiceManager.ReconcileServices(ctx, disaggregatedSet, slice, revisionRoles, revision); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile services: %w", err)
+	}
+
+	// Clean up fully-drained old revisions after rolling update and service reconciliation.
+	// This must happen after drain ordering logic to preserve revision history during the rollout.
+	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return result, nil
