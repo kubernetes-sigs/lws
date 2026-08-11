@@ -387,12 +387,16 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 		},
 		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
 	}
+	legacyPrefillSubRoleSvc := legacyPrefillSvc.DeepCopy()
+	legacyPrefillSubRoleSvc.Name = disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill) + "-short-prv"
+	legacyPrefillSubRoleSvc.Labels[disaggregatedsetv1.SubRoleLabelKey] = "short"
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
 		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision),
 		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision),
 		legacyPrefillSvc,
+		legacyPrefillSubRoleSvc,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
 		Client:         fakeClient,
@@ -416,6 +420,8 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 	// Legacy slice-agnostic service deleted (before any sibling could be selected).
 	err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSvc.Name, Namespace: disaggregatedSet.Namespace}, &corev1.Service{})
 	assert.Error(t, err, "legacy slice-agnostic service should be deleted")
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSubRoleSvc.Name, Namespace: disaggregatedSet.Namespace}, &corev1.Service{})
+	assert.Error(t, err, "legacy slice-agnostic sub-role service should be deleted")
 
 	// Slice 0 recreated slice-aware, and sibling slice 1 created in the same pass.
 	s0, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))

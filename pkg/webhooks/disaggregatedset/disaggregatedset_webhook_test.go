@@ -18,6 +18,8 @@ package disaggregatedset
 
 import (
 	"context"
+	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -712,5 +714,101 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		_, err := webhook.ValidateCreate(ctx, obj)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "253 characters")
+	})
+}
+
+func TestValidateSubRoleRules(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+	external := &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+	base := func() *disaggv1.DisaggregatedSet {
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{
+				Name: "decode",
+				SubRoles: []disaggv1.DisaggregatedSubRoleSpec{
+					{Name: "short", Replicas: ptr.To(int32(2))},
+					{Name: "long", Scaling: external},
+				},
+			}}},
+		}
+	}
+
+	t.Run("accepts mixed Static and External sub-roles", func(t *testing.T) {
+		warnings, err := webhook.ValidateCreate(ctx, base())
+		require.NoError(t, err)
+		require.Empty(t, warnings)
+	})
+
+	t.Run("rejects parent scaling", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles[0].Scaling = external
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parent scaling must be omitted")
+	})
+
+	t.Run("rejects replicas on an External sub-role", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles[0].SubRoles[1].Replicas = ptr.To(int32(1))
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "replicas must be omitted")
+	})
+
+	t.Run("rejects External sub-roles with multiple slices", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Slices = ptr.To(int32(2))
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "spec.slices > 1")
+	})
+
+	t.Run("rejects the controller-owned Pod label", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{
+			disaggv1.SubRoleLabelKey: "short",
+		}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "reserved for controller-managed sub-role assignment")
+	})
+
+	t.Run("rejects generated parent/sub-role Service collisions", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "decode-short"}, obj.Spec.Roles[0]}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "generated sub-role Service name collides")
+	})
+
+	t.Run("rejects generated sub-role Service names over 63 characters", func(t *testing.T) {
+		obj := base()
+		obj.Name = strings.Repeat("a", 20)
+		obj.Spec.Roles[0].Name = strings.Repeat("b", 20)
+		obj.Spec.Roles[0].SubRoles[0].Name = strings.Repeat("c", 10)
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid sub-role Service name")
+	})
+
+	t.Run("warns that inherited parent replicas are ignored", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles[0].Spec.Replicas = ptr.To(int32(4))
+		warnings, err := webhook.ValidateCreate(ctx, obj)
+		require.NoError(t, err)
+		require.Len(t, warnings, 1)
+		require.Contains(t, warnings[0], "parent spec.replicas is ignored")
+	})
+
+	t.Run("rejects static targets whose aggregate cannot fit in an LWS", func(t *testing.T) {
+		obj := base()
+		obj.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{
+			{Name: "short", Replicas: ptr.To(int32(math.MaxInt32))},
+			{Name: "long", Replicas: ptr.To(int32(1))},
+		}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeding the maximum LWS replica count")
 	})
 }

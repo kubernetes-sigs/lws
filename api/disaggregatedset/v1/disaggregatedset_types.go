@@ -30,6 +30,10 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
 
+	// SubRoleLabelKey records the virtual sub-role assigned to an LWS replica group.
+	// It is controller-owned and applied dynamically to Pods and sub-role Services.
+	SubRoleLabelKey string = "disaggregatedset.x-k8s.io/subrole"
+
 	// SliceLabelKey records which slice the resource belongs to.
 	SliceLabelKey string = "disaggregatedset.x-k8s.io/slice"
 
@@ -39,6 +43,10 @@ const (
 
 	// InitialReplicasAnnotationKey stores the initial replica count at rollout start.
 	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
+
+	// DisaggregatedSetSubRolesAssigned is True when every live replica group of every
+	// partitioned role has a valid sub-role assignment.
+	DisaggregatedSetSubRolesAssigned string = "SubRolesAssigned"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
@@ -68,6 +76,28 @@ type RoleScaling struct {
 	Mode RoleScalingMode `json:"mode,omitempty"`
 }
 
+// DisaggregatedSubRoleSpec defines a routing and scaling partition within a
+// configuration-identical parent role.
+type DisaggregatedSubRoleSpec struct {
+	// Name is unique within the parent role.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +required
+	Name string `json:"name"`
+
+	// Replicas is the desired number of LWS groups assigned to this sub-role
+	// when scaling is Static or omitted. It defaults to 1 in the controller.
+	// It must be omitted for External scaling.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Scaling configures how replicas are determined for this sub-role.
+	// +optional
+	Scaling *RoleScaling `json:"scaling,omitempty"`
+}
+
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
@@ -79,6 +109,16 @@ type DisaggregatedRoleSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +required
 	Name string `json:"name"`
+
+	// SubRoles partitions this role's configuration-identical LWS groups into
+	// independently scalable routing pools. When present, sub-role replica
+	// targets replace the parent role's replica target.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	SubRoles []DisaggregatedSubRoleSpec `json:"subRoles,omitempty"`
 
 	// Scaling configures how replicas are determined. Omit for inline Static
 	// scaling (default). When set to External, the DisaggregatedSet controller
@@ -99,13 +139,13 @@ type DisaggregatedRoleSpec struct {
 // every role has replicas == 0) applies only to non-External roles. External
 // roles are exempt because their effective replicas live outside the DS spec —
 // they are driven via DisaggregatedSetRoleScaler.spec.replicas.
-// +kubebuilder:validation:XValidation:rule="self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all non-External roles or non-zero for all non-External roles"
+// +kubebuilder:validation:XValidation:rule="self.roles.filter(r, (!has(r.subRoles) || size(r.subRoles) == 0) && (!has(r.scaling) || r.scaling.mode != 'External')).all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r, (!has(r.subRoles) || size(r.subRoles) == 0) && (!has(r.scaling) || r.scaling.mode != 'External')).all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all non-External unpartitioned roles or non-zero for all non-External unpartitioned roles"
 type DisaggregatedSetSpec struct {
-	// Roles defines the list of roles (at least 2 required).
+	// Roles defines the list of roles (at least 1 required).
 	// Each role has a unique name and its own configuration.
 	// +listType=map
 	// +listMapKey=name
-	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=10
 	// +required
 	Roles []DisaggregatedRoleSpec `json:"roles"`
@@ -126,6 +166,25 @@ type DisaggregatedSetSpec struct {
 	// created, so changing it takes effect on the next rollout.
 	// +optional
 	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// SubRoleStatus defines the observed state of one virtual sub-role.
+type SubRoleStatus struct {
+	// Name is the name of the sub-role.
+	// +required
+	Name string `json:"name"`
+
+	// Replicas is the number of assigned LWS groups.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ReadyReplicas is the number of assigned groups whose leader Pod is Ready.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// UpdatedReplicas is the number of assigned groups on the current revision.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.
@@ -174,6 +233,12 @@ type RoleStatus struct {
 	// UpdatedReplicas is the number of replicas updated to the latest revision.
 	// +optional
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// SubRoleStatuses contains observed counts for this role's virtual sub-roles.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	SubRoleStatuses []SubRoleStatus `json:"subRoleStatuses,omitempty"`
 }
 
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.
