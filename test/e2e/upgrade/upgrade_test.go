@@ -365,11 +365,18 @@ func readSnapshot() upgradeSnapshot {
 	return snapshot
 }
 
+func lwsNamespace() string {
+	if ns := os.Getenv("LWS_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "lws-system"
+}
+
 func expectCurrentControllerReady() {
 	gomega.Eventually(func() error {
 		deployment := &appsv1.Deployment{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
-			Namespace: "lws-system",
+			Namespace: lwsNamespace(),
 			Name:      "lws-controller-manager",
 		}, deployment); err != nil {
 			return err
