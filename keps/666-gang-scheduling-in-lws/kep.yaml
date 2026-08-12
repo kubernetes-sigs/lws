@@ -25,4 +25,4 @@ stage: alpha
 # The most recent milestone for which work toward delivery of this KEP has been
 # done. This can be the current (upcoming) milestone, if it is being actively
 # worked on.
-latest-milestone: "v0.9.0"
+latest-milestone: "v0.10.0"
