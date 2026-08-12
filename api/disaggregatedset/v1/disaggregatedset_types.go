@@ -181,8 +181,13 @@ type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// RoleStatuses contains the status for each role.
-	// The order matches spec.roles.
+	// observedGeneration is the most recent generation observed for this DisaggregatedSet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// RoleStatuses contains the status for each role currently in spec.roles.
+	// The order matches spec.roles. A role removed from spec.roles has no entry
+	// here, even if LeaderWorkerSets for that role still exist while draining.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
