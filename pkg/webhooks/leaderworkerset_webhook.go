@@ -54,6 +54,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.RecreateGroupOnPodRestart
 	}
 
+	if lws.Spec.GroupIdentity == "" {
+		lws.Spec.GroupIdentity = v1.GroupIdentityOrdinal
+	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
 	}
@@ -110,6 +114,10 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
+	}
+
+	if normalizeGroupIdentity(newLws.Spec.GroupIdentity) != normalizeGroupIdentity(oldLws.Spec.GroupIdentity) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("groupIdentity"), newLws.Spec.GroupIdentity, "groupIdentity is immutable"))
 	}
 
 	return nil, allErrs.ToAggregate()
@@ -186,6 +194,37 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
+	if normalizeGroupIdentity(lws.Spec.GroupIdentity) == v1.GroupIdentityHash {
+		allErrs = append(allErrs, validateHashGroupIdentity(specPath, lws)...)
+	}
+
+	return allErrs
+}
+
+func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
+	if gi == "" {
+		return v1.GroupIdentityOrdinal
+	}
+	return gi
+}
+
+// validateHashGroupIdentity rejects the parts of the API surface that depend on
+// ordinal leader names and are not supported when leaders are Deployment-managed.
+func validateHashGroupIdentity(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	allErrs := field.ErrorList{}
+	giPath := specPath.Child("groupIdentity")
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		allErrs = append(allErrs, field.Invalid(giPath, lws.Spec.GroupIdentity, "subGroupPolicy is not supported with groupIdentity Hash"))
+	}
+	if len(lws.Spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
+		allErrs = append(allErrs, field.Invalid(giPath, lws.Spec.GroupIdentity, "volumeClaimTemplates are not supported with groupIdentity Hash"))
+	}
+	if lws.Spec.NetworkConfig != nil && lws.Spec.NetworkConfig.SubdomainPolicy != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == v1.SubdomainUniquePerReplica {
+		allErrs = append(allErrs, field.Invalid(giPath, lws.Spec.GroupIdentity, "subdomainPolicy UniquePerReplica is not supported with groupIdentity Hash"))
+	}
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
+		allErrs = append(allErrs, field.Invalid(giPath, lws.Spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
+	}
 	return allErrs
 }
 

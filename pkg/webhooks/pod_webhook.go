@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -99,6 +100,28 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 	}
 	// adding labels for pods
 	if podutils.LeaderPod(*pod) {
+		if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
+			// Hash-identity leaders are created through a Deployment: the pod name is
+			// not known at admission (generateName), so the group identity is a fresh
+			// random key rather than a name-derived ordinal.
+			var groupUniqueKey string
+			if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
+				groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
+				pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+			} else {
+				groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+			}
+			if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
+				pod.Labels[leaderworkerset.GroupIndexLabelKey] = groupUniqueKey
+			}
+			if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
+				SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+			}
+			if err := podutils.AddLWSVariables(pod); err != nil {
+				return err
+			}
+			return nil
+		}
 		// add group index label to group pods
 		if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
