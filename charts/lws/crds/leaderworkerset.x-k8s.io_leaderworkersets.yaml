@@ -16814,6 +16814,114 @@ spec:
                   required:
                     - type
                   type: object
+                scheduling:
+                  description: |-
+                    scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+                    When set, each replica is represented by a Kubernetes PodGroup. This
+                    alpha field requires the WorkloadAwareScheduling LWS feature gate.
+                  properties:
+                    disruptionMode:
+                      description: |-
+                        disruptionMode controls whether replica members may be disrupted
+                        independently or only as a group.
+                      properties:
+                        all:
+                          description: all specifies that all pods in the group must
+                            be disrupted together.
+                          type: object
+                        single:
+                          description: single specifies that pods can be disrupted independently
+                            from each other.
+                          type: object
+                      type: object
+                    resourceClaims:
+                      description: resourceClaims lists dynamic resource claims shared
+                        by replica members.
+                      items:
+                        description: |
+                          WorkloadPodGroupResourceClaim references a dynamic resource claim
+                          that is shared across pods in the group.
+                        properties:
+                          name:
+                            description: |-
+                              name uniquely identifies this resource claim inside the group.
+                              This field is required. It must be a DNS_LABEL.
+                            type: string
+                          resourceClaimName:
+                            description: |-
+                              resourceClaimName is the name of a ResourceClaim object in the same
+                              namespace.
+                              This field is optional. If it is not specified, no resource claim
+                              is used. If set, it must be a DNS subdomain.
+                            type: string
+                          resourceClaimTemplateName:
+                            description: |-
+                              resourceClaimTemplateName is the name of a ResourceClaimTemplate
+                              object in the same namespace.
+                              This field is optional. If it is not specified, no resource claim
+                              template is used. If set, it must be a DNS subdomain.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      maxItems: 4
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                    schedulingConstraints:
+                      description: schedulingConstraints defines group-level topology
+                        constraints.
+                      properties:
+                        topology:
+                          description: |-
+                            topology specifies desired topological placements for all pods
+                            within the pod group.
+                            If unset, no topology placement is requested.
+                          items:
+                            description: TopologyConstraint defines a topology constraint
+                              for a PodGroup.
+                            properties:
+                              key:
+                                description: |-
+                                  key specifies the key of the node label representing the topology domain.
+                                  All pods within the PodGroup must be colocated within the same domain instance.
+                                  Different PodGroups can land on different domain instances even if they derive from the same PodGroupTemplate.
+                                  Examples: "topology.kubernetes.io/rack"
+                                type: string
+                            required:
+                            - key
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                    schedulingPolicy:
+                      description: |-
+                        schedulingPolicy selects Basic or Gang scheduling. An omitted or empty
+                        policy defaults to Gang for LWS. In Gang mode minCount defaults to the
+                        replica size.
+                      properties:
+                        basic:
+                          description: |-
+                            basic specifies that standard, pod-by-pod Kubernetes scheduling
+                            behavior should be used.
+                          type: object
+                        gang:
+                          description: gang specifies all-or-nothing scheduling semantics.
+                          properties:
+                            minCount:
+                              description: |-
+                                minCount is the minimum number of pods that must be scheduled
+                                at the same time for the scheduler to admit the entire group.
+                                This field is optional. If it is not specified, the controller
+                                should inject a context-specific sane default (e.g.,
+                                parallelism for a Job).
+                                If set, it must be a positive integer.
+                              format: int32
+                              type: integer
+                          type: object
+                      type: object
+                  type: object
                 startupPolicy:
                   default: LeaderCreated
                   description: startupPolicy determines the startup policy for the worker statefulset.

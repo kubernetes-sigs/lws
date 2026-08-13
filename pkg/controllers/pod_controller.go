@@ -425,6 +425,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		}
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
+	if currentLws.Spec.Scheduling != nil {
+		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = "true"
+	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name
 	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {

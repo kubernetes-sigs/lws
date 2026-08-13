@@ -33,6 +33,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=leaderworkerset.x-k8s.io, Version=v1
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSet"):
 		return &leaderworkersetv1.LeaderWorkerSetApplyConfiguration{}
+	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSetSchedulingConfiguration"):
+		return &leaderworkersetv1.LeaderWorkerSetSchedulingConfigurationApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSetSpec"):
 		return &leaderworkersetv1.LeaderWorkerSetSpecApplyConfiguration{}
 	case v1.SchemeGroupVersion.WithKind("LeaderWorkerSetStatus"):

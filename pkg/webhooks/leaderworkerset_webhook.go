@@ -20,27 +20,48 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 )
 
-type LeaderWorkerSetWebhook struct{}
+type LeaderWorkerSetWebhook struct {
+	FeatureGates      features.Gates
+	SchedulerProvider schedulerprovider.ProviderType
+	RESTMapper        meta.RESTMapper
+}
 
 // SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
-func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
+
+func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager, options ...LeaderWorkerSetWebhook) error {
+	hook := &LeaderWorkerSetWebhook{}
+	if len(options) > 0 {
+		hook = &options[0]
+	}
+	if hook.RESTMapper == nil {
+		hook.RESTMapper = mgr.GetRESTMapper()
+	}
 	return ctrl.NewWebhookManagedBy(mgr, &v1.LeaderWorkerSet{}).
-		WithDefaulter(&LeaderWorkerSetWebhook{}).
-		WithValidator(&LeaderWorkerSetWebhook{}).
+		WithDefaulter(hook).
+		WithValidator(hook).
 		Complete()
 }
 
@@ -91,12 +112,14 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
+	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
 	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
+	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
 	specPath := field.NewPath("spec")
 
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
@@ -113,6 +136,135 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 
 	return nil, allErrs.ToAggregate()
+}
+
+func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
+	path := field.NewPath("spec", "scheduling")
+	if lws.Spec.Scheduling == nil {
+		if oldLws != nil && oldLws.Spec.Scheduling != nil {
+			return field.ErrorList{field.Forbidden(path, "cannot remove scheduling after creation")}
+		}
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	if !r.FeatureGates.Enabled(features.WorkloadAwareScheduling) {
+		allErrs = append(allErrs, field.Forbidden(path, "requires the WorkloadAwareScheduling feature gate"))
+	}
+	if r.SchedulerProvider == "" {
+		allErrs = append(allErrs, field.Required(path, "requires a configured scheduler provider"))
+	} else if r.SchedulerProvider == schedulerprovider.Volcano {
+		policy := lws.Spec.Scheduling.SchedulingPolicy
+		if policy != nil && policy.Basic != nil {
+			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy"), "the Volcano provider does not support Basic policy"))
+		}
+		if lws.Spec.Scheduling.SchedulingConstraints != nil {
+			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingConstraints"), "the Volcano provider does not support typed scheduling constraints"))
+		}
+		if lws.Spec.Scheduling.DisruptionMode != nil {
+			allErrs = append(allErrs, field.Forbidden(path.Child("disruptionMode"), "the Volcano provider does not support typed disruption mode"))
+		}
+		if len(lws.Spec.Scheduling.ResourceClaims) > 0 {
+			allErrs = append(allErrs, field.Forbidden(path.Child("resourceClaims"), "the Volcano provider does not support shared resource claims"))
+		}
+	} else if r.SchedulerProvider != schedulerprovider.Kubernetes {
+		allErrs = append(allErrs, field.NotSupported(path, r.SchedulerProvider, []string{string(schedulerprovider.Kubernetes), string(schedulerprovider.Volcano)}))
+	}
+	if r.SchedulerProvider == schedulerprovider.Kubernetes && r.RESTMapper != nil {
+		for _, resource := range []string{"Workload", "PodGroup"} {
+			if _, err := r.RESTMapper.RESTMapping(schema.GroupKind{Group: schedulingv1beta1.GroupName, Kind: resource}, schedulingv1beta1.SchemeGroupVersion.Version); err != nil {
+				allErrs = append(allErrs, field.Forbidden(path, fmt.Sprintf("scheduling.k8s.io/v1beta1 %s API is not available: %v", resource, err)))
+			}
+		}
+	}
+	if r.SchedulerProvider == schedulerprovider.Kubernetes {
+		templateName, delegated := lws.Annotations[schedulerprovider.GroupTemplateNameAnnotation]
+		parentName, hasParent := lws.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation]
+		if hasParent && !delegated {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.ParentCompositePodGroupAnnotation), "requires the group-template-name delegation annotation"))
+		}
+		if delegated {
+			if templateName == "" {
+				allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "must name a parent Workload template"))
+			}
+			if metav1.GetControllerOf(lws) == nil {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "delegated scheduling requires a controller owner"))
+			}
+			if hasParent && parentName == "" {
+				allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(schedulerprovider.ParentCompositePodGroupAnnotation), "must name a parent CompositePodGroup"))
+			}
+		}
+	}
+	if oldLws != nil && oldLws.Spec.Scheduling == nil {
+		allErrs = append(allErrs, field.Forbidden(path, "cannot add scheduling after creation"))
+	}
+
+	if r.SchedulerProvider == schedulerprovider.Kubernetes {
+		builder := schedulerprovider.NewWorkloadBuilder(lws)
+		input := workloadbuilder.ValidationInput{}
+		if oldLws != nil && oldLws.Spec.Scheduling != nil {
+			input.OldRoot = schedulerprovider.NewWorkloadItem(oldLws)
+		}
+		allErrs = append(allErrs, builder.Validate(ctx, input)...)
+	}
+
+	policy := lws.Spec.Scheduling.SchedulingPolicy
+	gang := policy == nil || (policy.Basic == nil && policy.Gang == nil) || policy.Gang != nil
+	if policy != nil && policy.Basic != nil && policy.Gang != nil {
+		gang = false // the shared validator reports the union violation.
+	}
+	if gang {
+		size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
+		if policy != nil && policy.Gang != nil && policy.Gang.MinCount != nil && *policy.Gang.MinCount != size {
+			allErrs = append(allErrs, field.Invalid(path.Child("schedulingPolicy", "gang", "minCount"), *policy.Gang.MinCount, "must equal leaderWorkerTemplate.size"))
+		}
+		if lws.Spec.StartupPolicy == v1.LeaderReadyStartupPolicy {
+			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy", "gang"), "gang scheduling is incompatible with startupPolicy LeaderReady"))
+		}
+		if lws.Annotations[v1.ExclusiveKeyAnnotationKey] != "" {
+			allErrs = append(allErrs, field.Forbidden(path, "gang scheduling cannot be combined with exclusive topology in alpha"))
+		}
+	}
+	if lws.Spec.Scheduling.SchedulingConstraints != nil && lws.Annotations[v1.ExclusiveKeyAnnotationKey] != "" {
+		allErrs = append(allErrs, field.Forbidden(path.Child("schedulingConstraints"), "workload topology constraints cannot be combined with exclusive topology in alpha"))
+	}
+
+	leaderTemplate := &lws.Spec.LeaderWorkerTemplate.WorkerTemplate
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		leaderTemplate = lws.Spec.LeaderWorkerTemplate.LeaderTemplate
+	}
+	if leaderTemplate.Spec.PriorityClassName != lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName {
+		allErrs = append(allErrs, field.Invalid(path, nil, "leader and worker templates must use the same priorityClassName"))
+	}
+	if leaderTemplate.Spec.SchedulingGroup != nil || lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulingGroup != nil {
+		allErrs = append(allErrs, field.Forbidden(path, "managed pod templates must not set spec.schedulingGroup"))
+	}
+	allErrs = append(allErrs, validateSharedClaims(lws, leaderTemplate, path)...)
+	return allErrs
+}
+
+func validateSharedClaims(lws *v1.LeaderWorkerSet, leaderTemplate *corev1.PodTemplateSpec, path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	for i := range lws.Spec.Scheduling.ResourceClaims {
+		claim := lws.Spec.Scheduling.ResourceClaims[i]
+		for role, template := range map[string]*corev1.PodTemplateSpec{
+			"leaderTemplate": leaderTemplate,
+			"workerTemplate": &lws.Spec.LeaderWorkerTemplate.WorkerTemplate,
+		} {
+			matched := false
+			for j := range template.Spec.ResourceClaims {
+				podClaim := template.Spec.ResourceClaims[j]
+				if podClaim.Name == claim.Name && reflect.DeepEqual(podClaim.ResourceClaimName, claim.ResourceClaimName) && reflect.DeepEqual(podClaim.ResourceClaimTemplateName, claim.ResourceClaimTemplateName) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				allErrs = append(allErrs, field.Invalid(path.Child("resourceClaims").Index(i), claim.Name, fmt.Sprintf("must have a matching reference in %s.spec.resourceClaims", role)))
+			}
+		}
+	}
+	return allErrs
 }
 
 // ValidateDelete implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type

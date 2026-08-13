@@ -27,6 +27,8 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -44,6 +46,7 @@ import (
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
@@ -66,6 +69,8 @@ func init() {
 	utilruntime.Must(disaggregatedsetv1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
+	utilruntime.Must(schedulingv1alpha3.AddToScheme(scheme))
+	utilruntime.Must(schedulingv1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -196,11 +201,34 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 	<-certsReady
 	setupLog.Info("certs ready")
 
-	if err := controllers.NewLeaderWorkerSetReconciler(
+	featureGates, err := features.New(cfg.FeatureGates)
+	if err != nil {
+		setupLog.Error(err, "unable to configure feature gates")
+		os.Exit(1)
+	}
+
+	// Set up scheduler provider before controllers and webhooks so every
+	// component observes the same provider and feature-gate snapshot.
+	var sp schedulerprovider.SchedulerProvider
+	var providerType schedulerprovider.ProviderType
+	if cfg.GangSchedulingManagement != nil {
+		providerType = schedulerprovider.ProviderType(*cfg.GangSchedulingManagement.SchedulerProvider)
+		sp, err = schedulerprovider.NewSchedulerProvider(providerType, mgr.GetClient())
+		if err != nil {
+			setupLog.Error(err, "unable to create scheduler provider", "provider", providerType)
+			os.Exit(1)
+		}
+		setupLog.Info("Gang scheduling enabled", "provider", providerType)
+	}
+
+	lwsController := controllers.NewLeaderWorkerSetReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorder("leaderworkerset"),
-	).SetupWithManager(mgr); err != nil {
+		sp,
+	)
+	lwsController.FeatureGates = featureGates
+	if err := lwsController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)
 	}
@@ -213,17 +241,6 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		setupLog.Error(err, "unable to create controller", "controller", "DisaggregatedSet")
 		os.Exit(1)
 	}
-	// Set up scheduler provider
-	var sp schedulerprovider.SchedulerProvider
-	if cfg.GangSchedulingManagement != nil {
-		var err error
-		sp, err = schedulerprovider.NewSchedulerProvider(schedulerprovider.ProviderType(*cfg.GangSchedulingManagement.SchedulerProvider), mgr.GetClient())
-		if err != nil {
-			setupLog.Error(err, "unable to create scheduler provider", "provider", *cfg.GangSchedulingManagement.SchedulerProvider)
-			os.Exit(1)
-		}
-		setupLog.Info("Gang scheduling enabled", "provider", *cfg.GangSchedulingManagement.SchedulerProvider)
-	}
 	// Set up pod reconciler.
 	podController := controllers.NewPodReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorder("leaderworkerset"), sp)
 	if err := podController.SetupWithManager(mgr); err != nil {
@@ -232,7 +249,10 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 	}
 	// Set up webhooks
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr); err != nil {
+		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr, webhooks.LeaderWorkerSetWebhook{
+			FeatureGates:      featureGates,
+			SchedulerProvider: providerType,
+		}); err != nil {
 			setupLog.Error(err, "unable to create leaderworkerset webhook", "webhook", "LeaderWorkerSet")
 			os.Exit(1)
 		}

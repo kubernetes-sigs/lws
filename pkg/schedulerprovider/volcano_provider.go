@@ -18,9 +18,12 @@ package schedulerprovider
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,6 +47,44 @@ func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	return &VolcanoProvider{
 		client: client,
 	}
+}
+
+// ReconcileScheduling pre-creates LWS-owned PodGroups for the typed API. The
+// legacy path remains pod-owned and is handled by CreatePodGroupIfNotExists.
+func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
+	if lws.Spec.Scheduling == nil {
+		return nil
+	}
+	minResources := utils.CalculatePGMinResources(lws)
+	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
+		index := strconv.FormatInt(int64(groupIndex), 10)
+		pg := &volcanov1beta1.PodGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        GetPodGroupName(lws.Name, index, revision),
+				Namespace:   lws.Namespace,
+				Annotations: inheritVolcanoAnnotations(lws),
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:    lws.Name,
+					leaderworkerset.GroupIndexLabelKey: index,
+					leaderworkerset.RevisionKey:        revision,
+				},
+			},
+			Spec: volcanov1beta1.PodGroupSpec{
+				MinMember:    *lws.Spec.LeaderWorkerTemplate.Size,
+				MinResources: &minResources,
+			},
+		}
+		if queueName, ok := lws.Annotations[volcanov1beta1.QueueNameAnnotationKey]; ok {
+			pg.Spec.Queue = queueName
+		}
+		if err := ctrl.SetControllerReference(lws, pg, v.client.Scheme()); err != nil {
+			return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+		}
+		if err := v.client.Create(ctx, pg); err != nil && !apierrors.IsAlreadyExists(err) {
+			return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("create Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
+		}
+	}
+	return nil
 }
 
 func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {

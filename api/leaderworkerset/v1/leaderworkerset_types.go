@@ -19,6 +19,7 @@ package v1
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -138,6 +139,38 @@ type LeaderWorkerSetSpec struct {
 	// networkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+
+	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+	// When set, each replica is represented by a Kubernetes PodGroup. This
+	// alpha field requires the WorkloadAwareScheduling LWS feature gate.
+	// +optional
+	Scheduling *LeaderWorkerSetSchedulingConfiguration `json:"scheduling,omitempty"`
+}
+
+// LeaderWorkerSetSchedulingConfiguration contains the reusable Kubernetes
+// Workload-Aware Scheduling building blocks for one LWS replica.
+type LeaderWorkerSetSchedulingConfiguration struct {
+	// schedulingPolicy selects Basic or Gang scheduling. An omitted or empty
+	// policy defaults to Gang for LWS. In Gang mode minCount defaults to the
+	// replica size.
+	// +optional
+	SchedulingPolicy *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+
+	// schedulingConstraints defines group-level topology constraints.
+	// +optional
+	SchedulingConstraints *schedulingv1alpha3.WorkloadPodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+
+	// disruptionMode controls whether replica members may be disrupted
+	// independently or only as a group.
+	// +optional
+	DisruptionMode *schedulingv1alpha3.WorkloadPodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+
+	// resourceClaims lists dynamic resource claims shared by replica members.
+	// +optional
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=map
+	// +listMapKey=name
+	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaim `json:"resourceClaims,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -408,6 +441,10 @@ const (
 	// is true when the lws is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
+
+	// LeaderWorkerSetWorkloadSchedulingReady reports whether all upstream
+	// scheduling prerequisites for the current LWS generation exist.
+	LeaderWorkerSetWorkloadSchedulingReady LeaderWorkerSetConditionType = "WorkloadSchedulingReady"
 )
 
 // +genclient
