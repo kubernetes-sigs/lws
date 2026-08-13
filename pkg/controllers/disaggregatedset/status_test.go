@@ -97,10 +97,48 @@ func TestSetDisaggregatedSetCondition_StatusFlipUpdatesTransitionTime(t *testing
 	require.NotNil(t, available)
 	assert.Equal(t, metav1.ConditionFalse, available.Status)
 	assert.True(t, available.LastTransitionTime.Time.After(original.Time), "a real Status flip must refresh LastTransitionTime")
+	assert.Equal(t, newCondition.Reason, available.Reason, "the flipped-to-false condition must not keep a Reason that contradicts its new Status")
+	assert.Equal(t, newCondition.Message, available.Message)
+	assert.EqualValues(t, 1, available.ObservedGeneration)
 
 	progressing := findCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
 	require.NotNil(t, progressing)
 	assert.Equal(t, metav1.ConditionTrue, progressing.Status)
+}
+
+// TestSetDisaggregatedSetCondition_SameStatusSyncsReasonAndMessage verifies that
+// Reason/Message stay in sync with the newly-computed condition even when Status
+// doesn't change (only LastTransitionTime is preserved in that case).
+func TestSetDisaggregatedSetCondition_SameStatusSyncsReasonAndMessage(t *testing.T) {
+	original := metav1.NewTime(time.Now().Add(-time.Hour))
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		Status: disaggregatedsetv1.DisaggregatedSetStatus{
+			Conditions: []metav1.Condition{{
+				Type:               string(disaggregatedsetv1.DisaggregatedSetAvailable),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: 1,
+				LastTransitionTime: original,
+				Reason:             "Stale",
+				Message:            "stale message from a previous reconcile",
+			}},
+		},
+	}
+
+	newCondition := metav1.Condition{
+		Type:               string(disaggregatedsetv1.DisaggregatedSetAvailable),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: 1,
+		Reason:             "AllRolesReady",
+		Message:            "All roles have reached their desired replica count, ready and updated to the current revision",
+	}
+
+	changed := setDisaggregatedSetCondition(ds, newCondition)
+
+	assert.True(t, changed)
+	require.Len(t, ds.Status.Conditions, 1)
+	assert.Equal(t, "AllRolesReady", ds.Status.Conditions[0].Reason)
+	assert.Equal(t, newCondition.Message, ds.Status.Conditions[0].Message)
+	assert.Equal(t, original.Time, ds.Status.Conditions[0].LastTransitionTime.Time, "LastTransitionTime must not change when Status didn't transition")
 }
 
 func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {

@@ -636,6 +636,64 @@ func TestStatusAvailableWhenPausedAtZero(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
+// TestStatusUsesScalerTargetForExternalRoles: for a role with scaling.mode:
+// External, the effective desired count comes from its DisaggregatedSetRoleScaler,
+// not the role's inline spec.replicas (which is documented as ignored in that
+// mode). Comparing against the ignored inline value would leave the role stuck
+// Progressing forever even once it's fully satisfied at its real, scaler-driven
+// target (Copilot review on #980).
+func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("external-scaling", "default").
+		WithRole(testControllerRolePrefill, 5, "nginx:1.0"). // inline 5 must be ignored: External mode.
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "first reconcile should succeed")
+
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	prefillLWS, err := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NoError(t, err)
+	require.NotNil(t, prefillLWS)
+	require.EqualValues(t, 1, *prefillLWS.Spec.Replicas, "a fresh External role's LWS should be created at the scaler-seeded target (1), not the ignored inline replicas (5)")
+
+	// Simulate the LWS reporting itself fully ready/updated at that scaler-driven target.
+	prefillLWS.Status.Replicas, prefillLWS.Status.ReadyReplicas, prefillLWS.Status.UpdatedReplicas = 1, 1, 1
+	require.NoError(t, fakeClient.Status().Update(ctx, prefillLWS))
+
+	decodeLWS, err := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
+	require.NoError(t, err)
+	require.NotNil(t, decodeLWS)
+	decodeLWS.Status.Replicas, decodeLWS.Status.ReadyReplicas, decodeLWS.Status.UpdatedReplicas = 2, 2, 2
+	require.NoError(t, fakeClient.Status().Update(ctx, decodeLWS))
+
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "second reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
+	require.NotNil(t, cond, "Available should be set once the External role is ready at its scaler-driven target (1), not stuck Progressing by comparing against the ignored inline replicas (5)")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+}
+
 // TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains: roleStatuses mirrors the
 // current spec.roles contract (RoleStatuses doc, #868 review). Removing a role
 // from spec.roles must drop it from status.roleStatuses on the very next reconcile,

@@ -147,7 +147,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Status reflects the state observed above regardless of per-slice errors, so
 	// a role that failed to reconcile is still visible to clients instead of being
 	// silently left out of .status.
-	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision); statusErr != nil {
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, scalers); statusErr != nil {
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))
 	}
 
@@ -159,9 +159,8 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // slices and revisions), and persists the result if anything changed. roleNames is
 // always the current spec.roles: a role removed from spec has no RoleStatuses entry
 // even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string) error {
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
 	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
-	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 	sliceCount := disaggregatedsetutils.GetSlices(disaggregatedSet)
 	available := true
 
@@ -183,7 +182,11 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
 
-		desired := desiredReplicas(roleConfigs[role]) * sliceCount
+		// getTargetReplicas resolves the *effective* per-slice target: spec.replicas
+		// for Static roles, the scaler's resolved value for External roles. Falling
+		// back to 0 when an External role's scaler is unexpectedly missing is
+		// conservative — it reads as Progressing rather than guessing a target.
+		desired := int32(getTargetReplicas(disaggregatedSet, role, scalers, 0)) * sliceCount
 		if roleStatus.Replicas != desired || roleStatus.ReadyReplicas != desired || roleStatus.UpdatedReplicas != desired {
 			available = false
 		}
@@ -213,15 +216,6 @@ func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role
 	}
 	disaggregatedSet.Status.RoleStatuses = roleStatuses
 	return true
-}
-
-// desiredReplicas returns the per-slice group count a role's spec asks for,
-// defaulting to 1 — matching reconcileRoleSimple's own default.
-func desiredReplicas(config *disaggregatedsetv1.DisaggregatedRoleSpec) int32 {
-	if config.Spec.Replicas == nil {
-		return 1
-	}
-	return *config.Spec.Replicas
 }
 
 func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool) metav1.Condition {
@@ -258,16 +252,26 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 				newCondition.LastTransitionTime = now
 				disaggregatedSet.Status.Conditions[i] = newCondition
 				changed = true
-			} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
+			} else if cond.ObservedGeneration != newCondition.ObservedGeneration || cond.Reason != newCondition.Reason || cond.Message != newCondition.Message {
+				// Status is unchanged, so LastTransitionTime is preserved, but every
+				// other field still syncs to the latest computed condition.
 				disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
+				disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
 				changed = true
 			}
 			continue
 		}
 		if cond.Status == metav1.ConditionTrue {
+			// newCondition becoming true is exactly why this mutually-exclusive
+			// condition is now false, so it explains the flip with the same
+			// Reason/Message rather than leaving this condition's old (now
+			// contradictory) ones in place.
 			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
 			disaggregatedSet.Status.Conditions[i].LastTransitionTime = now
 			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+			disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
+			disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
 			changed = true
 		}
 	}
