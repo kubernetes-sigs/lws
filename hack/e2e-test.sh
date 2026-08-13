@@ -149,6 +149,11 @@ function install_old_release {
         --retry 5 --retry-delay 2 \
         --output "$OLD_MANIFEST" "$OLD_MANIFEST_URL"
 
+    if [ "$LWS_NAMESPACE" != "lws-system" ]; then
+        sed -i "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" "$OLD_MANIFEST"
+        $KUBECTL create namespace "$LWS_NAMESPACE" --dry-run=client -o yaml | $KUBECTL apply -f -
+    fi
+
     $KUBECTL apply --server-side -f "$OLD_MANIFEST"
     $KUBECTL rollout status deployment/lws-controller-manager \
         -n "$LWS_NAMESPACE" --timeout=5m
@@ -180,6 +185,7 @@ function upgrade_to_current {
             $KUSTOMIZE edit set image controller="$IMAGE_TAG"
         )
         $KUSTOMIZE build "$CWD/test/e2e/config" \
+            | sed "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" \
             | $KUBECTL apply --server-side --force-conflicts -f -
     )
 
