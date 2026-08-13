@@ -63,6 +63,7 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
 //+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;watch;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=delete;get;list;patch;update;watch
+//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
@@ -139,10 +140,21 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	hashIdentity := leaderWorkerSet.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash
+
 	// logic for handling leader pod
-	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy && !podutils.IsPodReady(&pod) {
-		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
-		return ctrl.Result{}, nil
+	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy {
+		leaderStarted := podutils.IsPodReady(&pod)
+		if hashIdentity {
+			// With hash identity, full pod readiness includes the group-ready gate,
+			// which in turn waits for the workers. Gate worker creation on container
+			// readiness instead to avoid a deadlock.
+			leaderStarted = podutils.ContainersReady(&pod)
+		}
+		if !leaderStarted {
+			log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
+			return ctrl.Result{}, nil
+		}
 	}
 	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
 	if err != nil {
@@ -156,6 +168,20 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	if hashIdentity {
+		// Hash-named leaders have no per-pod DNS record, so workers get the leader
+		// pod IP instead. The IP is stable for the group's lifetime because the
+		// whole group is recreated together when the leader is replaced.
+		if pod.Status.PodIP == "" {
+			log.V(2).Info("waiting for leader pod IP before creating the worker statefulset")
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		statefulSet.Spec.Template.WithAnnotations(map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+			leaderworkerset.LeaderAddressAnnotationKey: pod.Status.PodIP,
+		})
 	}
 
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
@@ -184,6 +210,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		Object: obj,
 	}
 
+	workerStsReady := false
 	var workerSts appsv1.StatefulSet
 	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
 		if client.IgnoreNotFound(err) != nil {
@@ -196,9 +223,46 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
+	} else {
+		workerStsReady = statefulsetutils.StatefulsetReady(workerSts)
+	}
+
+	if hashIdentity {
+		// Maintain the group-ready readiness gate so Deployment rollout pacing
+		// counts whole groups instead of bare leader pods.
+		if err := r.syncGroupReadyCondition(ctx, &pod, workerStsReady); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
+}
+
+// syncGroupReadyCondition patches the leader pod's group-ready condition to match
+// the readiness of its worker statefulset.
+func (r *PodReconciler) syncGroupReadyCondition(ctx context.Context, pod *corev1.Pod, ready bool) error {
+	status := corev1.ConditionFalse
+	reason := "WorkerStatefulSetNotReady"
+	if ready {
+		status = corev1.ConditionTrue
+		reason = "WorkerStatefulSetReady"
+	}
+	if _, existing := podutils.GetPodCondition(&pod.Status, leaderworkerset.GroupReadyConditionType); existing != nil && existing.Status == status {
+		return nil
+	}
+	newPod := pod.DeepCopy()
+	condition := corev1.PodCondition{
+		Type:               leaderworkerset.GroupReadyConditionType,
+		Status:             status,
+		Reason:             reason,
+		LastTransitionTime: metav1.Now(),
+	}
+	if idx, _ := podutils.GetPodCondition(&newPod.Status, leaderworkerset.GroupReadyConditionType); idx >= 0 {
+		newPod.Status.Conditions[idx] = condition
+	} else {
+		newPod.Status.Conditions = append(newPod.Status.Conditions, condition)
+	}
+	return r.Status().Patch(ctx, newPod, client.MergeFrom(pod))
 }
 
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
@@ -226,9 +290,15 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 
 	var leader corev1.Pod
 	if !podutils.LeaderPod(pod) {
-		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-		if ordinal == -1 {
-			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+		// Prefer the annotation over name parsing: with hash identity the leader
+		// name is not ordinal-derived.
+		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+		if leaderPodName == "" {
+			var ordinal int
+			leaderPodName, ordinal = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+			if ordinal == -1 {
+				return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+			}
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			// If the error is not found, it is likely caused by the fact that the leader was deleted but the worker statefulset

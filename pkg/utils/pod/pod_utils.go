@@ -144,6 +144,24 @@ func AddLWSVariables(pod *corev1.Pod) error {
 		Name:  leaderworkerset.LwsLeaderAddress,
 		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
 	}
+	if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
+		// Hash-named leaders have no ordinal DNS record. Workers carry the leader
+		// pod IP in an annotation; the leader itself resolves its own address
+		// through the downward API.
+		if addr := pod.Annotations[leaderworkerset.LeaderAddressAnnotationKey]; addr != "" {
+			leaderAddressEnvVar = corev1.EnvVar{
+				Name:  leaderworkerset.LwsLeaderAddress,
+				Value: addr,
+			}
+		} else if LeaderPod(*pod) {
+			leaderAddressEnvVar = corev1.EnvVar{
+				Name: leaderworkerset.LwsLeaderAddress,
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+				},
+			}
+		}
+	}
 
 	size, found := pod.Annotations[leaderworkerset.SizeAnnotationKey]
 	if !found {
@@ -181,6 +199,13 @@ func AddLWSVariables(pod *corev1.Pod) error {
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *corev1.Pod) bool {
 	return IsPodReadyConditionTrue(pod.Status)
+}
+
+// ContainersReady returns true if all of the pod's containers are ready,
+// regardless of readiness gates.
+func ContainersReady(pod *corev1.Pod) bool {
+	_, condition := GetPodCondition(&pod.Status, corev1.ContainersReady)
+	return condition != nil && condition.Status == corev1.ConditionTrue
 }
 
 // IsPodReadyConditionTrue returns true if a pod is ready; false otherwise.

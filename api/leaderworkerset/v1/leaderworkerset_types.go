@@ -103,7 +103,24 @@ const (
 	// Enables feature where the group will be restarted after pod failure if and only if
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
+
+	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
+	// LeaderWorkerSet runs with GroupIdentity=Hash so that admission and controllers
+	// can tell the identity scheme apart without fetching the LWS object.
+	GroupIdentityAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-identity"
+
+	// LeaderAddressAnnotationKey carries the leader address (pod IP) on worker pods
+	// when GroupIdentity=Hash. With hash-named leaders there is no per-pod DNS record,
+	// and the address only needs to be stable for one group generation because the
+	// whole group is recreated together.
+	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
 )
+
+// GroupReadyConditionType is the pod readiness gate condition set on leader pods when
+// GroupIdentity=Hash. The pod controller marks it True once the group's worker
+// statefulset is ready, which makes Deployment rollout pacing count whole groups
+// instead of bare leader pods.
+const GroupReadyConditionType corev1.PodConditionType = "leaderworkerset.sigs.k8s.io/group-ready"
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 // LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).
@@ -147,7 +164,31 @@ type LeaderWorkerSetSpec struct {
 	// networkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+
+	// groupIdentity determines how group identities are assigned.
+	// Ordinal (default) manages leaders through a StatefulSet: groups are named
+	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
+	// Hash manages leaders through a Deployment: group names are hash-suffixed,
+	// scale down prefers unscheduled and not-ready groups over healthy ones, and
+	// rollouts are paced by a group readiness gate on the leader pods.
+	// This field is immutable.
+	// +kubebuilder:default=Ordinal
+	// +kubebuilder:validation:Enum={Ordinal,Hash}
+	// +optional
+	GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
 }
+
+// GroupIdentityType defines how group identities are assigned.
+type GroupIdentityType string
+
+const (
+	// GroupIdentityOrdinal names groups by contiguous StatefulSet ordinals.
+	GroupIdentityOrdinal GroupIdentityType = "Ordinal"
+
+	// GroupIdentityHash names groups by hash-suffixed leader pod names managed
+	// through a Deployment.
+	GroupIdentityHash GroupIdentityType = "Hash"
+)
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
 // Defaults to the worker template if not specified. The idea is to allow users to create a
