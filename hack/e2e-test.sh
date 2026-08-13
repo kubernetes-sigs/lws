@@ -47,7 +47,7 @@ function cleanup {
             mkdir -p "$ARTIFACTS"
         fi
         $KUBECTL logs -n "$LWS_NAMESPACE" deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
-        $KUBECTL describe pods -n "$LWS_NAMESPACE" > "$ARTIFACTS"/lws-system-pods.log || true
+        $KUBECTL describe pods -n "$LWS_NAMESPACE" > "$ARTIFACTS"/"${LWS_NAMESPACE}"-pods.log || true
         
         if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
             $KUBECTL logs -n volcano-system deployment/volcano-scheduler > "$ARTIFACTS"/volcano-scheduler.log || true
