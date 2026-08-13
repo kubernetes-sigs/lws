@@ -16826,40 +16826,59 @@ spec:
                         independently or only as a group.
                       properties:
                         all:
-                          description: all specifies that all pods in the group must
-                            be disrupted together.
+                          description: all specifies that all children can only be disrupted
+                            together.
                           type: object
                         single:
-                          description: single specifies that pods can be disrupted independently
-                            from each other.
+                          description: single specifies that children can be disrupted
+                            independently from each other.
                           type: object
                       type: object
                     resourceClaims:
                       description: resourceClaims lists dynamic resource claims shared
                         by replica members.
                       items:
-                        description: |
-                          WorkloadPodGroupResourceClaim references a dynamic resource claim
-                          that is shared across pods in the group.
+                        description: |-
+                          PodGroupResourceClaim references exactly one ResourceClaim, either directly
+                          or by naming a ResourceClaimTemplate which is then turned into a ResourceClaim
+                          for the PodGroup.
+
+                          It adds a name to it that uniquely identifies the ResourceClaim inside the PodGroup.
+                          Pods that need access to the ResourceClaim define a matching reference in its
+                          own Spec.ResourceClaims. The Pod's claim must match all fields of the
+                          PodGroup's claim exactly.
                         properties:
                           name:
                             description: |-
-                              name uniquely identifies this resource claim inside the group.
-                              This field is required. It must be a DNS_LABEL.
+                              name uniquely identifies this resource claim inside the PodGroup.
+                              This must be a DNS_LABEL.
                             type: string
                           resourceClaimName:
                             description: |-
                               resourceClaimName is the name of a ResourceClaim object in the same
-                              namespace.
-                              This field is optional. If it is not specified, no resource claim
-                              is used. If set, it must be a DNS subdomain.
+                              namespace as this PodGroup. The ResourceClaim will be reserved for the
+                              PodGroup instead of its individual pods.
+
+                              Exactly one of ResourceClaimName and ResourceClaimTemplateName must
+                              be set.
                             type: string
                           resourceClaimTemplateName:
                             description: |-
                               resourceClaimTemplateName is the name of a ResourceClaimTemplate
-                              object in the same namespace.
-                              This field is optional. If it is not specified, no resource claim
-                              template is used. If set, it must be a DNS subdomain.
+                              object in the same namespace as this PodGroup.
+
+                              The template will be used to create a new ResourceClaim, which will
+                              be bound to this PodGroup. When this PodGroup is deleted, the ResourceClaim
+                              will also be deleted. The PodGroup name and resource name, along with a
+                              generated component, will be used to form a unique name for the
+                              ResourceClaim, which will be recorded in podgroup.status.resourceClaimStatuses.
+
+                              This field is immutable and no changes will be made to the
+                              corresponding ResourceClaim by the control plane after creating the
+                              ResourceClaim.
+
+                              Exactly one of ResourceClaimName and ResourceClaimTemplateName must
+                              be set.
                             type: string
                         required:
                         - name
@@ -16875,9 +16894,8 @@ spec:
                       properties:
                         topology:
                           description: |-
-                            topology specifies desired topological placements for all pods
-                            within the pod group.
-                            If unset, no topology placement is requested.
+                            topology defines the topology constraints for the pod group.
+                            Currently only a single topology constraint can be specified. This may change in the future.
                           items:
                             description: TopologyConstraint defines a topology constraint
                               for a PodGroup.
@@ -16898,29 +16916,47 @@ spec:
                     schedulingPolicy:
                       description: |-
                         schedulingPolicy selects Basic or Gang scheduling. An omitted or empty
-                        policy defaults to Gang for LWS. In Gang mode minCount defaults to the
-                        replica size.
+                        policy defaults to Gang for LWS. When Gang is selected, minCount must
+                        equal the replica size.
                       properties:
                         basic:
                           description: |-
-                            basic specifies that standard, pod-by-pod Kubernetes scheduling
-                            behavior should be used.
+                            basic specifies that the pods in this group should be scheduled using
+                            standard Kubernetes scheduling behavior. Setting this field at group creation time
+                            opts this group to basic scheduling; this field cannot be changed afterward.
                           type: object
+                          x-kubernetes-validations:
+                          - message: field is immutable
+                            rule: self == oldSelf
                         gang:
-                          description: gang specifies all-or-nothing scheduling semantics.
+                          description: |-
+                            gang specifies that the pods in this group should be scheduled using
+                            all-or-nothing semantics. Setting this field at group creation time
+                            opts this group to gang scheduling; this field cannot be set or unset afterward.
+                            The minCount field within Gang scheduling policy remains mutable after group creation.
                           properties:
                             minCount:
                               description: |-
-                                minCount is the minimum number of pods that must be scheduled
+                                minCount is the minimum number of pods that must be schedulable or scheduled
                                 at the same time for the scheduler to admit the entire group.
-                                This field is optional. If it is not specified, the controller
-                                should inject a context-specific sane default (e.g.,
-                                parallelism for a Job).
-                                If set, it must be a positive integer.
+                                It must be a positive integer. This field is mutable to support workload scaling.
+
+                                Note that the scheduler operates on an eventually consistent model. Updates
+                                to minCount may not be immediately reflected in scheduling decisions due to
+                                propagation delays. If minCount is updated while a scheduling cycle is in
+                                progress for that group, the new value may not take effect until the next
+                                cycle. Moreover, minCount is only enforced during scheduling, meaning that
+                                modifications to this field do not affect already-scheduled pods, applying
+                                only to those evaluated in future cycles.
                               format: int32
                               type: integer
+                          required:
+                          - minCount
                           type: object
                       type: object
+                      x-kubernetes-validations:
+                      - message: field basic is immutable once set
+                        rule: '!has(oldSelf.basic) || has(self.basic)'
                   type: object
                 startupPolicy:
                   default: LeaderCreated

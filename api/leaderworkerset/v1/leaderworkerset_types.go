@@ -19,7 +19,7 @@ package v1
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -151,26 +151,26 @@ type LeaderWorkerSetSpec struct {
 // Workload-Aware Scheduling building blocks for one LWS replica.
 type LeaderWorkerSetSchedulingConfiguration struct {
 	// schedulingPolicy selects Basic or Gang scheduling. An omitted or empty
-	// policy defaults to Gang for LWS. In Gang mode minCount defaults to the
-	// replica size.
+	// policy defaults to Gang for LWS. When Gang is selected, minCount must
+	// equal the replica size.
 	// +optional
-	SchedulingPolicy *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+	SchedulingPolicy *schedulingv1beta1.PodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 
 	// schedulingConstraints defines group-level topology constraints.
 	// +optional
-	SchedulingConstraints *schedulingv1alpha3.WorkloadPodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+	SchedulingConstraints *schedulingv1beta1.PodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
 
 	// disruptionMode controls whether replica members may be disrupted
 	// independently or only as a group.
 	// +optional
-	DisruptionMode *schedulingv1alpha3.WorkloadPodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+	DisruptionMode *schedulingv1beta1.DisruptionMode `json:"disruptionMode,omitempty"`
 
 	// resourceClaims lists dynamic resource claims shared by replica members.
 	// +optional
 	// +kubebuilder:validation:MaxItems=4
 	// +listType=map
 	// +listMapKey=name
-	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaim `json:"resourceClaims,omitempty"`
+	ResourceClaims []schedulingv1beta1.PodGroupResourceClaim `json:"resourceClaims,omitempty"`
 }
 
 // Template of the leader/worker pods, the group will include at least one leader pod.

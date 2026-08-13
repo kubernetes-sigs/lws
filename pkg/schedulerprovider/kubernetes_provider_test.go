@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -74,6 +75,41 @@ func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 		assert.Equal(t, strconv.Itoa(groupIndex), podGroup.Labels[leaderworkerset.GroupIndexLabelKey])
 		assert.Equal(t, "revision-1", podGroup.Labels[leaderworkerset.RevisionKey])
 	}
+}
+
+func TestNewWorkloadBuilderMapsV1Beta1SchedulingConfiguration(t *testing.T) {
+	lws := testScheduledLWS()
+	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetSchedulingConfiguration{
+		SchedulingPolicy: &schedulingv1beta1.PodGroupSchedulingPolicy{
+			Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+		},
+		SchedulingConstraints: &schedulingv1beta1.PodGroupSchedulingConstraints{
+			Topology: []schedulingv1beta1.TopologyConstraint{{Key: "topology.kubernetes.io/zone"}},
+		},
+		DisruptionMode: &schedulingv1beta1.DisruptionMode{
+			All: &schedulingv1beta1.AllDisruptionMode{},
+		},
+		ResourceClaims: []schedulingv1beta1.PodGroupResourceClaim{{
+			Name:              "gpu",
+			ResourceClaimName: ptr.To("shared-gpu"),
+		}},
+	}
+
+	builder := NewWorkloadBuilder(lws)
+	require.Empty(t, builder.Validate(context.Background(), workloadbuilder.ValidationInput{}))
+	workload, err := builder.BuildWorkload()
+	require.NoError(t, err)
+	require.Len(t, workload.Spec.PodGroupTemplates, 1)
+	template := workload.Spec.PodGroupTemplates[0]
+	require.NotNil(t, template.SchedulingPolicy.Gang)
+	assert.Equal(t, int32(3), template.SchedulingPolicy.Gang.MinCount)
+	require.NotNil(t, template.SchedulingConstraints)
+	assert.Equal(t, "topology.kubernetes.io/zone", template.SchedulingConstraints.Topology[0].Key)
+	require.NotNil(t, template.DisruptionMode)
+	require.NotNil(t, template.DisruptionMode.All)
+	require.Len(t, template.ResourceClaims, 1)
+	assert.Equal(t, "gpu", template.ResourceClaims[0].Name)
+	assert.Equal(t, ptr.To("shared-gpu"), template.ResourceClaims[0].ResourceClaimName)
 }
 
 func TestKubernetesProviderDoesNotCreatePodGroupsWhenWorkloadCreationFails(t *testing.T) {

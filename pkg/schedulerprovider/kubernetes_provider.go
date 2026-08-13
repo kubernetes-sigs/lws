@@ -86,21 +86,22 @@ func NewWorkloadItem(lws *leaderworkerset.LeaderWorkerSet) *workloadbuilder.Work
 		},
 	}
 	if lws.Spec.Scheduling != nil {
+		input := toWorkloadBuilderInput(lws.Spec.Scheduling)
 		item.Input = workloadbuilder.WorkloadInput{
 			Policy: workloadbuilder.PolicyInput{
-				PodGroupData: lws.Spec.Scheduling.SchedulingPolicy,
+				PodGroupData: input.policy,
 				PathElements: []string{"schedulingPolicy"},
 			},
 			Constraints: workloadbuilder.ConstraintsInput{
-				PodGroupData: lws.Spec.Scheduling.SchedulingConstraints,
+				PodGroupData: input.constraints,
 				PathElements: []string{"schedulingConstraints"},
 			},
 			DisruptionMode: workloadbuilder.DisruptionModeInput{
-				PodGroupData: lws.Spec.Scheduling.DisruptionMode,
+				PodGroupData: input.disruptionMode,
 				PathElements: []string{"disruptionMode"},
 			},
 			ResourceClaims: workloadbuilder.ResourceClaimsInput{
-				PodGroupData: lws.Spec.Scheduling.ResourceClaims,
+				PodGroupData: input.resourceClaims,
 				PathElements: []string{"resourceClaims"},
 			},
 		}

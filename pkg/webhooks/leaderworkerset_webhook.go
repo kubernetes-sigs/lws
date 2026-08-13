@@ -215,8 +215,8 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 	}
 	if gang {
 		size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
-		if policy != nil && policy.Gang != nil && policy.Gang.MinCount != nil && *policy.Gang.MinCount != size {
-			allErrs = append(allErrs, field.Invalid(path.Child("schedulingPolicy", "gang", "minCount"), *policy.Gang.MinCount, "must equal leaderWorkerTemplate.size"))
+		if policy != nil && policy.Gang != nil && policy.Gang.MinCount != size {
+			allErrs = append(allErrs, field.Invalid(path.Child("schedulingPolicy", "gang", "minCount"), policy.Gang.MinCount, "must equal leaderWorkerTemplate.size"))
 		}
 		if lws.Spec.StartupPolicy == v1.LeaderReadyStartupPolicy {
 			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy", "gang"), "gang scheduling is incompatible with startupPolicy LeaderReady"))

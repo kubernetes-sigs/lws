@@ -32,7 +32,7 @@ kube::codegen::gen_helpers ${REPO_ROOT}/api \
 kube::codegen::gen_client ${REPO_ROOT}/api \
     --with-watch \
     --with-applyconfig \
-    --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1,k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingPolicy:k8s.io/client-go/applyconfigurations/scheduling/v1alpha3,k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingConstraints:k8s.io/client-go/applyconfigurations/scheduling/v1alpha3,k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupDisruptionMode:k8s.io/client-go/applyconfigurations/scheduling/v1alpha3,k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupResourceClaim:k8s.io/client-go/applyconfigurations/scheduling/v1alpha3" \
+    --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1,k8s.io/api/scheduling/v1beta1.PodGroupSchedulingPolicy:k8s.io/client-go/applyconfigurations/scheduling/v1beta1,k8s.io/api/scheduling/v1beta1.PodGroupSchedulingConstraints:k8s.io/client-go/applyconfigurations/scheduling/v1beta1,k8s.io/api/scheduling/v1beta1.DisruptionMode:k8s.io/client-go/applyconfigurations/scheduling/v1beta1,k8s.io/api/scheduling/v1beta1.PodGroupResourceClaim:k8s.io/client-go/applyconfigurations/scheduling/v1beta1" \
     --output-dir "$REPO_ROOT"/client-go \
     --output-pkg sigs.k8s.io/lws/client-go \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"

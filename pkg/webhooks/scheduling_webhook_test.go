@@ -22,7 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -46,8 +46,8 @@ func TestValidateScheduling(t *testing.T) {
 		"gang minimum must equal size": {
 			gates: features.Gates{features.WorkloadAwareScheduling: true},
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
-				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
-					Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{MinCount: ptr.To[int32](2)},
+				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1beta1.PodGroupSchedulingPolicy{
+					Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 2},
 				}
 			},
 			wantErrs: 1,
