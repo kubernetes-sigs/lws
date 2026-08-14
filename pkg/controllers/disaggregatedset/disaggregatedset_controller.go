@@ -408,7 +408,7 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	}
 	if existingReplicas != desiredReplicas {
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
-		if err := r.LWSManager.Scale(ctx, disaggregatedSet.Namespace, existing.Name, int(desiredReplicas)); err != nil {
+		if err := r.LWSManager.Scale(ctx, disaggregatedSet, existing.Name, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale LWS %s: %w", existing.Name, err)
 		}
 	}
@@ -497,7 +497,9 @@ func (r *DisaggregatedSetReconciler) recreateLegacySlice0(
 	log := logf.FromContext(ctx)
 
 	for _, role := range roleNames {
-		lws, err := r.LWSManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
+		// getOwned (not a raw Get): a foreign object occupying the legacy name
+		// must not be adopted/deleted here — see #981.
+		lws, err := r.LWSManager.getOwned(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
 		if err != nil {
 			return err
 		}

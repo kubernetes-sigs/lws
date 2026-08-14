@@ -626,3 +626,75 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, targetRevision, testControllerRolePrefill))
 	require.NotNil(t, s1, "slice 1 should be created at the new revision without blocking")
 }
+
+// TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0 is a regression test for
+// #981: recreateLegacySlice0 must not delete/migrate a legacy-named LWS that
+// exists but is owned by a different DisaggregatedSet (e.g. left over from a
+// same-named DisaggregatedSet that was deleted and recreated before GC ran).
+// The foreign object is left untouched, and the normal create path still
+// proceeds for this DisaggregatedSet's own slice-aware LWS at both slices —
+// increasing slices must not get stuck just because the legacy name is
+// occupied by something else.
+func TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-foreign", "default").
+		Slices(2).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	foreignDS := wrappers.BuildDisaggregatedSet("some-other-ds", "default").Obj()
+	foreignOwnerRef := metav1.OwnerReference{
+		APIVersion: disaggregatedsetv1.GroupVersion.String(),
+		Kind:       "DisaggregatedSet",
+		Name:       foreignDS.Name,
+		UID:        foreignDS.UID,
+		Controller: ptr.To(true),
+	}
+	foreignLegacyPrefill := wrappers.BuildBasicLeaderWorkerSet(
+		disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill), "default").
+		Labels(map[string]string{
+			disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
+			disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
+			disaggregatedsetv1.RevisionLabelKey: revision,
+		}).
+		Replica(2).
+		Size(1).
+		OwnerReference(foreignOwnerRef).
+		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		foreignLegacyPrefill,
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed even though the legacy name is occupied by a foreign LWS")
+
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	// The foreign object at the legacy name must survive untouched.
+	foreignAfter, err := lwsManager.Get(ctx, "default", foreignLegacyPrefill.Name)
+	require.NoError(t, err)
+	require.NotNil(t, foreignAfter, "foreign-owned legacy LWS must not be deleted")
+	require.Len(t, foreignAfter.OwnerReferences, 1)
+	assert.Equal(t, foreignDS.UID, foreignAfter.OwnerReferences[0].UID, "foreign LWS ownership must be unchanged")
+
+	// This DisaggregatedSet's own slice-aware LWS are still created normally at
+	// both slices — the foreign object at the legacy name did not block anything.
+	s0, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	assert.NotNil(t, s0, "slice-aware slice-0 prefill should still be created")
+	s1, _ := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	assert.NotNil(t, s1, "sibling slice 1 prefill should still be created")
+}

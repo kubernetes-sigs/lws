@@ -81,6 +81,19 @@ func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 	}
 }
 
+// testDSOwnerRef is the controller OwnerReference matching the "test"/"uid"
+// DisaggregatedSet fixture convention used throughout this file (see
+// setupABCScenario and the inline `ds := &disaggregatedsetv1.DisaggregatedSet{
+// ObjectMeta: metav1.ObjectMeta{Name: "test", ...}}` fixtures) — Scale checks
+// ownership (#981), so LWS fixtures built via buildTestLWS must carry it too.
+var testDSOwnerRef = metav1.OwnerReference{
+	APIVersion: disaggregatedsetv1.GroupVersion.String(),
+	Kind:       "DisaggregatedSet",
+	Name:       "test",
+	UID:        "uid",
+	Controller: ptr.To(true),
+}
+
 func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorkerSetWrapper {
 	return wrappers.BuildBasicLeaderWorkerSet(name, namespace).
 		Labels(map[string]string{
@@ -88,7 +101,8 @@ func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorker
 			disaggregatedsetv1.SetNameLabelKey:  "test",
 			disaggregatedsetv1.SliceLabelKey:    "0",
 			disaggregatedsetv1.RevisionLabelKey: revision,
-		})
+		}).
+		OwnerReference(testDSOwnerRef)
 }
 
 // getTestLWSReplicas is a helper to get the current replica count from a LWS.
@@ -898,7 +912,7 @@ func TestScaleDownOld(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 
 			// Convert budget to current/target format
 			current := RoleReplicaState{
@@ -994,7 +1008,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 
 			// Convert budget to current/target format for 3 roles
 			current := RoleReplicaState{
@@ -1059,7 +1073,7 @@ func TestScaleUpNew(t *testing.T) {
 			executor := newTestExecutor(fakeClient)
 
 			ds := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace, UID: "uid"},
 			}
 
 			newRevision := disaggregatedsetutils.RevisionRoles{
@@ -1212,7 +1226,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
 			}
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
