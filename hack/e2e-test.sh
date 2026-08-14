@@ -20,6 +20,7 @@ set -o pipefail
 
 SCHEDULER_PROVIDER=${SCHEDULER_PROVIDER:-""}
 LWS_UPGRADE_FROM_VERSION=${LWS_UPGRADE_FROM_VERSION:-""}
+LWS_NAMESPACE=${LWS_NAMESPACE:-"lws-system"}
 export CWD=$(pwd)
 
 KUBECONFIG_PATH=""
@@ -35,7 +36,7 @@ fi
 
 function save_controller_logs {
     local output="$1"
-    $KUBECTL logs -n lws-system deployment/lws-controller-manager \
+    $KUBECTL logs -n "$LWS_NAMESPACE" deployment/lws-controller-manager \
         --all-pods=true --prefix=true > "$output" 2>&1 || true
 }
 
@@ -45,8 +46,8 @@ function cleanup {
         if [ ! -d "$ARTIFACTS" ]; then
             mkdir -p "$ARTIFACTS"
         fi
-        $KUBECTL logs -n lws-system deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
-        $KUBECTL describe pods -n lws-system > "$ARTIFACTS"/lws-system-pods.log || true
+        $KUBECTL logs -n "$LWS_NAMESPACE" deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
+        $KUBECTL describe pods -n "$LWS_NAMESPACE" > "$ARTIFACTS"/"${LWS_NAMESPACE}"-pods.log || true
         
         if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
             $KUBECTL logs -n volcano-system deployment/volcano-scheduler > "$ARTIFACTS"/volcano-scheduler.log || true
@@ -148,9 +149,14 @@ function install_old_release {
         --retry 5 --retry-delay 2 \
         --output "$OLD_MANIFEST" "$OLD_MANIFEST_URL"
 
+    if [ "$LWS_NAMESPACE" != "lws-system" ]; then
+        sed -i "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" "$OLD_MANIFEST"
+        $KUBECTL create namespace "$LWS_NAMESPACE" --dry-run=client -o yaml | $KUBECTL apply -f -
+    fi
+
     $KUBECTL apply --server-side -f "$OLD_MANIFEST"
     $KUBECTL rollout status deployment/lws-controller-manager \
-        -n lws-system --timeout=5m
+        -n "$LWS_NAMESPACE" --timeout=5m
 }
 
 function run_upgrade_phase {
@@ -158,6 +164,7 @@ function run_upgrade_phase {
     LWS_UPGRADE_PHASE="$phase" \
     LWS_UPGRADE_SNAPSHOT_PATH="$SNAPSHOT_PATH" \
     IMAGE_TAG="$IMAGE_TAG" \
+    LWS_NAMESPACE="$LWS_NAMESPACE" \
         $GINKGO \
         --junit-report="junit-upgrade-${phase}.xml" \
         --output-dir="$ARTIFACTS" \
@@ -178,11 +185,12 @@ function upgrade_to_current {
             $KUSTOMIZE edit set image controller="$IMAGE_TAG"
         )
         $KUSTOMIZE build "$CWD/test/e2e/config" \
+            | sed "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" \
             | $KUBECTL apply --server-side --force-conflicts -f -
     )
 
     $KUBECTL rollout status deployment/lws-controller-manager \
-        -n lws-system --timeout=5m
+        -n "$LWS_NAMESPACE" --timeout=5m
 }
 
 function upgrade_test_flow {
