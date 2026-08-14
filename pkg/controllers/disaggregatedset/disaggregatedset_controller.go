@@ -182,10 +182,19 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
 
+		// An External role with no scaler in the map (e.g. its generated name
+		// collided with a foreign, non-owned object — see #981 for the analogous
+		// LWS case) has no known target: getTargetReplicas would fall back to a
+		// literal 0, which can spuriously read as satisfied if the role also has
+		// 0 actual replicas. Treat that as explicitly Progressing instead of
+		// guessing a target that might accidentally match.
+		if isExternal(disaggregatedSet, role) && scalers[role] == nil {
+			available = false
+			continue
+		}
+
 		// getTargetReplicas resolves the *effective* per-slice target: spec.replicas
-		// for Static roles, the scaler's resolved value for External roles. Falling
-		// back to 0 when an External role's scaler is unexpectedly missing is
-		// conservative — it reads as Progressing rather than guessing a target.
+		// for Static roles, the scaler's resolved value for External roles.
 		desired := int32(getTargetReplicas(disaggregatedSet, role, scalers, 0)) * sliceCount
 		if roleStatus.Replicas != desired || roleStatus.ReadyReplicas != desired || roleStatus.UpdatedReplicas != desired {
 			available = false
@@ -235,8 +244,22 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 	}
 }
 
+// exclusiveConditionTypes reports whether t1 and t2 are a mutually-exclusive
+// pair, where one being true means the other must be false. Only
+// Available/Progressing are exclusive today; a condition type outside that
+// pair (added later, or written by another controller) is left untouched by
+// setDisaggregatedSetCondition rather than being clobbered just because it
+// happened to also be true.
+func exclusiveConditionTypes(t1, t2 string) bool {
+	pair := func(a, b disaggregatedsetv1.DisaggregatedSetConditionType) bool {
+		return (t1 == string(a) && t2 == string(b)) || (t1 == string(b) && t2 == string(a))
+	}
+	return pair(disaggregatedsetv1.DisaggregatedSetAvailable, disaggregatedsetv1.DisaggregatedSetProgressing)
+}
+
 // setDisaggregatedSetCondition records newCondition as true and, since Available and
-// Progressing are mutually exclusive, marks any other true condition as false.
+// Progressing are mutually exclusive, marks the other one of that specific pair as
+// false (see exclusiveConditionTypes) — any other condition type is left alone.
 // LastTransitionTime is only touched when a condition's Status actually flips, per
 // the metav1.Condition contract; a same-Status update (e.g. only ObservedGeneration
 // changed) must not look like a fresh transition to clients. Returns whether the
@@ -262,7 +285,7 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 			}
 			continue
 		}
-		if cond.Status == metav1.ConditionTrue {
+		if cond.Status == metav1.ConditionTrue && exclusiveConditionTypes(cond.Type, newCondition.Type) {
 			// newCondition becoming true is exactly why this mutually-exclusive
 			// condition is now false, so it explains the flip with the same
 			// Reason/Message rather than leaving this condition's old (now

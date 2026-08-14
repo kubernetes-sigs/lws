@@ -694,6 +694,65 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
+// TestStatusProgressingWhenExternalRoleScalerMissing: an External role whose
+// generated scaler name collides with a foreign, non-owned
+// DisaggregatedSetRoleScaler is left out of the scalers map entirely (the
+// ScalerManager declines to adopt it — same class of name-collision issue as
+// #981 for LWS). Its target is then genuinely unknown, so status must read
+// Progressing rather than falling back to a literal 0 that could spuriously
+// match a role that also happens to have 0 actual replicas (Copilot review
+// on #980).
+func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("scaler-collision", "default").
+		WithRole(testControllerRolePrefill, 1, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+
+	// A scaler already occupies the name this role would generate, but it's
+	// owned by a different DisaggregatedSet UID — ScalerManager won't adopt it.
+	foreignScaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      controller.ScalerName(disaggregatedSet.Name, testControllerRolePrefill),
+			Namespace: disaggregatedSet.Namespace,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name,
+				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       "some-other-ds",
+				UID:        "some-other-uid",
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, foreignScaler).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed even though the scaler couldn't be created")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, progressing, "a role with an unknown (missing/uncreatable) scaler target must read Progressing")
+	assert.Equal(t, metav1.ConditionTrue, progressing.Status)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "must not read Available just because the role also has 0 actual replicas")
+}
+
 // TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains: roleStatuses mirrors the
 // current spec.roles contract (RoleStatuses doc, #868 review). Removing a role
 // from spec.roles must drop it from status.roleStatuses on the very next reconcile,

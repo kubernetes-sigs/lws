@@ -141,6 +141,44 @@ func TestSetDisaggregatedSetCondition_SameStatusSyncsReasonAndMessage(t *testing
 	assert.Equal(t, original.Time, ds.Status.Conditions[0].LastTransitionTime.Time, "LastTransitionTime must not change when Status didn't transition")
 }
 
+// TestSetDisaggregatedSetCondition_LeavesUnrelatedConditionTypeUntouched guards
+// against a broader mutual-exclusivity bug: setDisaggregatedSetCondition must
+// only flip the specific Available/Progressing pair, not any other Status=True
+// condition it happens to find (Copilot review on #980) — otherwise a future
+// condition type, or one written by another controller, would get silently
+// clobbered just for being true when Available/Progressing changes.
+func TestSetDisaggregatedSetCondition_LeavesUnrelatedConditionTypeUntouched(t *testing.T) {
+	original := metav1.NewTime(time.Now().Add(-time.Hour))
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		Status: disaggregatedsetv1.DisaggregatedSetStatus{
+			Conditions: []metav1.Condition{{
+				Type:               "SomeUnrelatedCondition",
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: 1,
+				LastTransitionTime: original,
+				Reason:             "Unrelated",
+				Message:            "set by something else entirely",
+			}},
+		},
+	}
+
+	newCondition := metav1.Condition{
+		Type:               string(disaggregatedsetv1.DisaggregatedSetAvailable),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: 1,
+		Reason:             "AllRolesReady",
+		Message:            "All roles have reached their desired replica count, ready and updated to the current revision",
+	}
+
+	setDisaggregatedSetCondition(ds, newCondition)
+
+	unrelated := findCondition(ds.Status.Conditions, "SomeUnrelatedCondition")
+	require.NotNil(t, unrelated)
+	assert.Equal(t, metav1.ConditionTrue, unrelated.Status, "a condition type outside the Available/Progressing pair must not be flipped")
+	assert.Equal(t, original.Time, unrelated.LastTransitionTime.Time)
+	assert.Equal(t, "Unrelated", unrelated.Reason)
+}
+
 func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
 	for i := range conditions {
 		if conditions[i].Type == condType {
