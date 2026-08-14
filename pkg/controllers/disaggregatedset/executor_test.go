@@ -684,7 +684,7 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames, nil)
+			config := extractRollingUpdateConfig(ds, roleNames, resolveTargets(ds, 1, nil)[0])
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
@@ -793,7 +793,7 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfig(ds, roleNames, nil)
+			config := extractRollingUpdateConfig(ds, roleNames, resolveTargets(ds, 1, nil)[0])
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[0].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[0].MaxUnavailable)
@@ -1232,7 +1232,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				testRolePrefill: makeLWS(withReplicas(int(tc.cPrefill)), withReadyReplicas(int(tc.cPrefill))),
 				testRoleDecode:  makeLWS(withReplicas(int(tc.cDecode)), withReadyReplicas(int(tc.cDecode)))}}
 
-			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision, nil)
+			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision, resolveTargets(deployment, 1, nil)[0])
 			require.NoError(t, err)
 
 			if tc.aPrefill > 0 || tc.aDecode > 0 {

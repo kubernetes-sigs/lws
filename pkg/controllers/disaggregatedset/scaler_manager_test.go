@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -119,7 +121,7 @@ func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {
 	}
 }
 
-func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
+func TestTargetReplicasResolutionMatrix(t *testing.T) {
 	cases := []struct {
 		name         string
 		role         disaggregatedsetv1.DisaggregatedRoleSpec
@@ -143,7 +145,8 @@ func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
 					Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: tc.scalerVal},
 				}
 			}
-			assert.Equal(t, tc.wantReplicas, getTargetReplicas(ds, "r", scalers, tc.currentNew))
+			targets := resolveTargets(ds, 1, scalers)
+			assert.Equal(t, tc.wantReplicas, targets[0].Resolve("r", tc.currentNew))
 		})
 	}
 }
@@ -181,4 +184,42 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 // for one call in tests.
 func apierrorsIsNotFound(err error) bool {
 	return err != nil && client.IgnoreNotFound(err) == nil
+}
+
+func TestSeedForRole(t *testing.T) {
+	ds := newDSWithRoles("myds", externalRole("prefill"), staticRole("decode"))
+	ds.Spec.Slices = ptr.To(int32(3))
+
+	makeLWSWithLabels := func(name string, slice int, role string, replicas int32) *leaderworkersetv1.LeaderWorkerSet {
+		return &leaderworkersetv1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    disaggregatedsetutils.GenerateLabels("myds", slice, "rev1", role),
+			},
+			Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(replicas)},
+		}
+	}
+
+	t.Run("fresh role seeds to the slice count", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).Build()
+		r := &DisaggregatedSetReconciler{Client: cl, LWSManager: NewLeaderWorkerSetManager(cl)}
+		seedFor, err := r.seedForRole(context.TODO(), ds)
+		require.NoError(t, err)
+		assert.EqualValues(t, 3, seedFor("prefill"))
+	})
+
+	t.Run("flip seeds to the observed total across slices", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).
+			WithObjects(
+				makeLWSWithLabels("myds-0-rev1-prefill", 0, "prefill", 2),
+				makeLWSWithLabels("myds-1-rev1-prefill", 1, "prefill", 3),
+			).Build()
+		r := &DisaggregatedSetReconciler{Client: cl, LWSManager: NewLeaderWorkerSetManager(cl)}
+		seedFor, err := r.seedForRole(context.TODO(), ds)
+		require.NoError(t, err)
+		assert.EqualValues(t, 5, seedFor("prefill"))
+		// decode has no LWS yet, so it seeds fresh.
+		assert.EqualValues(t, 3, seedFor("decode"))
+	})
 }

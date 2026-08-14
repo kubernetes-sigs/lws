@@ -685,7 +685,7 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		require.Contains(t, warnings[0], "spec.replicas is ignored")
 	})
 
-	t.Run("rejects External + spec.slices > 1", func(t *testing.T) {
+	t.Run("allows External + spec.slices > 1", func(t *testing.T) {
 		obj := &disaggv1.DisaggregatedSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"},
 			Spec: disaggv1.DisaggregatedSetSpec{
@@ -693,9 +693,9 @@ func TestValidateExternalScalingRules(t *testing.T) {
 				Roles:  []disaggv1.DisaggregatedRoleSpec{{Name: "prefill", Scaling: external}},
 			},
 		}
-		_, err := webhook.ValidateCreate(ctx, obj)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "spec.slices > 1")
+		warnings, err := webhook.ValidateCreate(ctx, obj)
+		require.NoError(t, err)
+		require.Empty(t, warnings)
 	})
 
 	t.Run("rejects when scaler name would exceed 253 chars", func(t *testing.T) {
