@@ -719,7 +719,7 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 			Namespace: disaggregatedSet.Namespace,
 			Labels: map[string]string{
 				disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name,
-				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
+				disaggregatedsetv1.RoleLabelKey:    testControllerRolePrefill,
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
