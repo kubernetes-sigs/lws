@@ -49,6 +49,16 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	}
 	updateRevisionKey := revisionutils.GetRevisionKey(updateRevision)
 
+	lwsWithSubGroup := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(2).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).Obj()
+	subGroupRevision, err := revisionutils.NewRevision(context.TODO(), client, lwsWithSubGroup, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subGroupRevisionKey := revisionutils.GetRevisionKey(subGroupRevision)
+
 	tests := []struct {
 		name                  string
 		pod                   *corev1.Pod
@@ -212,7 +222,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 		},
 		{
 			name:     "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
-			revision: updateRevision,
+			revision: subGroupRevision,
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -222,7 +232,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.SetNameLabelKey:         "test-sample",
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
-						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RevisionKey:             subGroupRevisionKey,
 					},
 				},
 			},
@@ -243,7 +253,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 					Labels: map[string]string{
 						leaderworkerset.SetNameLabelKey:         "test-sample",
 						leaderworkerset.GroupIndexLabelKey:      "1",
-						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RevisionKey:             subGroupRevisionKey,
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 					},
 					Annotations: map[string]string{
@@ -264,7 +274,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 							Labels: map[string]string{
 								leaderworkerset.SetNameLabelKey:         "test-sample",
 								leaderworkerset.GroupIndexLabelKey:      "1",
-								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.RevisionKey:             subGroupRevisionKey,
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 							},
 							Annotations: map[string]string{
@@ -272,7 +282,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/leader-name":         "test-sample",
 								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
 								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
-								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   "LeaderExcluded",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{

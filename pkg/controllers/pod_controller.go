@@ -418,11 +418,13 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
-			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
+	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
+			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
 		}
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize != nil {
+			podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		}
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
