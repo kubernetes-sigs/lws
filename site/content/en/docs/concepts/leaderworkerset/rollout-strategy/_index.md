@@ -3,18 +3,19 @@ title: "Rollout Strategy"
 linkTitle: "Rollout Strategy"
 weight: 60
 description: >
-  Rolling update configurations, maxUnavailable, and maxSurge in LeaderWorkerSet.
+  Rolling update configurations, updateOrder, maxUnavailable, and maxSurge in LeaderWorkerSet.
 aliases:
 - /docs/concepts/rollout-strategy/
 ---
 
 Rolling update is vital to online services requiring high availability and zero downtime. For LLM inference services, this is particularly important to mitigate stockout and maintain serving capacity during updates.
 
-LeaderWorkerSet supports three parameters within `.spec.rolloutStrategy.rollingUpdateConfiguration`:
+LeaderWorkerSet supports four parameters within `.spec.rolloutStrategy.rollingUpdateConfiguration`:
 
 - `maxUnavailable`: Maximum number (or percentage) of replicas (groups of pods) allowed to be unavailable during the update, relative to `spec.replicas` (percentages are rounded down). Defaults to `1`.
 - `maxSurge`: Maximum number (or percentage) of extra replicas that can be created above `spec.replicas` during the update (percentages are rounded up; in `Ordinal` mode, surge is capped at `spec.replicas`). Defaults to `0`.
 - `partition`: Lowest ordinal updated to the new template during a rolling update. Replicas with `ordinal >= partition` receive the new template, while replicas with `ordinal < partition` stay on the previous revision. Defaults to `0`. Only supported when `.spec.groupIdentity` is `Ordinal`.
+- `updateOrder`: Controls simultaneous template updates and scale-ups. `ScaleFirst` creates the additional replicas before updating existing replicas and is the default. `RolloutFirst` updates existing replicas before creating additional replicas, which allows old resources to be released in clusters without spare capacity.
 
 {{% alert title="Note" color="info" %}}
 `maxSurge` and `maxUnavailable` cannot both be zero at the same time.
@@ -102,6 +103,25 @@ To avoid or recover from this state:
 2. **Increase `maxUnavailable` above the scale-up delta (`maxUnavailable > newReplicas - oldReplicas`)**:
    - **In `Hash` mode**: Setting `maxUnavailable` to at least `(newReplicas - oldReplicas) + 1` (e.g. `2` for `1 -> 2`, or `5` for `4 -> 8`) lets the Deployment immediately terminate one old `8`-GPU group. Once it exits, two new `4`-GPU groups fit into the freed capacity, and because any ready group increases Deployment availability regardless of order, the remaining old groups cascade through the rollout.
    - **In `Ordinal` mode**: Because `partition` only steps down as tail ordinals become contiguously ready from the highest ordinal (`newReplicas - 1`) downward, freeing capacity for a lower pending ordinal (such as `R-4` while `R-7` stays `Pending`) does not advance `partition`. When multiple scaled-up ordinals are `Pending`, single-step recovery requires setting `maxUnavailable: 100%` (or `newReplicas`) so `partition` drops to `0` immediately.
+
+## Update Order
+
+`ScaleFirst` preserves availability during a simultaneous template update and scale-up by creating the additional replicas before updating existing replicas. It requires enough capacity for the old replicas and at least one additional replica to run at the same time.
+
+`RolloutFirst` is intended for capacity-constrained clusters. It holds the current replica count, updates existing replicas according to `maxUnavailable`, waits for them to become ready, and then scales to the desired replica count. For example, changing one replica that requests eight GPUs into two replicas that request four GPUs each requires `RolloutFirst` when only eight GPUs are available:
+
+```yaml
+spec:
+  replicas: 2
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      updateOrder: RolloutFirst
+      maxUnavailable: 1
+      maxSurge: 0
+```
+
+`RolloutFirst` requires `maxUnavailable` to be greater than zero. It can temporarily reduce availability while existing replicas are replaced.
 
 ## MaxUnavailable Feature Gate
 
