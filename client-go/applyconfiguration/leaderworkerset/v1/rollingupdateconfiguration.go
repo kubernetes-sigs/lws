@@ -19,6 +19,7 @@ package v1
 
 import (
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // RollingUpdateConfigurationApplyConfiguration represents a declarative configuration of the RollingUpdateConfiguration type for use
@@ -26,6 +27,13 @@ import (
 //
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfigurationApplyConfiguration struct {
+	// updateOrder controls whether existing replicas are updated before scaling up
+	// when the pod template and replica count increase in the same update.
+	// ScaleFirst preserves the existing behavior of creating the additional replicas
+	// before updating existing replicas. RolloutFirst updates existing replicas before
+	// creating the additional replicas, allowing their old resources to be released.
+	// The default value is ScaleFirst.
+	UpdateOrder *leaderworkersetv1.UpdateOrderType `json:"updateOrder,omitempty"`
 	// partition indicates the ordinal at which the lws should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
@@ -65,6 +73,14 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 // apply.
 func RollingUpdateConfiguration() *RollingUpdateConfigurationApplyConfiguration {
 	return &RollingUpdateConfigurationApplyConfiguration{}
+}
+
+// WithUpdateOrder sets the UpdateOrder field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdateOrder field is set to the value of the last call.
+func (b *RollingUpdateConfigurationApplyConfiguration) WithUpdateOrder(value leaderworkersetv1.UpdateOrderType) *RollingUpdateConfigurationApplyConfiguration {
+	b.UpdateOrder = &value
+	return b
 }
 
 // WithPartition sets the Partition field in the declarative configuration to the given value
