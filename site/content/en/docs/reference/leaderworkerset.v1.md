@@ -318,6 +318,18 @@ the headless service, defaults to shared</p>
 <tbody>
     
   
+<tr><td><code>updateOrder</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-UpdateOrderType"><code>UpdateOrderType</code></a>
+</td>
+<td>
+   <p>updateOrder controls whether existing replicas are updated before scaling up
+when the pod template and replica count increase in the same update.
+ScaleFirst preserves the existing behavior of creating the additional replicas
+before updating existing replicas. RolloutFirst updates existing replicas before
+creating the additional replicas, allowing their old resources to be released.
+The default value is ScaleFirst.</p>
+</td>
+</tr>
 <tr><td><code>partition</code><br/>
 <code>int32</code>
 </td>
@@ -485,6 +497,18 @@ the extra pod, and will be part of the first subgroup.</p>
 **Appears in:**
 
 - [NetworkConfig](#leaderworkerset-x-k8s-io-v1-NetworkConfig)
+
+
+
+
+
+## `UpdateOrderType`     {#leaderworkerset-x-k8s-io-v1-UpdateOrderType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [RollingUpdateConfiguration](#leaderworkerset-x-k8s-io-v1-RollingUpdateConfiguration)
 
 
 

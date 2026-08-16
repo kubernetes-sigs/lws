@@ -150,6 +150,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						UpdateOrder:    leaderworkerset.ScaleFirstUpdateOrder,
 						Partition:      ptr.To[int32](0),
 						MaxUnavailable: intstr.FromInt32(1),
 						MaxSurge:       intstr.FromInt32(0),
@@ -162,6 +163,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							UpdateOrder:    leaderworkerset.ScaleFirstUpdateOrder,
 							Partition:      ptr.To[int32](2),
 							MaxUnavailable: intstr.FromInt32(2),
 							MaxSurge:       intstr.FromInt32(1),
@@ -173,6 +175,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
 						Type: leaderworkerset.RollingUpdateStrategyType,
 						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							UpdateOrder:    leaderworkerset.ScaleFirstUpdateOrder,
 							Partition:      ptr.To[int32](2),
 							MaxUnavailable: intstr.FromInt32(2),
 							MaxSurge:       intstr.FromInt32(1),
@@ -486,6 +489,16 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return lws
 			},
 			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("set RolloutFirst with maxUnavailable 0 should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder = leaderworkerset.RolloutFirstUpdateOrder
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(1)
+				return lws
+			},
+			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("set replica to 0 no matter maxUnavailable or maxSurge is should be allowed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
