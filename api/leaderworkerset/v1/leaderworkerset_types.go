@@ -267,6 +267,18 @@ const (
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
+	// updateOrder controls whether existing replicas are updated before scaling up
+	// when the pod template and replica count increase in the same update.
+	// ScaleFirst preserves the existing behavior of creating the additional replicas
+	// before updating existing replicas. RolloutFirst updates existing replicas before
+	// creating the additional replicas, allowing their old resources to be released.
+	// The default value is ScaleFirst.
+	//
+	// +optional
+	// +kubebuilder:default=ScaleFirst
+	// +kubebuilder:validation:Enum={ScaleFirst,RolloutFirst}
+	UpdateOrder UpdateOrderType `json:"updateOrder,omitempty"`
+
 	// partition indicates the ordinal at which the lws should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
@@ -312,6 +324,16 @@ type RollingUpdateConfiguration struct {
 	// +kubebuilder:default=0
 	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
+
+type UpdateOrderType string
+
+const (
+	// ScaleFirst increases the replica count before updating existing replicas.
+	ScaleFirstUpdateOrder UpdateOrderType = "ScaleFirst"
+
+	// RolloutFirst updates existing replicas before increasing the replica count.
+	RolloutFirstUpdateOrder UpdateOrderType = "RolloutFirst"
+)
 
 type RolloutStrategyType string
 

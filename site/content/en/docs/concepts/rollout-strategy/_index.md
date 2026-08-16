@@ -5,8 +5,9 @@ weight: 10
 description: >
 ---
 
-Rolling update is vital to online services with zero downtime. For LLM inference services, this is particularly important, which helps to mitigate stockout. Two different configurations are supported in LWS, `maxUnavailable` and `maxSurge`:
+Rolling update is vital to online services with zero downtime. For LLM inference services, this is particularly important, which helps to mitigate stockout. Three different configurations are supported in LWS, `updateOrder`, `maxUnavailable`, and `maxSurge`:
 
+- `updateOrder`: Controls simultaneous template updates and scale-ups. `ScaleFirst` creates the additional replicas before updating existing replicas and is the default. `RolloutFirst` updates existing replicas before creating additional replicas, which allows old resources to be released in clusters without spare capacity.
 - `maxUnavailable`: Indicates how many replicas are allowed to be unavailable during the update, the unavailable number is based on the spec.replicas. Defaults to 1.
 - `maxSurge`: Indicates how many extra replicas can be deployed during the update. Defaults to 0.
 
@@ -19,6 +20,7 @@ spec:
   rolloutStrategy:
     type: RollingUpdate
     rollingUpdateConfiguration:
+      updateOrder: ScaleFirst
       maxUnavailable: 2
       maxSurge: 2
   replicas: 4
@@ -41,6 +43,25 @@ In the following we'll show how rolling update processes for a leaderWorkerSet w
 | Stage7   | 0 | 4 |  ⏳ | ⏳ | ✅ | ✅ |  |  | Scale down to 4 immediately, reclaiming both surge replicas |
 | Stage8     | 0 | 4 |  ⏳  | ✅ |  ✅ | ✅ |  |  | R-1 becomes ready |
 | Stage9     | 0 | 4 |  ✅  | ✅ |  ✅ | ✅ |  |  | Rolling update completed |
+
+## Update Order
+
+`ScaleFirst` preserves availability during a simultaneous template update and scale-up by creating the additional replicas before updating existing replicas. It requires enough capacity for the old replicas and at least one additional replica to run at the same time.
+
+`RolloutFirst` is intended for capacity-constrained clusters. It holds the current replica count, updates existing replicas according to `maxUnavailable`, waits for them to become ready, and then scales to the desired replica count. For example, changing one replica that requests eight GPUs into two replicas that request four GPUs each requires `RolloutFirst` when only eight GPUs are available:
+
+```yaml
+spec:
+  replicas: 2
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      updateOrder: RolloutFirst
+      maxUnavailable: 1
+      maxSurge: 0
+```
+
+`RolloutFirst` requires `maxUnavailable` to be greater than zero. It can temporarily reduce availability while existing replicas are replaced.
 
 ## MaxUnavailable Feature
 `MaxUnavailable` was graduated to Beta in Kubernetes [1.35](1.35_release_notes), which means that it is enabled by default.
