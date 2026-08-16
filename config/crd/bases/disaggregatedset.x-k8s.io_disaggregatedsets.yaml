@@ -18343,6 +18343,19 @@ spec:
                                     The default value is 0.
                                   format: int32
                                   type: integer
+                                updateOrder:
+                                  default: ScaleFirst
+                                  description: |-
+                                    updateOrder controls whether existing replicas are updated before scaling up
+                                    when the pod template and replica count increase in the same update.
+                                    ScaleFirst preserves the existing behavior of creating the additional replicas
+                                    before updating existing replicas. RolloutFirst updates existing replicas before
+                                    creating the additional replicas, allowing their old resources to be released.
+                                    The default value is ScaleFirst.
+                                  enum:
+                                  - ScaleFirst
+                                  - RolloutFirst
+                                  type: string
                               type: object
                             type:
                               default: RollingUpdate

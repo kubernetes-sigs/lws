@@ -1034,6 +1034,167 @@ func TestRollingUpdateParametersScaleUpWithTemplateUpdateDoesNotCreateExtraSurge
 	}
 }
 
+func TestRollingUpdateParametersRolloutFirstHoldsReplicasDuringTemplateUpdate(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(3).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				UpdateOrder:    leaderworkerset.RolloutFirstUpdateOrder,
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        lws.Name,
+			Namespace:   lws.Namespace,
+			Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(2)},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](2),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+					Partition: ptr.To[int32](0),
+				},
+			},
+		},
+	}
+
+	partition, replicas, err := reconciler.rollingUpdateParameters(context.Background(), lws, sts, "rev-new", true)
+	if err != nil {
+		t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
+	}
+	if partition != 1 {
+		t.Fatalf("rollingUpdateParameters() partition=%d, want 1", partition)
+	}
+	if replicas != 2 {
+		t.Fatalf("rollingUpdateParameters() replicas=%d, want 2", replicas)
+	}
+}
+
+func TestRollingUpdateParametersRolloutFirstProgression(t *testing.T) {
+	const (
+		oldRevision = "rev-old"
+		newRevision = "rev-new"
+	)
+
+	tests := []struct {
+		name          string
+		partition     int32
+		pods          []corev1.Pod
+		wantPartition int32
+		wantReplicas  int32
+	}{
+		{
+			name:      "holds replicas while the first replacement is unready",
+			partition: 1,
+			pods: []corev1.Pod{
+				makeRolloutFirstTestPod("test-sample-0", "0", oldRevision, true),
+				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, false),
+			},
+			wantPartition: 1,
+			wantReplicas:  2,
+		},
+		{
+			name:      "updates the next existing replica before scaling",
+			partition: 1,
+			pods: []corev1.Pod{
+				makeRolloutFirstTestPod("test-sample-0", "0", oldRevision, true),
+				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, true),
+			},
+			wantPartition: 0,
+			wantReplicas:  2,
+		},
+		{
+			name:      "scales after all existing replicas are updated and ready",
+			partition: 0,
+			pods: []corev1.Pod{
+				makeRolloutFirstTestPod("test-sample-0", "0", newRevision, true),
+				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, true),
+			},
+			wantPartition: 0,
+			wantReplicas:  3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := make([]runtime.Object, 0, len(tc.pods))
+			for idx := range tc.pods {
+				objects = append(objects, &tc.pods[idx])
+			}
+			reconciler := &LeaderWorkerSetReconciler{
+				Client: fake.NewClientBuilder().WithRuntimeObjects(objects...).Build(),
+				Record: fakeEventRecorder{},
+			}
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(3).
+				Size(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						UpdateOrder:    leaderworkerset.RolloutFirstUpdateOrder,
+						Partition:      ptr.To[int32](0),
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).Obj()
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        lws.Name,
+					Namespace:   lws.Namespace,
+					Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(2)},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](2),
+					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+						Type: appsv1.RollingUpdateStatefulSetStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+							Partition: ptr.To(tc.partition),
+						},
+					},
+				},
+			}
+
+			partition, replicas, err := reconciler.rollingUpdateParameters(context.Background(), lws, sts, newRevision, false)
+			if err != nil {
+				t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
+			}
+			if partition != tc.wantPartition {
+				t.Errorf("rollingUpdateParameters() partition=%d, want %d", partition, tc.wantPartition)
+			}
+			if replicas != tc.wantReplicas {
+				t.Errorf("rollingUpdateParameters() replicas=%d, want %d", replicas, tc.wantReplicas)
+			}
+		})
+	}
+}
+
+func makeRolloutFirstTestPod(name, groupIndex, revision string, ready bool) corev1.Pod {
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  groupIndex,
+				leaderworkerset.RevisionKey:         revision,
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	if ready {
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	}
+	return pod
+}
+
 func TestRollingUpdateParametersTemplateUpdateReclaimsSurgeWhenAllowed(t *testing.T) {
 	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
