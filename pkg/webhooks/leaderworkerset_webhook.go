@@ -97,10 +97,14 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
+			UpdateOrder:    v1.ScaleFirstUpdateOrder,
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt32(0),
 			Partition:      ptr.To[int32](0),
 		}
+	}
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder == "" {
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder = v1.ScaleFirstUpdateOrder
 	}
 
 	if lws.Spec.NetworkConfig == nil {
