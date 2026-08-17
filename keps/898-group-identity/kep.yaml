@@ -1,0 +1,15 @@
+title: Hash Group Identity
+kep-number: 898
+authors:
+  - "BenjaminBraunDev"
+status: provisional
+creation-date: 2026-08-17
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
