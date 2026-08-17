@@ -118,6 +118,20 @@ spec:
                     spec:
                       description: spec defines the behavior of an LWS.
                       properties:
+                        groupIdentity:
+                          default: Ordinal
+                          description: |-
+                            groupIdentity determines how group identities are assigned.
+                            Ordinal (default) manages leaders through a StatefulSet: groups are named
+                            <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
+                            Hash manages leaders through a Deployment: group names are hash-suffixed,
+                            scale down prefers unscheduled and not-ready groups over healthy ones, and
+                            rollouts are paced by a group readiness gate on the leader pods.
+                            This field is immutable.
+                          enum:
+                          - Ordinal
+                          - Hash
+                          type: string
                         leaderWorkerTemplate:
                           description: leaderWorkerTemplate defines the template for
                             leader/worker pods
