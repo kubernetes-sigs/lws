@@ -17,14 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -122,6 +126,93 @@ func TestGetPVCApplyConfiguration(t *testing.T) {
 			result := GetPVCApplyConfiguration(tc.lws)
 			if diff := cmp.Diff(tc.expected, result); diff != "" {
 				t.Errorf("Unexpected PVC apply configuration (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCreateHeadlessServicePublishNotReadyAddresses(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+	shared := leaderworkerset.SubdomainShared
+	published := true
+	unpublished := false
+
+	tests := []struct {
+		name          string
+		networkConfig *leaderworkerset.NetworkConfig
+		existing      *corev1.Service
+		want          bool
+	}{
+		{
+			name:          "nil NetworkConfig keeps the historical default (true)",
+			networkConfig: nil,
+			want:          true,
+		},
+		{
+			name: "nil publishNotReadyAddresses keeps the historical default (true)",
+			networkConfig: &leaderworkerset.NetworkConfig{
+				SubdomainPolicy: &shared,
+			},
+			want: true,
+		},
+		{
+			name: "explicit false disables publishing",
+			networkConfig: &leaderworkerset.NetworkConfig{
+				SubdomainPolicy:          &shared,
+				PublishNotReadyAddresses: &unpublished,
+			},
+			want: false,
+		},
+		{
+			name: "explicit true publishes",
+			networkConfig: &leaderworkerset.NetworkConfig{
+				SubdomainPolicy:          &shared,
+				PublishNotReadyAddresses: &published,
+			},
+			want: true,
+		},
+		{
+			name:          "existing service is patched back to true when the field is cleared",
+			networkConfig: nil,
+			existing: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP:                "None",
+					PublishNotReadyAddresses: false,
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+			lws.UID = types.UID("lws-uid")
+			lws.Spec.NetworkConfig = tc.networkConfig
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tc.existing != nil {
+				builder = builder.WithObjects(tc.existing)
+			}
+			k8sClient := builder.Build()
+
+			if err := CreateHeadlessServiceIfNotExists(context.Background(), k8sClient, scheme, lws, "test-sample", map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
+				t.Fatalf("CreateHeadlessServiceIfNotExists() error = %v", err)
+			}
+
+			var svc corev1.Service
+			if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "test-sample", Namespace: "default"}, &svc); err != nil {
+				t.Fatalf("failed to get service: %v", err)
+			}
+			if svc.Spec.PublishNotReadyAddresses != tc.want {
+				t.Fatalf("PublishNotReadyAddresses = %v, want %v", svc.Spec.PublishNotReadyAddresses, tc.want)
 			}
 		})
 	}
