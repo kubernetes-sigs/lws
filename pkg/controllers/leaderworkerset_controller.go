@@ -38,8 +38,11 @@ import (
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -269,6 +272,19 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					Name:      name,
 					Namespace: a.GetNamespace(),
 				}}}
+			}),
+			// React to leader pod creation (eager per-leader Service), deletion
+			// (group recreation), and updates that change the group-restart-count
+			// annotation (surfacing the Failed condition without waiting for the
+			// next unrelated event). Kubelet status churn on healthy leader pods
+			// must not enqueue a full LWS reconcile.
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(e event.CreateEvent) bool { return true },
+				DeleteFunc: func(e event.DeleteEvent) bool { return true },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartCountAnnotationKey] !=
+						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartCountAnnotationKey]
+				},
 			})).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
