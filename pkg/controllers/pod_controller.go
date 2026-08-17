@@ -277,11 +277,15 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		limit := *leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
 		if count >= limit {
-			// Still bump the annotation so the LWS-level reconciler
-			// (hasFailedGroup) can observe the exhausted budget and surface
-			// the Failed condition, even though we do not delete the leader.
-			if err := r.incrementGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
-				return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+			// Bump the annotation once, on the transition into the exhausted
+			// state, so the LWS-level reconciler (hasFailedGroup) can observe
+			// the budget is exceeded and surface the Failed condition, even
+			// though we do not delete the leader. Subsequent failures (e.g. a
+			// crash-looping pod) must not keep growing the counter.
+			if count == limit {
+				if err := r.incrementGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
+					return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+				}
 			}
 			r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeWarning, "MaxGroupRestartsExceeded",
 				"Skip recreating group %s: reached maxGroupRestarts=%d", leader.Labels[leaderworkerset.GroupIndexLabelKey], limit)

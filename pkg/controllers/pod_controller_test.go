@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -754,11 +755,12 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		limit             *int32
-		existingCount     string
-		wantLeaderDeleted bool
-		wantCountAfter    string
+		name                   string
+		limit                  *int32
+		existingCount          string
+		existingPersistedCount string
+		wantLeaderDeleted      bool
+		wantCountAfter         string
 	}{
 		{
 			name:              "nil MaxGroupRestarts does not touch annotation",
@@ -788,6 +790,14 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 			wantLeaderDeleted: false,
 			wantCountAfter:    "2",
 		},
+		{
+			name:                   "maxGroupRestarts=1 with count=2 already exceeded does not keep growing the counter",
+			limit:                  ptr.To[int32](1),
+			existingCount:          "2",
+			existingPersistedCount: "2",
+			wantLeaderDeleted:      false,
+			wantCountAfter:         "2",
+		},
 	}
 
 	for _, tc := range tests {
@@ -803,6 +813,11 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 				t.Fatalf("add lws to scheme: %v", err)
 			}
 			lws := buildLWS(tc.limit)
+			if tc.existingPersistedCount != "" {
+				lws.Annotations = map[string]string{
+					leaderworkerset.GroupRestartCountsAnnotationKey: fmt.Sprintf(`{"0":%s}`, tc.existingPersistedCount),
+				}
+			}
 			leaderSts := buildLeaderStatefulSet("leader-sts-uid")
 			leader := buildLeader("leader-uid", map[string]string{})
 			leader.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leaderSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
