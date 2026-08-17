@@ -72,6 +72,9 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
+		// Reject hash-mode feature combinations the LWS webhook would reject, so
+		// they fail at DisaggregatedSet admission instead of at LWS creation time.
+		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
 			continue
