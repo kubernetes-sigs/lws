@@ -210,7 +210,10 @@ const (
      the LWS-level reconciler reads to surface `Failed`;
    - the `group-restart-counts` annotation on the LWS object survives leader pod
      recreation, so a recreated leader inherits the group's counter and neither
-     pod recreation nor controller restarts reset the budget.
+     pod recreation nor controller restarts reset the budget;
+   - the budget read path takes the max of the two sides and sync only raises
+     (never downgrades) the pod annotation, so a lagging annotation from a
+     partial write cannot undercount the budget.
 3. After terminal failure:
    no further group recreation is attempted for the failed replica; pod is retained for debugging.
 4. DNS behavior:

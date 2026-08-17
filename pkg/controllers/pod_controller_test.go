@@ -798,6 +798,14 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 			wantLeaderDeleted:      false,
 			wantCountAfter:         "2",
 		},
+		{
+			name:                   "max(persisted, pod) wins when the pod annotation has drifted ahead",
+			limit:                  ptr.To[int32](2),
+			existingCount:          "2",
+			existingPersistedCount: "1",
+			wantLeaderDeleted:      false,
+			wantCountAfter:         "3",
+		},
 	}
 
 	for _, tc := range tests {
@@ -888,8 +896,6 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 	}
 }
 
-// ownerRefWrapper removed in favor of direct []metav1.OwnerReference.
-
 func TestGetGroupRestartCountHandlesInvalidAnnotation(t *testing.T) {
 	r := &PodReconciler{}
 	pod := &corev1.Pod{
@@ -979,6 +985,46 @@ func TestSyncLeaderRestartCountAnnotationFromLWS(t *testing.T) {
 	}
 	if got.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] != "1" {
 		t.Fatalf("annotation = %q, want %q", got.Annotations[leaderworkerset.GroupRestartCountAnnotationKey], "1")
+	}
+}
+
+func TestSyncLeaderRestartCountAnnotationNeverDowngrades(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("add lws to scheme: %v", err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"0":1}`,
+	}
+	leader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.GroupIndexLabelKey: "0",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartCountAnnotationKey: "2",
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if err := r.syncLeaderRestartCountAnnotation(context.Background(), lws, leader); err != nil {
+		t.Fatalf("syncLeaderRestartCountAnnotation error = %v", err)
+	}
+	var got corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{Name: leader.Name, Namespace: leader.Namespace}, &got); err != nil {
+		t.Fatalf("refetch leader: %v", err)
+	}
+	// The pod annotation drifted ahead (newer information); sync must not
+	// downgrade it to the stale persisted value.
+	if got.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] != "2" {
+		t.Fatalf("annotation = %q, want %q (never downgrade)", got.Annotations[leaderworkerset.GroupRestartCountAnnotationKey], "2")
 	}
 }
 

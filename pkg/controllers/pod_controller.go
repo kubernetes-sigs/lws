@@ -265,15 +265,22 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	// behavior.
 	if leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
 		groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+		// The counter lives in two places: the LWS-level annotation (survives
+		// leader recreation) and the leader pod annotation (read by the
+		// LWS-level reconciler to surface Failed). Both patches are
+		// best-effort and non-atomic, so either side can briefly lag behind
+		// the other; taking the max of the two removes the asymmetry instead
+		// of special-casing "0 means absent".
 		count, err := r.getPersistedGroupRestartCount(&leaderWorkerSet, groupIndex)
 		if err != nil {
 			return false, fmt.Errorf("reading persisted group restart count for %s: %w", leader.Name, err)
 		}
-		if count == 0 {
-			count, err = r.getGroupRestartCount(&leader)
-		}
+		podCount, err := r.getGroupRestartCount(&leader)
 		if err != nil {
 			return false, fmt.Errorf("reading group restart count for %s: %w", leader.Name, err)
+		}
+		if podCount > count {
+			count = podCount
 		}
 		limit := *leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
 		if count >= limit {
@@ -367,6 +374,13 @@ func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leade
 // incrementGroupRestartCount stores the next count on the LWS object and on the
 // current leader pod so the budget survives leader recreation and remains visible
 // on the active leader.
+//
+// The two patches (LWS annotation, then leader pod annotation) are deliberately
+// best-effort: they are not atomic with each other or with the leader deletion,
+// and two concurrent reconciles for the same group can lose an update (last
+// writer wins). This is an accepted tradeoff documented in KEP-820 ("annotation
+// increment and delete are not fully atomic"); callers take max(persisted, pod)
+// when reading so a lagging side cannot undercount the budget.
 func (r *PodReconciler) incrementGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
 	groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
 	if err := r.persistGroupRestartCount(ctx, lws, groupIndex, next); err != nil {
@@ -389,10 +403,18 @@ func (r *PodReconciler) syncLeaderRestartCountAnnotation(ctx context.Context, lw
 	if count == 0 {
 		return nil
 	}
-	want := strconv.FormatInt(int64(count), 10)
-	if leader.Annotations != nil && leader.Annotations[leaderworkerset.GroupRestartCountAnnotationKey] == want {
+	podCount, err := r.getGroupRestartCount(leader)
+	if err != nil {
+		return err
+	}
+	// Only ever raise the leader annotation toward the persisted value. A pod
+	// annotation that has drifted ahead of the LWS-level map is newer
+	// information and must not be downgraded; the budget read path takes
+	// max(persisted, pod) anyway, so both sides converge on the higher value.
+	if podCount >= count {
 		return nil
 	}
+	want := strconv.FormatInt(int64(count), 10)
 	patch := client.MergeFrom(leader.DeepCopy())
 	if leader.Annotations == nil {
 		leader.Annotations = map[string]string{}
