@@ -41,10 +41,10 @@ var managerTestLabels = map[string]string{
 	disaggregatedsetv1.RevisionLabelKey: "abc123",
 }
 
-func buildManagerTestLWS(name string, replicas int32, annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
-	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
+func buildManagerTestLWS(annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
 		Labels(managerTestLabels).
-		Replica(int(replicas)).
+		Replica(3).
 		Annotation(annotations).
 		Obj()
 }
@@ -172,7 +172,7 @@ func TestManagerDelete(t *testing.T) {
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
+		existingLWS := buildManagerTestLWS(nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -272,7 +272,6 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("skips update when value already correct", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -291,7 +290,6 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("updates when overwriting different value", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -309,7 +307,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets annotation when not present", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
+		existingLWS := buildManagerTestLWS(nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
