@@ -11,7 +11,7 @@ description: >
 
 <img src="/images/lws-ds-logos.svg" width="300" alt="lws logo">
 
-**LeaderWorkerSet (LWS):** An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
+**[LeaderWorkerSet (LWS)](../concepts/leaderworkerset/):** An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
 
 **[DisaggregatedSet (DS)](../concepts/disaggregatedset/):** An API to support advanced multi-node inference. LWS forms the core API for multi-node while DisaggregatedSet builds on it to add advanced disaggregated workload deployment with support for autoscaling, rollouts and failure handling.
 
