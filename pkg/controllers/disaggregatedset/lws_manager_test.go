@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,11 +41,39 @@ var managerTestLabels = map[string]string{
 	disaggregatedsetv1.RevisionLabelKey: "abc123",
 }
 
-func buildManagerTestLWS(name string, replicas int32, annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
+func buildManagerTestLWS(annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+		Labels(managerTestLabels).
+		Replica(3).
+		Annotation(annotations).
+		Obj()
+}
+
+// testManagerDS returns a minimal DisaggregatedSet fixture for ownership
+// checks in Scale/GetForRole tests.
+func testManagerDS(name string) *disaggregatedsetv1.DisaggregatedSet {
+	return wrappers.BuildDisaggregatedSet(name, "default").Obj()
+}
+
+// ownerRefFor builds the controller OwnerReference this package's own
+// LeaderWorkerSetManager.Create sets, so fixtures match real objects.
+func ownerRefFor(ds *disaggregatedsetv1.DisaggregatedSet) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: disaggregatedsetv1.GroupVersion.String(),
+		Kind:       "DisaggregatedSet",
+		Name:       ds.Name,
+		UID:        ds.UID,
+		Controller: ptr.To(true),
+	}
+}
+
+// buildOwnedManagerTestLWS is buildManagerTestLWS plus a controller
+// OwnerReference to owner, for ownership-check tests.
+func buildOwnedManagerTestLWS(name string, replicas int32, owner *disaggregatedsetv1.DisaggregatedSet) *leaderworkersetv1.LeaderWorkerSet {
 	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
 		Labels(managerTestLabels).
 		Replica(int(replicas)).
-		Annotation(annotations).
+		OwnerReference(ownerRefFor(owner)).
 		Obj()
 }
 
@@ -143,7 +172,7 @@ func TestManagerDelete(t *testing.T) {
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
+		existingLWS := buildManagerTestLWS(nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -172,9 +201,10 @@ func TestManagerDelete(t *testing.T) {
 func TestManagerScale(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
 
 	t.Run("skips patch when already at desired scale", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 5, nil)
+		existingLWS := buildOwnedManagerTestLWS("test-lws", 5, ds)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -182,13 +212,13 @@ func TestManagerScale(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Scale(context.Background(), "default", "test-lws", 5)
+		err := manager.Scale(context.Background(), ds, "test-lws", 5)
 
 		require.NoError(t, err)
 	})
 
 	t.Run("scales to new replica count", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
+		existingLWS := buildOwnedManagerTestLWS("test-lws", 3, ds)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -196,7 +226,7 @@ func TestManagerScale(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Scale(context.Background(), "default", "test-lws", 5)
+		err := manager.Scale(context.Background(), ds, "test-lws", 5)
 
 		require.NoError(t, err)
 	})
@@ -207,9 +237,31 @@ func TestManagerScale(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Scale(context.Background(), "default", "nonexistent", 5)
+		err := manager.Scale(context.Background(), ds, "nonexistent", 5)
 
 		require.Error(t, err)
+	})
+
+	// Regression test for #981: a same-named LWS that exists but is owned by a
+	// different DisaggregatedSet (e.g. left over from a same-named
+	// DisaggregatedSet that was deleted and recreated before GC ran) must be
+	// refused, not mutated.
+	t.Run("refuses to scale a foreign-owned LWS with the same name", func(t *testing.T) {
+		foreignDS := testManagerDS("some-other-ds")
+		foreignLWS := buildOwnedManagerTestLWS("test-lws", 3, foreignDS)
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithRuntimeObjects(foreignLWS).
+			Build()
+
+		manager := NewLeaderWorkerSetManager(fakeClient)
+		err := manager.Scale(context.Background(), ds, "test-lws", 5)
+		require.Error(t, err, "scaling a foreign-owned LWS must be refused")
+
+		var got leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-lws"}, &got))
+		assert.EqualValues(t, 3, *got.Spec.Replicas, "the foreign LWS must not have been mutated")
 	})
 }
 
@@ -220,7 +272,6 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("skips update when value already correct", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -239,7 +290,6 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 
 	t.Run("updates when overwriting different value", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(
-			"test-lws", 3,
 			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 		)
 
@@ -257,7 +307,7 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 	})
 
 	t.Run("sets annotation when not present", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-lws", 3, nil)
+		existingLWS := buildManagerTestLWS(nil)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -289,8 +339,18 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
-	t.Run("returns nil when LWS already exists (idempotent)", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS("test-deploy-0-abc123-prefill", 3, nil)
+	testDeploy := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deploy",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	t.Run("returns nil when LWS already exists and is owned by this DS (idempotent)", func(t *testing.T) {
+		// Represents a concurrent reconcile of this same DisaggregatedSet
+		// having already created it.
+		existingLWS := buildOwnedManagerTestLWS("test-deploy-0-abc123-prefill", 3, testDeploy)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -299,16 +359,10 @@ func TestManagerCreate(t *testing.T) {
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
 		params := disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-deploy",
-					Namespace: "default",
-					UID:       "test-uid",
-				},
-			},
-			Role:     "prefill",
-			Revision: "abc123",
-			Replicas: 3,
+			DisaggregatedSet: testDeploy,
+			Role:             "prefill",
+			Revision:         "abc123",
+			Replicas:         3,
 			Labels: map[string]string{
 				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
 				disaggregatedsetv1.RoleLabelKey:     "prefill",
@@ -325,6 +379,45 @@ func TestManagerCreate(t *testing.T) {
 
 		err := manager.Create(context.Background(), params)
 		require.NoError(t, err) // Should not error, creation is idempotent
+	})
+
+	// Regression test for #981 (Copilot review on #983): a same-named LWS that
+	// exists but is owned by a different DisaggregatedSet must not be silently
+	// treated as "already created" — this DS's owned-object watches will never
+	// fire for a foreign object, so silently returning nil here could leave the
+	// role permanently missing an LWS. Create must error so the reconcile
+	// requeues instead.
+	t.Run("errors when the name is taken by a foreign-owned LWS", func(t *testing.T) {
+		foreignDS := testManagerDS("some-other-ds")
+		foreignLWS := buildOwnedManagerTestLWS("test-deploy-0-abc123-prefill", 3, foreignDS)
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithRuntimeObjects(foreignLWS).
+			Build()
+
+		manager := NewLeaderWorkerSetManager(fakeClient)
+		params := disaggregatedsetutils.CreateParams{
+			DisaggregatedSet: testDeploy,
+			Role:             "prefill",
+			Revision:         "abc123",
+			Replicas:         3,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
+				disaggregatedsetv1.RoleLabelKey:     "prefill",
+				disaggregatedsetv1.RevisionLabelKey: "abc123",
+			},
+			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
+				}},
+			},
+		}
+
+		err := manager.Create(context.Background(), params)
+		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
 	t.Run("successfully creates new LWS", func(t *testing.T) {
@@ -679,5 +772,59 @@ func TestManagerListSliceBucketing(t *testing.T) {
 		got, err := manager.List(context.Background(), ds, -1, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s0", "s1", "legacy"}, names(got))
+	})
+}
+
+// TestManagerGetForRoleIgnoresForeignOwnedLWS is a regression test for #981:
+// GetForRole must treat a same-named LWS occupying either the slice-aware or
+// the legacy name as absent when it's owned by a different DisaggregatedSet
+// (e.g. left over from a same-named DisaggregatedSet that was deleted and
+// recreated before GC ran), rather than returning it for the caller to scale.
+func TestManagerGetForRoleIgnoresForeignOwnedLWS(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+
+	ds := testManagerDS("test-deployment")
+	foreignDS := testManagerDS("some-other-ds")
+	const revision, role = "abc123", "prefill"
+
+	t.Run("slice-aware name occupied by a foreign LWS reads as absent", func(t *testing.T) {
+		slice := 0
+		name := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
+		foreignLWS := buildOwnedManagerTestLWS(name, 3, foreignDS)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(foreignLWS).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		got, err := manager.GetForRole(context.Background(), ds, slice, revision, role)
+		require.NoError(t, err)
+		assert.Nil(t, got, "a foreign-owned LWS at the generated name must not be returned")
+	})
+
+	t.Run("legacy name occupied by a foreign LWS reads as absent", func(t *testing.T) {
+		slice := 0
+		legacyName := disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role)
+		foreignLWS := buildOwnedManagerTestLWS(legacyName, 3, foreignDS)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(foreignLWS).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		got, err := manager.GetForRole(context.Background(), ds, slice, revision, role)
+		require.NoError(t, err)
+		assert.Nil(t, got, "a foreign-owned LWS at the legacy name must not be returned")
+	})
+
+	t.Run("owned LWS at the generated name is still returned normally", func(t *testing.T) {
+		slice := 0
+		name := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
+		ownedLWS := buildOwnedManagerTestLWS(name, 3, ds)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(ownedLWS).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		got, err := manager.GetForRole(context.Background(), ds, slice, revision, role)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, name, got.Name)
 	})
 }
