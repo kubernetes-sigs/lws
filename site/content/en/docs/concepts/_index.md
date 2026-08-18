@@ -6,14 +6,14 @@ description: >
   Core concepts of the LeaderWorkerSet and DisaggregatedSet APIs.
 ---
 
-The LeaderWorkerSet project provides two complementary Kubernetes APIs designed to address the unique requirements of distributed AI/ML workloads:
-
-1. **LeaderWorkerSet (LWS)** (`leaderworkerset.x-k8s.io/v1`): A foundational API for deploying a group of pods as a single **unit of replication**. LWS addresses multi-node model-parallel inference and distributed training workloads where pods within a replica share fate, require tight co-location, and communicate via high-speed interconnects.
-2. **DisaggregatedSet (DS)** (`disaggregatedset.x-k8s.io/v1`): A higher-level orchestration API designed for **disaggregated inference** architectures (e.g., separating prefill and decode phases). DisaggregatedSet manages and coordinates multiple underlying LeaderWorkerSets as distinct roles within a unified logical workload.
+This project provides two complementary Kubernetes APIs for distributed AI/ML workloads: **LeaderWorkerSet (LWS)** (`leaderworkerset.x-k8s.io/v1`) and **DisaggregatedSet (DS)** (`disaggregatedset.x-k8s.io/v1`).
 
 ## Architecture: Two Complementary APIs
 
 LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
+
+- **LeaderWorkerSet (LWS)** (`leaderworkerset.x-k8s.io/v1`): A foundational API for deploying a group of pods as a single **unit of replication**. LWS addresses multi-node model-parallel inference and distributed training workloads where pods within a replica share fate, require tight co-location, and communicate via high-speed interconnects.
+- **DisaggregatedSet (DS)** (`disaggregatedset.x-k8s.io/v1`): A higher-level orchestration API designed for **disaggregated inference** architectures (e.g., separating prefill and decode phases). DisaggregatedSet manages and coordinates multiple underlying LeaderWorkerSets as distinct roles within a unified logical workload.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -66,27 +66,3 @@ LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
 - You require coordinated, lockstep rollouts across multiple roles without disrupting serving ratios or dropping requests.
 - You want declarative management of a complex multi-role topology in a single Kubernetes manifest.
 - You are evaluating or adopting disaggregated serving architectures with first-class Kubernetes support.
-
----
-
-## Concept Sections
-
-Explore the detailed concepts for each API:
-
-### [LeaderWorkerSet](leaderworkerset/)
-
-Concepts and capabilities of the core LeaderWorkerSet API:
-
-- **[Dual Pod Templates](leaderworkerset/pod-templates/)**: Configure distinct specifications for leader and worker pods.
-- **[Startup Policy](leaderworkerset/startup-policy/)**: Control worker creation timing relative to leader pod readiness.
-- **[Exclusive Topology Placement](leaderworkerset/topology-placement/)**: Co-locate replica pods onto exclusive topology domains (e.g. rack, host).
-- **[Subgroups](leaderworkerset/subgroups/)**: Subgroup sizing, independent placement, and `LeaderOnly` heterogeneous scheduling.
-- **[Volume Claim Templates Support](leaderworkerset/volume-claim-templates/)**: Provision persistent storage dynamically for leader and worker pods.
-- **[Rollout Strategy](leaderworkerset/rollout-strategy/)**: Rolling update mechanics, `maxUnavailable`, and `maxSurge` configurations for zero-downtime upgrades.
-- **[Failure Handling](leaderworkerset/failure-handling/)**: Group restart policies (`RecreateGroupOnPodRestart`, `None`, `RecreateGroupAfterStart`) and node failure recovery.
-
-### [DisaggregatedSet](disaggregatedset/)
-
-Concepts and capabilities of the DisaggregatedSet API:
-
-- **[DisaggregatedSet](disaggregatedset/)**: Architecture, relationship to LeaderWorkerSet, role specifications, coordinated N-dimensional rollouts, slice replication, placement policies, and lifecycle management.
