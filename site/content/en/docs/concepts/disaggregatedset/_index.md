@@ -56,26 +56,6 @@ Each child LWS inherits standard LWS capabilities such as subgroup policies,
 exclusive placement, volume claim templates, and health monitoring. Rollout
 strategy for the set is owned by the DisaggregatedSet controller (see below).
 
-## Roles in DisaggregatedSet
-
-A `DisaggregatedSet` spec contains a `roles` list. Each role defines:
-
-| Field | Description |
-|---|---|
-| `name` | Unique name for this role (e.g., `prefill`, `decode`) |
-| `replicas` | Number of LWS replicas (pod groups) for this role (per slice) |
-| `rolloutStrategy` | Rolling update config for this role (DisaggregatedSet coordinates rollouts across roles; `partition`-based rollout is not supported) |
-| `leaderWorkerTemplate` | Pod template defining leader + worker containers |
-| `scaling` | Optional external scaling mode (for example HPA via `DisaggregatedSetRoleScaler`) |
-
-DisaggregatedSet coordinates lifecycle and rollouts across roles. Each role's replica count,
-rollout strategy, and pod template can be configured independently, while the controller manages
-them as a single cohesive unit.
-
-Optional top-level fields such as `slices` (replicate the full role topology) and
-`placementPolicy` (topology co-location / spread) are covered in the
-[examples and operations guide](/docs/examples/disaggregatedset/).
-
 ## Key Design Principles
 
 1. **LWS-native** — DisaggregatedSet is built on top of LWS, not alongside it. This means LWS features (failure handling, subgroup topology, exclusive placement) are available per role. Note: rollout strategy is owned by the DisaggregatedSet controller, which replaces the per-LWS rollout to coordinate updates across roles.
