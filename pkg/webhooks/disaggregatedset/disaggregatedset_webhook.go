@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -104,7 +105,55 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 			"spec.slices > 1 is not supported while any role has scaling.mode: External (alpha restriction)"))
 	}
 
+	allErrs = append(allErrs, w.validateGeneratedNames(obj)...)
+
 	return warnings, allErrs
+}
+
+// validateGeneratedNames rejects the DisaggregatedSet if any role would produce
+// a generated LWS name or derived Service name (<lws>-prv) exceeding the
+// DNS-1035 63-character limit. The generated name format is:
+//
+//	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
+//
+// and the service appends "-prv".
+func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
+	slices := int32(1)
+	if obj.Spec.Slices != nil {
+		slices = *obj.Spec.Slices
+	}
+	maxSliceIndex := slices - 1
+	sliceDigits := len(strconv.Itoa(int(maxSliceIndex)))
+
+	const (
+		dns1035MaxLen    = 63
+		revisionLen      = 8 // hex characters in the revision hash
+		serviceSuffixLen = 4 // len("-prv")
+		separators       = 3 // three "-" between dsName, slice, revision, roleName
+	)
+
+	rolesPath := field.NewPath("spec", "roles")
+	for i, role := range obj.Spec.Roles {
+		lwsNameLen := len(obj.Name) + separators + sliceDigits + revisionLen + len(role.Name)
+		svcNameLen := lwsNameLen + serviceSuffixLen
+
+		if svcNameLen > dns1035MaxLen {
+			combinedLimit := dns1035MaxLen - separators - sliceDigits - revisionLen - serviceSuffixLen
+			allErrs = append(allErrs, field.Invalid(
+				rolesPath.Index(i).Child("name"),
+				role.Name,
+				fmt.Sprintf(
+					"the generated service name (%d chars) would exceed the DNS-1035 limit of %d characters; "+
+						"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
+					svcNameLen, dns1035MaxLen, combinedLimit,
+				),
+			))
+		}
+	}
+	return allErrs
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy

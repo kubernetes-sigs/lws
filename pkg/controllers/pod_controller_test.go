@@ -27,11 +27,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -54,11 +56,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 		pod                   *corev1.Pod
 		lws                   *leaderworkerset.LeaderWorkerSet
 		wantStatefulSetConfig *appsapplyv1.StatefulSetApplyConfiguration
-		revision              *appsv1.ControllerRevision
 	}{
 		{
-			name:     "1 replica, size 1, exclusive placement disabled",
-			revision: updateRevision,
+			name: "1 replica, size 1, exclusive placement disabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -131,8 +131,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 2, exclusive placement enabled",
-			revision: updateRevision,
+			name: "1 replica, size 2, exclusive placement enabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -211,8 +210,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
-			revision: updateRevision,
+			name: "1 replica, size 2, subgroupsize 2, exclusive placement enabled",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -293,8 +291,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:     "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
-			revision: updateRevision,
+			name: "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
 			pod: &corev1.Pod{
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
@@ -420,7 +417,18 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, tc.revision)
+			// Build the revision from this test case's lws, mirroring production where the
+			// revision snapshots the same spec: revision-covered fields (size, subGroupPolicy,
+			// networkConfig, volume claims) are read from the revision by the function under test.
+			revision, err := revisionutils.NewRevision(context.TODO(), client, tc.lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			revisionKey := revisionutils.GetRevisionKey(revision)
+			tc.pod.Labels[leaderworkerset.RevisionKey] = revisionKey
+			tc.wantStatefulSetConfig.Labels[leaderworkerset.RevisionKey] = revisionKey
+			tc.wantStatefulSetConfig.Spec.Template.Labels[leaderworkerset.RevisionKey] = revisionKey
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, revision)
 			if err != nil {
 				t.Errorf("failed with error %s", err.Error())
 			}
@@ -428,6 +436,29 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				t.Errorf("unexpected StatefulSet apply operation %s", diff)
 			}
 		})
+	}
+}
+
+func TestSetNodeSelectorForWorkerPodsReturnsNotFoundWhenLeaderNodeIsMissing(t *testing.T) {
+	reconciler := PodReconciler{Client: fake.NewClientBuilder().Build()}
+	leaderPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec:       corev1.PodSpec{NodeName: "missing-node"},
+	}
+	workerStatefulSet := &appsapplyv1.StatefulSetApplyConfiguration{
+		Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+			Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+				Spec: &coreapplyv1.PodSpecApplyConfiguration{},
+			},
+		},
+	}
+
+	err := reconciler.setNodeSelectorForWorkerPods(context.Background(), leaderPod, workerStatefulSet, "topology.kubernetes.io/zone")
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("setNodeSelectorForWorkerPods() error = %v, want NotFound", err)
+	}
+	if workerStatefulSet.Spec.Template.Spec.NodeSelector != nil {
+		t.Fatalf("setNodeSelectorForWorkerPods() set a node selector after a missing leader node: %v", workerStatefulSet.Spec.Template.Spec.NodeSelector)
 	}
 }
 
@@ -588,5 +619,65 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 				t.Fatalf("leader pod should still exist, err = %v", err)
 			}
 		})
+	}
+}
+
+func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		SubdomainPolicy(subdomainPolicy).
+		Obj()
+
+	deletionTimestamp := metav1.Now()
+	leaderPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-sample-0",
+			Namespace:         "default",
+			DeletionTimestamp: &deletionTimestamp,
+			Finalizers:        []string{"leaderworkerset.sigs.k8s.io/test"},
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, &leaderPod).Build()
+	reconciler := PodReconciler{
+		Client: client,
+		Scheme: scheme,
+		Record: fakeEventRecorder{},
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      leaderPod.Name,
+			Namespace: leaderPod.Namespace,
+		},
+	}
+
+	res, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error during reconcile: %v", err)
+	}
+	if res.Requeue {
+		t.Errorf("expected no requeue, got %v", res)
+	}
+
+	var svcList corev1.ServiceList
+	if err := client.List(context.Background(), &svcList); err != nil {
+		t.Fatalf("failed to list services: %v", err)
+	}
+	if len(svcList.Items) != 0 {
+		t.Errorf("expected 0 services created for deleting leader pod, got %d", len(svcList.Items))
 	}
 }

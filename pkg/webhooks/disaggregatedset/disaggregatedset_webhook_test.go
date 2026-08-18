@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -535,6 +536,109 @@ func TestValidateCreate(t *testing.T) {
 				},
 			},
 			expectError: false,
+		},
+		// --- Generated name length validation tests ---
+		{
+			// With slices=1 (default), overhead = 3 separators + 1 slice digit + 8 revision + 4 "-prv" = 16.
+			// dsName(40) + roleName(7) + 16 = 63 → exactly at limit.
+			name: "generated service name at exact 63-char limit is accepted",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 40), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 7),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			// dsName(40) + roleName(8) + 16 = 64 → 1 char over.
+			name: "generated service name 1 char over limit is rejected",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 40), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 8),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
+		},
+		{
+			// Long DS name (50 chars) with a short role (3 chars): 50+3+16=69 → rejected.
+			name: "long DS name with short role name exceeds limit",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("x", 50), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "abc",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "de",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
+		},
+		{
+			// slices=100 → max index 99 → 2 digits. Overhead = 3+2+8+4 = 17.
+			// dsName(40) + roleName(7) + 17 = 64 → rejected (would be accepted with slices=1).
+			name: "multi-slice worst case pushes name over limit",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 40), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Slices: ptr.To(int32(100)),
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 7),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
 		},
 	}
 
