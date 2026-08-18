@@ -59,7 +59,7 @@ Serving workloads generally do not need stable per-group identity. They need N i
 
 ### Non-Goals
 
-1. Changing the default identity mode.
+1. Changing the default identity mode, now or later. Flipping the default to `Hash` would change the behavior of existing objects and manifests within the v1 API, so `Ordinal` remains the default permanently. Adoption is driven by recommending `Hash` for serving workloads in the documentation and using it in the project's guides and examples.
 2. Migrating a live LeaderWorkerSet between modes. The field is immutable.
 3. Supporting every ordinal-dependent feature in hash mode. Subgroups, volume claim templates, `subdomainPolicy: UniquePerReplica`, and rolling update partitions are rejected at admission (see [Unsupported Combinations](#unsupported-combinations)).
 4. A user-facing API for naming specific scale-down victims.
@@ -206,7 +206,7 @@ These can be revisited individually if there is demand.
 
 Alpha: field implemented behind the `Ordinal` default, hash mode covered by the tests above.
 
-Beta: at least one release of user feedback, and a decision on webhook template validation.
+Beta: at least one release of user feedback, a decision on webhook template validation, and `Hash` recommended for serving workloads in the documentation and example manifests. The default does not change at any stage (see Non-Goals).
 
 ## Implementation History
 
