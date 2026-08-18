@@ -76,7 +76,7 @@ Explore the detailed concepts for each API:
 
 Concepts and capabilities of the core LeaderWorkerSet API:
 
-- **[Multi-Template for Pods](leaderworkerset/pod-templates/)**: Configure distinct specifications for leader and worker pods.
+- **[Dual Pod Templates](leaderworkerset/pod-templates/)**: Configure distinct specifications for leader and worker pods.
 - **[Startup Policy](leaderworkerset/startup-policy/)**: Control worker creation timing relative to leader pod readiness.
 - **[Exclusive Topology Placement](leaderworkerset/topology-placement/)**: Co-locate replica pods onto exclusive topology domains (e.g. rack, host).
 - **[Subgroups](leaderworkerset/subgroups/)**: Subgroup sizing, independent placement, and `LeaderOnly` heterogeneous scheduling.

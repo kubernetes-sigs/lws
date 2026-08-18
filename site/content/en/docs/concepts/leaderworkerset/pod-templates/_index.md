@@ -1,6 +1,6 @@
 ---
-title: "Multi-Template for Pods"
-linkTitle: "Pod Templates"
+title: "Dual Pod Templates"
+linkTitle: "Dual Pod Templates"
 weight: 10
 description: >
   Configuring leader and worker pod templates in LeaderWorkerSet.
