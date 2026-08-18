@@ -76,19 +76,6 @@ Optional top-level fields such as `slices` (replicate the full role topology) an
 `placementPolicy` (topology co-location / spread) are covered in the
 [examples and operations guide](/docs/examples/disaggregatedset/).
 
-## When to Use DisaggregatedSet vs Plain LWS
-
-Use **plain LWS** when:
-- All inference pods are homogeneous (same model, same resources).
-- You do not need to separate prefill from decode.
-- You are running training jobs or batch workloads without disaggregation.
-
-Use **DisaggregatedSet** when:
-- You are running disaggregated LLM inference (e.g., vLLM with P/D disaggregation, SGLang).
-- Different inference phases require different GPU types or different pod group sizes.
-- You want to scale prefill and decode replicas independently based on different traffic patterns.
-- You are evaluating disaggregated serving architectures and need first-class Kubernetes support.
-
 ## Key Design Principles
 
 1. **LWS-native** — DisaggregatedSet is built on top of LWS, not alongside it. This means LWS features (failure handling, subgroup topology, exclusive placement) are available per role. Note: rollout strategy is owned by the DisaggregatedSet controller, which replaces the per-LWS rollout to coordinate updates across roles.

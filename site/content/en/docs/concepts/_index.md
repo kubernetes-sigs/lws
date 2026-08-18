@@ -56,15 +56,16 @@ LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
 
 ### Use LeaderWorkerSet when:
 - All inference pods are **homogeneous** (same model sharding, same hardware requirements across all nodes).
-- You do not need to disaggregate distinct serving phases (e.g., running standard tensor-parallel inference with vLLM, SGLang, or TensorRT-LLM).
-- You are running distributed training, fine-tuning, or data-caching workloads (such as Kubeflow Trainer or Axlearn).
+- You do not need to separate prefill from decode (e.g., running standard tensor-parallel inference with vLLM, SGLang, or TensorRT-LLM).
+- You are running distributed training, fine-tuning, batch workloads, or data-caching (such as Kubeflow Trainer or Axlearn).
 - You need fine-grained control over pod subgroup placement or group restart policies within a single pod group.
 
 ### Use DisaggregatedSet when:
-- You are deploying **disaggregated LLM inference** where prefill (compute-bound) and decode (memory-bandwidth-bound) phases run on different hardware or require different pod group sizes.
-- You need to scale prefill and decode capacities independently based on traffic patterns (e.g., prompt length vs. generation length).
+- You are deploying **disaggregated LLM inference** (e.g., vLLM with P/D disaggregation, SGLang, or llm-d) where distinct phases (such as prefill and decode) require different GPU types, different container images, or different pod group sizes.
+- You want to scale prefill and decode replicas independently based on traffic patterns (e.g., prompt length vs. generation length).
 - You require coordinated, lockstep rollouts across multiple roles without disrupting serving ratios or dropping requests.
 - You want declarative management of a complex multi-role topology in a single Kubernetes manifest.
+- You are evaluating or adopting disaggregated serving architectures with first-class Kubernetes support.
 
 ---
 
