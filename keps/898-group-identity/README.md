@@ -19,6 +19,7 @@
   - [Worker StatefulSets and Leader Address](#worker-statefulsets-and-leader-address)
   - [Rollouts](#rollouts)
   - [Scale Subresource and HPA](#scale-subresource-and-hpa)
+  - [DisaggregatedSet Integration](#disaggregatedset-integration)
   - [Unsupported Combinations](#unsupported-combinations)
   - [Test Plan](#test-plan)
     - [Prerequisite testing updates](#prerequisite-testing-updates)
@@ -53,7 +54,8 @@ Serving workloads generally do not need stable per-group identity. They need N i
 1. Let users opt a LeaderWorkerSet into hash-based group identity where groups are interchangeable.
 2. Prefer unscheduled and not-ready groups as scale-down victims.
 3. Preserve group semantics: atomic group creation and restart, group-by-group rolling updates, startup policies, exclusive placement, and the scale subresource.
-4. Change nothing for existing LeaderWorkerSets. `Ordinal` remains the default.
+4. Let DisaggregatedSet roles opt into hash identity through their inline LeaderWorkerSet spec, including migrating an existing role from Ordinal to Hash as a rolling update.
+5. Change nothing for existing LeaderWorkerSets and DisaggregatedSets. `Ordinal` remains the default.
 
 ### Non-Goals
 
@@ -144,6 +146,16 @@ Template changes produce a controller revision as in ordinal mode. The Deploymen
 
 `kubectl scale` and the scale subresource work unchanged. `status.hpaPodSelector` selects pods by LWS name and `worker-index=0`, which matches exactly the leader pods in both modes.
 
+### DisaggregatedSet Integration
+
+DisaggregatedSet roles embed the full LeaderWorkerSet spec, so a role sets `groupIdentity: Hash` directly in its template and the controller passes it through to the LeaderWorkerSets it creates. Three pieces make this safe:
+
+1. The DisaggregatedSet CRD schema is regenerated to include the field. Without this the API server prunes it from role templates silently.
+2. The DisaggregatedSet webhook runs the same hash-mode validation per role, so an unsupported combination fails at DisaggregatedSet admission instead of surfacing later as LeaderWorkerSet creation failures in a reconcile loop.
+3. The DisaggregatedSet revision hash includes the field, normalized so an empty value and the CRD default `Ordinal` hash identically. Objects persisted before the field existed keep their revision when the new CRD starts defaulting it, so upgrading the controller does not roll existing DisaggregatedSets.
+
+Because the revision includes the field and DisaggregatedSet rolls template changes by replacing whole LeaderWorkerSets, changing a role from `Ordinal` to `Hash` is a normal rolling update rather than a forbidden in-place mutation. Note that the DisaggregatedSet revision covers all roles jointly, so changing one role's identity mode rolls the whole slice, the same as any other role template change. Role services select pods by DisaggregatedSet labels, which are identical in both modes.
+
 ### Unsupported Combinations
 
 Validation rejects hash mode combined with features whose semantics depend on stable ordinals:
@@ -169,6 +181,7 @@ These can be revisited individually if there is demand.
 - Leader Deployment construction: selector, strategy mapping, readiness gate injection.
 - Group-ready condition sync in the pod controller.
 - Leader address annotation and environment variable injection.
+- DisaggregatedSet: webhook rejection of hash-mode combinations per role, revision stability between empty and `Ordinal`, revision change on `Hash`, and spec passthrough to created LeaderWorkerSets.
 
 #### Integration tests
 
@@ -178,6 +191,7 @@ These can be revisited individually if there is demand.
 - Scale up and scale down, including to zero and back.
 - Rolling updates respect `maxSurge` and `maxUnavailable` in units of groups.
 - Size 1 groups: no gate, no worker StatefulSet.
+- A `groupIdentity: Hash` DisaggregatedSet role survives the CRD schema and is rejected when combined with `subGroupPolicy`.
 
 #### e2e tests
 
@@ -186,6 +200,7 @@ These can be revisited individually if there is demand.
 - `LeaderReady` startup policy in hash mode.
 - Exclusive placement in hash mode.
 - Upgrade from a release without the field to one with it, with ordinal workloads running across the upgrade.
+- DisaggregatedSet with hash-mode roles: creation, scale down with an unhealthy group present, and migration of a role from `Ordinal` to `Hash`.
 
 ### Graduation Criteria
 
@@ -195,7 +210,8 @@ Beta: at least one release of user feedback, and a decision on webhook template 
 
 ## Implementation History
 
-- 2026-08-17: KEP drafted. A working prototype was built and validated first, including regression suites, node failure testing on GKE, and scale testing. Results are linked from issue #898.
+- 2026-08-17: KEP drafted. A working prototype was built and validated first, including regression suites, node failure testing, and scale testing. Results are linked from issue #898.
+- 2026-08-18: DisaggregatedSet integration added to the prototype and validated live, including upgrade stability for existing objects, victim selection through a DisaggregatedSet scale down, and a rolling Ordinal to Hash migration.
 
 ## Drawbacks
 
