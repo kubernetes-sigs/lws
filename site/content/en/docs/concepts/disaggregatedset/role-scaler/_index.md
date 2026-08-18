@@ -14,7 +14,7 @@ To maximize accelerator utilization and cost efficiency, each role must be able 
 
 However, because child LeaderWorkerSets include dynamic revision hashes in their names (`<ds>-<slice>-<rev>-<role>`), pointing a standard Kubernetes `HorizontalPodAutoscaler` (HPA) directly at an underlying LWS breaks whenever a rolling update occurs.
 
-**`DisaggregatedSetRoleScaler`** (`disaggregatedset.x-k8s.io/v1`) solves this by exposing a stable `/scale` subresource target per role that persists across arbitrary rollouts.
+**`DisaggregatedSetRoleScaler`** (`disaggregatedset.x-k8s.io/v1`, introduced in [KEP-849](https://github.com/kubernetes-sigs/lws/tree/main/keps/849-DisaggregatedSet-HPA)) solves this by exposing a stable `/scale` subresource target per role that persists across arbitrary rollouts.
 
 ---
 
@@ -147,10 +147,3 @@ spec:
 - **Independent Scaling Curves:** Scale prefill aggressively based on request surges while keeping decode capacity stable or scaling on memory pressure.
 - **Rollout Resilience:** Active autoscalers remain attached and functional during rolling updates without reconfiguration.
 - **Declarative & Low-Touch:** Zero custom CR authoring required — simply enable `mode: External` and point your autoscaler at the deterministic scaler name.
-
----
-
-## Further Reading
-
-- [KEP-849: DisaggregatedSet HPA Support per Role](https://github.com/kubernetes-sigs/lws/tree/main/keps/849-DisaggregatedSet-HPA)
-- [DisaggregatedSet Roles Concept](../roles/)

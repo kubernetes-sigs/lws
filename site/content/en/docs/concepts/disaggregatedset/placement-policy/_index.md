@@ -11,7 +11,7 @@ Disaggregated inference workloads have strict placement requirements:
 - **Inter-Slice Isolation:** Slices of the same DisaggregatedSet should be spread across distinct physical domains so that hardware or power failures take down at most one slice.
 - **Domain Exclusivity:** Highly sensitive production workloads may require exclusive access to an accelerator domain to prevent noisy-neighbor performance degradation.
 
-DisaggregatedSet provides the `spec.placementPolicy` API to declaratively manage these constraints.
+DisaggregatedSet provides the `spec.placementPolicy` API (introduced in [KEP-848](https://github.com/kubernetes-sigs/lws/tree/main/keps/848-disaggregatedset-placement-policy)) to declaratively manage these constraints.
 
 ---
 
@@ -111,10 +111,3 @@ The DisaggregatedSet controller translates `placementPolicy` into Kubernetes `po
    Injected so that pods matching the parent DisaggregatedSet with a *different* slice index (or any DisaggregatedSet for `ExclusiveTopology`) cannot land in the same domain.
 3. **Hardware Agnostic:**
    The `topology` field uses standard Kubernetes node labels (e.g., `topology.kubernetes.io/rack`, `cloud.google.com/gke-placement-group`, `topology.kubernetes.io/zone`), making the placement policy fully portable across GPU, TPU, and CPU clusters.
-
----
-
-## Further Reading
-
-- [KEP-848: DisaggregatedSet Placement Policy](https://github.com/kubernetes-sigs/lws/tree/main/keps/848-disaggregatedset-placement-policy)
-- [DisaggregatedSet Slices Concept](../slices/)

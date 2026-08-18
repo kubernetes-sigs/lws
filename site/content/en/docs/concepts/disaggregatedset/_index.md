@@ -63,12 +63,3 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 2. **Coordinated rollouts** — Rollouts across roles are coordinated by DisaggregatedSet to preserve capacity ratios (e.g., prefill-to-decode ratio) throughout the update process. Partition-based rollout is not supported.
 
 3. **Declarative** — The entire multi-role inference topology is expressed in a single YAML manifest, making it easy to version-control and apply via GitOps.
-
-## Further Reading
-
-- [KEP-766: DisaggregatedSet design document](https://github.com/kubernetes-sigs/lws/tree/main/keps/766-DisaggregatedSet)
-- [Installation guide](/docs/installation/#disaggregatedset)
-- [API Reference](/docs/reference/disaggregatedset.v1/)
-- [Labels and annotations](/docs/reference/labels-annotations-and-environment-variables/)
-- [Examples and operations](/docs/examples/disaggregatedset/)
-- In-repo samples: [`config/samples/disaggregatedset_v1_disaggregatedset.yaml`](https://github.com/kubernetes-sigs/lws/blob/main/config/samples/disaggregatedset_v1_disaggregatedset.yaml), [`config/samples/disaggregatedset_v1_3role.yaml`](https://github.com/kubernetes-sigs/lws/blob/main/config/samples/disaggregatedset_v1_3role.yaml)

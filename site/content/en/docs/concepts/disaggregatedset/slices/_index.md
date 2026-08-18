@@ -6,7 +6,7 @@ description: >
   Replicating multi-role serving topologies with DisaggregatedSet slices.
 ---
 
-A **Slice** in DisaggregatedSet represents a complete, self-contained replica of the entire multi-role serving topology (e.g., a full pair of `prefill` and `decode` roles).
+A **Slice** in DisaggregatedSet (introduced in [KEP-846](https://github.com/kubernetes-sigs/lws/tree/main/keps/846-disaggregatedset-slices)) represents a complete, self-contained replica of the entire multi-role serving topology (e.g., a full pair of `prefill` and `decode` roles).
 
 Configured via the top-level `spec.slices` field, slices allow you to scale and duplicate an entire disaggregated inference architecture as a single declarative unit.
 
@@ -93,10 +93,3 @@ Every child resource is labeled with:
 - `disaggregatedset.x-k8s.io/name`: Name of the parent DisaggregatedSet
 - `disaggregatedset.x-k8s.io/slice`: Slice index (`"0"`, `"1"`, ...)
 - `disaggregatedset.x-k8s.io/role`: Role name (`"prefill"`, `"decode"`)
-
----
-
-## Further Reading
-
-- [KEP-846: DisaggregatedSet Slices](https://github.com/kubernetes-sigs/lws/tree/main/keps/846-disaggregatedset-slices)
-- [DisaggregatedSet Examples and Operations Guide](/docs/examples/disaggregatedset/)
