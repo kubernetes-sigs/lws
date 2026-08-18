@@ -139,7 +139,7 @@ Each group's worker StatefulSet is named after its leader pod, as today. Since h
 
 ### Rollouts
 
-Template changes produce a controller revision as in ordinal mode. The Deployment performs the rollout, replacing groups within the `maxSurge` and `maxUnavailable` budgets, and the readiness gate holds each step until the replacement group is fully ready. Startup policies behave as in ordinal mode, including `LeaderReady`, where the worker StatefulSet is not created until the leader's containers are ready.
+Template changes produce a controller revision in both modes. The Deployment performs the rollout, replacing groups within the `maxSurge` and `maxUnavailable` budgets, and the readiness gate holds each step until the replacement group is fully ready. Startup policies behave as in ordinal mode, including `LeaderReady`, where the worker StatefulSet is not created until the leader's containers are ready.
 
 ### Scale Subresource and HPA
 
@@ -147,13 +147,13 @@ Template changes produce a controller revision as in ordinal mode. The Deploymen
 
 ### DisaggregatedSet Integration
 
-DisaggregatedSet roles embed the full LeaderWorkerSet spec, so a role sets `groupIdentity: Hash` directly in its template and the controller passes it through to the LeaderWorkerSets it creates. Three pieces make this safe:
+DisaggregatedSet roles embed the full LeaderWorkerSet spec, so a role sets `groupIdentity: Hash` directly in its template and the controller passes it through to the LeaderWorkerSets it creates:
 
 1. The DisaggregatedSet CRD schema is regenerated to include the field. Without this the API server prunes it from role templates silently.
 2. The DisaggregatedSet webhook runs the same hash-mode validation per role, so an unsupported combination fails at DisaggregatedSet admission instead of surfacing later as LeaderWorkerSet creation failures in a reconcile loop.
 3. The DisaggregatedSet revision hash includes the field, normalized so an empty value and the CRD default `Ordinal` hash identically. Objects persisted before the field existed keep their revision when the new CRD starts defaulting it, so upgrading the controller does not roll existing DisaggregatedSets.
 
-Because the revision includes the field and DisaggregatedSet rolls template changes by replacing whole LeaderWorkerSets, changing a role from `Ordinal` to `Hash` is a normal rolling update rather than a forbidden in-place mutation. Note that the DisaggregatedSet revision covers all roles jointly, so changing one role's identity mode rolls the whole slice, the same as any other role template change. Role services select pods by DisaggregatedSet labels, which are identical in both modes.
+Because the revision includes the field and DisaggregatedSet rolls template changes by replacing whole LeaderWorkerSets, changing a role from `Ordinal` to `Hash` is a normal rolling update rather than a forbidden in-place mutation. NOTE: the DisaggregatedSet revision covers all roles jointly, so changing one role's identity mode rolls the whole slice, the same as any other role template change.
 
 ### Unsupported Combinations
 
@@ -205,7 +205,7 @@ These can be revisited individually if there is demand.
 
 Alpha: field implemented behind the `Ordinal` default, hash mode covered by the tests above.
 
-Beta: at least one release of user feedback, a decision on webhook template validation, and `Hash` recommended for serving workloads in the documentation and example manifests. The default does not change at any stage (see Non-Goals).
+Beta: feedback, make `Hash` recommended for serving workloads in the documentation and example manifests.
 
 ## Implementation History
 
