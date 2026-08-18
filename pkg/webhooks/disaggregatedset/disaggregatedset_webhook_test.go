@@ -719,7 +719,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()
 
-	buildDS := func(spec leaderworkerset.LeaderWorkerSetSpec) *disaggv1.DisaggregatedSet {
+	buildDisaggregatedSet := func(spec leaderworkerset.LeaderWorkerSetSpec) *disaggv1.DisaggregatedSet {
 		return &disaggv1.DisaggregatedSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			Spec: disaggv1.DisaggregatedSetSpec{
@@ -741,7 +741,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 	}{
 		{
 			name: "hash role is accepted",
-			obj: buildDS(leaderworkerset.LeaderWorkerSetSpec{
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 			}),
@@ -749,7 +749,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 		},
 		{
 			name: "hash role with subGroupPolicy is rejected",
-			obj: buildDS(leaderworkerset.LeaderWorkerSetSpec{
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
@@ -763,7 +763,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 		},
 		{
 			name: "ordinal role with subGroupPolicy is accepted",
-			obj: buildDS(leaderworkerset.LeaderWorkerSetSpec{
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityOrdinal,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
