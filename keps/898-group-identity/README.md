@@ -39,15 +39,13 @@
 
 This KEP adds a `groupIdentity` field to the LeaderWorkerSet spec with two values. `Ordinal` is the default and keeps today's behavior, where groups are named by the leader StatefulSet's ordinals. `Hash` gives each group a random identity instead of an ordinal and manages leader pods with a Deployment instead of a StatefulSet.
 
-With hash identity, scale down removes unscheduled and not-ready groups before healthy ones, because that is how the ReplicaSet ranks its victims. Everything else about a group stays the same: workers still run in a per-group StatefulSet, rolling updates still move group by group within the `maxSurge` and `maxUnavailable` budgets, and startup policies and exclusive placement work as they do today.
+With hash identity, scale down removes unscheduled and not-ready groups before healthy ones, because that is how the ReplicaSet ranks its victims. Everything else about a group stays the same: workers still run in a per-group StatefulSet, rolling updates still move group by group within the `maxSurge` and `maxUnavailable` budgets, and startup policies and exclusive placement are unaffected.
 
 ## Motivation
 
-Group identity in LWS is currently an ordinal, so the set of live groups is always `0..replicas-1`. Scale down can only remove the highest ordinal. When some other group is unhealthy, for example because its node died, scaling down removes a healthy group and then rebuilds the unhealthy one. The user wanted one group gone and got two disruptions.
+Group identity in LWS is currently an ordinal, so the set of live groups is always `0..replicas-1`. Scale down can only remove the highest ordinal. When some other group is unhealthy, for example because its node died, scaling down removes a healthy group when targeting the unhealthy group would save the rebuild churn.
 
-The same coupling makes it impossible to remove or relocate one specific group. Issue [#898](https://github.com/kubernetes-sigs/lws/issues/898) describes both problems from an inference serving platform running LWS behind an autoscaler.
-
-Serving workloads generally do not need stable per-group identity. They need N interchangeable groups, and they want the unhealthy ones to be the first to go.
+The ordinal system makes it impossible to remove or relocate one specific group. Issue [#898](https://github.com/kubernetes-sigs/lws/issues/898) describes both problems from an inference serving platform running LWS behind an autoscaler. Serving workloads generally do not need stable per-group identity. They need N interchangeable groups, and this hashing system maintains that while allowing ReplicaSet to pick the unhealthy ones as the first to go.
 
 ### Goals
 
@@ -55,14 +53,14 @@ Serving workloads generally do not need stable per-group identity. They need N i
 2. Prefer unscheduled and not-ready groups as scale-down victims.
 3. Preserve group semantics: atomic group creation and restart, group-by-group rolling updates, startup policies, exclusive placement, and the scale subresource.
 4. Let DisaggregatedSet roles opt into hash identity through their inline LeaderWorkerSet spec, including migrating an existing role from Ordinal to Hash as a rolling update.
-5. Change nothing for existing LeaderWorkerSets and DisaggregatedSets. `Ordinal` remains the default.
+5. Change nothing for existing LeaderWorkerSets and DisaggregatedSets.
 
 ### Non-Goals
 
-1. Changing the default identity mode, now or later. Flipping the default to `Hash` would change the behavior of existing objects and manifests within the v1 API, so `Ordinal` remains the default permanently. Adoption is driven by recommending `Hash` for serving workloads in the documentation and using it in the project's guides and examples.
+1. Changing the default identity mode, now or later. Flipping the default to `Hash` would change the behavior of existing objects and manifests within the v1 API, so `Ordinal` remains the default. Adoption is driven by recommending `Hash` for serving workloads in the documentation and using it in the project guides (work for future doc update PR).
 2. Migrating a live LeaderWorkerSet between modes. The field is immutable.
 3. Supporting every ordinal-dependent feature in hash mode. Subgroups, volume claim templates, `subdomainPolicy: UniquePerReplica`, and rolling update partitions are rejected at admission (see [Unsupported Combinations](#unsupported-combinations)).
-4. A user-facing API for naming specific scale-down victims.
+4. A user-facing API for naming specific scale-down victims, for example via `pod-deletion-cost` (see [Alternatives](#alternatives) below).
 
 ## Proposal
 
@@ -92,13 +90,13 @@ An HPA drives `spec.replicas` on a hash mode LeaderWorkerSet through the scale s
 2. The `group-index` label carries a 40 character hash in hash mode. Tooling that parses it as an integer will not work on hash mode pods.
 3. There is no per-group stable hostname. Workers get the leader's pod IP, which changes when the leader is recreated.
 4. Victim ranking runs on API server state. If a node fails and is replaced under the same name, its pods can report a stale `Running` phase for a short window and ranking sees that state until the kubelet reports in.
+5. `NoneRestartPolicy` keeps its meaning for worker failures only (the worker is recreated alone and rejoins its group). Losing the leader always replaces the whole group under a fresh identity, because the group's identity is the leader pod. Workers cannot survive their leader in hash mode.
 
 ### Risks and Mitigations
 
 1. **Two leader management paths.** The controller now reconciles leaders through either a StatefulSet or a Deployment. The group-level machinery (pod webhook, worker StatefulSet reconciliation, revisions) is shared and only leader ownership differs. Both modes run in the e2e suite.
-2. **Consumers assuming numeric group indices.** The field is opt-in and immutable, and the label semantics are documented. Nothing changes unless a user asks for hash mode.
-3. **Admission accepts templates the Deployment API rejects.** The LWS webhook does not fully validate pod templates, so an invalid template surfaces as reconcile errors rather than an admission failure. Ordinal mode has the same exposure through the StatefulSet API. A dry-run template validation at admission is a possible follow-up for both modes.
-4. **Controller downgrade with hash workloads present.** An older controller does not know the field, treats the LWS as Ordinal, and creates a leader StatefulSet alongside the existing Deployment. This cannot be fixed in already-shipped versions, so downgrading with hash mode workloads present is unsupported and documented as such: delete or migrate them first.
+2. **Consumers assuming numeric group indices.** The field is opt-in and immutable, and the label semantics are documented.
+3. **Controller downgrade with hash workloads present.** An older controller does not know the field, treats the LWS as Ordinal, and creates a leader StatefulSet alongside the existing Deployment. This cannot be fixed in already-shipped versions, so downgrading with hash mode workloads present is unsupported and documented as such: delete or migrate them first.
 
 ## Design Details
 
@@ -110,7 +108,7 @@ type LeaderWorkerSetSpec struct {
     // GroupIdentity controls how group identities are assigned.
     // Ordinal (default) names groups by leader StatefulSet ordinals.
     // Hash names groups by random keys and manages leaders with a Deployment.
-    // Immutable after creation.
+    // Immutable post creation.
     // +optional
     GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
 }
@@ -123,11 +121,11 @@ const (
 )
 ```
 
-The webhook defaults an empty value to `Ordinal` and rejects updates that change the field.
+The webhook defaults an empty value to `Ordinal` and rejects updates to it.
 
 ### Leader Deployment
 
-In hash mode the controller owns a Deployment (named after the LeaderWorkerSet) instead of a leader StatefulSet. `maxSurge` and `maxUnavailable` from the LWS rolling update configuration map directly onto the Deployment strategy.
+In hash mode, the controller owns a Deployment (named after the LeaderWorkerSet) instead of a leader StatefulSet. `maxSurge` and `maxUnavailable` from the LWS rolling update configuration map directly onto the Deployment strategy.
 
 Leader pods carry a `leaderworkerset.sigs.k8s.io/group-ready` readiness gate. The pod controller sets the condition to true once the group's worker StatefulSet is ready, so a leader counts as ready only when its whole group is. This makes the Deployment's availability budget count groups rather than bare leader pods, which is what paces rollouts group by group and what makes the ReplicaSet prefer broken groups at scale down.
 
