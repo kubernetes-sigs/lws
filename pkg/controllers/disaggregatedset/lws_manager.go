@@ -152,14 +152,23 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 	return nil
 }
 
-func (manager *LeaderWorkerSetManager) Get(ctx context.Context, namespace, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
+// Get returns the LWS named name, but only if it's actually controller-owned
+// by ds — consistent with List's ownership filtering. A same-named LWS that
+// exists but isn't owned by ds (e.g. left over from a same-named
+// DisaggregatedSet that was deleted and recreated before garbage collection
+// ran) is treated as absent (nil, nil) rather than returned for the caller to
+// read or mutate as if it were this DisaggregatedSet's own.
+func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
 	lws := &leaderworkersetv1.LeaderWorkerSet{}
-	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, lws)
+	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, lws)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
+	}
+	if !metav1.IsControlledBy(lws, ds) {
+		return nil, nil
 	}
 	return lws, nil
 }
@@ -195,21 +204,6 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSe
 	return result, nil
 }
 
-// getOwned returns the LWS named name, but only if it's actually
-// controller-owned by ds. A same-named LWS that exists but isn't owned by ds
-// is treated as absent (nil, nil), matching List's ownership filtering —
-// see #981.
-func (manager *LeaderWorkerSetManager) getOwned(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
-	lws, err := manager.Get(ctx, ds.Namespace, name)
-	if err != nil || lws == nil {
-		return lws, err
-	}
-	if !metav1.IsControlledBy(lws, ds) {
-		return nil, nil
-	}
-	return lws, nil
-}
-
 // GetForRole returns the existing LWS for (slice, revision, role) that is
 // actually controller-owned by ds, or nil if none. It looks up the
 // slice-aware name and, for slice 0, falls back to the legacy (pre-slices)
@@ -217,14 +211,14 @@ func (manager *LeaderWorkerSetManager) getOwned(ctx context.Context, ds *disaggr
 // same-named LWS occupied by a foreign object is treated as absent rather
 // than returned for the caller to mutate.
 func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision, role string) (*leaderworkersetv1.LeaderWorkerSet, error) {
-	lws, err := manager.getOwned(ctx, ds, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
+	lws, err := manager.Get(ctx, ds, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
 	if err != nil {
 		return nil, err
 	}
 	if lws != nil || slice != 0 {
 		return lws, nil
 	}
-	return manager.getOwned(ctx, ds, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
+	return manager.Get(ctx, ds, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
 }
 
 func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, name string) error {

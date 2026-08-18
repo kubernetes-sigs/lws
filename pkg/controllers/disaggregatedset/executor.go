@@ -459,7 +459,7 @@ func (executor *RollingUpdateExecutor) ensureNewLWSExists(
 	initialReplicas int,
 ) (bool, error) {
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
-	existing, err := executor.LWSManager.Get(ctx, ds.Namespace, lwsName)
+	existing, err := executor.LWSManager.Get(ctx, ds, lwsName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LWS %s: %w", lwsName, err)
 	}

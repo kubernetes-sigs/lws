@@ -1147,7 +1147,7 @@ func TestEnsureNewLWSExists(t *testing.T) {
 				},
 			}
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "test-uid"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 

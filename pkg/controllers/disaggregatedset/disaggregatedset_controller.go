@@ -497,9 +497,9 @@ func (r *DisaggregatedSetReconciler) recreateLegacySlice0(
 	log := logf.FromContext(ctx)
 
 	for _, role := range roleNames {
-		// getOwned (not a raw Get): a foreign object occupying the legacy name
-		// must not be adopted/deleted here — see #981.
-		lws, err := r.LWSManager.getOwned(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
+		// Get is ownership-filtered: a foreign object occupying the legacy
+		// name must not be adopted/deleted here.
+		lws, err := r.LWSManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
 		if err != nil {
 			return err
 		}
