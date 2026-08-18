@@ -76,7 +76,11 @@ Explore the detailed concepts for each API:
 
 Concepts and capabilities of the core LeaderWorkerSet API:
 
-- **[Core Concepts](leaderworkerset/)**: Unit of replication, dual pod templates (`leaderTemplate` / `workerTemplate`), startup policies (`LeaderCreated` / `LeaderReady`), exclusive topology placement, subgroup scheduling, and volume claim templates.
+- **[Multi-Template for Pods](leaderworkerset/pod-templates/)**: Configure distinct specifications for leader and worker pods.
+- **[Startup Policy](leaderworkerset/startup-policy/)**: Control worker creation timing relative to leader pod readiness.
+- **[Exclusive Topology Placement](leaderworkerset/topology-placement/)**: Co-locate replica pods onto exclusive topology domains (e.g. rack, host).
+- **[Subgroups](leaderworkerset/subgroups/)**: Subgroup sizing, independent placement, and `LeaderOnly` heterogeneous scheduling.
+- **[Volume Claim Templates Support](leaderworkerset/volume-claim-templates/)**: Provision persistent storage dynamically for leader and worker pods.
 - **[Rollout Strategy](leaderworkerset/rollout-strategy/)**: Rolling update mechanics, `maxUnavailable`, and `maxSurge` configurations for zero-downtime upgrades.
 - **[Failure Handling](leaderworkerset/failure-handling/)**: Group restart policies (`RecreateGroupOnPodRestart`, `None`, `RecreateGroupAfterStart`) and node failure recovery.
 

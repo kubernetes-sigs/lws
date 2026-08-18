@@ -1,7 +1,7 @@
 ---
 title: "Failure Handling and Restart Policies"
 linkTitle: "Failure Handling"
-weight: 20
+weight: 70
 description: >
   Learn how LeaderWorkerSet handles pod and node failures with configurable restart policies.
 aliases:

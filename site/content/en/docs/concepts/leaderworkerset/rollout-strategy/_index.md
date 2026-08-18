@@ -1,7 +1,7 @@
 ---
 title: "Rollout Strategy"
 linkTitle: "Rollout Strategy"
-weight: 10
+weight: 60
 description: >
   Rolling update configurations, maxUnavailable, and maxSurge in LeaderWorkerSet.
 aliases:
