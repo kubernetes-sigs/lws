@@ -1,5 +1,5 @@
 ---
-title: "The LeaderWorkerSet and DisaggregatedSet APIs"
+title: "Distributed Inference APIs"
 linkTitle: "Overview"
 weight: 1
 menu:
@@ -21,7 +21,7 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
 
 ## Feature Overview
 
-### Core LeaderWorkerSet (LWS) Features
+### Core Features: LeaderWorkerSet
 - **Group of Pods as a unit:** Supports a tightly managed group of pods that represent a “super pod”
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
   - **Parallel creation:** Pods in the group will have the same lifecycle and be created in parallel.
@@ -37,7 +37,7 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
   <img src="/images/lws-concept.svg" width="550" alt="LWS Concept">
 </p>
 
-### Advanced DisaggregatedSet Features
+### Advanced Features: DisaggregatedSet
 - **Disaggregated Architecture Support:** Specifically designed for workloads where different phases (e.g., prefill and decode) run on separate infrastructure.
 - **Coordinated N-Dimensional Rollouts:** Updates multiple roles (2-10) in lockstep, preserving capacity ratios throughout the update process.
 - **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.
