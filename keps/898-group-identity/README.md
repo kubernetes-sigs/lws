@@ -98,6 +98,7 @@ An HPA drives `spec.replicas` on a hash mode LeaderWorkerSet through the scale s
 1. **Two leader management paths.** The controller now reconciles leaders through either a StatefulSet or a Deployment. The group-level machinery (pod webhook, worker StatefulSet reconciliation, revisions) is shared and only leader ownership differs. Both modes run in the e2e suite.
 2. **Consumers assuming numeric group indices.** The field is opt-in and immutable, and the label semantics are documented. Nothing changes unless a user asks for hash mode.
 3. **Admission accepts templates the Deployment API rejects.** The LWS webhook does not fully validate pod templates, so an invalid template surfaces as reconcile errors rather than an admission failure. Ordinal mode has the same exposure through the StatefulSet API. A dry-run template validation at admission is a possible follow-up for both modes.
+4. **Controller downgrade with hash workloads present.** An older controller does not know the field, treats the LWS as Ordinal, and creates a leader StatefulSet alongside the existing Deployment. This cannot be fixed in already-shipped versions, so downgrading with hash mode workloads present is unsupported and documented as such: delete or migrate them first.
 
 ## Design Details
 
@@ -132,7 +133,7 @@ Leader pods carry a `leaderworkerset.sigs.k8s.io/group-ready` readiness gate. Th
 
 ### Group Identity Assignment
 
-The pod webhook assigns each new leader pod a group key, a SHA1 over the namespace and a random 16 character string. The key is stored in both the `group-index` and `group-key` labels on the leader and inherited by its workers. Exclusive placement continues to key off `group-key` exactly as in ordinal mode.
+The pod webhook assigns each new leader pod a group key, a SHA1 over the namespace and a random 16 character string. A random input is required because leader pods are created through `generateName`, so at mutating admission time the pod has no name or UID to derive a key from. The key is stored in both the `group-index` and `group-key` labels on the leader and inherited by its workers. Exclusive placement continues to key off `group-key` exactly as in ordinal mode.
 
 ### Worker StatefulSets and Leader Address
 
@@ -211,7 +212,7 @@ Beta: at least one release of user feedback, a decision on webhook template vali
 ## Implementation History
 
 - 2026-08-17: KEP drafted. A working prototype was built and validated first, including regression suites, node failure testing, and scale testing. Results are linked from issue #898.
-- 2026-08-18: DisaggregatedSet integration added to the prototype and validated live, including upgrade stability for existing objects, victim selection through a DisaggregatedSet scale down, and a rolling Ordinal to Hash migration.
+- 2026-08-18: DisaggregatedSet integration added to the prototype and validated live, including upgrade stability for existing objects, victim selection through a DisaggregatedSet scale down, and a rolling Ordinal to Hash migration. The scale down comparison against Ordinal was rerun as a controlled experiment with identical failures in both modes.
 
 ## Drawbacks
 
