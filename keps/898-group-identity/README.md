@@ -211,8 +211,8 @@ Beta: at least one release of user feedback, a decision on webhook template vali
 
 ## Implementation History
 
-- 2026-08-17: KEP drafted. A working prototype was built and validated first, including regression suites, node failure testing, and scale testing. Results are linked from issue #898.
-- 2026-08-18: DisaggregatedSet integration added to the prototype and validated live, including upgrade stability for existing objects, victim selection through a DisaggregatedSet scale down, and a rolling Ordinal to Hash migration. The scale down comparison against Ordinal was rerun as a controlled experiment with identical failures in both modes.
+- 2026-08-17: KEP drafted after a working prototype was built and tested.
+- 2026-08-18: DisaggregatedSet integration added to the prototype.
 
 ## Drawbacks
 
