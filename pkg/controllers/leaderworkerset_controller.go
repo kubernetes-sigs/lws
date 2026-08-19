@@ -165,6 +165,14 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Services must exist before the StatefulSet can create Pods. In
+	// UniquePerReplica mode this includes scale-up and MaxSurge ordinals.
+	if err := r.reconcileHeadlessServices(ctx, lws, leaderSts, replicas); err != nil {
+		log.Error(err, "Creating headless service.")
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
+		return ctrl.Result{}, err
+	}
+
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
@@ -189,13 +197,6 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
 	}
 
-	// Create headless service if it does not exist.
-	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
-		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
-		return ctrl.Result{}, err
-	}
-
 	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
 		if apierrors.IsConflict(err) {
@@ -213,37 +214,86 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
-			return err
-		}
-		return nil
-	}
-
+func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderSts *appsv1.StatefulSet, replicas int32) error {
 	leaderSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.WorkerIndexLabelKey: "0",
 	})
-	var leaderPodList corev1.PodList
-	if err := r.List(ctx, &leaderPodList, leaderSelector, client.InNamespace(lws.Namespace)); err != nil {
+	var leaderPods corev1.PodList
+	if err := r.List(ctx, &leaderPods, leaderSelector, client.InNamespace(lws.Namespace)); err != nil {
 		return err
 	}
-	for i := range leaderPodList.Items {
-		leaderPod := &leaderPodList.Items[i]
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(
-			ctx,
-			r.Client,
-			r.Scheme,
-			lws,
-			leaderPod.Name,
-			map[string]string{
-				leaderworkerset.SetNameLabelKey:    lws.Name,
-				leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
-			},
-			leaderPod,
-		); err != nil {
+	leaderPodsByName := make(map[string]*corev1.Pod, len(leaderPods.Items))
+	for i := range leaderPods.Items {
+		leaderPodsByName[leaderPods.Items[i].Name] = &leaderPods.Items[i]
+	}
+
+	firstStaleOrdinal := replicas
+	canCleanStaleServices := leaderSts != nil && leaderSts.Spec.Replicas != nil && *leaderSts.Spec.Replicas <= replicas
+	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
+		}
+		// Per-replica Services that were pre-created before switching to Shared
+		// are stale once their corresponding Pods are gone.
+		firstStaleOrdinal = 0
+		canCleanStaleServices = leaderSts != nil &&
+			leaderSts.Spec.Template.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey] != string(leaderworkerset.SubdomainUniquePerReplica)
+	} else {
+		for ordinal := int32(0); ordinal < replicas; ordinal++ {
+			groupIndex := strconv.FormatInt(int64(ordinal), 10)
+			serviceName := fmt.Sprintf("%s-%s", lws.Name, groupIndex)
+			// Do not recreate a Service for a terminating leader. Once deletion
+			// completes, a subsequent reconcile will create it before the
+			// StatefulSet can start the replacement Pod.
+			if leaderPod := leaderPodsByName[serviceName]; leaderPod != nil && leaderPod.DeletionTimestamp != nil {
+				continue
+			}
+			if err := controllerutils.CreateHeadlessServiceIfNotExists(
+				ctx,
+				r.Client,
+				r.Scheme,
+				lws,
+				serviceName,
+				map[string]string{
+					leaderworkerset.SetNameLabelKey:    lws.Name,
+					leaderworkerset.GroupIndexLabelKey: groupIndex,
+				},
+				lws,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	if !canCleanStaleServices {
+		return nil
+	}
+
+	// A Service that was pre-created for a Pod which never appeared remains
+	// LWS-owned. Remove those Services after scale-down or MaxSurge reclamation,
+	// but retain Services for Pods that still exist until StatefulSet scale-down
+	// and Pod-owned garbage collection have completed. Cleanup waits until the
+	// StatefulSet has observed the lower replica count (or the Shared template)
+	// so an in-flight Pod creation cannot lose its Service.
+	var services corev1.ServiceList
+	if err := r.List(ctx, &services, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+	for i := range services.Items {
+		service := &services.Items[i]
+		groupIndex, ok := service.Spec.Selector[leaderworkerset.GroupIndexLabelKey]
+		if !ok || service.Name != fmt.Sprintf("%s-%s", lws.Name, groupIndex) {
+			continue
+		}
+		ordinal, err := strconv.ParseInt(groupIndex, 10, 32)
+		if err != nil || int32(ordinal) < firstStaleOrdinal || leaderPodsByName[service.Name] != nil {
+			continue
+		}
+		owner := metav1.GetControllerOf(service)
+		if owner != nil && owner.UID == lws.UID {
+			if err := r.Delete(ctx, service); client.IgnoreNotFound(err) != nil {
+				return err
+			}
 		}
 	}
 	return nil

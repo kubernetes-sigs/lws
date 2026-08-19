@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/lru"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -110,17 +109,9 @@ func TestEqualRevision(t *testing.T) {
 			// A nil networkConfig is defaulted by the webhook to Shared and by
 			// the CRD schema to publishNotReadyAddresses=true, so it must
 			// produce the same revision as the explicit default form.
-			name:    "nil networkConfig materializes to shared policy + default publish, should be equal",
-			leftLws: wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
-			rightLws: func() *leaderworkerset.LeaderWorkerSet {
-				lws := wrappers.BuildLeaderWorkerSet("default").SubdomainNil().Obj()
-				shared := leaderworkerset.SubdomainShared
-				lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-					SubdomainPolicy:          &shared,
-					PublishNotReadyAddresses: ptr.To(true),
-				}
-				return lws
-			}(),
+			name:             "nil networkConfig materializes to shared policy + default publish, should be equal",
+			leftLws:          wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
+			rightLws:         wrappers.BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
 			leftRevisionKey:  "",
 			rightRevisionKey: "",
 			equal:            true,

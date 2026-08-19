@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1162,6 +1164,28 @@ func TestGetUpdatedRevision(t *testing.T) {
 			expectUpdate: false,
 		},
 		{
+			name: "legacy revision without publishNotReadyAddresses matches default true",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+			},
+			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
+			modifyRevision: func(rev *appsv1.ControllerRevision) {
+				removePublishNotReadyAddresses(t, rev)
+			},
+			expectUpdate: false,
+		},
+		{
+			name: "legacy revision without publishNotReadyAddresses differs from explicit false",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
+			},
+			lws: wrappers.BuildLeaderWorkerSet("default").PublishNotReadyAddresses(false).Obj(),
+			modifyRevision: func(rev *appsv1.ControllerRevision) {
+				removePublishNotReadyAddresses(t, rev)
+			},
+			expectUpdate: true,
+		},
+		{
 			name: "revision has different spec, should trigger update",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
@@ -1202,6 +1226,201 @@ func TestGetUpdatedRevision(t *testing.T) {
 				t.Errorf("expected update=%t, got update=%t", tc.expectUpdate, gotUpdate)
 			}
 		})
+	}
+}
+
+func removePublishNotReadyAddresses(t *testing.T, revision *appsv1.ControllerRevision) {
+	t.Helper()
+	var patch map[string]interface{}
+	if err := json.Unmarshal(revision.Data.Raw, &patch); err != nil {
+		t.Fatalf("unmarshal revision: %v", err)
+	}
+	spec, ok := patch["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatal("revision is missing spec")
+	}
+	networkConfig, ok := spec["networkConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatal("revision is missing spec.networkConfig")
+	}
+	delete(networkConfig, "publishNotReadyAddresses")
+	data, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatalf("marshal revision: %v", err)
+	}
+	revision.Data.Raw = data
+}
+
+func TestReconcileHeadlessServicesPrecreatesUniquePerReplicaOrdinals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+
+	// Initial creation must cover every ordinal before the StatefulSet is applied.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+	// The replicas passed by rollingUpdateParameters include scale-up and
+	// MaxSurge ordinals, which must also be created eagerly.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 4); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-up) error = %v", err)
+	}
+
+	for ordinal := 0; ordinal < 4; ordinal++ {
+		name := "test-sample-" + strconv.Itoa(ordinal)
+		var service corev1.Service
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: name}, &service); err != nil {
+			t.Fatalf("get Service %s: %v", name, err)
+		}
+		if got := service.Spec.Selector[leaderworkerset.GroupIndexLabelKey]; got != strconv.Itoa(ordinal) {
+			t.Errorf("Service %s group selector = %q, want %q", name, got, strconv.Itoa(ordinal))
+		}
+		owner := metav1.GetControllerOf(&service)
+		if owner == nil || owner.UID != lws.UID {
+			t.Errorf("Service %s controller owner = %#v, want LWS UID %q", name, owner, lws.UID)
+		}
+	}
+}
+
+func TestReconcileHeadlessServicesSkipsDeletingLeaderAndCleansUnusedOrdinals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	deletingLeader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	deletingLeader.UID = types.UID("pod-uid")
+	deletingLeader.Finalizers = []string{"test-finalizer"}
+	deletionTime := metav1.Now()
+	deletingLeader.DeletionTimestamp = &deletionTime
+	activeSurgeLeader := wrappers.MakePodWithLabels(lws.Name, "3", "0", lws.Namespace, 2)
+	activeSurgeLeader.UID = types.UID("surge-pod-uid")
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deletingLeader, activeSurgeLeader).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](4)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 4); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: deletingLeader.Name}, &service); !apierrors.IsNotFound(err) {
+		t.Fatalf("Service for deleting leader should not be created, got error %v", err)
+	}
+
+	// Ordinals without Pods are LWS-owned and should be removed when replicas
+	// shrink. A Service whose Pod still exists is retained until that Pod exits.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}, &service); err != nil {
+		t.Fatalf("Service should remain until StatefulSet observes scale-down: %v", err)
+	}
+	leaderSts.Spec.Replicas = ptr.To[int32](2)
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(observed scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}, &service); !apierrors.IsNotFound(err) {
+		t.Errorf("unused Service test-sample-2 should be deleted, got error %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: activeSurgeLeader.Name}, &service); err != nil {
+		t.Errorf("Service for an existing surge Pod should be retained: %v", err)
+	}
+}
+
+func TestReconcileHeadlessServicesWaitsForTerminatingServiceBeforeScaleUp(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 3); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+
+	var service corev1.Service
+	key := types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}
+	if err := k8sClient.Get(context.Background(), key, &service); err != nil {
+		t.Fatalf("get Service: %v", err)
+	}
+	service.Finalizers = []string{"test-finalizer"}
+	if err := k8sClient.Update(context.Background(), &service); err != nil {
+		t.Fatalf("add Service finalizer: %v", err)
+	}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), key, &service); err != nil {
+		t.Fatalf("get terminating Service: %v", err)
+	}
+	if service.DeletionTimestamp == nil {
+		t.Fatal("Service should be terminating after scale-down")
+	}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 3); err == nil {
+		t.Fatal("scale-up should wait for the terminating Service to disappear")
+	}
+}
+
+func TestReconcileHeadlessServicesCleansPrecreatedServicesAfterSwitchToShared(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(unique) error = %v", err)
+	}
+	shared := leaderworkerset.SubdomainShared
+	lws.Spec.NetworkConfig.SubdomainPolicy = &shared
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(shared) error = %v", err)
+	}
+
+	for _, name := range []string{"test-sample-0", "test-sample-1"} {
+		var service corev1.Service
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: name}, &service); !apierrors.IsNotFound(err) {
+			t.Errorf("stale per-replica Service %s should be deleted, got error %v", name, err)
+		}
+	}
+	var sharedService corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &sharedService); err != nil {
+		t.Fatalf("shared Service should exist: %v", err)
 	}
 }
 
