@@ -304,8 +304,18 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 				return err
 			}
 			hash := revisionutils.GetRevisionKey(cr)
-			if revisionutils.GetRevisionKey(&sts) != hash {
-				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
+			statefulSetHash := revisionutils.GetRevisionKey(&sts)
+			if statefulSetHash != hash {
+				// As with the leader StatefulSet, an upgrade may intentionally
+				// retain a legacy hash when its revision data is semantically equal
+				// after default normalization.
+				legacyRevision, getRevisionErr := revisionutils.GetRevision(ctx, k8sClient, &lws, statefulSetHash)
+				if getRevisionErr != nil {
+					return getRevisionErr
+				}
+				if legacyRevision == nil || !revisionutils.SetMatchesRevision(&lws, cr, legacyRevision, lru.New(1)) {
+					return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", statefulSetHash, hash)
+				}
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")
