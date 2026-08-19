@@ -217,3 +217,41 @@ func TestCreateHeadlessServicePublishNotReadyAddresses(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateHeadlessServiceAdoptsPrecreatedServiceForLeaderPod(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	pod := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	pod.UID = types.UID("pod-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	selector := map[string]string{
+		leaderworkerset.SetNameLabelKey:    lws.Name,
+		leaderworkerset.GroupIndexLabelKey: "0",
+	}
+	if err := CreateHeadlessServiceIfNotExists(context.Background(), k8sClient, scheme, lws, pod.Name, selector, lws); err != nil {
+		t.Fatalf("precreate Service: %v", err)
+	}
+	if err := CreateHeadlessServiceIfNotExists(context.Background(), k8sClient, scheme, lws, pod.Name, selector, pod); err != nil {
+		t.Fatalf("adopt Service: %v", err)
+	}
+
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: pod.Name}, &service); err != nil {
+		t.Fatalf("get Service: %v", err)
+	}
+	owner := metav1.GetControllerOf(&service)
+	if owner == nil || owner.UID != pod.UID || owner.Kind != "Pod" {
+		t.Fatalf("controller owner = %#v, want Pod UID %q", owner, pod.UID)
+	}
+}
