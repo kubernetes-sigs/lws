@@ -9,11 +9,11 @@ description: >
   An overview of the LeaderWorkerSet (LWS) and DisaggregatedSet (DS) APIs
 ---
 
-<img src="/images/lws-ds-logos.svg" width="300" alt="lws logo">
+<img src="/images/lws-ds-logos.svg" width="300" alt="LWS and DS logos">
 
 **[LeaderWorkerSet (LWS)](../concepts/leaderworkerset/):** An API for deploying a group of pods as a unit of replication. It aims to address common deployment patterns of AI/ML inference workloads, especially multi-host inference workloads where the LLM will be sharded and run across multiple devices on multiple nodes.
 
-**[DisaggregatedSet (DS)](../concepts/disaggregatedset/):** An API to support advanced multi-node inference. LWS forms the core API for multi-node while DisaggregatedSet builds on it to add advanced disaggregated workload deployment with support for autoscaling, rollouts and failure handling.
+**[DisaggregatedSet (DS)](../concepts/disaggregatedset/):** An API to support advanced multi-node inference. LWS forms the core API for multi-node while DisaggregatedSet builds on it to add advanced disaggregated workload deployment with support for autoscaling, rollouts, and failure handling.
 
 Both APIs are being co-designed with [<img src="https://raw.githubusercontent.com/llm-d/llm-d/main/docs/assets/images/llm-d-logo.png" width="60" style="vertical-align: middle" alt="llm-d logo">](https://github.com/llm-d/llm-d) (CNCF sandbox project). llm-d is a high-performance distributed inference serving stack optimized for production deployments. This collaboration ensures that the APIs are optimized for real-world serving frameworks and disaggregated architectures, helping achieve state-of-the-art performance across hardware accelerators.
 
@@ -26,9 +26,9 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
   - **Parallel creation:** Pods in the group will have the same lifecycle and be created in parallel.
   - **Gang Scheduling:** Each replica with a group of pods can be scheduled in an all-or-nothing manner (Alpha level, API may change in the future).
-- **Dual-template, one for leader and one for the workers:** A replica is a group of a single leader and a set of workers, and allow to specify a template for the workers and optionally use a second one for the leader pod.
+- **Dual-template, one for leader and one for the workers:** A replica is a group of a single leader and a set of workers, and allows you to specify a template for the workers and optionally use a second one for the leader pod.
 - **Multiple groups with identical specifications:** Supports creating multiple “replicas” of the above mentioned group. Each group is a single unit for rolling update, scaling, and maps to a single exclusive topology for placement.
-- **A scale subresource:** A scale endpoint is exposed for HPA to dynamically scale the number replicas (aka number of groups)
+- **A scale subresource:** A scale endpoint is exposed for HPA to dynamically scale the number of replicas (aka number of groups).
 - **Rollout and Rolling update:** Supports performing rollout and rolling update at the group level, which means the groups are upgraded one by one as a unit (i.e. the pods within a group are updated together).
 - **Topology-aware placement:** Opt-in support for pods in the same group to be co-located in the same topology.
 - **All-or-nothing restart for failure handling:** Opt-in support for all pods in the group to be recreated if one pod in the group failed or one container in the pods is restarted.

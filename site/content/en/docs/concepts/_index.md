@@ -48,7 +48,7 @@ LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
 | **CRD** | `leaderworkerset.x-k8s.io/v1` | `disaggregatedset.x-k8s.io/v1` |
 | **Rollout Ownership** | LWS controller (`maxUnavailable`, `maxSurge`) | DisaggregatedSet controller (lockstep, ratio-preserving) |
 | **Scaling** | Horizontal Pod Autoscaler (HPA) via scale subresource | Independent per-role scaling & full topology slice scaling |
-| **Service Discovery** | Headless service per replica (`SubdomainUniquePerReplica`) | Headless service per role with revision-aware routing |
+| **Service Discovery** | Headless service per replica (`UniquePerReplica` subdomain policy) | Headless service per role with revision-aware routing |
 | **Placement & Topology** | Exclusive topology placement & subgroups per replica | Role-level placement policies & slice topology spread |
 | **Failure Handling** | `RecreateGroupOnPodRestart`, `None`, `RecreateGroupAfterStart` | Coordinated drain and restart policies across all roles |
 

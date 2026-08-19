@@ -8,5 +8,5 @@ description: >
 
 This section covers operational guides and cluster management topics for LeaderWorkerSet and DisaggregatedSet:
 
-- [Configure external cert-manager](cert_manager.md)
-- [Configure Prometheus metrics](prometheus.md)
+- [Configure external cert-manager](cert_manager/)
+- [Configure Prometheus metrics](prometheus/)

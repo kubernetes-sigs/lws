@@ -36,10 +36,9 @@ spec:
 
 The scheduler treats each SubGroup as an independent placement unit, preventing partial scheduling issues.
 
-## SubGroupType: LeaderOnly
+## SubGroupPolicyType: LeaderExcluded
 
-By default, the leader pod is included in the first subgroup. Setting the subgroup type to `LeaderOnly` isolates the leader into its own exclusive subgroup, while worker pods are partitioned into separate subgroups according to `subGroupSize`.
-
+By default, the leader pod is included in the first subgroup. Setting the subgroup policy type to `LeaderExcluded` excludes the leader from subgroups so it can be scheduled independently, while worker pods are partitioned into subgroups according to `subGroupSize`.
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
