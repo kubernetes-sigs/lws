@@ -8,15 +8,17 @@ aliases:
 - /docs/concepts/failure-handling/
 ---
 
-LeaderWorkerSet provides configurable failure handling for pod groups, ensuring that failures in tightly coupled distributed workloads are handled consistently.
+LeaderWorkerSet provides configurable failure handling for pod groups, ensuring that pod and node failures in distributed workloads are handled consistently according to the coupling requirements of the application.
 
-## Restart Policies
-
-Configure the restart behavior for worker and leader pods via `.spec.leaderWorkerTemplate.restartPolicy`:
+Configure the failure and restart behavior via `.spec.leaderWorkerTemplate.restartPolicy`:
 
 ### RecreateGroupOnPodRestart (Default)
 
-When any pod in a group fails or restarts, the entire replica group (leader + all workers) is deleted and recreated. This ensures all pods in the replica start fresh together and re-initialize collective communication or distributed caches cleanly.
+When any pod in a group fails or restarts, the entire replica group (leader + all workers) is deleted and recreated.
+
+- **Pod Failures:** If a single container or pod fails or restarts, all other pods in the group are terminated and recreated simultaneously to ensure all processes restart fresh and re-initialize collective communication or distributed caches cleanly.
+- **Node Failures:** When a node hosting any pod in the replica fails or becomes unreachable, the entire replica group is deleted and recreated on healthy nodes, respecting topology placement constraints.
+- **Primary Use Case:** Tightly coupled multi-host distributed inference and training (e.g., tensor-parallel or pipeline-parallel models) where a single pod or node failure breaks collective communication.
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -35,11 +37,13 @@ spec:
           image: worker-image:latest
 ```
 
-**Primary use case:** Tightly coupled multi-host distributed inference and training where worker failure breaks collective communication.
-
 ### None
 
-Only the failed pod is restarted. Other pods in the group continue running without interruption.
+Only the failed pod is restarted or rescheduled. Other pods in the group continue running without interruption.
+
+- **Pod Failures:** If an individual pod or container fails, only that specific pod is restarted by Kubernetes.
+- **Node Failures:** When a node fails, only the pods residing on that failed node are rescheduled. Other pods in the replica remain running on their existing nodes.
+- **Primary Use Case:** Loosely coupled workers or workloads with application-level fault tolerance where individual pods can reconnect or recover independently.
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -58,11 +62,13 @@ spec:
           image: worker-image:latest
 ```
 
-**Primary use case:** Loosely coupled workers or workloads with built-in fault tolerance where individual pods can reconnect independently.
-
 ### RecreateGroupAfterStart
 
-When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. This allows large container image pulls or initial scheduling delays to complete without triggering premature group recreation cascades.
+When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group.
+
+- **Pod Failures:** Recreates the entire group if a pod fails after initial startup is complete. If pods are still pending (e.g., during large container image pulls or initial scheduling), group recreation is deferred until the group stabilizes, preventing premature restart cascades.
+- **Node Failures:** If a node fails after all pods in the replica have successfully started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while pods are still pending, the controller waits for the startup phase to complete before triggering group recreation.
+- **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production without failing during the initial rollout.
 
 On version 0.9+, this feature is enabled via the `restartPolicy` field:
 
@@ -102,8 +108,3 @@ spec:
         - name: worker
           image: worker-image:latest
 ```
-
-## Node Failure Handling
-
-- **With `RecreateGroupOnPodRestart` (default):** When a node hosting any pod in the replica fails, the entire replica group is deleted and recreated on healthy nodes, respecting topology placement constraints.
-- **With `None`:** Only the pods residing on the failed node are rescheduled. Other pods in the replica remain running on their existing nodes.
