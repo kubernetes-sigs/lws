@@ -28,17 +28,7 @@ these multi-role, multi-resource serving patterns with a single, declarative Kub
 DisaggregatedSet does **not** replace LeaderWorkerSet — it **orchestrates multiple LeaderWorkerSets**.
 
 Each `role` defined in a `DisaggregatedSet` spec maps to an independent `LeaderWorkerSet`, deployed
-in the same namespace. This means:
-
-| Feature | LeaderWorkerSet (LWS) | DisaggregatedSet |
-|---|---|---|
-| Unit | A single group of homogeneous pods | Multiple groups, each with a distinct role |
-| Use case | Uniform inference or training | Disaggregated prefill/decode/encode serving |
-| CRD version | `leaderworkerset.x-k8s.io/v1` | `disaggregatedset.x-k8s.io/v1` |
-| Controller namespace | `lws-system` | `lws-system` |
-| Dependency | None | None (bundled in LWS from v0.9.0) |
-
-Child LeaderWorkerSets use a **slice index** and a **revision hash** in their names:
+in the same namespace. Child LeaderWorkerSets use a **slice index** and a **revision hash** in their names:
 
 ```
 DisaggregatedSet "my-inference"
