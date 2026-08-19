@@ -254,11 +254,21 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		}
 		labelSelector := client.MatchingLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey: lws.Name,
-			leaderworkerset.RevisionKey:     revisionutils.GetRevisionKey(cr),
 		})
 
-		if err := k8sClient.List(ctx, podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
+		var allPods corev1.PodList
+		if err := k8sClient.List(ctx, &allPods, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
 			return err
+		}
+		podList.Items = nil
+		for i := range allPods.Items {
+			matches, err := revisionHashMatches(ctx, k8sClient, lws, cr, revisionutils.GetRevisionKey(&allPods.Items[i]))
+			if err != nil {
+				return err
+			}
+			if matches {
+				podList.Items = append(podList.Items, allPods.Items[i])
+			}
 		}
 
 		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
