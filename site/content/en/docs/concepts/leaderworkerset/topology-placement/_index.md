@@ -40,7 +40,7 @@ Common topology keys include:
 ## How It Works
 
 1. **Topology Constraint Enforcement:**
-   When an LWS replica is created, the LWS controller configures node affinity/anti-affinity rules so that all pods belonging to a single replica (the leader and its workers) must be scheduled within the same topology domain instance (e.g., the same rack).
+   When an LWS replica is created, the LWS controller configures pod affinity/anti-affinity rules so that all pods belonging to a single replica (the leader and its workers) must be scheduled within the same topology domain instance (e.g., the same rack).
 
 2. **Mutual Exclusivity:**
    Pods from different replicas will not share the same topology domain instance if exclusive placement is requested, preventing noisy-neighbor interference and optimizing cross-node bandwidth.
