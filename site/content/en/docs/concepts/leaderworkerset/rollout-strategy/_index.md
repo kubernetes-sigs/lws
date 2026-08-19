@@ -15,8 +15,9 @@ LeaderWorkerSet supports two primary parameters within `.spec.rolloutStrategy.ro
 - `maxUnavailable`: Indicates how many replicas (groups of pods) are allowed to be unavailable during the update, based on `spec.replicas`. Defaults to 1.
 - `maxSurge`: Indicates how many extra replicas can be deployed above `spec.replicas` during the update. Defaults to 0.
 
-> [!NOTE]
-> `maxSurge` and `maxUnavailable` cannot both be zero at the same time.
+{{% alert title="Note" color="info" %}}
+`maxSurge` and `maxUnavailable` cannot both be zero at the same time.
+{{% /alert %}}
 
 ## Example Configuration
 

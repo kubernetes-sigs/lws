@@ -70,7 +70,9 @@ When any pod in a group fails, the entire group is recreated **if and only if th
 - **Node Failures:** If a node fails after all pods in the replica have successfully started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while pods are still pending, the controller waits for the startup phase to complete before triggering group recreation.
 - **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production without failing during the initial rollout.
 
-On version 0.9+, this feature is enabled via the `restartPolicy` field:
+{{% alert title="Note" color="info" %}}
+The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
+{{% /alert %}}
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -81,26 +83,6 @@ spec:
   replicas: 2
   leaderWorkerTemplate:
     restartPolicy: RecreateGroupAfterStart
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
-
-On version 0.8, this feature can be enabled via annotation:
-
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-  annotations:
-    leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start: "true"
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
     size: 4
     workerTemplate:
       spec:

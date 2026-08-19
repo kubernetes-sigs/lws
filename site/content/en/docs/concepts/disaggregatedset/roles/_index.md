@@ -22,8 +22,9 @@ DisaggregatedSet "my-inference"
 Child LeaderWorkerSets follow the naming convention:
 `<DisaggregatedSet-name>-<slice>-<revision-hash>-<role-name>`
 
-> [!NOTE]
-> The revision hash in the child resource name is dynamic across updates. Always select child resources using Kubernetes labels (`disaggregatedset.x-k8s.io/name`, `disaggregatedset.x-k8s.io/role`, `disaggregatedset.x-k8s.io/slice`) rather than hardcoding names.
+{{% alert title="Note" color="info" %}}
+The revision hash in the child resource name is dynamic across updates. Always select child resources using Kubernetes labels (`disaggregatedset.x-k8s.io/name`, `disaggregatedset.x-k8s.io/role`, `disaggregatedset.x-k8s.io/slice`) rather than hardcoding names.
+{{% /alert %}}
 
 ---
 
