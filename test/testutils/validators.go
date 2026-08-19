@@ -30,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/lru"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -168,8 +169,18 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 			return err
 		}
 		hash := revisionutils.GetRevisionKey(cr)
-		if revisionutils.GetRevisionKey(&sts) != hash {
-			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
+		statefulSetHash := revisionutils.GetRevisionKey(&sts)
+		if statefulSetHash != hash {
+			// A controller upgrade may retain a legacy revision hash when the
+			// revision data is semantically equal after default normalization.
+			// That is intentional: changing only the hash would cause a rollout.
+			legacyRevision, getRevisionErr := revisionutils.GetRevision(ctx, k8sClient, &lws, statefulSetHash)
+			if getRevisionErr != nil {
+				return getRevisionErr
+			}
+			if legacyRevision == nil || !revisionutils.SetMatchesRevision(&lws, cr, legacyRevision, lru.New(1)) {
+				return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", statefulSetHash, hash)
+			}
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
