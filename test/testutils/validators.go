@@ -43,6 +43,20 @@ const (
 	Interval = time.Millisecond * 250
 )
 
+func revisionHashMatches(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision, candidateHash string) (bool, error) {
+	if candidateHash == revisionutils.GetRevisionKey(currentRevision) {
+		return true, nil
+	}
+	legacyRevision, err := revisionutils.GetRevision(ctx, k8sClient, lws, candidateHash)
+	if err != nil {
+		return false, err
+	}
+	if legacyRevision == nil {
+		return false, nil
+	}
+	return revisionutils.SetMatchesRevision(lws, currentRevision, legacyRevision, lru.New(1)), nil
+}
+
 func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
 	gomega.Eventually(func() bool {
 		var leaderSet appsv1.StatefulSet
@@ -170,17 +184,12 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		}
 		hash := revisionutils.GetRevisionKey(cr)
 		statefulSetHash := revisionutils.GetRevisionKey(&sts)
-		if statefulSetHash != hash {
-			// A controller upgrade may retain a legacy revision hash when the
-			// revision data is semantically equal after default normalization.
-			// That is intentional: changing only the hash would cause a rollout.
-			legacyRevision, getRevisionErr := revisionutils.GetRevision(ctx, k8sClient, &lws, statefulSetHash)
-			if getRevisionErr != nil {
-				return getRevisionErr
-			}
-			if legacyRevision == nil || !revisionutils.SetMatchesRevision(&lws, cr, legacyRevision, lru.New(1)) {
-				return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", statefulSetHash, hash)
-			}
+		matchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, statefulSetHash)
+		if err != nil {
+			return err
+		}
+		if !matchesRevision {
+			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", statefulSetHash, hash)
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
@@ -206,13 +215,17 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		} else {
 			podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 		}
-		// check pod template has correct label
-		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
-			leaderworkerset.SetNameLabelKey:     lws.Name,
-			leaderworkerset.WorkerIndexLabelKey: "0",
-			leaderworkerset.RevisionKey:         hash,
-		}); diff != "" {
-			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
+		// Check pod template labels. A legacy revision hash is valid when its
+		// revision data is semantically equal to the current normalized spec.
+		if sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey] != lws.Name || sts.Spec.Template.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
+			return errors.New("leader StatefulSet pod template doesn't have the correct labels")
+		}
+		labelMatchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, sts.Spec.Template.Labels[leaderworkerset.RevisionKey])
+		if err != nil {
+			return err
+		}
+		if !labelMatchesRevision {
+			return fmt.Errorf("leader StatefulSet pod template revision hash mismatch, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.RevisionKey], hash)
 		}
 		// we can't do a full diff of the pod template since there will be default fields added to pod template
 		if podTemplateSpec.Spec.Containers[0].Name != sts.Spec.Template.Spec.Containers[0].Name {
@@ -305,17 +318,12 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			}
 			hash := revisionutils.GetRevisionKey(cr)
 			statefulSetHash := revisionutils.GetRevisionKey(&sts)
-			if statefulSetHash != hash {
-				// As with the leader StatefulSet, an upgrade may intentionally
-				// retain a legacy hash when its revision data is semantically equal
-				// after default normalization.
-				legacyRevision, getRevisionErr := revisionutils.GetRevision(ctx, k8sClient, &lws, statefulSetHash)
-				if getRevisionErr != nil {
-					return getRevisionErr
-				}
-				if legacyRevision == nil || !revisionutils.SetMatchesRevision(&lws, cr, legacyRevision, lru.New(1)) {
-					return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", statefulSetHash, hash)
-				}
+			matchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, statefulSetHash)
+			if err != nil {
+				return err
+			}
+			if !matchesRevision {
+				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", statefulSetHash, hash)
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")
