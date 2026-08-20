@@ -138,7 +138,7 @@ HELM_RBAC_GENERATED_FILES := \
 	$(HELM_RBAC_DIR)/service_account.yaml
 
 .PHONY: update-helm
-update-helm: manifests ## Generate Helm templates from Kustomize manifests.
+update-helm: manifests ## Generate Helm RBAC templates from config/rbac.
 	rm -f $(HELM_RBAC_GENERATED_FILES)
 	$(GO_CMD) run -modfile=$(PROJECT_DIR)/hack/tools/yaml-processor/go.mod \
 		sigs.k8s.io/kueue/hack/tools/yaml-processor \
@@ -424,7 +424,7 @@ helm: ## Download helm locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install helm.sh/helm/v3/cmd/helm@$(HELM_VERSION)
 
 .PHONY: helm-verify
-helm-verify: helm ## Verify the Helm chart and generated RBAC templates.
+helm-verify: update-helm helm ## Verify the Helm chart and generated RBAC templates.
 	$(HELM) lint charts/lws
 	$(HELM) template charts/lws >/dev/null
 	$(HELM) template charts/lws --set gangSchedulingManagement.schedulerProvider=volcano >/dev/null
