@@ -1,0 +1,11 @@
+FROM alpine:latest
+
+WORKDIR /
+COPY bin/manager-static /manager
+
+# 添加必要的运行时依赖
+RUN apk add --no-cache ca-certificates
+
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]

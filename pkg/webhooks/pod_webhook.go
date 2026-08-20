@@ -135,6 +135,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
+		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ShareTopologyAnnotationKey]; foundEpKey {
+			SetShareAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
@@ -307,4 +310,27 @@ func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)
 	}
 	return fmt.Sprint(workerIndex / subGroupSize)
+}
+
+// SetShareAffinities set the pod affinity/anti-affinity
+func SetShareAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &corev1.Affinity{}
+	}
+	if pod.Spec.Affinity.PodAffinity == nil {
+		pod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+	}
+	// Pod affinity ensures the pods of this set land on the same topology domain.
+	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{groupUniqueKey},
+				},
+			}},
+			TopologyKey: topologyKey,
+		})
+
 }
