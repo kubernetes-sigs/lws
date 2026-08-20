@@ -141,20 +141,8 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubGroupType(subGroupType leaderworker
 
 func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leaderworkerset.SubdomainPolicy) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-		SubdomainPolicy:          &subdomainPolicy,
-		PublishNotReadyAddresses: ptr.To(true),
+		SubdomainPolicy: &subdomainPolicy,
 	}
-	return lwsWrapper
-}
-
-func (lwsWrapper *LeaderWorkerSetWrapper) PublishNotReadyAddresses(v bool) *LeaderWorkerSetWrapper {
-	if lwsWrapper.Spec.NetworkConfig == nil {
-		subdomainPolicy := leaderworkerset.SubdomainShared
-		lwsWrapper.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-			SubdomainPolicy: &subdomainPolicy,
-		}
-	}
-	lwsWrapper.Spec.NetworkConfig.PublishNotReadyAddresses = ptr.To(v)
 	return lwsWrapper
 }
 
@@ -268,8 +256,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
 	subdomainPolicy := leaderworkerset.SubdomainShared
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
-		SubdomainPolicy:          &subdomainPolicy,
-		PublishNotReadyAddresses: ptr.To(true),
+		SubdomainPolicy: &subdomainPolicy,
 	}
 
 	return &LeaderWorkerSetWrapper{

@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -1183,28 +1182,6 @@ func TestGetUpdatedRevision(t *testing.T) {
 			expectUpdate: false,
 		},
 		{
-			name: "legacy revision without publishNotReadyAddresses matches default true",
-			sts: &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
-			},
-			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
-			modifyRevision: func(rev *appsv1.ControllerRevision) {
-				removePublishNotReadyAddresses(t, rev)
-			},
-			expectUpdate: false,
-		},
-		{
-			name: "legacy revision without publishNotReadyAddresses differs from explicit false",
-			sts: &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
-			},
-			lws: wrappers.BuildLeaderWorkerSet("default").PublishNotReadyAddresses(false).Obj(),
-			modifyRevision: func(rev *appsv1.ControllerRevision) {
-				removePublishNotReadyAddresses(t, rev)
-			},
-			expectUpdate: true,
-		},
-		{
 			name: "revision has different spec, should trigger update",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
@@ -1246,28 +1223,6 @@ func TestGetUpdatedRevision(t *testing.T) {
 			}
 		})
 	}
-}
-
-func removePublishNotReadyAddresses(t *testing.T, revision *appsv1.ControllerRevision) {
-	t.Helper()
-	var patch map[string]interface{}
-	if err := json.Unmarshal(revision.Data.Raw, &patch); err != nil {
-		t.Fatalf("unmarshal revision: %v", err)
-	}
-	spec, ok := patch["spec"].(map[string]interface{})
-	if !ok {
-		t.Fatal("revision is missing spec")
-	}
-	networkConfig, ok := spec["networkConfig"].(map[string]interface{})
-	if !ok {
-		t.Fatal("revision is missing spec.networkConfig")
-	}
-	delete(networkConfig, "publishNotReadyAddresses")
-	data, err := json.Marshal(patch)
-	if err != nil {
-		t.Fatalf("marshal revision: %v", err)
-	}
-	revision.Data.Raw = data
 }
 
 func TestReconcileHeadlessServicesPrecreatesUniquePerReplicaOrdinals(t *testing.T) {

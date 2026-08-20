@@ -663,24 +663,6 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
-// UpdatePublishNotReadyAddresses flips NetworkConfig.PublishNotReadyAddresses on the
-// LWS spec in-place (preserving the existing SubdomainPolicy) so that callers can
-// exercise the LWS controller's reconcileHeadlessServices update path.
-func UpdatePublishNotReadyAddresses(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, publish bool) {
-	gomega.Eventually(func() error {
-		var newLws leaderworkerset.LeaderWorkerSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
-			return err
-		}
-		if newLws.Spec.NetworkConfig == nil {
-			shared := leaderworkerset.SubdomainShared
-			newLws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{SubdomainPolicy: &shared}
-		}
-		newLws.Spec.NetworkConfig.PublishNotReadyAddresses = ptr.To(publish)
-		return k8sClient.Update(ctx, &newLws)
-	}, Timeout, Interval).Should(gomega.Succeed())
-}
-
 // UpdateMaxGroupRestarts sets leaderWorkerTemplate.maxGroupRestarts on the LWS spec.
 func UpdateMaxGroupRestarts(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, n int32) {
 	gomega.Eventually(func() error {
@@ -726,27 +708,6 @@ func ExpectNoFailedCondition(ctx context.Context, k8sClient client.Client, lws *
 		return false, nil
 	}, 30*time.Second, Interval).Should(gomega.Equal(false),
 		"unexpected Failed=True on LWS %s/%s", lws.Namespace, lws.Name)
-}
-
-// ExpectServicePublishNotReadyAddresses checks every LWS-owned headless service in
-// the namespace matches the expected PublishNotReadyAddresses value.
-func ExpectServicePublishNotReadyAddresses(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, want bool) {
-	gomega.Eventually(func() (bool, error) {
-		var serviceList corev1.ServiceList
-		if err := k8sClient.List(ctx, &serviceList, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
-			return false, err
-		}
-		if len(serviceList.Items) == 0 {
-			return false, nil
-		}
-		for _, svc := range serviceList.Items {
-			if svc.Spec.PublishNotReadyAddresses != want {
-				return false, fmt.Errorf("service %s has PublishNotReadyAddresses=%v, want %v", svc.Name, svc.Spec.PublishNotReadyAddresses, want)
-			}
-		}
-		return true, nil
-	}, Timeout, Interval).Should(gomega.Equal(true),
-		"services for LWS %s/%s did not converge to PublishNotReadyAddresses=%v", lws.Namespace, lws.Name, want)
 }
 
 func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {

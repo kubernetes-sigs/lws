@@ -106,10 +106,9 @@ func TestEqualRevision(t *testing.T) {
 			equal:            true,
 		},
 		{
-			// A nil networkConfig is defaulted by the webhook to Shared and by
-			// the CRD schema to publishNotReadyAddresses=true, so it must
-			// produce the same revision as the explicit default form.
-			name:             "nil networkConfig materializes to shared policy + default publish, should be equal",
+			// A nil networkConfig is defaulted by the webhook to Shared, so it
+			// must produce the same revision as the explicit default form.
+			name:             "nil networkConfig materializes to shared policy, should be equal",
 			leftLws:          wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
 			rightLws:         wrappers.BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
 			leftRevisionKey:  "",

@@ -275,16 +275,6 @@ type NetworkConfig struct {
 	// the headless service, defaults to shared
 	// +kubebuilder:validation:Enum={Shared,UniquePerReplica}
 	SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
-
-	// publishNotReadyAddresses controls whether the LWS-owned headless
-	// Services publish endpoints for pods that are not yet Ready. Publishing
-	// not-ready addresses is what makes peer FQDN (e.g. LWS_LEADER_ADDRESS)
-	// resolvable during the init-container phase. It defaults to true when
-	// unset, preserving the historical LWS behavior (not-ready addresses have
-	// always been published). Set it to false to disable publishing.
-	// +optional
-	// +kubebuilder:default=true
-	PublishNotReadyAddresses *bool `json:"publishNotReadyAddresses,omitempty"`
 }
 
 type SubdomainPolicy string

@@ -33,14 +33,6 @@ import (
 
 func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Client, Scheme *runtime.Scheme, lws *leaderworkerset.LeaderWorkerSet, serviceName string, serviceSelector map[string]string, owner metav1.Object) error {
 	log := ctrl.LoggerFrom(ctx)
-	// PublishNotReadyAddresses is spec-driven and must be reconciled on both
-	// create and update paths so later LWS updates take effect on existing Services.
-	// It defaults to true when unset, preserving the historical LWS behavior
-	// (not-ready addresses have always been published on these Services).
-	publishNotReady := true
-	if lws.Spec.NetworkConfig != nil && lws.Spec.NetworkConfig.PublishNotReadyAddresses != nil {
-		publishNotReady = *lws.Spec.NetworkConfig.PublishNotReadyAddresses
-	}
 	// If the headless service does not exist in the namespace, create it.
 	var headlessService corev1.Service
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: lws.Namespace}, &headlessService); err != nil {
@@ -56,7 +48,7 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 			Spec: corev1.ServiceSpec{
 				ClusterIP:                "None", // defines service as headless
 				Selector:                 serviceSelector,
-				PublishNotReadyAddresses: publishNotReady,
+				PublishNotReadyAddresses: true,
 			},
 		}
 
@@ -77,10 +69,6 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 
 	original := headlessService.DeepCopy()
 	needsPatch := false
-	if headlessService.Spec.PublishNotReadyAddresses != publishNotReady {
-		headlessService.Spec.PublishNotReadyAddresses = publishNotReady
-		needsPatch = true
-	}
 
 	// UniquePerReplica Services are pre-created by the LWS reconciler so they
 	// exist before the StatefulSet can start a Pod. Once that leader Pod exists,
