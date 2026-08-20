@@ -348,44 +348,6 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 	})
 
-	ginkgo.It("publishNotReadyAddresses propagates to LWS-owned Services on spec update (UniquePerReplica)", func() {
-		// KEP-820: flipping publishNotReadyAddresses must converge on already-created
-		// per-replica headless services, not only on freshly created ones.
-		unique := leaderworkerset.SubdomainUniquePerReplica
-		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
-			Replica(2).Size(2).
-			RestartPolicy(v1.RecreateGroupOnPodRestart).
-			SubdomainPolicy(unique).PublishNotReadyAddresses(false).
-			Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.ExpectValidServices(ctx, k8sClient, lws, 2)
-		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
-
-		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, true)
-		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, true)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-
-		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, false)
-		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
-	})
-
-	ginkgo.It("publishNotReadyAddresses propagates to the shared headless Service (Shared)", func() {
-		shared := leaderworkerset.SubdomainShared
-		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
-			Replica(1).Size(2).
-			RestartPolicy(v1.RecreateGroupOnPodRestart).
-			SubdomainPolicy(shared).PublishNotReadyAddresses(false).
-			Obj()
-		testing.MustCreateLws(ctx, k8sClient, lws)
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.ExpectValidServices(ctx, k8sClient, lws, 1)
-		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, false)
-
-		testing.UpdatePublishNotReadyAddresses(ctx, k8sClient, lws, true)
-		testing.ExpectServicePublishNotReadyAddresses(ctx, k8sClient, lws, true)
-	})
-
 	ginkgo.It("maxGroupRestarts surfaces Failed condition after budget is exhausted", func() {
 		// KEP-820: a worker pod deletion under RecreateGroupOnPodRestart must
 		// consult the group-restart budget. With maxGroupRestarts=0 the very

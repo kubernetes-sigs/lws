@@ -274,15 +274,6 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 			SubdomainPolicy: &subdomainPolicy,
 		}
 	}
-	// Revisions written before publishNotReadyAddresses was added do not contain
-	// the field. Normalize that legacy representation to the historical default
-	// so upgrading the controller does not look like a spec change and trigger a
-	// rollout. An explicit false remains false.
-	if clone.Spec.NetworkConfig.PublishNotReadyAddresses == nil {
-		publishNotReadyAddresses := true
-		clone.Spec.NetworkConfig.PublishNotReadyAddresses = &publishNotReadyAddresses
-	}
-
 	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
 		return nil, err
 	}

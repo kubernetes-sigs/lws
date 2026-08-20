@@ -16783,16 +16783,6 @@ spec:
                           networkConfig:
                             description: networkConfig defines the network configuration of the group
                             properties:
-                              publishNotReadyAddresses:
-                                default: true
-                                description: |-
-                                  publishNotReadyAddresses controls whether the LWS-owned headless
-                                  Services publish endpoints for pods that are not yet Ready. Publishing
-                                  not-ready addresses is what makes peer FQDN (e.g. LWS_LEADER_ADDRESS)
-                                  resolvable during the init-container phase. It defaults to true when
-                                  unset, preserving the historical LWS behavior (not-ready addresses have
-                                  always been published). Set it to false to disable publishing.
-                                type: boolean
                               subdomainPolicy:
                                 description: |-
                                   subdomainPolicy determines the policy that will be used when creating
