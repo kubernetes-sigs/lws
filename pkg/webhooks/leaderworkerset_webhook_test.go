@@ -23,7 +23,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -254,17 +253,13 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	}
 }
 
-// Make sure the import is used: verify Update path with nil maxGroupRestarts
-// does not regress when previously set fields remain.
-func TestGeneralValidateNilMaxGroupRestartsUpdate(t *testing.T) {
+func TestGeneralValidateNilMaxGroupRestarts(t *testing.T) {
 	lws := wrappers.BuildLeaderWorkerSet("default").
 		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
 		Obj()
-	// explicitly nil
-	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](0)
 
 	r := &LeaderWorkerSetWebhook{}
-	// MaxGroupRestarts(0) with RecreateGroupOnPodRestart should pass generalValidate.
+	// An unset maxGroupRestarts with RecreateGroupOnPodRestart should pass.
 	if errs := r.generalValidate(lws); len(errs) != 0 {
 		t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
 	}

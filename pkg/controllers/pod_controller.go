@@ -126,7 +126,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	if subdomainPolicyForLWS(&leaderWorkerSet) == leaderworkerset.SubdomainUniquePerReplica {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -338,6 +338,11 @@ func parseGroupRestartCounts(raw string) (map[string]int32, error) {
 	counts := map[string]int32{}
 	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
 		return nil, err
+	}
+	for groupIndex, count := range counts {
+		if count < 0 {
+			return nil, fmt.Errorf("invalid group restart count for group %q: must be non-negative", groupIndex)
+		}
 	}
 	return counts, nil
 }
@@ -587,7 +592,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name
-	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+	if subdomainPolicyForLWS(currentLws) == leaderworkerset.SubdomainShared {
 		serviceName = lws.Name
 	}
 	// construct statefulset apply configuration

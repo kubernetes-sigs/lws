@@ -282,7 +282,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("shared headless service defaults publishNotReadyAddresses to false", &testCase{
+		ginkgo.Entry("shared headless service defaults publishNotReadyAddresses to true", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
 				{
