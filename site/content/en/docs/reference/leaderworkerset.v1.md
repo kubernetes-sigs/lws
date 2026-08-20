@@ -234,6 +234,18 @@ The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
 </tr>
+<tr><td><code>maxGroupRestarts</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>maxGroupRestarts bounds how many times a group's leader pod can be recreated
+via the RecreateGroupOnPodRestart path before the group is marked terminally
+failed. It is opt-in: when unset (nil) the existing unbounded recreation
+behavior is preserved. This field is only valid when
+spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
+validating webhook rejects any other combination.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>

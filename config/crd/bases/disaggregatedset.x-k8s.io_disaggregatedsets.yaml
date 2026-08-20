@@ -8919,6 +8919,17 @@ spec:
                                   - containers
                                   type: object
                               type: object
+                            maxGroupRestarts:
+                              description: |-
+                                maxGroupRestarts bounds how many times a group's leader pod can be recreated
+                                via the RecreateGroupOnPodRestart path before the group is marked terminally
+                                failed. It is opt-in: when unset (nil) the existing unbounded recreation
+                                behavior is preserved. This field is only valid when
+                                spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
+                                validating webhook rejects any other combination.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             persistentVolumeClaimRetentionPolicy:
                               description: |-
                                 persistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from

@@ -38,8 +38,11 @@ import (
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -162,6 +165,14 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Services must exist before the StatefulSet can create Pods. In
+	// UniquePerReplica mode this includes scale-up and MaxSurge ordinals.
+	if err := r.reconcileHeadlessServices(ctx, lws, leaderSts, replicas); err != nil {
+		log.Error(err, "Creating headless service.")
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
+		return ctrl.Result{}, err
+	}
+
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
@@ -186,13 +197,6 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
 	}
 
-	// Create headless service if it does not exist.
-	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
-		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
-		return ctrl.Result{}, err
-	}
-
 	updateDone, err := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
 		if apierrors.IsConflict(err) {
@@ -210,14 +214,99 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderSts *appsv1.StatefulSet, replicas int32) error {
+	leaderSelector := client.MatchingLabels(map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	})
+	var leaderPods corev1.PodList
+	if err := r.List(ctx, &leaderPods, leaderSelector, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+	leaderPodsByName := make(map[string]*corev1.Pod, len(leaderPods.Items))
+	for i := range leaderPods.Items {
+		leaderPodsByName[leaderPods.Items[i].Name] = &leaderPods.Items[i]
+	}
+
+	firstStaleOrdinal := replicas
+	canCleanStaleServices := leaderSts != nil && leaderSts.Spec.Replicas != nil && *leaderSts.Spec.Replicas <= replicas
+	if subdomainPolicyForLWS(lws) == leaderworkerset.SubdomainShared {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
 		}
+		// Per-replica Services that were pre-created before switching to Shared
+		// are stale once their corresponding Pods are gone.
+		firstStaleOrdinal = 0
+		canCleanStaleServices = leaderSts != nil &&
+			leaderSts.Spec.Template.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey] != string(leaderworkerset.SubdomainUniquePerReplica)
+	} else {
+		for ordinal := int32(0); ordinal < replicas; ordinal++ {
+			groupIndex := strconv.FormatInt(int64(ordinal), 10)
+			serviceName := fmt.Sprintf("%s-%s", lws.Name, groupIndex)
+			// Do not recreate a Service for a terminating leader. Once deletion
+			// completes, a subsequent reconcile will create it before the
+			// StatefulSet can start the replacement Pod.
+			if leaderPod := leaderPodsByName[serviceName]; leaderPod != nil && leaderPod.DeletionTimestamp != nil {
+				continue
+			}
+			if err := controllerutils.CreateHeadlessServiceIfNotExists(
+				ctx,
+				r.Client,
+				r.Scheme,
+				lws,
+				serviceName,
+				map[string]string{
+					leaderworkerset.SetNameLabelKey:    lws.Name,
+					leaderworkerset.GroupIndexLabelKey: groupIndex,
+				},
+				lws,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	if !canCleanStaleServices {
 		return nil
 	}
+
+	// A Service that was pre-created for a Pod which never appeared remains
+	// LWS-owned. Remove those Services after scale-down or MaxSurge reclamation,
+	// but retain Services for Pods that still exist until StatefulSet scale-down
+	// and Pod-owned garbage collection have completed. Cleanup waits until the
+	// StatefulSet has observed the lower replica count (or the Shared template)
+	// so an in-flight Pod creation cannot lose its Service.
+	var services corev1.ServiceList
+	if err := r.List(ctx, &services, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}, client.InNamespace(lws.Namespace)); err != nil {
+		return err
+	}
+	for i := range services.Items {
+		service := &services.Items[i]
+		groupIndex, ok := service.Spec.Selector[leaderworkerset.GroupIndexLabelKey]
+		if !ok || service.Name != fmt.Sprintf("%s-%s", lws.Name, groupIndex) {
+			continue
+		}
+		ordinal, err := strconv.ParseInt(groupIndex, 10, 32)
+		if err != nil || int32(ordinal) < firstStaleOrdinal || leaderPodsByName[service.Name] != nil {
+			continue
+		}
+		owner := metav1.GetControllerOf(service)
+		if owner != nil && owner.UID == lws.UID {
+			if err := r.Delete(ctx, service); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// subdomainPolicyForLWS treats a missing networkConfig or subdomainPolicy as
+// the historical Shared default. Admission normally fills this field, but
+// legacy objects and direct controller calls can still contain nil pointers.
+func subdomainPolicyForLWS(lws *leaderworkerset.LeaderWorkerSet) leaderworkerset.SubdomainPolicy {
+	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == nil {
+		return leaderworkerset.SubdomainShared
+	}
+	return *lws.Spec.NetworkConfig.SubdomainPolicy
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -226,6 +315,37 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				labels := a.GetLabels()
+				if labels == nil {
+					return nil
+				}
+				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
+				}
+				name := labels[leaderworkerset.SetNameLabelKey]
+				if name == "" {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Name:      name,
+					Namespace: a.GetNamespace(),
+				}}}
+			}),
+			// React to leader pod creation (eager per-leader Service), deletion
+			// (group recreation), and updates that change the group-restart-count
+			// annotation (surfacing the Failed condition without waiting for the
+			// next unrelated event). Kubelet status churn on healthy leader pods
+			// must not enqueue a full LWS reconcile.
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(e event.CreateEvent) bool { return true },
+				DeleteFunc: func(e event.DeleteEvent) bool { return true },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartCountAnnotationKey] !=
+						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartCountAnnotationKey]
+				},
+			})).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
 		Complete(r)
@@ -492,7 +612,15 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
-	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
+	// Terminal failure check must run first so Failed dominates over the
+	// rolling-update / progress / available decisions below.
+	failed, err := r.hasFailedGroup(ctx, lws, leaderPodList)
+	if err != nil {
+		return false, false, err
+	}
+	if failed {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws))
+	} else if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
@@ -808,7 +936,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		}
 	}
 
-	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	if subdomainPolicyForLWS(lws) == leaderworkerset.SubdomainUniquePerReplica {
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
 
@@ -886,6 +1014,10 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
 		reason = GroupsUpdating
 		message = "Rolling Upgrade is in progress"
+	case leaderworkerset.LeaderWorkerSetFailed:
+		condtype = string(leaderworkerset.LeaderWorkerSetFailed)
+		reason = "MaxGroupRestartsExceeded"
+		message = "One or more groups exceeded maxGroupRestarts"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
 		reason = GroupsProgressing
@@ -901,6 +1033,35 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 		Message:            message,
 	}
 	return condition
+}
+
+// hasFailedGroup reports whether any leader pod carries a group-restart-count
+// annotation that has exceeded the configured maxGroupRestarts budget. The
+// annotation is the source of truth enforced by pod_controller.go. Invalid
+// annotations are surfaced as reconcile errors instead of being coerced into a
+// terminal Failed condition.
+func (r *LeaderWorkerSetReconciler) hasFailedGroup(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPodList *corev1.PodList) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
+	if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts == nil {
+		return false, nil
+	}
+	limit := *lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		raw, ok := pod.Annotations[leaderworkerset.GroupRestartCountAnnotationKey]
+		if !ok || raw == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			log.Error(err, "invalid group-restart-count annotation", "pod", pod.Name, "value", raw)
+			return false, fmt.Errorf("invalid %s annotation on leader pod %s: %w", leaderworkerset.GroupRestartCountAnnotationKey, pod.Name, err)
+		}
+		if int32(v) > limit {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
@@ -965,6 +1126,20 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	if (condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) && condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress)) ||
 		(condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) && condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable)) {
 		return true
+	}
+
+	// Failed is terminal: if a previous reconcile set Failed=True, a new
+	// reconcile must clear Available/Progressing/UpdateInProgress to False.
+	failedType := string(leaderworkerset.LeaderWorkerSetFailed)
+	if condition1.Type == failedType || condition2.Type == failedType {
+		if condition1.Type == string(leaderworkerset.LeaderWorkerSetAvailable) ||
+			condition1.Type == string(leaderworkerset.LeaderWorkerSetProgressing) ||
+			condition1.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetAvailable) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetProgressing) ||
+			condition2.Type == string(leaderworkerset.LeaderWorkerSetUpdateInProgress) {
+			return true
+		}
 	}
 
 	return false

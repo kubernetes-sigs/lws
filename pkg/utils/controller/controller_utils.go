@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,6 +59,42 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 		// create the service in the cluster
 		log.V(2).Info("Creating headless service.")
 		if err := k8sClient.Create(ctx, &headlessService); err != nil {
+			return err
+		}
+		return nil
+	}
+	if headlessService.DeletionTimestamp != nil {
+		return fmt.Errorf("headless Service %s/%s is terminating", headlessService.Namespace, headlessService.Name)
+	}
+
+	original := headlessService.DeepCopy()
+	needsPatch := false
+
+	// UniquePerReplica Services are pre-created by the LWS reconciler so they
+	// exist before the StatefulSet can start a Pod. Once that leader Pod exists,
+	// transfer controller ownership from the LWS to the Pod to preserve the
+	// existing per-replica garbage-collection behavior. Never adopt a Service
+	// controlled by an unrelated object.
+	currentController := metav1.GetControllerOf(&headlessService)
+	if currentController != nil &&
+		currentController.UID == lws.UID &&
+		owner.GetUID() != "" && owner.GetUID() != lws.UID {
+		ownerReferences := headlessService.GetOwnerReferences()
+		for i := range ownerReferences {
+			if ownerReferences[i].Controller != nil && *ownerReferences[i].Controller {
+				ownerReferences = append(ownerReferences[:i], ownerReferences[i+1:]...)
+				break
+			}
+		}
+		headlessService.SetOwnerReferences(ownerReferences)
+		if err := ctrl.SetControllerReference(owner, &headlessService, Scheme); err != nil {
+			return err
+		}
+		needsPatch = true
+	}
+
+	if needsPatch {
+		if err := k8sClient.Patch(ctx, &headlessService, client.MergeFrom(original)); err != nil {
 			return err
 		}
 	}

@@ -269,13 +269,11 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	// until another field in the LWS object is changed triggering the LWS webhook. This allows the revision
 	// to be the same before and after the LWS webhook actually defaults the value.
 	if clone.Spec.NetworkConfig == nil {
-		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
 		subdomainPolicy := leaderworkerset.SubdomainShared
 		clone.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 			SubdomainPolicy: &subdomainPolicy,
 		}
 	}
-
 	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
 		return nil, err
 	}

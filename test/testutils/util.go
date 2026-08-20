@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -253,11 +254,21 @@ func ExpectValidPods(ctx context.Context, k8sClient client.Client, lws *leaderwo
 		}
 		labelSelector := client.MatchingLabels(map[string]string{
 			leaderworkerset.SetNameLabelKey: lws.Name,
-			leaderworkerset.RevisionKey:     revisionutils.GetRevisionKey(cr),
 		})
 
-		if err := k8sClient.List(ctx, podList, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
+		var allPods corev1.PodList
+		if err := k8sClient.List(ctx, &allPods, labelSelector, client.InNamespace(lws.Namespace)); err != nil {
 			return err
+		}
+		podList.Items = nil
+		for i := range allPods.Items {
+			matches, err := revisionHashMatches(ctx, k8sClient, lws, cr, revisionutils.GetRevisionKey(&allPods.Items[i]))
+			if err != nil {
+				return err
+			}
+			if matches {
+				podList.Items = append(podList.Items, allPods.Items[i])
+			}
 		}
 
 		if len(podList.Items) != int((*lws.Spec.Replicas)*(*lws.Spec.LeaderWorkerTemplate.Size)) {
@@ -339,7 +350,25 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
 			return err
 		}
-		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(&leaderSts)
+		var revisionList appsv1.ControllerRevisionList
+		if err := k8sClient.List(ctx, &revisionList, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+			return err
+		}
+		var latestRevision *appsv1.ControllerRevision
+		for i := range revisionList.Items {
+			r := &revisionList.Items[i]
+			if latestRevision == nil || r.Revision > latestRevision.Revision {
+				latestRevision = r
+			}
+		}
+		revisionKey := ""
+		if latestRevision != nil && latestRevision.Labels != nil {
+			revisionKey = latestRevision.Labels[leaderworkerset.RevisionKey]
+		}
+		if revisionKey == "" {
+			revisionKey = revisionutils.GetRevisionKey(&leaderSts)
+		}
+		leaderPod.Labels[leaderworkerset.RevisionKey] = revisionKey
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
@@ -632,6 +661,53 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 		}
 		return k8sClient.Update(ctx, &newLws)
 	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// UpdateMaxGroupRestarts sets leaderWorkerTemplate.maxGroupRestarts on the LWS spec.
+func UpdateMaxGroupRestarts(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, n int32) {
+	gomega.Eventually(func() error {
+		var newLws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
+			return err
+		}
+		newLws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To(n)
+		return k8sClient.Update(ctx, &newLws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// ExpectFailedCondition polls the LWS status.conditions until a Failed condition
+// with the given reason is present with status True (or fails after Timeout).
+func ExpectFailedCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, reason string) {
+	gomega.Eventually(func() (bool, error) {
+		var cur leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &cur); err != nil {
+			return false, err
+		}
+		for _, c := range cur.Status.Conditions {
+			if c.Type == "Failed" && c.Status == metav1.ConditionTrue && (reason == "" || c.Reason == reason) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, Timeout, Interval).Should(gomega.Equal(true),
+		"expected Failed=%s condition on LWS %s/%s", reason, lws.Namespace, lws.Name)
+}
+
+// ExpectNoFailedCondition asserts the LWS never surfaces a Failed=True condition.
+func ExpectNoFailedCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
+	gomega.Consistently(func() (bool, error) {
+		var cur leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &cur); err != nil {
+			return false, err
+		}
+		for _, c := range cur.Status.Conditions {
+			if c.Type == "Failed" && c.Status == metav1.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, 30*time.Second, Interval).Should(gomega.Equal(false),
+		"unexpected Failed=True on LWS %s/%s", lws.Namespace, lws.Name)
 }
 
 func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {

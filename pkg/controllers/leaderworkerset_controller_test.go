@@ -25,6 +25,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1205,6 +1206,203 @@ func TestGetUpdatedRevision(t *testing.T) {
 	}
 }
 
+func TestReconcileHeadlessServicesPrecreatesUniquePerReplicaOrdinals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+
+	// Initial creation must cover every ordinal before the StatefulSet is applied.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+	// The replicas passed by rollingUpdateParameters include scale-up and
+	// MaxSurge ordinals, which must also be created eagerly.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 4); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-up) error = %v", err)
+	}
+
+	for ordinal := 0; ordinal < 4; ordinal++ {
+		name := "test-sample-" + strconv.Itoa(ordinal)
+		var service corev1.Service
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: name}, &service); err != nil {
+			t.Fatalf("get Service %s: %v", name, err)
+		}
+		if got := service.Spec.Selector[leaderworkerset.GroupIndexLabelKey]; got != strconv.Itoa(ordinal) {
+			t.Errorf("Service %s group selector = %q, want %q", name, got, strconv.Itoa(ordinal))
+		}
+		owner := metav1.GetControllerOf(&service)
+		if owner == nil || owner.UID != lws.UID {
+			t.Errorf("Service %s controller owner = %#v, want LWS UID %q", name, owner, lws.UID)
+		}
+	}
+}
+
+func TestReconcileHeadlessServicesDefaultsMissingSubdomainPolicyToShared(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.UID = types.UID("lws-uid")
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 1); err != nil {
+		t.Fatalf("reconcileHeadlessServices() error = %v", err)
+	}
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &service); err != nil {
+		t.Fatalf("get shared Service: %v", err)
+	}
+}
+
+func TestReconcileHeadlessServicesSkipsDeletingLeaderAndCleansUnusedOrdinals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	deletingLeader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	deletingLeader.UID = types.UID("pod-uid")
+	deletingLeader.Finalizers = []string{"test-finalizer"}
+	deletionTime := metav1.Now()
+	deletingLeader.DeletionTimestamp = &deletionTime
+	activeSurgeLeader := wrappers.MakePodWithLabels(lws.Name, "3", "0", lws.Namespace, 2)
+	activeSurgeLeader.UID = types.UID("surge-pod-uid")
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deletingLeader, activeSurgeLeader).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](4)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 4); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: deletingLeader.Name}, &service); !apierrors.IsNotFound(err) {
+		t.Fatalf("Service for deleting leader should not be created, got error %v", err)
+	}
+
+	// Ordinals without Pods are LWS-owned and should be removed when replicas
+	// shrink. A Service whose Pod still exists is retained until that Pod exits.
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}, &service); err != nil {
+		t.Fatalf("Service should remain until StatefulSet observes scale-down: %v", err)
+	}
+	leaderSts.Spec.Replicas = ptr.To[int32](2)
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(observed scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}, &service); !apierrors.IsNotFound(err) {
+		t.Errorf("unused Service test-sample-2 should be deleted, got error %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: activeSurgeLeader.Name}, &service); err != nil {
+		t.Errorf("Service for an existing surge Pod should be retained: %v", err)
+	}
+}
+
+func TestReconcileHeadlessServicesWaitsForTerminatingServiceBeforeScaleUp(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 3); err != nil {
+		t.Fatalf("reconcileHeadlessServices(initial) error = %v", err)
+	}
+
+	var service corev1.Service
+	key := types.NamespacedName{Namespace: lws.Namespace, Name: "test-sample-2"}
+	if err := k8sClient.Get(context.Background(), key, &service); err != nil {
+		t.Fatalf("get Service: %v", err)
+	}
+	service.Finalizers = []string{"test-finalizer"}
+	if err := k8sClient.Update(context.Background(), &service); err != nil {
+		t.Fatalf("add Service finalizer: %v", err)
+	}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(scale-down) error = %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), key, &service); err != nil {
+		t.Fatalf("get terminating Service: %v", err)
+	}
+	if service.DeletionTimestamp == nil {
+		t.Fatal("Service should be terminating after scale-down")
+	}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 3); err == nil {
+		t.Fatal("scale-up should wait for the terminating Service to disappear")
+	}
+}
+
+func TestReconcileHeadlessServicesCleansPrecreatedServicesAfterSwitchToShared(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		Obj()
+	lws.UID = types.UID("lws-uid")
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+	leaderSts := &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2)}}
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(unique) error = %v", err)
+	}
+	shared := leaderworkerset.SubdomainShared
+	lws.Spec.NetworkConfig.SubdomainPolicy = &shared
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, leaderSts, 2); err != nil {
+		t.Fatalf("reconcileHeadlessServices(shared) error = %v", err)
+	}
+
+	for _, name := range []string{"test-sample-0", "test-sample-1"} {
+		var service corev1.Service
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: name}, &service); !apierrors.IsNotFound(err) {
+			t.Errorf("stale per-replica Service %s should be deleted, got error %v", name, err)
+		}
+	}
+	var sharedService corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &sharedService); err != nil {
+		t.Fatalf("shared Service should exist: %v", err)
+	}
+}
+
 func TestEnqueueLWSRequests(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1263,5 +1461,163 @@ func TestEnqueueLWSRequests(t *testing.T) {
 				t.Errorf("unexpected reconcile requests (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestMakeConditionFailed(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	cond := makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws)
+	if cond.Type != string(leaderworkerset.LeaderWorkerSetFailed) {
+		t.Fatalf("type = %q, want Failed", cond.Type)
+	}
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("status = %q, want True", cond.Status)
+	}
+	if cond.Reason != "MaxGroupRestartsExceeded" {
+		t.Fatalf("reason = %q, want MaxGroupRestartsExceeded", cond.Reason)
+	}
+}
+
+func TestExclusiveConditionTypesWithFailed(t *testing.T) {
+	failed := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetFailed), Status: metav1.ConditionTrue}
+	available := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetAvailable), Status: metav1.ConditionTrue}
+	progressing := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetProgressing), Status: metav1.ConditionTrue}
+	updating := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetUpdateInProgress), Status: metav1.ConditionTrue}
+	availableFalse := metav1.Condition{Type: string(leaderworkerset.LeaderWorkerSetAvailable), Status: metav1.ConditionFalse}
+
+	if !exclusiveConditionTypes(failed, available) {
+		t.Fatal("Failed must be exclusive with Available=True")
+	}
+	if !exclusiveConditionTypes(available, failed) {
+		t.Fatal("Available=True must be exclusive with Failed")
+	}
+	if !exclusiveConditionTypes(failed, progressing) {
+		t.Fatal("Failed must be exclusive with Progressing=True")
+	}
+	if !exclusiveConditionTypes(updating, failed) {
+		t.Fatal("UpdateInProgress=True must be exclusive with Failed")
+	}
+	// Two non-terminal true conditions are still exclusive as before.
+	if !exclusiveConditionTypes(available, progressing) {
+		t.Fatal("Available and Progressing must remain exclusive")
+	}
+	_ = availableFalse
+}
+
+func TestSetConditionFailedClearsProgressing(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Generation(1).
+		Conditions([]metav1.Condition{{Type: string(leaderworkerset.LeaderWorkerSetProgressing), Status: metav1.ConditionTrue, ObservedGeneration: 1}}).
+		Obj()
+	failed := makeCondition(leaderworkerset.LeaderWorkerSetFailed, lws)
+	if !setCondition(lws, failed) {
+		t.Fatal("expected setCondition to return true when adding Failed")
+	}
+	var foundProgressing, foundFailed bool
+	for _, c := range lws.Status.Conditions {
+		if c.Type == string(leaderworkerset.LeaderWorkerSetProgressing) {
+			foundProgressing = true
+			if c.Status != metav1.ConditionFalse {
+				t.Fatalf("Progressing should be forced to False, got %q", c.Status)
+			}
+		}
+		if c.Type == string(leaderworkerset.LeaderWorkerSetFailed) {
+			foundFailed = true
+			if c.Status != metav1.ConditionTrue {
+				t.Fatalf("Failed should be True, got %q", c.Status)
+			}
+		}
+	}
+	if !foundProgressing {
+		t.Fatal("Progressing condition should still be present (cleared to False)")
+	}
+	if !foundFailed {
+		t.Fatal("Failed condition should be present")
+	}
+}
+
+func TestHasFailedGroup(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Client: fake.NewClientBuilder().Build()}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](2)
+
+	pods := &corev1.PodList{}
+	failed, err := reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("empty pod list should not be a failed group")
+	}
+
+	pods.Items = append(pods.Items, corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "lws-0",
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartCountAnnotationKey: "1",
+			},
+		},
+	})
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("count below limit should not trigger Failed")
+	}
+
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = "2"
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("count at limit should not trigger Failed")
+	}
+
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartCountAnnotationKey] = "3"
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if !failed {
+		t.Fatal("count above limit should trigger Failed")
+	}
+
+	// nil maxGroupRestarts disables detection entirely.
+	lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = nil
+	failed, err = reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err != nil {
+		t.Fatalf("hasFailedGroup() unexpected error: %v", err)
+	}
+	if failed {
+		t.Fatal("nil MaxGroupRestarts should never trigger Failed")
+	}
+}
+
+func TestHasFailedGroupInvalidAnnotationReturnsError(t *testing.T) {
+	reconciler := &LeaderWorkerSetReconciler{Client: fake.NewClientBuilder().Build()}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+	pods := &corev1.PodList{
+		Items: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "lws-0",
+					Annotations: map[string]string{
+						leaderworkerset.GroupRestartCountAnnotationKey: "bad",
+					},
+				},
+			},
+		},
+	}
+
+	failed, err := reconciler.hasFailedGroup(context.Background(), lws, pods)
+	if err == nil {
+		t.Fatal("hasFailedGroup() error = nil, want invalid annotation error")
+	}
+	if failed {
+		t.Fatal("hasFailedGroup() should not coerce invalid annotation into Failed=true")
 	}
 }

@@ -106,7 +106,9 @@ func TestEqualRevision(t *testing.T) {
 			equal:            true,
 		},
 		{
-			name:             "same LeaderWorkerTemplate, shared subdomainpolicy & nil, should be equal",
+			// A nil networkConfig is defaulted by the webhook to Shared, so it
+			// must produce the same revision as the explicit default form.
+			name:             "nil networkConfig materializes to shared policy, should be equal",
 			leftLws:          wrappers.BuildLeaderWorkerSet("default").SubdomainPolicy(leaderworkerset.SubdomainShared).Obj(),
 			rightLws:         wrappers.BuildLeaderWorkerSet("default").SubdomainNil().Obj(),
 			leftRevisionKey:  "",

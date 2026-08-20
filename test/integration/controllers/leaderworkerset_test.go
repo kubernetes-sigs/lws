@@ -282,6 +282,16 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("shared headless service publishes not-ready addresses by default", &testCase{
+			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidServices(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
