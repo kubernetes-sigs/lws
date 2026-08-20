@@ -285,7 +285,10 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 			}
 			continue
 		}
-		if cond.Status == metav1.ConditionTrue && exclusiveConditionTypes(cond.Type, newCondition.Type) {
+		if !exclusiveConditionTypes(cond.Type, newCondition.Type) {
+			continue
+		}
+		if cond.Status == metav1.ConditionTrue {
 			// newCondition becoming true is exactly why this mutually-exclusive
 			// condition is now false, so it explains the flip with the same
 			// Reason/Message rather than leaving this condition's old (now
@@ -295,6 +298,12 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
 			disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
 			disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
+			changed = true
+		} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
+			// Already false and staying false — no real transition, so only
+			// ObservedGeneration needs to catch up; Reason/Message still
+			// accurately describe why it became false and don't need to change.
+			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
 			changed = true
 		}
 	}

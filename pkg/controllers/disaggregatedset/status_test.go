@@ -141,6 +141,60 @@ func TestSetDisaggregatedSetCondition_SameStatusSyncsReasonAndMessage(t *testing
 	assert.Equal(t, original.Time, ds.Status.Conditions[0].LastTransitionTime.Time, "LastTransitionTime must not change when Status didn't transition")
 }
 
+// TestSetDisaggregatedSetCondition_StaleFalseConditionObservedGenerationCatchesUp
+// is a regression test for #980 review feedback: the *other* condition in the
+// exclusive pair, once it has settled to Status=False, was only ever touched by
+// the Status-flip branch — so if it stays False across further reconciles while
+// spec generation keeps advancing, its ObservedGeneration froze at whatever it
+// was on the last flip. That's misleading for a client reading
+// conditions[Progressing].observedGeneration expecting it to track how current
+// the reported state is. Reason/Message must NOT change, since they still
+// accurately describe why the condition became false.
+func TestSetDisaggregatedSetCondition_StaleFalseConditionObservedGenerationCatchesUp(t *testing.T) {
+	original := metav1.NewTime(time.Now().Add(-time.Hour))
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		Status: disaggregatedsetv1.DisaggregatedSetStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               string(disaggregatedsetv1.DisaggregatedSetAvailable),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: 2,
+					LastTransitionTime: original,
+					Reason:             "AllRolesReady",
+					Message:            "All roles have reached their desired replica count, ready and updated to the current revision",
+				},
+				{
+					Type:               string(disaggregatedsetv1.DisaggregatedSetProgressing),
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: 1, // stale: set on an earlier reconcile, before Available flipped true.
+					LastTransitionTime: original,
+					Reason:             "AllRolesReady",
+					Message:            "All roles have reached their desired replica count, ready and updated to the current revision",
+				},
+			},
+		},
+	}
+
+	// Available stays true on a later reconcile (generation advanced, no flip).
+	newCondition := metav1.Condition{
+		Type:               string(disaggregatedsetv1.DisaggregatedSetAvailable),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: 3,
+		Reason:             "AllRolesReady",
+		Message:            "All roles have reached their desired replica count, ready and updated to the current revision",
+	}
+
+	changed := setDisaggregatedSetCondition(ds, newCondition)
+
+	assert.True(t, changed)
+	progressing := findCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, progressing)
+	assert.Equal(t, metav1.ConditionFalse, progressing.Status, "must not flip back to true")
+	assert.EqualValues(t, 3, progressing.ObservedGeneration, "ObservedGeneration must catch up even while staying False")
+	assert.Equal(t, original.Time, progressing.LastTransitionTime.Time, "LastTransitionTime must not change when Status didn't transition")
+	assert.Equal(t, "AllRolesReady", progressing.Reason, "Reason must not change: it still accurately describes why this became false")
+}
+
 // TestSetDisaggregatedSetCondition_LeavesUnrelatedConditionTypeUntouched guards
 // against a broader mutual-exclusivity bug: setDisaggregatedSetCondition must
 // only flip the specific Available/Progressing pair, not any other Status=True
