@@ -120,17 +120,20 @@ function deploy_gang_scheduler() {
 # Avoid kind's --all-platforms import path for multi-arch release images.
 function kind_load_image {
     local image="$1"
-    local archive
-    archive="$(mktemp)"
-    trap 'rm -f "$archive"' RETURN
-    docker save "$image" -o "$archive"
+    # Load in a subshell so the cleanup trap cannot outlive `local archive`.
+    # A RETURN trap on the function itself fires after the local goes out of
+    # scope; with `set -o nounset` that is `archive: unbound variable` (#992).
+    (
+        local archive
+        archive="$(mktemp)"
+        trap 'rm -f "$archive"' EXIT
+        docker save "$image" -o "$archive"
 
-    while IFS= read -r node; do
-        docker exec -i "$node" ctr --namespace=k8s.io images import \
-            --digests --snapshotter=overlayfs - < "$archive"
-    done < <($KIND get nodes --name "$KIND_CLUSTER_NAME")
-
-    rm -f "$archive"
+        while IFS= read -r node; do
+            docker exec -i "$node" ctr --namespace=k8s.io images import \
+                --digests --snapshotter=overlayfs - < "$archive"
+        done < <($KIND get nodes --name "$KIND_CLUSTER_NAME")
+    )
 }
 
 function kind_load {
