@@ -668,7 +668,7 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	prefillLWS, err := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	prefillLWS, err := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
 	require.NoError(t, err)
 	require.NotNil(t, prefillLWS)
 	require.EqualValues(t, 1, *prefillLWS.Spec.Replicas, "a fresh External role's LWS should be created at the scaler-seeded target (1), not the ignored inline replicas (5)")
@@ -677,7 +677,7 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 	prefillLWS.Status.Replicas, prefillLWS.Status.ReadyReplicas, prefillLWS.Status.UpdatedReplicas = 1, 1, 1
 	require.NoError(t, fakeClient.Status().Update(ctx, prefillLWS))
 
-	decodeLWS, err := lwsManager.Get(ctx, disaggregatedSet.Namespace, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
+	decodeLWS, err := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
 	require.NoError(t, err)
 	require.NotNil(t, decodeLWS)
 	decodeLWS.Status.Replicas, decodeLWS.Status.ReadyReplicas, decodeLWS.Status.UpdatedReplicas = 2, 2, 2
