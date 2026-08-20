@@ -910,6 +910,12 @@ func TestGetGroupRestartCountHandlesInvalidAnnotation(t *testing.T) {
 	}
 }
 
+func TestParseGroupRestartCountsRejectsNegativeCount(t *testing.T) {
+	if _, err := parseGroupRestartCounts(`{"0":-1}`); err == nil {
+		t.Fatal("expected negative persisted count to be rejected")
+	}
+}
+
 func TestIncrementGroupRestartCountPatchesAnnotation(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

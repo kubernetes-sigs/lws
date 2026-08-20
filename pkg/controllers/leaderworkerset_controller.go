@@ -230,7 +230,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 
 	firstStaleOrdinal := replicas
 	canCleanStaleServices := leaderSts != nil && leaderSts.Spec.Replicas != nil && *leaderSts.Spec.Replicas <= replicas
-	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+	if subdomainPolicyForLWS(lws) == leaderworkerset.SubdomainShared {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
 		}
@@ -297,6 +297,16 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		}
 	}
 	return nil
+}
+
+// subdomainPolicyForLWS treats a missing networkConfig or subdomainPolicy as
+// the historical Shared default. Admission normally fills this field, but
+// legacy objects and direct controller calls can still contain nil pointers.
+func subdomainPolicyForLWS(lws *leaderworkerset.LeaderWorkerSet) leaderworkerset.SubdomainPolicy {
+	if lws.Spec.NetworkConfig == nil || lws.Spec.NetworkConfig.SubdomainPolicy == nil {
+		return leaderworkerset.SubdomainShared
+	}
+	return *lws.Spec.NetworkConfig.SubdomainPolicy
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -926,7 +936,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		}
 	}
 
-	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	if subdomainPolicyForLWS(lws) == leaderworkerset.SubdomainUniquePerReplica {
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
 

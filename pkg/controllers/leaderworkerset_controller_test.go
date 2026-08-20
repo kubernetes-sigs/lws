@@ -1293,6 +1293,30 @@ func TestReconcileHeadlessServicesPrecreatesUniquePerReplicaOrdinals(t *testing.
 	}
 }
 
+func TestReconcileHeadlessServicesDefaultsMissingSubdomainPolicyToShared(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding leaderworkerset to scheme: %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.UID = types.UID("lws-uid")
+	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &LeaderWorkerSetReconciler{Client: k8sClient, Scheme: scheme}
+
+	if err := reconciler.reconcileHeadlessServices(context.Background(), lws, nil, 1); err != nil {
+		t.Fatalf("reconcileHeadlessServices() error = %v", err)
+	}
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name}, &service); err != nil {
+		t.Fatalf("get shared Service: %v", err)
+	}
+}
+
 func TestReconcileHeadlessServicesSkipsDeletingLeaderAndCleansUnusedOrdinals(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
