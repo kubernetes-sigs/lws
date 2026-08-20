@@ -186,6 +186,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
+	// exclusive-topology and share-topology cannot be set at the same time
+	if lws.Annotations[v1.ExclusiveKeyAnnotationKey] != "" && lws.Annotations[v1.ShareTopologyAnnotationKey] != "" {
+		allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations"), lws.Annotations, "cannot set both exclusive-topology and share-topology"))
+	}
+
 	return allErrs
 }
 
