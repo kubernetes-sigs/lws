@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -146,20 +147,22 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Status reflects the state observed above regardless of per-slice errors, so
 	// a role that failed to reconcile is still visible to clients instead of being
 	// silently left out of .status.
-	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision); statusErr != nil {
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, scalers); statusErr != nil {
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))
 	}
 
 	return result, reconcileErr
 }
 
-// updateStatus recomputes per-role replica counts from the LWS objects the
-// DisaggregatedSet owns (aggregated across all slices and revisions), and
-// persists the result if anything changed. roleNames is always the current
-// spec.roles: a role removed from spec has no RoleStatuses entry even while its
-// old LWS objects are still draining down to 0 (see RoleStatuses doc).
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string) error {
+// updateStatus recomputes per-role replica counts and the Available/Progressing
+// condition from the LWS objects the DisaggregatedSet owns (aggregated across all
+// slices and revisions), and persists the result if anything changed. roleNames is
+// always the current spec.roles: a role removed from spec has no RoleStatuses entry
+// even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
 	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
+	sliceCount := disaggregatedsetutils.GetSlices(disaggregatedSet)
+	available := true
 
 	for _, role := range roleNames {
 		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, role)
@@ -178,9 +181,30 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 			}
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
+
+		// An External role with no scaler in the map (e.g. its generated name
+		// collided with a foreign, non-owned object — see #981 for the analogous
+		// LWS case) has no known target: getTargetReplicas would fall back to a
+		// literal 0, which can spuriously read as satisfied if the role also has
+		// 0 actual replicas. Treat that as explicitly Progressing instead of
+		// guessing a target that might accidentally match.
+		if isExternal(disaggregatedSet, role) && scalers[role] == nil {
+			available = false
+			continue
+		}
+
+		// getTargetReplicas resolves the *effective* per-slice target: spec.replicas
+		// for Static roles, the scaler's resolved value for External roles.
+		desired := int32(getTargetReplicas(disaggregatedSet, role, scalers, 0)) * sliceCount
+		if roleStatus.Replicas != desired || roleStatus.ReadyReplicas != desired || roleStatus.UpdatedReplicas != desired {
+			available = false
+		}
 	}
 
 	changed := setRoleStatuses(disaggregatedSet, roleStatuses)
+	if setDisaggregatedSetCondition(disaggregatedSet, disaggregatedSetCondition(disaggregatedSet, available)) {
+		changed = true
+	}
 	if disaggregatedSet.Status.ObservedGeneration != disaggregatedSet.Generation {
 		disaggregatedSet.Status.ObservedGeneration = disaggregatedSet.Generation
 		changed = true
@@ -201,6 +225,96 @@ func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role
 	}
 	disaggregatedSet.Status.RoleStatuses = roleStatuses
 	return true
+}
+
+func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool) metav1.Condition {
+	condType := disaggregatedsetv1.DisaggregatedSetProgressing
+	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
+	if available {
+		condType = disaggregatedsetv1.DisaggregatedSetAvailable
+		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
+	}
+
+	return metav1.Condition{
+		Type:               string(condType),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: disaggregatedSet.Generation,
+		Reason:             reason,
+		Message:            message,
+	}
+}
+
+// exclusiveConditionTypes reports whether t1 and t2 are a mutually-exclusive
+// pair, where one being true means the other must be false. Only
+// Available/Progressing are exclusive today; a condition type outside that
+// pair (added later, or written by another controller) is left untouched by
+// setDisaggregatedSetCondition rather than being clobbered just because it
+// happened to also be true.
+func exclusiveConditionTypes(t1, t2 string) bool {
+	pair := func(a, b disaggregatedsetv1.DisaggregatedSetConditionType) bool {
+		return (t1 == string(a) && t2 == string(b)) || (t1 == string(b) && t2 == string(a))
+	}
+	return pair(disaggregatedsetv1.DisaggregatedSetAvailable, disaggregatedsetv1.DisaggregatedSetProgressing)
+}
+
+// setDisaggregatedSetCondition records newCondition as true and, since Available and
+// Progressing are mutually exclusive, marks the other one of that specific pair as
+// false (see exclusiveConditionTypes) — any other condition type is left alone.
+// LastTransitionTime is only touched when a condition's Status actually flips, per
+// the metav1.Condition contract; a same-Status update (e.g. only ObservedGeneration
+// changed) must not look like a fresh transition to clients. Returns whether the
+// status changed.
+func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, newCondition metav1.Condition) bool {
+	now := metav1.Now()
+	changed, found := false, false
+
+	for i, cond := range disaggregatedSet.Status.Conditions {
+		if cond.Type == newCondition.Type {
+			found = true
+			if cond.Status != newCondition.Status {
+				newCondition.LastTransitionTime = now
+				disaggregatedSet.Status.Conditions[i] = newCondition
+				changed = true
+			} else if cond.ObservedGeneration != newCondition.ObservedGeneration || cond.Reason != newCondition.Reason || cond.Message != newCondition.Message {
+				// Status is unchanged, so LastTransitionTime is preserved, but every
+				// other field still syncs to the latest computed condition.
+				disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
+				disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
+				changed = true
+			}
+			continue
+		}
+		if !exclusiveConditionTypes(cond.Type, newCondition.Type) {
+			continue
+		}
+		if cond.Status == metav1.ConditionTrue {
+			// newCondition becoming true is exactly why this mutually-exclusive
+			// condition is now false, so it explains the flip with the same
+			// Reason/Message rather than leaving this condition's old (now
+			// contradictory) ones in place.
+			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
+			disaggregatedSet.Status.Conditions[i].LastTransitionTime = now
+			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+			disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
+			disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
+			changed = true
+		} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
+			// Already false and staying false — no real transition, so only
+			// ObservedGeneration needs to catch up; Reason/Message still
+			// accurately describe why it became false and don't need to change.
+			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+			changed = true
+		}
+	}
+
+	if !found {
+		newCondition.LastTransitionTime = now
+		disaggregatedSet.Status.Conditions = append(disaggregatedSet.Status.Conditions, newCondition)
+		changed = true
+	}
+
+	return changed
 }
 
 // seedForRole returns a callback that yields the initial spec.replicas value

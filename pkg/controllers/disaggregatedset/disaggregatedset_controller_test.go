@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -470,6 +471,11 @@ func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 	}
 
 	assert.Equal(t, got.Generation, got.Status.ObservedGeneration, "observedGeneration should track .metadata.generation")
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, cond, "Progressing condition should be set")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "Available should not be set yet")
 }
 
 // TestStatusRoleCountsAggregateFromOwnedLWS: roleStatuses sums replicas/ready/updated
@@ -528,6 +534,223 @@ func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
 		assert.EqualValues(t, 2, rs.ReadyReplicas, "role %s readyReplicas", rs.Name)
 		assert.EqualValues(t, 2, rs.UpdatedReplicas, "role %s updatedReplicas", rs.Name)
 	}
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
+	require.NotNil(t, cond, "Available condition should be set once every role is at its desired count, ready and updated")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+
+	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	if progressing != nil {
+		assert.Equal(t, metav1.ConditionFalse, progressing.Status, "Progressing must not also be true once Available")
+	}
+}
+
+// TestStatusProgressingWhenUnderDesiredCount: a role whose running replicas are all
+// ready and updated is still Progressing if it hasn't reached its *desired* replica
+// count yet — internal consistency alone isn't enough to call it Available.
+func TestStatusProgressingWhenUnderDesiredCount(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("under-scaled", "default").
+		WithRole(testControllerRolePrefill, 3, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	// prefill wants 3 but only 1 has come up so far; decode is fully at its desired 2.
+	partialLWS := func(role string, replicas int32) *leaderworkersetv1.LeaderWorkerSet {
+		return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role), disaggregatedSet.Namespace).
+			Labels(disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, 0, revision, role)).
+			Replica(int(replicas)).
+			Size(1).
+			StatusReplicas(replicas).
+			ReadyReplicas(replicas).
+			UpdatedReplicas(replicas).
+			OwnerReference(metav1.OwnerReference{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
+				Controller: ptr.To(true),
+			}).
+			WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
+			Obj()
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		partialLWS(testControllerRolePrefill, 1),
+		partialLWS(testControllerRoleDecode, 2),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, progressing, "under-desired-count role should keep the set Progressing")
+	assert.Equal(t, metav1.ConditionTrue, progressing.Status)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "Available must not be set while prefill is under its desired count")
+}
+
+// TestStatusAvailableWhenPausedAtZero: the documented all-roles-zero pause state
+// (XValidation on DisaggregatedSetSpec) should read as Available once fully
+// drained, not stuck Progressing forever just because desired is 0.
+func TestStatusAvailableWhenPausedAtZero(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("paused", "default").
+		WithRole(testControllerRolePrefill, 0, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 0, "nginx:1.0").
+		Obj()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
+	require.NotNil(t, cond, "a fully-drained, all-roles-zero DisaggregatedSet should be Available, not stuck Progressing")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+}
+
+// TestStatusUsesScalerTargetForExternalRoles: for a role with scaling.mode:
+// External, the effective desired count comes from its DisaggregatedSetRoleScaler,
+// not the role's inline spec.replicas (which is documented as ignored in that
+// mode). Comparing against the ignored inline value would leave the role stuck
+// Progressing forever even once it's fully satisfied at its real, scaler-driven
+// target (Copilot review on #980).
+func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("external-scaling", "default").
+		WithRole(testControllerRolePrefill, 5, "nginx:1.0"). // inline 5 must be ignored: External mode.
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "first reconcile should succeed")
+
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+
+	prefillLWS, err := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NoError(t, err)
+	require.NotNil(t, prefillLWS)
+	require.EqualValues(t, 1, *prefillLWS.Spec.Replicas, "a fresh External role's LWS should be created at the scaler-seeded target (1), not the ignored inline replicas (5)")
+
+	// Simulate the LWS reporting itself fully ready/updated at that scaler-driven target.
+	prefillLWS.Status.Replicas, prefillLWS.Status.ReadyReplicas, prefillLWS.Status.UpdatedReplicas = 1, 1, 1
+	require.NoError(t, fakeClient.Status().Update(ctx, prefillLWS))
+
+	decodeLWS, err := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
+	require.NoError(t, err)
+	require.NotNil(t, decodeLWS)
+	decodeLWS.Status.Replicas, decodeLWS.Status.ReadyReplicas, decodeLWS.Status.UpdatedReplicas = 2, 2, 2
+	require.NoError(t, fakeClient.Status().Update(ctx, decodeLWS))
+
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "second reconcile should succeed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable))
+	require.NotNil(t, cond, "Available should be set once the External role is ready at its scaler-driven target (1), not stuck Progressing by comparing against the ignored inline replicas (5)")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+}
+
+// TestStatusProgressingWhenExternalRoleScalerMissing: an External role whose
+// generated scaler name collides with a foreign, non-owned
+// DisaggregatedSetRoleScaler is left out of the scalers map entirely (the
+// ScalerManager declines to adopt it — same class of name-collision issue as
+// #981 for LWS). Its target is then genuinely unknown, so status must read
+// Progressing rather than falling back to a literal 0 that could spuriously
+// match a role that also happens to have 0 actual replicas (Copilot review
+// on #980).
+func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("scaler-collision", "default").
+		WithRole(testControllerRolePrefill, 1, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+
+	// A scaler already occupies the name this role would generate, but it's
+	// owned by a different DisaggregatedSet UID — ScalerManager won't adopt it.
+	foreignScaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      controller.ScalerName(disaggregatedSet.Name, testControllerRolePrefill),
+			Namespace: disaggregatedSet.Namespace,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name,
+				disaggregatedsetv1.RoleLabelKey:    testControllerRolePrefill,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       "some-other-ds",
+				UID:        "some-other-uid",
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, foreignScaler).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile should succeed even though the scaler couldn't be created")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+
+	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+	require.NotNil(t, progressing, "a role with an unknown (missing/uncreatable) scaler target must read Progressing")
+	assert.Equal(t, metav1.ConditionTrue, progressing.Status)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "must not read Available just because the role also has 0 actual replicas")
 }
 
 // TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains: roleStatuses mirrors the
