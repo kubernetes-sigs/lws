@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -146,5 +147,52 @@ var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
 		err := k8sClient.Update(ctx, &fetched)
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(leaderworkerset.ExclusiveKeyAnnotationKey))
+	})
+})
+
+var _ = ginkgo.Describe("disaggregatedset group identity", func() {
+
+	var ns *corev1.Namespace
+	ginkgo.BeforeEach(func() {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ns-",
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+	})
+
+	buildDisaggregatedSet := func(name string) *wrappers.DisaggregatedSetWrapper {
+		disagg := wrappers.BuildDisaggregatedSet(name, ns.Name).
+			WithRole("prefill", 1, "nginx:1.14.2").
+			WithRole("decode", 1, "nginx:1.14.2")
+		for i := range disagg.Spec.Roles {
+			disagg.Spec.Roles[i].Spec.RolloutStrategy.Type = leaderworkerset.RollingUpdateStrategyType
+			disagg.Spec.Roles[i].Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+		}
+		return disagg
+	}
+
+	ginkgo.It("persists a Hash groupIdentity role through the CRD schema", func() {
+		disagg := buildDisaggregatedSet("gi-hash").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+
+		fetched := &disaggregatedset.DisaggregatedSet{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: ns.Name}, fetched)).To(gomega.Succeed())
+		gomega.Expect(fetched.Spec.Roles[0].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityHash))
+		// The role without an explicit value gets the CRD default.
+		gomega.Expect(fetched.Spec.Roles[1].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityOrdinal))
+	})
+
+	ginkgo.It("rejects a Hash role with subGroupPolicy at admission", func() {
+		disagg := buildDisaggregatedSet("gi-hash-subgroup").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{
+			SubGroupSize: ptr.To(int32(1)),
+		}
+		err := k8sClient.Create(ctx, disagg)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("subGroupPolicy is not supported with groupIdentity Hash"))
 	})
 })

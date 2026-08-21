@@ -103,6 +103,8 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -121,6 +123,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
+
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return r.reconcileHash(ctx, lws)
+	}
 
 	leaderSts, err := r.getLeaderStatefulSet(ctx, lws)
 	if err != nil {
@@ -225,6 +231,7 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).

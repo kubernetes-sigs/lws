@@ -143,15 +143,24 @@ const revisionLength = 8
 
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
-		Name     string                                 `json:"name"`
-		Template leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
+		Name string `json:"name"`
+		// GroupIdentity is normalized so "" and the CRD default Ordinal hash
+		// identically: objects persisted before the field existed must keep
+		// their revision once the API server starts defaulting it on reads.
+		GroupIdentity leaderworkersetv1.GroupIdentityType    `json:"groupIdentity,omitempty"`
+		Template      leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
 	}
 
 	templates := make([]roleTemplate, 0, len(roles))
 	for _, role := range roles {
+		groupIdentity := role.Spec.GroupIdentity
+		if groupIdentity == leaderworkersetv1.GroupIdentityOrdinal {
+			groupIdentity = ""
+		}
 		templates = append(templates, roleTemplate{
-			Name:     role.Name,
-			Template: role.Spec.LeaderWorkerTemplate,
+			Name:          role.Name,
+			GroupIdentity: groupIdentity,
+			Template:      role.Spec.LeaderWorkerTemplate,
 		})
 	}
 

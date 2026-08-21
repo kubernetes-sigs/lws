@@ -48,6 +48,20 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </tbody>
 </table>
 
+## `GroupIdentityType`     {#leaderworkerset-x-k8s-io-v1-GroupIdentityType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GroupIdentityType defines how group identities are assigned.</p>
+
+
+
+
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
 
@@ -112,6 +126,19 @@ when a revision is made to the leaderWorkerTemplate.</p>
 </td>
 <td>
    <p>networkConfig defines the network configuration of the group</p>
+</td>
+</tr>
+<tr><td><code>groupIdentity</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-GroupIdentityType"><code>GroupIdentityType</code></a>
+</td>
+<td>
+   <p>groupIdentity determines how group identities are assigned.
+Ordinal (default) manages leaders through a StatefulSet: groups are named
+<!-- raw HTML omitted -->-0..<!-- raw HTML omitted -->-N-1 and scale down always removes the highest ordinal.
+Hash manages leaders through a Deployment: group names are hash-suffixed,
+scale down prefers unscheduled and not-ready groups over healthy ones, and
+rollouts are paced by a group readiness gate on the leader pods.
+This field is immutable.</p>
 </td>
 </tr>
 </tbody>
