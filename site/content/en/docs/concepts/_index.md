@@ -48,8 +48,8 @@ LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
 | **Rollout Ownership** | LWS controller (`maxUnavailable`, `maxSurge`) | DisaggregatedSet controller (lockstep, ratio-preserving) |
 | **Scaling** | Horizontal Pod Autoscaler (HPA) via scale subresource | Independent per-role scaling & full topology slice scaling |
 | **Service Discovery** | Headless service per replica (`UniquePerReplica` subdomain policy) | Headless service per role with revision-aware routing |
-| **Placement & Topology** | Exclusive topology placement & subgroups per replica | Role-level placement policies & slice topology spread |
-| **Failure Handling** | Per-replica policies (`RecreateGroupOnPodRestart`, `None`, `RecreateGroupAfterStart`), isolating failure recovery to the affected pod group | Coordinated drain and restart policies across all roles |
+| **Placement & Topology** | Exclusive topology placement & subgroups per replica | Slice-level placement policy and topology spread |
+| **Failure Handling & Lifecycle** | Per-replica restart policies (`RecreateGroupOnPodRestart`, `None`, `RecreateGroupAfterStart`), isolating failure recovery to the affected pod group | Per-role LWS failure handling; coordinated rollout and drain across all roles |
 
 ## When to Use Which API
 

@@ -48,6 +48,10 @@ However, because child LeaderWorkerSets include dynamic revision hashes in their
 2. **Stable Target:** The scaler's name remains constant regardless of how many rolling updates or revision changes occur.
 3. **Reconciled Replicas:** The external autoscaler (HPA or KEDA) writes the desired replica count to the scaler's `/scale` endpoint. The DisaggregatedSet controller reads this value and scales the corresponding child LeaderWorkerSet accordingly.
 
+{{% alert title="Note" color="info" %}}
+External role scaling (`scaling.mode: External`) currently requires `spec.slices: 1` (or omitted, which defaults to 1). Admission validation rejects configurations with `slices > 1` when any role uses `scaling.mode: External`.
+{{% /alert %}}
+
 ---
 
 ## Configuration Example
@@ -66,28 +70,32 @@ spec:
   - name: prefill
     scaling:
       mode: External
-    leaderWorkerTemplate:
-      size: 4
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-prefill
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "8"
+    spec:
+      leaderWorkerTemplate:
+        size: 4
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-prefill
+              image: vllm/vllm-openai:latest
+              resources:
+                requests:
+                  cpu: "16"
+                limits:
+                  nvidia.com/gpu: "8"
   - name: decode
-    replicas: 4
-    leaderWorkerTemplate:
-      size: 2
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-decode
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "4"
+    spec:
+      replicas: 4
+      leaderWorkerTemplate:
+        size: 2
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-decode
+              image: vllm/vllm-openai:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "4"
 ```
 
 ### 2. Create an HPA Targeting the Role Scaler

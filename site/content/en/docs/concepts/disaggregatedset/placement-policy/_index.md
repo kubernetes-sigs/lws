@@ -38,19 +38,23 @@ The controller injects no placement constraints. Pods for all roles and slices a
 
 ### 3. `ExclusiveTopology`
 - **Co-location & Spread:** Performs everything `ExclusiveSlice` does (co-locates roles within a slice and spreads slices across domains).
-- **Exclusivity (1:1 Domain Mapping):** Guarantees that the topology domain is exclusively reserved for that single slice. Pods from other DisaggregatedSets are strictly prevented from landing in the same domain.
+- **Exclusivity Among DisaggregatedSets:** Ensures that a topology domain holds at most one slice across all DisaggregatedSets (a 1:1 domain-to-slice mapping). Pods from other DisaggregatedSet slices are prevented from landing in the same domain.
 
-**Use Case:** Mission-critical or benchmark serving workloads that require guaranteed hardware isolation and zero noisy-neighbor interference on NVLink or accelerator fabrics.
+{{% alert title="Note" color="info" %}}
+Exclusivity is enforced via injected pod anti-affinity targeting DisaggregatedSet labels. Unrelated, non-DisaggregatedSet workloads do not match this anti-affinity and can still share the domain unless node taints or dedicated node pools are configured.
+{{% /alert %}}
+
+**Use Case:** Production serving workloads that require dedicated accelerator domains without interference from other DisaggregatedSet slices.
 
 ---
 
 ## Comparison Matrix
 
-| Policy Type | Intra-Slice Co-location | Inter-Slice Spread (Same Set) | Domain Sharing (Other Sets) |
+| Policy Type | Intra-Slice Co-location | Inter-Slice Spread (Same Set) | Sharing with Other DisaggregatedSets |
 | :--- | :---: | :---: | :---: |
 | **`None`** | ❌ None | ❌ None | ✅ Allowed |
 | **`ExclusiveSlice`** | ✅ Same domain | ✅ Different domains | ✅ Allowed |
-| **`ExclusiveTopology`** | ✅ Same domain | ✅ Different domains | ❌ Disallowed (Exclusive 1:1) |
+| **`ExclusiveTopology`** | ✅ Same domain | ✅ Different domains | ❌ Disallowed (1:1 Domain Mapping) |
 
 ---
 
@@ -70,29 +74,31 @@ spec:
     topology: topology.kubernetes.io/rack
   roles:
   - name: prefill
-    replicas: 2
-    leaderWorkerTemplate:
-      size: 4
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-prefill
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "8"
+    spec:
+      replicas: 2
+      leaderWorkerTemplate:
+        size: 4
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-prefill
+              image: vllm/vllm-openai:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "8"
   - name: decode
-    replicas: 4
-    leaderWorkerTemplate:
-      size: 2
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-decode
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "4"
+    spec:
+      replicas: 4
+      leaderWorkerTemplate:
+        size: 2
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-decode
+              image: vllm/vllm-openai:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "4"
 ```
 
 In this example:
@@ -111,3 +117,5 @@ The DisaggregatedSet controller translates `placementPolicy` into Kubernetes `po
    Injected so that pods matching the parent DisaggregatedSet with a *different* slice index (or any DisaggregatedSet for `ExclusiveTopology`) cannot land in the same domain.
 3. **Hardware Agnostic:**
    The `topology` field uses standard Kubernetes node labels (e.g., `topology.kubernetes.io/rack`, `cloud.google.com/gke-placement-group`, `topology.kubernetes.io/zone`), making the placement policy fully portable across GPU, TPU, and CPU clusters.
+4. **Rollout Semantics:**
+   Affinity rules are injected when child LeaderWorkerSets are created. Changing `placementPolicy` on an active DisaggregatedSet takes effect on the next rollout.

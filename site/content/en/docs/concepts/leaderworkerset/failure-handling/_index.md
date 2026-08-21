@@ -64,11 +64,11 @@ spec:
 
 ### RecreateGroupAfterStart
 
-When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group.
+When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. If any pod in the replica is still in the `Pending` phase (e.g., during image pulls or initial scheduling), the controller skips the failure event without triggering a group-wide recreation.
 
-- **Pod Failures:** Recreates the entire group if a pod fails after initial startup is complete. If pods are still pending (e.g., during large container image pulls or initial scheduling), group recreation is deferred until the group stabilizes, preventing premature restart cascades.
-- **Node Failures:** If a node fails after all pods in the replica have successfully started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while pods are still pending, the controller waits for the startup phase to complete before triggering group recreation.
-- **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production without failing during the initial rollout.
+- **Pod Failures:** Recreates the entire group if a pod fails after all pods in the replica have started (no pods are `Pending`). If any pod in the replica is `Pending`, the failure event is skipped, allowing Kubernetes to handle pod restarts individually and preventing restart cascades during rollout.
+- **Node Failures:** If a node fails after all pods in the replica have started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while any pod in the replica is `Pending`, group recreation is not triggered.
+- **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production once running, but want to prevent recreation loops during the initial rollout.
 
 {{% alert title="Note" color="info" %}}
 The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.

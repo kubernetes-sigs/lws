@@ -38,23 +38,25 @@ spec:
   slices: 3
   roles:
   - name: prefill
-    replicas: 2
-    leaderWorkerTemplate:
-      size: 4
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-prefill
-            image: vllm/vllm-openai:latest
+    spec:
+      replicas: 2
+      leaderWorkerTemplate:
+        size: 4
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-prefill
+              image: vllm/vllm-openai:latest
   - name: decode
-    replicas: 4
-    leaderWorkerTemplate:
-      size: 2
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-decode
-            image: vllm/vllm-openai:latest
+    spec:
+      replicas: 4
+      leaderWorkerTemplate:
+        size: 2
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-decode
+              image: vllm/vllm-openai:latest
 ```
 
 ### 2. Accelerator Domain Confinement & Fault Isolation
@@ -83,10 +85,10 @@ Child resources belonging to a slice include the slice index in their name and l
 `<DisaggregatedSet-name>-<slice-index>-<revision-hash>-<role-name>`
 
 Example for `slices: 2`:
-- `my-inference-0-7f9b8c-prefill`
-- `my-inference-0-7f9b8c-decode`
-- `my-inference-1-7f9b8c-prefill`
-- `my-inference-1-7f9b8c-decode`
+- `my-inference-0-7f9b8c21-prefill`
+- `my-inference-0-7f9b8c21-decode`
+- `my-inference-1-7f9b8c21-prefill`
+- `my-inference-1-7f9b8c21-decode`
 
 ### Kubernetes Labels
 Every child resource is labeled with:

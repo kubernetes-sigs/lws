@@ -42,7 +42,7 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
 - **Coordinated N-Dimensional Rollouts:** Updates multiple roles (2-10) in lockstep, preserving capacity ratios throughout the update process.
 - **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.
 - **Automatic Service Orchestration:** Automatically creates and manages headless services for each role to facilitate discovery and revision-aware routing.
-- **Advanced Failure Handling:** Coordinated drain and restart policies across all roles in the disaggregated set.
+- **Coordinated Lifecycle Operations:** Coordinated rollout and drain across all roles in the disaggregated set.
 
 <p align="center">
   <img src="/images/ds-concept.svg" width="700" alt="DisaggregatedSet Concept">

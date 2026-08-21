@@ -30,15 +30,15 @@ The revision hash in the child resource name is dynamic across updates. Always s
 
 ## Role Configuration Fields
 
-A `DisaggregatedSet` spec defines a `roles` list where each entry contains:
+A `DisaggregatedSet` spec defines a `roles` list where each entry represents a role (`DisaggregatedRoleSpec`):
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `name` | `string` | Unique name for this role within the set (e.g., `prefill`, `decode`, `encode`). |
-| `replicas` | `int32` | Number of LWS replicas (pod groups) for this role per slice. |
-| `leaderWorkerTemplate` | `LeaderWorkerTemplate` | Full pod template defining the leader and worker pod containers, resource requests/limits, restart policies, and subgroup configurations for this role. |
-| `rolloutStrategy` | `RolloutStrategy` | Optional rolling update configuration for this role. DisaggregatedSet coordinates updates across roles to maintain capacity ratios. |
-| `scaling` | `RoleScalingMode` | Optional external scaling mode (e.g., enabling HPA via `DisaggregatedSetRoleScaler`). |
+| `scaling` | `RoleScaling` | Optional scaling configuration. `scaling.mode: External` delegates replica management to an external autoscaler (e.g., HPA/KEDA via `DisaggregatedSetRoleScaler`). Default is `Static`. |
+| `spec.replicas` | `*int32` | Number of LWS replicas (pod groups) for this role per slice. |
+| `spec.leaderWorkerTemplate` | `LeaderWorkerTemplate` | Full pod template defining the leader and worker pod containers, resource requests/limits, restart policies, and subgroup configurations for this role. |
+| `spec.rolloutStrategy` | `RolloutStrategy` | Optional rolling update configuration for this role. DisaggregatedSet coordinates updates across roles to maintain capacity ratios. |
 
 ---
 
@@ -54,29 +54,31 @@ metadata:
 spec:
   roles:
   - name: prefill
-    replicas: 2
-    leaderWorkerTemplate:
-      size: 4
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-prefill
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "8"
+    spec:
+      replicas: 2
+      leaderWorkerTemplate:
+        size: 4
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-prefill
+              image: vllm/vllm-openai:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "8"
   - name: decode
-    replicas: 4
-    leaderWorkerTemplate:
-      size: 2
-      workerTemplate:
-        spec:
-          containers:
-          - name: vllm-decode
-            image: vllm/vllm-openai:latest
-            resources:
-              limits:
-                nvidia.com/gpu: "4"
+    spec:
+      replicas: 4
+      leaderWorkerTemplate:
+        size: 2
+        workerTemplate:
+          spec:
+            containers:
+            - name: vllm-decode
+              image: vllm/vllm-openai:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "4"
 ```
 
 ---
