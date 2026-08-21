@@ -1,5 +1,7 @@
 ---
 title: LeaderWorkerSet API
+linkTitle: LeaderWorkerSet API
+weight: 10
 content_type: tool-reference
 package: leaderworkerset.x-k8s.io/v1
 auto_generated: true

@@ -1,5 +1,7 @@
 ---
 title: DisaggregatedSet API
+linkTitle: DisaggregatedSet API
+weight: 20
 content_type: tool-reference
 package: disaggregatedset.x-k8s.io/v1
 auto_generated: true
