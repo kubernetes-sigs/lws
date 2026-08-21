@@ -332,6 +332,10 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		// Processing scaling up/down first prior to rolling update.
 		partition := min(lwsReplicas, stsReplicas)
 		if stsReplicas < lwsReplicas {
+			if lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder == leaderworkerset.RolloutFirstUpdateOrder && stsReplicas > 0 {
+				partition = max(*lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition, stsReplicas-int32(maxUnavailable))
+				return partition, stsReplicas, nil
+			}
 			return partition, lwsReplicas, nil
 		}
 		return partition, wantReplicas(lwsReplicas), nil
@@ -344,14 +348,30 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if rollingUpdateCompleted {
 		return 0, lwsReplicas, nil
 	}
-	if stsReplicas < lwsReplicas {
+	if stsReplicas < lwsReplicas && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder != leaderworkerset.RolloutFirstUpdateOrder {
 		return partition, lwsReplicas, nil
 	}
-
 	states, err := r.getReplicaStates(ctx, lws, stsReplicas, revisionKey)
 	if err != nil {
 		return 0, 0, err
 	}
+	if stsReplicas < lwsReplicas {
+		rolloutPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+		rolloutComplete := true
+		for idx := rolloutPartition; idx < stsReplicas; idx++ {
+			if !states[idx].ready || !states[idx].updated {
+				rolloutComplete = false
+				break
+			}
+		}
+		if rolloutComplete {
+			return partition, lwsReplicas, nil
+		}
+
+		partition = rollingUpdatePartition(states, stsReplicas, int32(maxUnavailable), partition)
+		return partition, stsReplicas, nil
+	}
+
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 
 	originalLwsReplicas, err := strconv.Atoi(sts.Annotations[leaderworkerset.ReplicasAnnotationKey])
