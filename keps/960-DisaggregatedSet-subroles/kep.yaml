@@ -1,0 +1,22 @@
+title: DisaggregatedSet Sub-Roles
+kep-number: 960
+authors:
+  - "Mathis Felardos"
+status: provisional
+creation-date: 2026-08-04
+reviewers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+approvers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+  - "/keps/849-DisaggregatedSet-HPA"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
