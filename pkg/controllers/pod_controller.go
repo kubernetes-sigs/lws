@@ -33,11 +33,16 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -56,6 +61,73 @@ type PodReconciler struct {
 	SchedulerProvider schedulerprovider.SchedulerProvider
 }
 
+// podReconcileRequest keeps the identity of a deleted Pod in the workqueue.
+// A StatefulSet can create a replacement with the same namespace and name
+// before reconciliation starts, so a namespaced name alone is insufficient.
+type podReconcileRequest struct {
+	types.NamespacedName
+	UID             types.UID
+	Deleted         bool
+	LWSName         string
+	WorkerIndex     string
+	GroupIndex      string
+	RevisionKey     string
+	OwnerAPIVersion string
+	OwnerKind       string
+	OwnerName       string
+	OwnerUID        types.UID
+}
+
+func podReconcileRequestForPod(pod *corev1.Pod, deleted bool) podReconcileRequest {
+	request := podReconcileRequest{
+		NamespacedName: client.ObjectKeyFromObject(pod),
+		UID:            pod.UID,
+		Deleted:        deleted,
+	}
+	if !deleted {
+		return request
+	}
+
+	request.LWSName = pod.Labels[leaderworkerset.SetNameLabelKey]
+	request.WorkerIndex = pod.Labels[leaderworkerset.WorkerIndexLabelKey]
+	request.GroupIndex = pod.Labels[leaderworkerset.GroupIndexLabelKey]
+	request.RevisionKey = pod.Labels[leaderworkerset.RevisionKey]
+	if owner := metav1.GetControllerOf(pod); owner != nil {
+		request.OwnerAPIVersion = owner.APIVersion
+		request.OwnerKind = owner.Kind
+		request.OwnerName = owner.Name
+		request.OwnerUID = owner.UID
+	}
+	return request
+}
+
+func (r podReconcileRequest) deletedPod() corev1.Pod {
+	deletionTimestamp := metav1.Now()
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:              r.Name,
+		Namespace:         r.Namespace,
+		UID:               r.UID,
+		DeletionTimestamp: &deletionTimestamp,
+		Labels: map[string]string{
+			leaderworkerset.SetNameLabelKey:     r.LWSName,
+			leaderworkerset.WorkerIndexLabelKey: r.WorkerIndex,
+			leaderworkerset.GroupIndexLabelKey:  r.GroupIndex,
+			leaderworkerset.RevisionKey:         r.RevisionKey,
+		},
+	}}
+	if r.OwnerUID != "" {
+		controller := true
+		pod.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: r.OwnerAPIVersion,
+			Kind:       r.OwnerKind,
+			Name:       r.OwnerName,
+			UID:        r.OwnerUID,
+			Controller: &controller,
+		}}
+	}
+	return pod
+}
+
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
 	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp}
 }
@@ -67,8 +139,14 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	return r.reconcilePod(ctx, podReconcileRequest{NamespacedName: req.NamespacedName})
+}
+
+func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
-	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, &pod); err != nil {
+	if req.Deleted {
+		pod = req.deletedPod()
+	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(&pod))
@@ -461,8 +539,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
+	return builder.TypedControllerManagedBy[podReconcileRequest](mgr).
+		Named("pod").
+		Watches(&corev1.Pod{}, podEventHandler()).
+		Watches(&appsv1.StatefulSet{}, statefulSetEventHandler()).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			if pod, ok := object.(*corev1.Pod); ok {
 				_, exist := pod.Labels[leaderworkerset.SetNameLabelKey]
@@ -473,5 +553,47 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return exist
 			}
 			return false
-		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+		})).
+		Complete(reconcile.TypedFunc[podReconcileRequest](r.reconcilePod))
+}
+
+func podEventHandler() handler.TypedEventHandler[client.Object, podReconcileRequest] {
+	enqueue := func(object client.Object, deleted bool, queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+		pod, ok := object.(*corev1.Pod)
+		if !ok || pod == nil {
+			return
+		}
+		queue.Add(podReconcileRequestForPod(pod, deleted))
+	}
+	return handler.TypedFuncs[client.Object, podReconcileRequest]{
+		CreateFunc: func(_ context.Context, event event.TypedCreateEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, false, queue)
+		},
+		UpdateFunc: func(_ context.Context, event event.TypedUpdateEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.ObjectNew, false, queue)
+		},
+		DeleteFunc: func(_ context.Context, event event.TypedDeleteEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, true, queue)
+		},
+		GenericFunc: func(_ context.Context, event event.TypedGenericEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, false, queue)
+		},
+	}
+}
+
+func statefulSetEventHandler() handler.TypedEventHandler[client.Object, podReconcileRequest] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []podReconcileRequest {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if !ok || statefulSet == nil {
+			return nil
+		}
+		owner := metav1.GetControllerOf(statefulSet)
+		if owner == nil || owner.APIVersion != corev1.SchemeGroupVersion.String() || owner.Kind != "Pod" {
+			return nil
+		}
+		return []podReconcileRequest{{
+			NamespacedName: types.NamespacedName{Name: owner.Name, Namespace: statefulSet.Namespace},
+			UID:            owner.UID,
+		}}
+	})
 }
