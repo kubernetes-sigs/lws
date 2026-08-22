@@ -794,6 +794,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey: "0",
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.RevisionKey:         revisionKey,
+		leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
@@ -839,6 +840,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	statefulSetLabels := mergeMetadata(lws.Labels, map[string]string{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 		leaderworkerset.RevisionKey:     revisionKey,
+		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
 	})
 	statefulSetAnnotations := mergeMetadata(lws.Annotations, map[string]string{
 		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
