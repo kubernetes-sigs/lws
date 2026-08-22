@@ -72,7 +72,9 @@ INTEGRATION_TARGET ?= ./test/integration/...
 E2E_KIND_VERSION ?= kindest/node:v1.36.1
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
-LWS_UPGRADE_FROM_VERSION ?= v0.9.0
+# Newest released tag to upgrade from; falls back to v0.9.0 on shallow clones
+# without tags. Override to pin a specific version.
+LWS_UPGRADE_FROM_VERSION ?= $(shell git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1 | grep . || echo v0.9.0)
 UPGRADE_KIND_CLUSTER_NAME ?= lws-upgrade
 
 # For local testing, we should allow user to use different kind cluster name
