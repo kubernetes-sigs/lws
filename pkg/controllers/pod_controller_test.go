@@ -32,10 +32,12 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -619,6 +621,175 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 				t.Fatalf("leader pod should still exist, err = %v", err)
 			}
 		})
+	}
+}
+
+func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
+	controller := true
+	oldPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-0-1",
+			Namespace: "default",
+			UID:       "worker-old",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "1",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+				leaderworkerset.RevisionKey:         "revision-1",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+				Name:       "test-sample-0",
+				UID:        "worker-sts",
+				Controller: &controller,
+			}},
+		},
+	}
+	replacementPod := oldPod.DeepCopy()
+	replacementPod.UID = "worker-replacement"
+
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[podReconcileRequest](),
+	)
+	defer queue.ShutDown()
+
+	handler := podEventHandler()
+	handler.Delete(context.Background(), event.TypedDeleteEvent[client.Object]{Object: oldPod}, queue)
+	handler.Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: replacementPod}, queue)
+
+	if got := queue.Len(); got != 2 {
+		t.Fatalf("queue length = %d, want 2 distinct requests", got)
+	}
+
+	requests := make(map[types.UID]podReconcileRequest, 2)
+	for range 2 {
+		request, shutdown := queue.Get()
+		if shutdown {
+			t.Fatal("queue shut down before returning both requests")
+		}
+		requests[request.UID] = request
+		queue.Done(request)
+	}
+
+	wantDeleted := podReconcileRequest{
+		NamespacedName:  types.NamespacedName{Name: oldPod.Name, Namespace: oldPod.Namespace},
+		UID:             oldPod.UID,
+		Deleted:         true,
+		LWSName:         "test-sample",
+		WorkerIndex:     "1",
+		GroupIndex:      "0",
+		RevisionKey:     "revision-1",
+		OwnerAPIVersion: "apps/v1",
+		OwnerKind:       "StatefulSet",
+		OwnerName:       "test-sample-0",
+		OwnerUID:        "worker-sts",
+	}
+	if diff := cmp.Diff(wantDeleted, requests[oldPod.UID]); diff != "" {
+		t.Fatalf("unexpected deleted Pod request (-want,+got):\n%s", diff)
+	}
+	if got := requests[replacementPod.UID]; got.Deleted {
+		t.Fatalf("replacement Pod request is unexpectedly marked deleted: %#v", got)
+	}
+}
+
+func TestStatefulSetEventHandlerEnqueuesControllerPod(t *testing.T) {
+	controller := true
+	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sample-0",
+		Namespace: "default",
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Name:       "test-sample-0",
+			UID:        "leader-current",
+			Controller: &controller,
+		}},
+	}}
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[podReconcileRequest](),
+	)
+	defer queue.ShutDown()
+
+	statefulSetEventHandler().Create(
+		context.Background(),
+		event.TypedCreateEvent[client.Object]{Object: statefulSet},
+		queue,
+	)
+
+	request, shutdown := queue.Get()
+	if shutdown {
+		t.Fatal("queue shut down before returning the request")
+	}
+	queue.Done(request)
+	want := podReconcileRequest{
+		NamespacedName: types.NamespacedName{Name: "test-sample-0", Namespace: "default"},
+		UID:            "leader-current",
+	}
+	if diff := cmp.Diff(want, request); diff != "" {
+		t.Fatalf("unexpected StatefulSet owner request (-want,+got):\n%s", diff)
+	}
+}
+
+func TestReconcileDeletedWorkerAfterSameNameReplacement(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
+	revisionKey := "revision-1"
+
+	leaderPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sample-0",
+		Namespace: lws.Namespace,
+		UID:       "leader-current",
+		Labels: map[string]string{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.GroupIndexLabelKey:  "0",
+			leaderworkerset.RevisionKey:         revisionKey,
+		},
+	}}
+	workerStatefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name:            leaderPod.Name,
+		Namespace:       leaderPod.Namespace,
+		UID:             "worker-sts-current",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leaderPod, corev1.SchemeGroupVersion.WithKind("Pod"))},
+	}}
+	workerLabels := map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "1",
+		leaderworkerset.GroupIndexLabelKey:  "0",
+		leaderworkerset.RevisionKey:         revisionKey,
+	}
+	deletedWorker := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            "test-sample-0-1",
+		Namespace:       lws.Namespace,
+		UID:             "worker-old",
+		Labels:          workerLabels,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workerStatefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+	}}
+	replacementWorker := deletedWorker.DeepCopy()
+	replacementWorker.UID = "worker-replacement"
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		lws, leaderPod, workerStatefulSet, replacementWorker,
+	).Build()
+	reconciler := PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+	if _, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(deletedWorker, true)); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var leader corev1.Pod
+	err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &leader)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("leader Pod still exists after deleted worker replacement, err = %v", err)
 	}
 }
 
