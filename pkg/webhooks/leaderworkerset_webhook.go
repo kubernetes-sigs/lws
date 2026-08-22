@@ -128,54 +128,54 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
+	replicas := int32(1)
 	if lws.Spec.Replicas != nil {
-		if *lws.Spec.Replicas < 0 {
+		replicas = *lws.Spec.Replicas
+		if replicas < 0 {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
 		}
-		if *lws.Spec.Replicas > 1000000 {
+		if replicas > 1000000 {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
 		}
 	}
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
 	}
-	if int64(*lws.Spec.Replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
+	if int64(replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
 
-	maxUnavailable := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
-	maxUnavailablePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable")
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		maxUnavailable := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
+		maxUnavailablePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable")
 		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
 		// This is aligned with Statefulset.
 		allErrs = append(allErrs, IsNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
-	}
 
-	maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
-	maxSurgePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxSurge")
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+		maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
+		maxSurgePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxSurge")
 		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
 		allErrs = append(allErrs, IsNotMoreThan100Percent(maxSurge, maxSurgePath)...)
-	}
 
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		// Validate partition value
-		partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
-		allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
-	}
+		if lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil {
+			// Validate partition value
+			partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
+			partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
+			allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
+		}
 
-	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(*lws.Spec.Replicas), false)
-	if err != nil {
-		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
-	}
-	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(*lws.Spec.Replicas), true)
-	if err != nil {
-		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
-	}
-	if maxUnavailableValue == 0 && maxSurgeValue == 0 && *lws.Spec.Replicas != 0 {
-		// Both MaxSurge and MaxUnavailable cannot be zero.
-		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
+		maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(replicas), false)
+		if err != nil {
+			allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
+		}
+		maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
+		if err != nil {
+			allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
+		}
+		if maxUnavailableValue == 0 && maxSurgeValue == 0 && replicas != 0 {
+			// Both MaxSurge and MaxUnavailable cannot be zero.
+			allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
+		}
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
@@ -242,20 +242,25 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	allErrs := field.ErrorList{}
 	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
-	subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
+	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize == nil {
+		return append(allErrs, field.Required(subGroupSizePath, "subGroupSize is required"))
+	}
+
+	subGroupSize := *lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize
 	if subGroupSize < 1 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
+		return append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "subGroupSize must be equal or greater than 1"))
 	}
 	if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size or size - 1 must be divisible by subGroupSize"))
 	}
 	if size < subGroupSize {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "subGroupSize cannot be larger than size"))
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil &&
 		(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
 	}
 	return allErrs
 }

@@ -17,11 +17,16 @@ limitations under the License.
 package webhooks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -183,4 +188,92 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeaderWorkerSetValidation(t *testing.T) {
+	webhook := &LeaderWorkerSetWebhook{}
+	ctx := context.Background()
+
+	t.Run("nil replicas should not panic", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: nil, // nil replicas
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+				RolloutStrategy: v1.RolloutStrategy{
+					Type: v1.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+						Partition:      ptr.To[int32](0),
+					},
+				},
+			},
+		}
+		_, _ = webhook.ValidateCreate(ctx, lws)
+	})
+
+	t.Run("nil rolling update configuration should not panic", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](2),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+				RolloutStrategy: v1.RolloutStrategy{
+					Type:                       v1.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: nil, // nil configuration
+				},
+			},
+		}
+		_, _ = webhook.ValidateCreate(ctx, lws)
+	})
+
+	t.Run("missing subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size:           ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{},
+				},
+			},
+		}
+
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Fatal("expected validation error for missing subGroupSize")
+		}
+	})
+
+	t.Run("zero subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-lws",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{
+						SubGroupSize: ptr.To[int32](0),
+					},
+				},
+			},
+		}
+
+		_, err := webhook.ValidateCreate(ctx, lws)
+		if err == nil {
+			t.Fatal("expected validation error for zero subGroupSize")
+		}
+	})
+
 }
