@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -514,7 +515,118 @@ func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 		t.Errorf("unexpected StatefulSet annotations: %s", diff)
 	}
 }
+func TestReconcileUsesDeletedPodWhenReplacementExists(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Replica(1).
+		Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
 
+	revisionKey := "revision-1"
+
+	leader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name + "-0",
+			Namespace: lws.Namespace,
+			UID:       "leader-uid",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+				leaderworkerset.RevisionKey:         revisionKey,
+			},
+		},
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      leader.Name,
+			Namespace: leader.Namespace,
+			UID:       "sts-uid",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(
+					leader,
+					corev1.SchemeGroupVersion.WithKind("Pod"),
+				),
+			},
+		},
+	}
+
+	oldWorker := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name + "-0-1",
+			Namespace: lws.Namespace,
+			UID:       "old-worker-uid",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "1",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+				leaderworkerset.RevisionKey:         revisionKey,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(
+					sts,
+					appsv1.SchemeGroupVersion.WithKind("StatefulSet"),
+				),
+			},
+		},
+	}
+
+	oldWorker = oldWorker.DeepCopy()
+	now := v1.Now()
+	oldWorker.DeletionTimestamp = &now
+
+	// This is the replacement created by the StatefulSet.
+	// It has the same name but a different UID.
+	replacementWorker := oldWorker.DeepCopy()
+	replacementWorker.UID = "new-worker-uid"
+	replacementWorker.DeletionTimestamp = nil
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(lws, leader, sts, replacementWorker).
+		Build()
+
+	r := &PodReconciler{
+		Client:      client,
+		Scheme:      scheme,
+		Record:      fakeEventRecorder{},
+		deletedPods: make(map[types.NamespacedName][]*corev1.Pod),
+	}
+
+	// Simulate the Delete event for the old worker arriving before
+	// reconciliation, while the StatefulSet has already created
+	// the replacement Pod.
+	r.storeDeletedPod(oldWorker)
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      oldWorker.Name,
+			Namespace: oldWorker.Namespace,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var gotLeader corev1.Pod
+	err = client.Get(
+		context.Background(),
+		types.NamespacedName{
+			Name:      leader.Name,
+			Namespace: leader.Namespace,
+		},
+		&gotLeader,
+	)
+
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected leader pod to be deleted, got err = %v", err)
+	}
+}
 func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
 	revisionKey := "revision-1"
@@ -621,7 +733,57 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 		})
 	}
 }
+func TestDeletedPodQueue(t *testing.T) {
+	r := &PodReconciler{
+		deletedPods: make(map[types.NamespacedName][]*corev1.Pod),
+	}
 
+	key := types.NamespacedName{
+		Namespace: "default",
+		Name:      "lws-0-2",
+	}
+
+	pod1 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lws-0-2",
+			Namespace: "default",
+			UID:       "uid-1",
+		},
+	}
+
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lws-0-2",
+			Namespace: "default",
+			UID:       "uid-2",
+		},
+	}
+
+	r.storeDeletedPod(pod1)
+	r.storeDeletedPod(pod2)
+
+	got, ok := r.loadDeletedPod(key)
+	if !ok {
+		t.Fatal("expected first deleted pod")
+	}
+
+	if got.UID != pod1.UID {
+		t.Fatalf("expected first pod UID %q, got %q", pod1.UID, got.UID)
+	}
+
+	got, ok = r.loadDeletedPod(key)
+	if !ok {
+		t.Fatal("expected second deleted pod")
+	}
+
+	if got.UID != pod2.UID {
+		t.Fatalf("expected second pod UID %q, got %q", pod2.UID, got.UID)
+	}
+
+	if _, ok := r.loadDeletedPod(key); ok {
+		t.Fatal("expected deleted pod queue to be empty")
+	}
+}
 func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
 	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
 	lws := wrappers.BuildLeaderWorkerSet("default").

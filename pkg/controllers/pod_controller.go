@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -33,11 +34,16 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -54,10 +60,18 @@ type PodReconciler struct {
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
+	deletedPodsMu     sync.Mutex
+	deletedPods       map[types.NamespacedName][]*corev1.Pod
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp}
+	return &PodReconciler{
+		Client:            client,
+		Scheme:            schema,
+		Record:            record,
+		SchedulerProvider: sp,
+		deletedPods:       make(map[types.NamespacedName][]*corev1.Pod),
+	}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -67,9 +81,19 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	key := types.NamespacedName{
+		Name:      req.Name,
+		Namespace: req.Namespace,
+	}
+
 	var pod corev1.Pod
-	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, &pod); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+
+	if deletedPod, ok := r.loadDeletedPod(key); ok {
+		pod = *deletedPod
+	} else {
+		if err := r.Get(ctx, key, &pod); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 	log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(&pod))
 	ctx = ctrl.LoggerInto(ctx, log)
@@ -459,19 +483,81 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	return statefulSetConfig, nil
 }
-
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			if pod, ok := object.(*corev1.Pod); ok {
-				_, exist := pod.Labels[leaderworkerset.SetNameLabelKey]
-				return exist
+				_, exists := pod.Labels[leaderworkerset.SetNameLabelKey]
+				return exists
 			}
 			if statefulSet, ok := object.(*appsv1.StatefulSet); ok {
-				_, exist := statefulSet.Labels[leaderworkerset.SetNameLabelKey]
-				return exist
+				_, exists := statefulSet.Labels[leaderworkerset.SetNameLabelKey]
+				return exists
 			}
 			return false
-		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+		})).
+		Owns(&appsv1.StatefulSet{}).
+		Watches(
+			&corev1.Pod{},
+			handler.Funcs{
+				DeleteFunc: func(
+					ctx context.Context,
+					e event.DeleteEvent,
+					q workqueue.TypedRateLimitingInterface[reconcile.Request],
+				) {
+					pod, ok := e.Object.(*corev1.Pod)
+					if !ok {
+						return
+					}
+
+					if _, exists := pod.Labels[leaderworkerset.SetNameLabelKey]; !exists {
+						return
+					}
+
+					key := types.NamespacedName{
+						Name:      pod.Name,
+						Namespace: pod.Namespace,
+					}
+
+					r.storeDeletedPod(pod)
+
+					q.Add(reconcile.Request{
+						NamespacedName: key,
+					})
+				},
+			},
+		).
+		Complete(r)
+}
+func (r *PodReconciler) storeDeletedPod(pod *corev1.Pod) {
+	key := types.NamespacedName{
+		Name:      pod.Name,
+		Namespace: pod.Namespace,
+	}
+
+	r.deletedPodsMu.Lock()
+	defer r.deletedPodsMu.Unlock()
+
+	r.deletedPods[key] = append(r.deletedPods[key], pod.DeepCopy())
+}
+
+func (r *PodReconciler) loadDeletedPod(key types.NamespacedName) (*corev1.Pod, bool) {
+	r.deletedPodsMu.Lock()
+	defer r.deletedPodsMu.Unlock()
+
+	pods := r.deletedPods[key]
+	if len(pods) == 0 {
+		return nil, false
+	}
+
+	pod := pods[0]
+
+	if len(pods) == 1 {
+		delete(r.deletedPods, key)
+	} else {
+		r.deletedPods[key] = pods[1:]
+	}
+
+	return pod, true
 }
