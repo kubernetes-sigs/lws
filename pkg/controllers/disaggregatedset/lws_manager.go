@@ -221,19 +221,18 @@ func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disag
 	return manager.Get(ctx, ds, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
 }
 
-func (manager *LeaderWorkerSetManager) Delete(ctx context.Context, namespace, name string) error {
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-	}
-
-	if err := manager.client.Delete(ctx, leaderWorkerSet); err != nil {
+// deleteInForeground deletes the LWS so Kubernetes removes its children — including
+// the private Service — before the LWS itself. The UID precondition keeps a same-named
+// replacement created since the caller read this object from being deleted instead.
+func (manager *LeaderWorkerSetManager) deleteInForeground(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) error {
+	if err := manager.client.Delete(ctx, leaderWorkerSet,
+		client.PropagationPolicy(metav1.DeletePropagationForeground),
+		client.Preconditions{UID: ptr.To(leaderWorkerSet.UID)},
+	); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to delete LeaderWorkerSet %s: %w", name, err)
+		return fmt.Errorf("failed to delete LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
 	}
 
 	return nil

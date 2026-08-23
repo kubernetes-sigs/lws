@@ -200,6 +200,11 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for rolling update to complete")
 			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 
+			By("verifying Services from old revisions are garbage collected via their owning LWS")
+			Eventually(func(g Gomega) {
+				g.Expect(kubectl.CountService(deploymentName)).To(Equal(2))
+			}, kubectl.DefaultTimeout, kubectl.DefaultInterval).Should(Succeed())
+
 			By("verifying no orphaned single-role workloads exist")
 			output, err := kubectl.LWS(deploymentName).
 				JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision},{.metadata.labels.disaggregatedset\.x-k8s\.io/role},{.spec.replicas}{"\n"}{end}`).

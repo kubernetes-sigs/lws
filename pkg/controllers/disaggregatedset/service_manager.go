@@ -20,14 +20,14 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -47,10 +47,62 @@ func NewServiceManager(k8sClient client.Client, scheme *runtime.Scheme) *Service
 	}
 }
 
+// migrateLegacyServices transfers Services created by an older controller to
+// their matching LWS. A DS-owned Service without a matching LWS is an orphan
+// left by an interrupted old-controller cleanup and is deleted. Foreign and
+// ownerless Services are never changed.
+func (manager *ServiceManager) migrateLegacyServices(
+	ctx context.Context,
+	deployment *disaggregatedsetv1.DisaggregatedSet,
+	lwsList []*leaderworkersetv1.LeaderWorkerSet,
+) error {
+	lwsByService := make(map[string]*leaderworkersetv1.LeaderWorkerSet, len(lwsList))
+	for _, lws := range lwsList {
+		lwsByService[disaggregatedsetutils.PrivateServiceName(lws.Name)] = lws
+	}
+
+	serviceList := &corev1.ServiceList{}
+	if err := manager.client.List(ctx, serviceList,
+		client.InNamespace(deployment.Namespace),
+		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
+	); err != nil {
+		return fmt.Errorf("failed to list legacy services: %w", err)
+	}
+
+	log := logf.FromContext(ctx)
+	for i := range serviceList.Items {
+		service := &serviceList.Items[i]
+		if !metav1.IsControlledBy(service, deployment) || !isPrivateRoleService(service) {
+			continue
+		}
+
+		if lws := lwsByService[service.Name]; lws != nil {
+			if exists, controlled, err := manager.transferServiceOwnership(ctx, deployment, lws); err != nil {
+				return err
+			} else if exists && !controlled {
+				return fmt.Errorf("legacy service %s could not be transferred to LeaderWorkerSet %s", service.Name, lws.Name)
+			}
+			continue
+		}
+
+		log.Info("Deleting orphaned legacy Service", "service", service.Name)
+		if err := manager.client.Delete(ctx, service); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete orphaned legacy service %s: %w", service.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func isPrivateRoleService(service *corev1.Service) bool {
+	return strings.HasSuffix(service.Name, disaggregatedsetutils.PrivateServiceSuffix) &&
+		service.Labels[disaggregatedsetv1.RoleLabelKey] != "" &&
+		service.Labels[disaggregatedsetv1.RevisionLabelKey] != ""
+}
+
 func (manager *ServiceManager) ReconcileServices(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	revisionRoles disaggregatedsetutils.RevisionRolesList,
 	targetRevision string,
 ) error {
@@ -84,10 +136,6 @@ func (manager *ServiceManager) ReconcileServices(
 		}
 	}
 
-	if err := manager.cleanupDrainedServices(ctx, deployment, slice, revisionRoles, targetRevision, roleNames); err != nil {
-		return fmt.Errorf("failed to cleanup drained services: %w", err)
-	}
-
 	return nil
 }
 
@@ -110,10 +158,24 @@ func (manager *ServiceManager) ensureService(
 ) error {
 	log := logf.FromContext(ctx)
 
-	service := manager.buildService(deployment, lws)
+	service, err := manager.buildService(deployment, lws)
+	if err != nil {
+		return fmt.Errorf("failed to set owner for service %s: %w", disaggregatedsetutils.PrivateServiceName(lws.Name), err)
+	}
 
 	if err := manager.client.Create(ctx, service); err != nil {
 		if apierrors.IsAlreadyExists(err) {
+			exists, controlled, transferErr := manager.transferServiceOwnership(ctx, deployment, lws)
+			if transferErr != nil {
+				return transferErr
+			}
+			if !exists {
+				// Deleted between our Create and this Get; the next reconcile recreates it.
+				return nil
+			}
+			if !controlled {
+				return fmt.Errorf("service %s exists but is not controlled by LeaderWorkerSet %s (owned by another object or pending garbage collection from a previous generation)", service.Name, lws.Name)
+			}
 			log.V(1).Info("Service already exists", "service", service.Name)
 			return nil
 		}
@@ -132,7 +194,7 @@ func (manager *ServiceManager) ensureService(
 func (manager *ServiceManager) buildService(
 	deployment *disaggregatedsetv1.DisaggregatedSet,
 	lws *leaderworkersetv1.LeaderWorkerSet,
-) *corev1.Service {
+) (*corev1.Service, error) {
 	selector := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
 		disaggregatedsetv1.RoleLabelKey:     lws.Labels[disaggregatedsetv1.RoleLabelKey],
@@ -142,124 +204,55 @@ func (manager *ServiceManager) buildService(
 		selector[disaggregatedsetv1.SliceLabelKey] = lws.Labels[disaggregatedsetv1.SliceLabelKey]
 	}
 
-	return &corev1.Service{
+	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      lws.Name + "-prv",
+			Name:      disaggregatedsetutils.PrivateServiceName(lws.Name),
 			Namespace: deployment.Namespace,
 			Labels:    maps.Clone(selector),
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedsetv1.GroupVersion.String(),
-				Kind:       "DisaggregatedSet",
-				Name:       deployment.Name,
-				UID:        deployment.UID,
-				Controller: ptr.To(true),
-			}},
 		},
 		Spec: corev1.ServiceSpec{
 			ClusterIP: corev1.ClusterIPNone,
 			Selector:  selector,
 		},
 	}
+	if err := controllerutil.SetControllerReference(lws, service, manager.scheme); err != nil {
+		return nil, err
+	}
+	return service, nil
 }
 
-func (manager *ServiceManager) cleanupDrainedServices(
+// transferServiceOwnership moves a Service created by an older controller from
+// the DisaggregatedSet to its corresponding LWS. Foreign Services are untouched.
+// The booleans report whether the Service exists and whether it is controlled by
+// the LWS after the call.
+func (manager *ServiceManager) transferServiceOwnership(
 	ctx context.Context,
 	deployment *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
-	revisionRoles disaggregatedsetutils.RevisionRolesList,
-	targetRevision string,
-	roleNames []string,
-) error {
-	log := logf.FromContext(ctx)
-
-	readyRevisionSet := make(map[string]bool)
-	for _, group := range revisionRoles {
-		if revisionReadyOnAllRoles(group, roleNames) {
-			readyRevisionSet[group.Revision] = true
+	lws *leaderworkersetv1.LeaderWorkerSet,
+) (bool, bool, error) {
+	service := &corev1.Service{}
+	if err := manager.client.Get(ctx, client.ObjectKey{Name: disaggregatedsetutils.PrivateServiceName(lws.Name), Namespace: deployment.Namespace}, service); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, false, nil
 		}
+		return false, false, fmt.Errorf("failed to get service %s: %w", disaggregatedsetutils.PrivateServiceName(lws.Name), err)
+	}
+	if metav1.IsControlledBy(service, lws) {
+		return true, true, nil
+	}
+	if !metav1.IsControlledBy(service, deployment) {
+		return true, false, nil
 	}
 
-	readyRevisionSet[targetRevision] = true
-
-	// List all of the DisaggregatedSet's services and filter to this slice client-side
-	// so a legacy slice-0 service (which has no slice label) is included in slice 0's
-	// cleanup and removed once its revision drains.
-	serviceList := &corev1.ServiceList{}
-	if err := manager.client.List(ctx, serviceList,
-		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
-	); err != nil {
-		return fmt.Errorf("failed to list services: %w", err)
+	patch := client.MergeFromWithOptions(service.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if err := controllerutil.RemoveControllerReference(deployment, service, manager.scheme); err != nil {
+		return true, false, fmt.Errorf("failed to remove DisaggregatedSet owner from service %s: %w", service.Name, err)
 	}
-
-	for i := range serviceList.Items {
-		service := &serviceList.Items[i]
-		if !disaggregatedsetutils.SliceLabelMatches(service.Labels, slice) {
-			continue
-		}
-		serviceRevision := service.Labels[disaggregatedsetv1.RevisionLabelKey]
-
-		if !readyRevisionSet[serviceRevision] {
-			log.Info("Deleting drained Service", "service", service.Name, "revision", serviceRevision, "targetRevision", targetRevision)
-			if err := manager.client.Delete(ctx, service); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				return fmt.Errorf("failed to delete service %s: %w", service.Name, err)
-			}
-		}
+	if err := controllerutil.SetControllerReference(lws, service, manager.scheme); err != nil {
+		return true, false, fmt.Errorf("failed to set LeaderWorkerSet owner on service %s: %w", service.Name, err)
 	}
-
-	return nil
-}
-
-// CleanupRemovedSlices deletes services whose slice index is at or above the
-// desired slice count.
-func (manager *ServiceManager) CleanupRemovedSlices(
-	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
-	desiredSlices int,
-) error {
-	log := logf.FromContext(ctx)
-
-	serviceList := &corev1.ServiceList{}
-	if err := manager.client.List(ctx, serviceList,
-		client.InNamespace(deployment.Namespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: deployment.Name},
-	); err != nil {
-		return fmt.Errorf("failed to list services: %w", err)
+	if err := manager.client.Patch(ctx, service, patch); err != nil {
+		return true, false, fmt.Errorf("failed to transfer ownership of service %s: %w", service.Name, err)
 	}
-
-	for i := range serviceList.Items {
-		service := &serviceList.Items[i]
-		sliceIdx, err := strconv.Atoi(service.Labels[disaggregatedsetv1.SliceLabelKey])
-		if err != nil || sliceIdx < desiredSlices {
-			continue
-		}
-		log.Info("Deleting Service for removed slice", "service", service.Name, "slice", sliceIdx)
-		if err := manager.client.Delete(ctx, service); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("failed to delete service %s: %w", service.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// DeleteLegacyService deletes the pre-slices, slice-agnostic service for a role and
-// revision. Used during legacy slice-0 migration: the legacy service shares the target
-// revision, so per-revision drained cleanup never removes it.
-func (manager *ServiceManager) DeleteLegacyService(
-	ctx context.Context,
-	deployment *disaggregatedsetv1.DisaggregatedSet,
-	revision, role string,
-) error {
-	name := disaggregatedsetutils.GenerateLegacyName(deployment.Name, revision, role) + "-prv"
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: deployment.Namespace}}
-	if err := manager.client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete legacy service %s: %w", name, err)
-	}
-	return nil
+	return true, true, nil
 }
