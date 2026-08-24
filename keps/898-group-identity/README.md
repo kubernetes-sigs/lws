@@ -59,14 +59,14 @@ The ordinal system makes it impossible to remove or relocate one specific group.
 
 1. Changing the default identity mode, now or later. Flipping the default to `Hash` would change the behavior of existing objects and manifests within the v1 API, so `Ordinal` remains the default. Adoption is driven by recommending `Hash` for serving workloads in the documentation and using it in the project guides (work for future doc update PR).
 2. Migrating a live LeaderWorkerSet between modes. The field is immutable.
-3. Supporting every ordinal-dependent feature in hash mode. Subgroups, volume claim templates, `subdomainPolicy: UniquePerReplica`, and rolling update partitions are rejected at admission (see [Unsupported Combinations](#unsupported-combinations)).
+3. Supporting every ordinal-dependent feature in hash mode. Volume claim templates and rolling update partitions are rejected at admission (see [Unsupported Combinations](#unsupported-combinations)).
 4. A user-facing API for naming specific scale-down victims, for example via `pod-deletion-cost` (see [Alternatives](#alternatives) below).
 
 ## Proposal
 
 Add `spec.groupIdentity` with values `Ordinal` and `Hash`, defaulted to `Ordinal` by the webhook and immutable after creation.
 
-In hash mode the controller manages leader pods through a Deployment named after the LeaderWorkerSet. Each new leader pod is assigned a random 40 character group key at admission, stored in both the `group-index` and `group-key` labels. The per-group worker StatefulSet is named after its leader pod, and workers reach their leader by pod IP through the `LWS_LEADER_ADDRESS` environment variable rather than a stable DNS name.
+In hash mode the controller manages leader pods through a Deployment named after the LeaderWorkerSet. Each new leader pod is assigned a random 40 character group key at admission, stored in both the `group-index` and `group-key` labels. The webhook also sets the leader's hostname to an 8 character prefix of the group key and its subdomain to the LeaderWorkerSet headless service, giving each leader a DNS name for its lifetime. The per-group worker StatefulSet is named after its leader pod, and workers reach their leader through that DNS name in the `LWS_LEADER_ADDRESS` environment variable, the same form as ordinal mode.
 
 Scale down is delegated to the ReplicaSet, which deletes unscheduled and not-ready pods before healthy ones. Since a leader pod is only fully ready once its whole group is ready (via a readiness gate, described below), the ReplicaSet's ranking operates on group health.
 
@@ -88,7 +88,7 @@ An HPA drives `spec.replicas` on a hash mode LeaderWorkerSet through the scale s
 
 1. Group identity is not stable. A recreated group gets a new key, so anything keyed on group identity must treat it as ephemeral.
 2. The `group-index` label carries a 40 character hash in hash mode. Tooling that parses it as an integer will not work on hash mode pods.
-3. There is no per-group stable hostname. Workers get the leader's pod IP, which changes when the leader is recreated.
+3. The leader's DNS name is derived from the group key, so a recreated group gets a new name. Consumers must not cache it across group replacement.
 4. Victim ranking runs on API server state. If a node fails and is replaced under the same name, its pods can report a stale `Running` phase for a short window and ranking sees that state until the kubelet reports in.
 5. `NoneRestartPolicy` keeps its meaning for worker failures only (the worker is recreated alone and rejoins its group). Losing the leader always replaces the whole group under a fresh identity, because the group's identity is the leader pod. Workers cannot survive their leader in hash mode.
 
@@ -133,9 +133,11 @@ Leader pods carry a `leaderworkerset.sigs.k8s.io/group-ready` readiness gate. Th
 
 The pod webhook assigns each new leader pod a group key, a SHA1 over the namespace and a random 16 character string. A random input is required because leader pods are created through `generateName`, so at mutating admission time the pod has no name or UID to derive a key from. The key is stored in both the `group-index` and `group-key` labels on the leader and inherited by its workers. Exclusive placement continues to key off `group-key` exactly as in ordinal mode.
 
+The webhook also sets the leader's `hostname` to an 8 character prefix of the group key and its `subdomain` to the LeaderWorkerSet headless service, which gives each leader a per-pod DNS record under the service. The key is truncated because the full 40 characters would consume most of the 63 character service name budget. Under `subdomainPolicy: UniquePerReplica` the per-replica headless service is named from the LeaderWorkerSet name plus the same prefix, since Service names must begin with a letter and the raw key cannot be used as a name.
+
 ### Worker StatefulSets and Leader Address
 
-Each group's worker StatefulSet is named after its leader pod, as today. Since hash-named leaders have no per-pod DNS record, the controller stamps the leader's pod IP onto worker pods through a `leaderworkerset.sigs.k8s.io/leader-address` annotation, surfaced to containers as the `LWS_LEADER_ADDRESS` environment variable. On the leader itself the variable resolves to its own pod IP through the downward API. Groups of size 1 get no readiness gate and no worker StatefulSet.
+Each group's worker StatefulSet is named after its leader pod, as today. The hostname and subdomain assigned at admission give each leader a DNS record under the LeaderWorkerSet headless service, which is created with `publishNotReadyAddresses` so the record resolves while the readiness gate holds the leader not-ready. Workers receive this DNS name through the `leaderworkerset.sigs.k8s.io/leader-address` annotation, surfaced to containers as the `LWS_LEADER_ADDRESS` environment variable, matching the form ordinal mode provides. Groups of size 1 get no readiness gate and no worker StatefulSet.
 
 ### Rollouts
 
@@ -157,14 +159,10 @@ Because the revision includes the field and DisaggregatedSet rolls template chan
 
 ### Unsupported Combinations
 
-Validation rejects hash mode combined with features whose semantics depend on stable ordinals:
+Validation rejects hash mode combined with features whose semantics depend on stable StatefulSet identity:
 
-- `subGroupPolicy`
-- volume claim templates
-- `networkConfig.subdomainPolicy: UniquePerReplica`
-- `rollingUpdateConfiguration.partition`
-
-These can be revisited individually if there is demand.
+- volume claim templates: persistent storage exists to be reattached to a successor with the same identity, and hash mode never reuses identities, so there is nothing to reattach to. Per-group scratch storage is already covered upstream by generic ephemeral volumes.
+- `rollingUpdateConfiguration.partition`: partition is defined over ordinals and Deployments have no equivalent rollout control.
 
 ### Test Plan
 
@@ -180,6 +178,7 @@ These can be revisited individually if there is demand.
 - Leader Deployment construction: selector, strategy mapping, readiness gate injection.
 - Group-ready condition sync in the pod controller.
 - Leader address annotation and environment variable injection.
+- Hostname and subdomain assignment on hash mode leaders, and group key derivation for subgroup hashes and per-replica service names.
 - DisaggregatedSet: webhook rejection of hash-mode combinations per role, revision stability between empty and `Ordinal`, revision change on `Hash`, and spec passthrough to created LeaderWorkerSets.
 
 #### Integration tests
@@ -190,7 +189,8 @@ These can be revisited individually if there is demand.
 - Scale up and scale down, including to zero and back.
 - Rolling updates respect `maxSurge` and `maxUnavailable` in units of groups.
 - Size 1 groups: no gate, no worker StatefulSet.
-- A `groupIdentity: Hash` DisaggregatedSet role survives the CRD schema and is rejected when combined with `subGroupPolicy`.
+- Leaders resolve by DNS name, and `subGroupPolicy` and `UniquePerReplica` work in hash mode with group key derived values.
+- A `groupIdentity: Hash` DisaggregatedSet role survives the CRD schema and is rejected when combined with volume claim templates.
 
 #### e2e tests
 
@@ -211,6 +211,7 @@ Beta: feedback, make `Hash` recommended for serving workloads in the documentati
 
 - 2026-08-17: KEP drafted after a working prototype was built and tested.
 - 2026-08-18: DisaggregatedSet integration added to the prototype.
+- 2026-08-24: Review updates. Leaders get DNS names derived from the group key, and `subGroupPolicy` and `UniquePerReplica` move from rejected to supported through group key derivation.
 
 ## Drawbacks
 
