@@ -126,26 +126,43 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 	sliceDigits := len(strconv.Itoa(int(maxSliceIndex)))
 
 	const (
-		dns1035MaxLen    = 63
-		revisionLen      = 8 // hex characters in the revision hash
-		serviceSuffixLen = 4 // len("-prv")
-		separators       = 3 // three "-" between dsName, slice, revision, roleName
+		dns1035MaxLen                     = 63
+		revisionLen                       = 8  // hex characters in the revision hash
+		serviceSuffixLen                  = 4  // len("-prv")
+		separators                        = 3  // three "-" between dsName, slice, revision, roleName
+		statefulSetRevisionLabelSuffixLen = 11 // len("-<10-char-hash>")
 	)
 
 	rolesPath := field.NewPath("spec", "roles")
 	for i, role := range obj.Spec.Roles {
 		lwsNameLen := len(obj.Name) + separators + sliceDigits + revisionLen + len(role.Name)
-		svcNameLen := lwsNameLen + serviceSuffixLen
 
-		if svcNameLen > dns1035MaxLen {
-			combinedLimit := dns1035MaxLen - separators - sliceDigits - revisionLen - serviceSuffixLen
+		groupIndexDigits := 1
+		if role.Spec.Replicas != nil && *role.Spec.Replicas > 0 {
+			groupIndexDigits = len(strconv.Itoa(int(*role.Spec.Replicas - 1)))
+		}
+
+		// The worker StatefulSet pods get a label "controller-revision-hash" with value:
+		// <lwsName>-<groupIndex>-<hash>
+		// Which translates to: lwsNameLen + 1 (dash) + groupIndexDigits + statefulSetRevisionLabelSuffixLen
+		workerRevisionLabelSuffixLen := 1 + groupIndexDigits + statefulSetRevisionLabelSuffixLen
+
+		maxSuffixLen := serviceSuffixLen
+		if workerRevisionLabelSuffixLen > maxSuffixLen {
+			maxSuffixLen = workerRevisionLabelSuffixLen
+		}
+
+		maxNameLen := lwsNameLen + maxSuffixLen
+
+		if maxNameLen > dns1035MaxLen {
+			combinedLimit := dns1035MaxLen - separators - sliceDigits - revisionLen - maxSuffixLen
 			allErrs = append(allErrs, field.Invalid(
 				rolesPath.Index(i).Child("name"),
 				role.Name,
 				fmt.Sprintf(
-					"the generated service name (%d chars) would exceed the DNS-1035 limit of %d characters; "+
+					"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for service name and StatefulSet revision hash labels); "+
 						"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
-					svcNameLen, dns1035MaxLen, combinedLimit,
+					maxNameLen, dns1035MaxLen, combinedLimit,
 				),
 			))
 		}
