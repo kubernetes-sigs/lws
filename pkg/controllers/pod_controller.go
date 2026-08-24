@@ -532,8 +532,8 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
-	if lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.EnableGangSchedulingAnnotationKey] = lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]
+	if lws.Spec.GangScheduling != nil && lws.Spec.GangScheduling.Enable != nil {
+		podAnnotations[leaderworkerset.EnableGangSchedulingAnnotationKey] = strconv.FormatBool(*lws.Spec.GangScheduling.Enable)
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
@@ -640,11 +640,8 @@ func statefulSetEventHandler() handler.TypedEventHandler[client.Object, podRecon
 }
 
 func shouldCreatePodGroup(lws *leaderworkerset.LeaderWorkerSet) bool {
-	if val, ok := lws.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]; ok {
-		enabled, err := strconv.ParseBool(val)
-		if err == nil {
-			return enabled
-		}
+	if lws.Spec.GangScheduling != nil && lws.Spec.GangScheduling.Enable != nil {
+		return *lws.Spec.GangScheduling.Enable
 	}
 	return true
 }

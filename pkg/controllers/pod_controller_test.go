@@ -930,44 +930,35 @@ func TestShouldCreatePodGroup(t *testing.T) {
 		expected bool
 	}{
 		{
-			name: "No annotation defaults to true",
+			name: "No gang scheduling spec defaults to true",
 			lws: &leaderworkerset.LeaderWorkerSet{
 				ObjectMeta: metav1.ObjectMeta{},
 			},
 			expected: true,
 		},
 		{
-			name: "Annotation true",
+			name: "Gang scheduling enable true",
 			lws: &leaderworkerset.LeaderWorkerSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						leaderworkerset.EnableGangSchedulingAnnotationKey: "true",
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					GangScheduling: &leaderworkerset.GangSchedulingConfig{
+						Enable: ptr.To(true),
 					},
 				},
 			},
 			expected: true,
 		},
 		{
-			name: "Annotation false",
+			name: "Gang scheduling enable false",
 			lws: &leaderworkerset.LeaderWorkerSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						leaderworkerset.EnableGangSchedulingAnnotationKey: "false",
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					GangScheduling: &leaderworkerset.GangSchedulingConfig{
+						Enable: ptr.To(false),
 					},
 				},
 			},
 			expected: false,
-		},
-		{
-			name: "Invalid annotation defaults to true",
-			lws: &leaderworkerset.LeaderWorkerSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						leaderworkerset.EnableGangSchedulingAnnotationKey: "invalid",
-					},
-				},
-			},
-			expected: true,
 		},
 	}
 
