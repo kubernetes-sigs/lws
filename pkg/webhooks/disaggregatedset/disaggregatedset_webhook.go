@@ -127,16 +127,16 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 
 	const (
 		dns1035MaxLen                     = 63
-		revisionLen                       = 8 // hex characters in the revision hash
-		serviceSuffixLen                  = 4 // len("-prv")
-		separators                        = 3 // three "-" between dsName, slice, revision, roleName
+		revisionLen                       = 8  // hex characters in the revision hash
+		serviceSuffixLen                  = 4  // len("-prv")
+		separators                        = 3  // three "-" between dsName, slice, revision, roleName
 		statefulSetRevisionLabelSuffixLen = 11 // len("-<10-char-hash>")
 	)
 
 	rolesPath := field.NewPath("spec", "roles")
 	for i, role := range obj.Spec.Roles {
 		lwsNameLen := len(obj.Name) + separators + sliceDigits + revisionLen + len(role.Name)
-		
+
 		groupIndexDigits := 1
 		if role.Spec.Replicas != nil && *role.Spec.Replicas > 0 {
 			groupIndexDigits = len(strconv.Itoa(int(*role.Spec.Replicas - 1)))
