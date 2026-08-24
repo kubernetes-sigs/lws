@@ -23,7 +23,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -185,14 +184,14 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		gomega.Expect(fetched.Spec.Roles[1].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityOrdinal))
 	})
 
-	ginkgo.It("rejects a Hash role with subGroupPolicy at admission", func() {
-		disagg := buildDisaggregatedSet("gi-hash-subgroup").Obj()
+	ginkgo.It("rejects a Hash role with volumeClaimTemplates at admission", func() {
+		disagg := buildDisaggregatedSet("gi-hash-vct").Obj()
 		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
-		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{
-			SubGroupSize: ptr.To(int32(1)),
-		}
+		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+		}}
 		err := k8sClient.Create(ctx, disagg)
 		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("subGroupPolicy is not supported with groupIdentity Hash"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("volumeClaimTemplates are not supported with groupIdentity Hash"))
 	})
 })

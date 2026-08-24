@@ -690,3 +690,47 @@ func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
 		t.Errorf("expected 0 services created for deleting leader pod, got %d", len(svcList.Items))
 	}
 }
+
+func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		SubdomainPolicy(subdomainPolicy).
+		Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	revision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaderPod := corev1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-sample-7d9f8b6c4-x2kkp",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.WorkerIndexLabelKey:     "0",
+				leaderworkerset.SetNameLabelKey:         "test-sample",
+				leaderworkerset.GroupIndexLabelKey:      "test-key",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(revision),
+			},
+		},
+		Spec: corev1.PodSpec{
+			Hostname:  "9f2ac71b",
+			Subdomain: "test-sample-9f2ac71b",
+		},
+	}
+
+	cfg, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *cfg.Spec.ServiceName; got != "test-sample-9f2ac71b" {
+		t.Errorf("expected the worker StatefulSet to use the group key derived service name, got %q", got)
+	}
+}

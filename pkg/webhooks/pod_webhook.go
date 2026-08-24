@@ -117,6 +117,35 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 				SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
 			}
+			// The group key also provides the leader's DNS identity: hostname is a
+			// prefix of the key and subdomain is the headless service the record
+			// lives under. Both fields are immutable, so admission is the only
+			// chance to set them.
+			hostPrefix := hashDNSPrefix(groupUniqueKey)
+			if pod.Spec.Hostname == "" {
+				pod.Spec.Hostname = hostPrefix
+			}
+			if pod.Spec.Subdomain == "" {
+				subdomain := pod.Labels[leaderworkerset.SetNameLabelKey]
+				if sp, foundSP := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]; foundSP && sp == string(leaderworkerset.SubdomainUniquePerReplica) {
+					// Service names must begin with a letter, so the per-replica
+					// service cannot be named the raw key.
+					subdomain = fmt.Sprintf("%s-%s", subdomain, hostPrefix)
+				}
+				pod.Spec.Subdomain = subdomain
+			}
+			_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
+			subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
+			if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
+				// The leader pod always lands on SubGroup 0. The subgroup hash
+				// derives from the group key instead of the leader pod name.
+				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
+				subGroupUniqueKey := genGroupUniqueKey(groupUniqueKey, "0")
+				pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
+				if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
+					SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				}
+			}
 			if err := podutils.AddLWSVariables(pod); err != nil {
 				return err
 			}
@@ -168,10 +197,15 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
-			leaderName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			// In hash mode the subgroup hash derives from the group key, matching
+			// what the leader computed at its own admission when it had no name.
+			subGroupKeyInput := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+			if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
+				subGroupKeyInput = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+			}
 			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
-			subGroupUniqueKey := genGroupUniqueKey(leaderName, subGroupIndexKey)
+			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
@@ -202,6 +236,19 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 
 func genGroupUniqueKey(ns string, podName string) string {
 	return utils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
+}
+
+// hashDNSPrefixLength is how much of the group key goes into DNS facing names
+// (leader hostname, per-replica service name). 8 hex characters is 32 bits, the
+// same width as the pod template hash Deployments already rely on, and keeps
+// the LeaderWorkerSet's share of the 63 character name budgets large.
+const hashDNSPrefixLength = 8
+
+func hashDNSPrefix(groupUniqueKey string) string {
+	if len(groupUniqueKey) < hashDNSPrefixLength {
+		return groupUniqueKey
+	}
+	return groupUniqueKey[:hashDNSPrefixLength]
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity

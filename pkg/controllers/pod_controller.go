@@ -123,7 +123,14 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
+		// In hash mode the per-replica service carries the group key derived name
+		// the webhook stamped as the leader's subdomain, since Service names must
+		// begin with a letter and the pod name is not known at admission.
+		serviceName := pod.Name
+		if leaderWorkerSet.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && pod.Spec.Subdomain != "" {
+			serviceName = pod.Spec.Subdomain
+		}
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, serviceName, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -171,16 +178,24 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if hashIdentity {
-		// Hash-named leaders have no per-pod DNS record, so workers get the leader
-		// pod IP instead. The IP is stable for the group's lifetime because the
-		// whole group is recreated together when the leader is replaced.
-		if pod.Status.PodIP == "" {
-			log.V(2).Info("waiting for leader pod IP before creating the worker statefulset")
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+		// Workers reach the leader through the DNS record the webhook derived
+		// from the group key. Leaders admitted before hostnames were assigned
+		// fall back to the pod IP, which is stable for the group's lifetime
+		// because the whole group is recreated together when the leader is
+		// replaced.
+		var leaderAddress string
+		if pod.Spec.Hostname != "" && pod.Spec.Subdomain != "" {
+			leaderAddress = fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace)
+		} else {
+			if pod.Status.PodIP == "" {
+				log.V(2).Info("waiting for leader pod IP before creating the worker statefulset")
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			leaderAddress = pod.Status.PodIP
 		}
 		statefulSet.Spec.Template.WithAnnotations(map[string]string{
 			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
-			leaderworkerset.LeaderAddressAnnotationKey: pod.Status.PodIP,
+			leaderworkerset.LeaderAddressAnnotationKey: leaderAddress,
 		})
 	}
 
@@ -501,6 +516,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	serviceName := leaderPod.Name
 	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		serviceName = lws.Name
+	} else if currentLws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && leaderPod.Spec.Subdomain != "" {
+		// The hash mode per-replica service is named by the leader's subdomain
+		// (group key derived), not the leader pod name.
+		serviceName = leaderPod.Spec.Subdomain
 	}
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)

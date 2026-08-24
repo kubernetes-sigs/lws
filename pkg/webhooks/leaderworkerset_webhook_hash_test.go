@@ -54,8 +54,8 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 
 	subGroup := hashLws("subgroup")
 	subGroup.Spec.LeaderWorkerTemplate.SubGroupPolicy = &v1.SubGroupPolicy{SubGroupSize: ptr.To[int32](2)}
-	if _, err := webhook.ValidateCreate(context.TODO(), subGroup); err == nil {
-		t.Error("expected subGroupPolicy to be rejected with groupIdentity Hash")
+	if _, err := webhook.ValidateCreate(context.TODO(), subGroup); err != nil {
+		t.Errorf("expected subGroupPolicy to be accepted with groupIdentity Hash: %v", err)
 	}
 
 	partitioned := hashLws("partitioned")
@@ -67,8 +67,8 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 	uniqueSubdomain := hashLws("subdomain")
 	policy := v1.SubdomainUniquePerReplica
 	uniqueSubdomain.Spec.NetworkConfig = &v1.NetworkConfig{SubdomainPolicy: &policy}
-	if _, err := webhook.ValidateCreate(context.TODO(), uniqueSubdomain); err == nil {
-		t.Error("expected UniquePerReplica subdomain policy to be rejected with groupIdentity Hash")
+	if _, err := webhook.ValidateCreate(context.TODO(), uniqueSubdomain); err != nil {
+		t.Errorf("expected UniquePerReplica subdomain policy to be accepted with groupIdentity Hash: %v", err)
 	}
 }
 

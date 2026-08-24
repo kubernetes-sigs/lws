@@ -852,7 +852,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "hash role with subGroupPolicy is rejected",
+			name: "hash role with subGroupPolicy is accepted",
 			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
@@ -862,8 +862,19 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 					},
 				},
 			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with volumeClaimTemplates is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{}},
+				},
+			}),
 			expectError: true,
-			errorMsg:    "subGroupPolicy is not supported with groupIdentity Hash",
+			errorMsg:    "volumeClaimTemplates are not supported with groupIdentity Hash",
 		},
 		{
 			name: "ordinal role with subGroupPolicy is accepted",

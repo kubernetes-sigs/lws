@@ -145,20 +145,28 @@ func AddLWSVariables(pod *corev1.Pod) error {
 		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
 	}
 	if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
-		// Hash-named leaders have no ordinal DNS record. Workers carry the leader
-		// pod IP in an annotation; the leader itself resolves its own address
-		// through the downward API.
+		// Hash leaders have no ordinal DNS record. Their DNS name comes from the
+		// hostname and subdomain the webhook derives from the group key; workers
+		// carry it in an annotation. Pods admitted before hostnames were assigned
+		// fall back to the leader pod IP.
 		if addr := pod.Annotations[leaderworkerset.LeaderAddressAnnotationKey]; addr != "" {
 			leaderAddressEnvVar = corev1.EnvVar{
 				Name:  leaderworkerset.LwsLeaderAddress,
 				Value: addr,
 			}
 		} else if LeaderPod(*pod) {
-			leaderAddressEnvVar = corev1.EnvVar{
-				Name: leaderworkerset.LwsLeaderAddress,
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
-				},
+			if pod.Spec.Hostname != "" && pod.Spec.Subdomain != "" {
+				leaderAddressEnvVar = corev1.EnvVar{
+					Name:  leaderworkerset.LwsLeaderAddress,
+					Value: fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
+				}
+			} else {
+				leaderAddressEnvVar = corev1.EnvVar{
+					Name: leaderworkerset.LwsLeaderAddress,
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+					},
+				}
 			}
 		}
 	}

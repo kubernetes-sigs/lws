@@ -206,26 +206,21 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 	return gi
 }
 
-// ValidateGroupIdentity rejects the parts of the API surface that depend on
-// ordinal leader names and are not supported when leaders are Deployment-managed.
-// It is a no-op unless the spec asks for groupIdentity Hash. Exported so the
-// DisaggregatedSet webhook can run the same checks against each role's inline
-// LeaderWorkerSet spec at DisaggregatedSet admission time, where a bad combination
-// would otherwise only surface as LWS creation failures during reconciliation.
+// ValidateGroupIdentity rejects the parts of the API surface whose semantics
+// depend on stable StatefulSet identity and are not supported when leaders are
+// Deployment-managed. It is a no-op unless the spec asks for groupIdentity Hash.
+// Exported so the DisaggregatedSet webhook can run the same checks against each
+// role's inline LeaderWorkerSet spec at DisaggregatedSet admission time, where a
+// bad combination would otherwise only surface as LWS creation failures during
+// reconciliation.
 func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if normalizeGroupIdentity(spec.GroupIdentity) != v1.GroupIdentityHash {
 		return allErrs
 	}
 	giPath := specPath.Child("groupIdentity")
-	if spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "subGroupPolicy is not supported with groupIdentity Hash"))
-	}
 	if len(spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "volumeClaimTemplates are not supported with groupIdentity Hash"))
-	}
-	if spec.NetworkConfig != nil && spec.NetworkConfig.SubdomainPolicy != nil && *spec.NetworkConfig.SubdomainPolicy == v1.SubdomainUniquePerReplica {
-		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "subdomainPolicy UniquePerReplica is not supported with groupIdentity Hash"))
 	}
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
