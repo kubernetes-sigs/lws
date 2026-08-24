@@ -89,6 +89,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -107,6 +108,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -164,6 +166,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 					},
 					Annotations: map[string]string{
 						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
@@ -185,6 +188,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -242,6 +246,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.SetNameLabelKey:         "test-sample",
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 					},
 					Annotations: map[string]string{
@@ -263,6 +268,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.SetNameLabelKey:         "test-sample",
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 							},
 							Annotations: map[string]string{
@@ -343,6 +349,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupIndexLabelKey:      "1",
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
+						leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
@@ -361,6 +368,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
+								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -504,6 +512,7 @@ func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 		leaderworkerset.GroupIndexLabelKey:      "1",
 		leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 		leaderworkerset.RevisionKey:             revisionKey,
+		leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 	}
 	if diff := cmp.Diff(wantLabels, statefulSetConfig.Labels); diff != "" {
 		t.Errorf("unexpected StatefulSet labels: %s", diff)
