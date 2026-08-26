@@ -1,0 +1,76 @@
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: disagg-nginx-demo
+  namespace: default
+spec:
+  roles:
+  # Prefill role: larger pool, higher parallelism
+  - name: prefill
+    spec:
+      replicas: 2
+      rolloutStrategy:
+        rollingUpdateConfiguration:
+          maxSurge: 0
+          maxUnavailable: 1
+      leaderWorkerTemplate:
+        size: 2          # 1 leader + 1 worker per group
+        workerTemplate:
+          metadata:
+            labels:
+              role: prefill
+              component: disaggregation
+          spec:
+            containers:
+            - name: nginx
+              image: nginx:1.29.3
+              ports:
+              - containerPort: 80
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "64Mi"
+              readinessProbe:
+                httpGet:
+                  path: /
+                  port: 80
+                initialDelaySeconds: 5
+                periodSeconds: 2
+
+  # Decode role: smaller pool, lower latency
+  - name: decode
+    spec:
+      replicas: 1
+      rolloutStrategy:
+        rollingUpdateConfiguration:
+          maxSurge: 1
+          maxUnavailable: 0
+      leaderWorkerTemplate:
+        size: 1          # 1 leader only per group
+        workerTemplate:
+          metadata:
+            labels:
+              role: decode
+              component: disaggregation
+          spec:
+            containers:
+            - name: nginx
+              image: nginx:1.29.3
+              ports:
+              - containerPort: 80
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "64Mi"
+              readinessProbe:
+                httpGet:
+                  path: /
+                  port: 80
+                initialDelaySeconds: 5
+                periodSeconds: 2
