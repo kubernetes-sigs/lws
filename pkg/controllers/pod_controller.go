@@ -61,7 +61,7 @@ type PodReconciler struct {
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
 	deletedPodsMu     sync.Mutex
-	deletedPods       map[types.NamespacedName][]*corev1.Pod
+	deletedPods       map[types.NamespacedName]*corev1.Pod
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
@@ -70,8 +70,7 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 		Scheme:            schema,
 		Record:            record,
 		SchedulerProvider: sp,
-		deletedPods:       make(map[types.NamespacedName][]*corev1.Pod),
-	}
+		deletedPods:       make(map[types.NamespacedName]*corev1.Pod)}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -80,7 +79,7 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
-func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	key := types.NamespacedName{
 		Name:      req.Name,
 		Namespace: req.Namespace,
@@ -88,8 +87,14 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var pod corev1.Pod
 
-	if deletedPod, ok := r.loadDeletedPod(key); ok {
+	if deletedPod, ok := r.getDeletedPod(key); ok {
 		pod = *deletedPod
+
+		defer func() {
+			if err == nil {
+				r.removeDeletedPod(key)
+			}
+		}()
 	} else {
 		if err := r.Get(ctx, key, &pod); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -539,25 +544,26 @@ func (r *PodReconciler) storeDeletedPod(pod *corev1.Pod) {
 	r.deletedPodsMu.Lock()
 	defer r.deletedPodsMu.Unlock()
 
-	r.deletedPods[key] = append(r.deletedPods[key], pod.DeepCopy())
+	// Keep only the most recent deleted Pod for each key because the
+	// workqueue coalesces requests by key.
+	r.deletedPods[key] = pod.DeepCopy()
 }
 
-func (r *PodReconciler) loadDeletedPod(key types.NamespacedName) (*corev1.Pod, bool) {
+func (r *PodReconciler) getDeletedPod(key types.NamespacedName) (*corev1.Pod, bool) {
 	r.deletedPodsMu.Lock()
 	defer r.deletedPodsMu.Unlock()
 
-	pods := r.deletedPods[key]
-	if len(pods) == 0 {
+	pod, ok := r.deletedPods[key]
+	if !ok {
 		return nil, false
 	}
 
-	pod := pods[0]
+	return pod.DeepCopy(), true
+}
 
-	if len(pods) == 1 {
-		delete(r.deletedPods, key)
-	} else {
-		r.deletedPods[key] = pods[1:]
-	}
+func (r *PodReconciler) removeDeletedPod(key types.NamespacedName) {
+	r.deletedPodsMu.Lock()
+	defer r.deletedPodsMu.Unlock()
 
-	return pod, true
+	delete(r.deletedPods, key)
 }

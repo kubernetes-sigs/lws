@@ -595,7 +595,7 @@ func TestReconcileUsesDeletedPodWhenReplacementExists(t *testing.T) {
 		Client:      client,
 		Scheme:      scheme,
 		Record:      fakeEventRecorder{},
-		deletedPods: make(map[types.NamespacedName][]*corev1.Pod),
+		deletedPods: make(map[types.NamespacedName]*corev1.Pod),
 	}
 
 	// Simulate the Delete event for the old worker arriving before
@@ -733,9 +733,9 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 		})
 	}
 }
-func TestDeletedPodQueue(t *testing.T) {
+func TestDeletedPodCache(t *testing.T) {
 	r := &PodReconciler{
-		deletedPods: make(map[types.NamespacedName][]*corev1.Pod),
+		deletedPods: make(map[types.NamespacedName]*corev1.Pod),
 	}
 
 	key := types.NamespacedName{
@@ -762,26 +762,31 @@ func TestDeletedPodQueue(t *testing.T) {
 	r.storeDeletedPod(pod1)
 	r.storeDeletedPod(pod2)
 
-	got, ok := r.loadDeletedPod(key)
+	// The latest deleted Pod replaces the previous one.
+	got, ok := r.getDeletedPod(key)
 	if !ok {
-		t.Fatal("expected first deleted pod")
-	}
-
-	if got.UID != pod1.UID {
-		t.Fatalf("expected first pod UID %q, got %q", pod1.UID, got.UID)
-	}
-
-	got, ok = r.loadDeletedPod(key)
-	if !ok {
-		t.Fatal("expected second deleted pod")
+		t.Fatal("expected deleted pod")
 	}
 
 	if got.UID != pod2.UID {
-		t.Fatalf("expected second pod UID %q, got %q", pod2.UID, got.UID)
+		t.Fatalf("expected latest pod UID %q, got %q", pod2.UID, got.UID)
 	}
 
-	if _, ok := r.loadDeletedPod(key); ok {
-		t.Fatal("expected deleted pod queue to be empty")
+	// Getting the Pod does not consume the cache.
+	got, ok = r.getDeletedPod(key)
+	if !ok {
+		t.Fatal("expected deleted pod to remain cached")
+	}
+
+	if got.UID != pod2.UID {
+		t.Fatalf("expected latest pod UID %q, got %q", pod2.UID, got.UID)
+	}
+
+	// The cache is explicitly removed after successful reconciliation.
+	r.removeDeletedPod(key)
+
+	if _, ok := r.getDeletedPod(key); ok {
+		t.Fatal("expected deleted pod cache to be empty")
 	}
 }
 func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
