@@ -3,6 +3,7 @@ kep-number: 666
 authors:
   - Edwinhr716
   - yankay
+  - pacoxu
 status: provisional
 creation-date: 2025-10-13
 reviewers:
@@ -25,4 +26,8 @@ stage: alpha
 # The most recent milestone for which work toward delivery of this KEP has been
 # done. This can be the current (upcoming) milestone, if it is being actively
 # worked on.
-latest-milestone: "v0.10.0"
+latest-milestone: "v0.11.0"
+
+feature-gates:
+  - name: WorkloadAwareGangScheduling
+disable-supported: true
