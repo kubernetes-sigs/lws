@@ -426,7 +426,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	if currentLws.Spec.Scheduling != nil {
-		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = "true"
+		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(currentLws)
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name

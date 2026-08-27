@@ -26,6 +26,7 @@ import (
 	"github.com/onsi/gomega"
 	. "github.com/onsi/gomega"
 
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -37,6 +38,8 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -66,6 +69,12 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
+		ControlPlane: envtest.ControlPlane{
+			APIServer: &envtest.APIServer{Args: []string{
+				"--feature-gates=GenericWorkload=true",
+				"--runtime-config=scheduling.k8s.io/v1beta1=true",
+			}},
+		},
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "..", "test", "integration", "crd"),
@@ -91,6 +100,8 @@ var _ = BeforeSuite(func() {
 
 	err = volcanov1beta1.AddToScheme(scheme.Scheme)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	err = schedulingv1beta1.AddToScheme(scheme.Scheme)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	//+kubebuilder:scaffold:scheme
 
@@ -102,14 +113,16 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("leaderworkerset"))
+	kubernetesProvider := schedulerprovider.NewKubernetesProvider(k8sManager.GetClient())
+	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("leaderworkerset"), kubernetesProvider)
+	lwsController.FeatureGates = features.Gates{features.WorkloadAwareScheduling: true}
 
 	err = controllers.SetupIndexes(k8sManager.GetFieldIndexer())
 	Expect(err).ToNot(HaveOccurred())
 	err = lwsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("pod"), nil)
+	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("pod"), kubernetesProvider)
 	err = podController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

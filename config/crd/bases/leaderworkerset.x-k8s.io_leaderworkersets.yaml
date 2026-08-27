@@ -18520,85 +18520,353 @@ spec:
               scheduling:
                 description: |-
                   scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
-                  When set, each replica is represented by a Kubernetes PodGroup. This
-                  alpha field requires the WorkloadAwareScheduling LWS feature gate.
+                  It mirrors the LWS hierarchy: the complete set, each replica, and the
+                  leader and worker groups within a replica. In phase 1 exactly one level
+                  may be selected. This alpha field requires the WorkloadAwareScheduling
+                  LWS feature gate.
                 properties:
                   disruptionMode:
-                    description: |-
-                      disruptionMode controls whether replica members may be disrupted
-                      independently or only as a group.
+                    description: disruptionMode controls how replica groups may be
+                      disrupted.
                     properties:
                       all:
-                        description: all specifies that all children can only be disrupted
+                        description: all specifies that all child groups must be disrupted
                           together.
                         type: object
                       single:
-                        description: single specifies that children can be disrupted
-                          independently from each other.
+                        description: |-
+                          single specifies that child groups can be disrupted independently from
+                          each other.
                         type: object
                     type: object
-                  resourceClaims:
-                    description: resourceClaims lists dynamic resource claims shared
-                      by replica members.
-                    items:
-                      description: |-
-                        PodGroupResourceClaim references exactly one ResourceClaim, either directly
-                        or by naming a ResourceClaimTemplate which is then turned into a ResourceClaim
-                        for the PodGroup.
-
-                        It adds a name to it that uniquely identifies the ResourceClaim inside the PodGroup.
-                        Pods that need access to the ResourceClaim define a matching reference in its
-                        own Spec.ResourceClaims. The Pod's claim must match all fields of the
-                        PodGroup's claim exactly.
-                      properties:
-                        name:
-                          description: |-
-                            name uniquely identifies this resource claim inside the PodGroup.
-                            This must be a DNS_LABEL.
-                          type: string
-                        resourceClaimName:
-                          description: |-
-                            resourceClaimName is the name of a ResourceClaim object in the same
-                            namespace as this PodGroup. The ResourceClaim will be reserved for the
-                            PodGroup instead of its individual pods.
-
-                            Exactly one of ResourceClaimName and ResourceClaimTemplateName must
-                            be set.
-                          type: string
-                        resourceClaimTemplateName:
-                          description: |-
-                            resourceClaimTemplateName is the name of a ResourceClaimTemplate
-                            object in the same namespace as this PodGroup.
-
-                            The template will be used to create a new ResourceClaim, which will
-                            be bound to this PodGroup. When this PodGroup is deleted, the ResourceClaim
-                            will also be deleted. The PodGroup name and resource name, along with a
-                            generated component, will be used to form a unique name for the
-                            ResourceClaim, which will be recorded in podgroup.status.resourceClaimStatuses.
-
-                            This field is immutable and no changes will be made to the
-                            corresponding ResourceClaim by the control plane after creating the
-                            ResourceClaim.
-
-                            Exactly one of ResourceClaimName and ResourceClaimTemplateName must
-                            be set.
-                          type: string
-                      required:
-                      - name
-                      type: object
-                    maxItems: 4
-                    type: array
-                    x-kubernetes-list-map-keys:
-                    - name
-                    x-kubernetes-list-type: map
+                  replica:
+                    description: replica defines level-2 scheduling for each LWS replica.
+                    properties:
+                      disruptionMode:
+                        description: disruptionMode controls how the leader and worker
+                          groups may be disrupted.
+                        properties:
+                          all:
+                            description: all specifies that all child groups must
+                              be disrupted together.
+                            type: object
+                          single:
+                            description: |-
+                              single specifies that child groups can be disrupted independently from
+                              each other.
+                            type: object
+                        type: object
+                      leader:
+                        description: leader defines level-3 scheduling for the leader
+                          PodGroup.
+                        properties:
+                          disruptionMode:
+                            description: |
+                              WorkloadPodGroupDisruptionMode defines how individual pods within a
+                              group can be disrupted. Exactly one mode must be set.
+                            properties:
+                              all:
+                                description: all specifies that all pods in the group
+                                  must be disrupted together.
+                                type: object
+                              single:
+                                description: single specifies that pods can be disrupted
+                                  independently from each other.
+                                type: object
+                            type: object
+                          resourceClaims:
+                            items:
+                              description: |
+                                WorkloadPodGroupResourceClaim references a dynamic resource claim
+                                that is shared across pods in the group.
+                              properties:
+                                name:
+                                  description: |-
+                                    name uniquely identifies this resource claim inside the group.
+                                    This field is required. It must be a DNS_LABEL.
+                                  type: string
+                                resourceClaimName:
+                                  description: |-
+                                    resourceClaimName is the name of a ResourceClaim object in the same
+                                    namespace.
+                                    This field is optional. If it is not specified, no resource claim
+                                    is used. If set, it must be a DNS subdomain.
+                                  type: string
+                                resourceClaimTemplateName:
+                                  description: |-
+                                    resourceClaimTemplateName is the name of a ResourceClaimTemplate
+                                    object in the same namespace.
+                                    This field is optional. If it is not specified, no resource claim
+                                    template is used. If set, it must be a DNS subdomain.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            maxItems: 4
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          schedulingConstraints:
+                            description: |
+                              WorkloadPodGroupSchedulingConstraints defines leaf-level scheduling
+                              constraints, such as topology.
+                            properties:
+                              topology:
+                                description: |-
+                                  topology specifies desired topological placements for all pods
+                                  within the pod group.
+                                  If unset, no topology placement is requested.
+                                items:
+                                  description: TopologyConstraint defines a topology
+                                    constraint for a PodGroup.
+                                  properties:
+                                    key:
+                                      description: |-
+                                        key specifies the key of the node label representing the topology domain.
+                                        All pods within the PodGroup must be colocated within the same domain instance.
+                                        Different PodGroups can land on different domain instances even if they derive from the same PodGroupTemplate.
+                                        Examples: "topology.kubernetes.io/rack"
+                                      type: string
+                                  required:
+                                  - key
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            type: object
+                          schedulingPolicy:
+                            description: |
+                              WorkloadPodGroupSchedulingPolicy defines the scheduling policy for a
+                              group of pods managed by a workload controller.
+                              Exactly one policy must be set.
+                            properties:
+                              basic:
+                                description: |-
+                                  basic specifies that standard, pod-by-pod Kubernetes scheduling
+                                  behavior should be used.
+                                type: object
+                              gang:
+                                description: gang specifies all-or-nothing scheduling
+                                  semantics.
+                                properties:
+                                  minCount:
+                                    description: |-
+                                      minCount is the minimum number of pods that must be scheduled
+                                      at the same time for the scheduler to admit the entire group.
+                                      This field is optional. If it is not specified, the controller
+                                      should inject a context-specific sane default (e.g.,
+                                      parallelism for a Job).
+                                      If set, it must be a positive integer.
+                                    format: int32
+                                    type: integer
+                                type: object
+                            type: object
+                        type: object
+                      resourceClaims:
+                        description: |-
+                          resourceClaims lists dynamic resource claims shared by replica members.
+                          It is mutually exclusive with leader and worker scheduling leaves.
+                        items:
+                          description: |
+                            WorkloadPodGroupResourceClaim references a dynamic resource claim
+                            that is shared across pods in the group.
+                          properties:
+                            name:
+                              description: |-
+                                name uniquely identifies this resource claim inside the group.
+                                This field is required. It must be a DNS_LABEL.
+                              type: string
+                            resourceClaimName:
+                              description: |-
+                                resourceClaimName is the name of a ResourceClaim object in the same
+                                namespace.
+                                This field is optional. If it is not specified, no resource claim
+                                is used. If set, it must be a DNS subdomain.
+                              type: string
+                            resourceClaimTemplateName:
+                              description: |-
+                                resourceClaimTemplateName is the name of a ResourceClaimTemplate
+                                object in the same namespace.
+                                This field is optional. If it is not specified, no resource claim
+                                template is used. If set, it must be a DNS subdomain.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        maxItems: 4
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      schedulingConstraints:
+                        description: schedulingConstraints defines placement constraints
+                          for a replica.
+                        properties:
+                          topology:
+                            description: |-
+                              topology specifies desired topological placements for all child groups
+                              within the composite group.
+                              If unset, no topology placement is requested.
+                            items:
+                              description: TopologyConstraint defines a topology constraint
+                                for a PodGroup.
+                              properties:
+                                key:
+                                  description: |-
+                                    key specifies the key of the node label representing the topology domain.
+                                    All pods within the PodGroup must be colocated within the same domain instance.
+                                    Different PodGroups can land on different domain instances even if they derive from the same PodGroupTemplate.
+                                    Examples: "topology.kubernetes.io/rack"
+                                  type: string
+                              required:
+                              - key
+                              type: object
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                      schedulingPolicy:
+                        description: schedulingPolicy defines scheduling for a leader
+                          and its workers.
+                        properties:
+                          basic:
+                            description: |-
+                              basic specifies that the child groups of this composite group should be
+                              scheduled independently.
+                            type: object
+                          gang:
+                            description: |-
+                              gang specifies that the child groups of this composite group should be
+                              scheduled using all-or-nothing semantics.
+                            properties:
+                              minGroupCount:
+                                description: |-
+                                  minGroupCount is the minimum number of child groups that must be
+                                  schedulable at the same time for the scheduler to admit the entire
+                                  composite group.
+                                  This field is optional. If it is not specified, the controller
+                                  should inject a context-specific sane default (e.g., the number of
+                                  child groups).
+                                  If set, it must be a positive integer.
+                                format: int32
+                                type: integer
+                            type: object
+                        type: object
+                      worker:
+                        description: worker defines level-3 scheduling for the worker
+                          PodGroup.
+                        properties:
+                          disruptionMode:
+                            description: |
+                              WorkloadPodGroupDisruptionMode defines how individual pods within a
+                              group can be disrupted. Exactly one mode must be set.
+                            properties:
+                              all:
+                                description: all specifies that all pods in the group
+                                  must be disrupted together.
+                                type: object
+                              single:
+                                description: single specifies that pods can be disrupted
+                                  independently from each other.
+                                type: object
+                            type: object
+                          resourceClaims:
+                            items:
+                              description: |
+                                WorkloadPodGroupResourceClaim references a dynamic resource claim
+                                that is shared across pods in the group.
+                              properties:
+                                name:
+                                  description: |-
+                                    name uniquely identifies this resource claim inside the group.
+                                    This field is required. It must be a DNS_LABEL.
+                                  type: string
+                                resourceClaimName:
+                                  description: |-
+                                    resourceClaimName is the name of a ResourceClaim object in the same
+                                    namespace.
+                                    This field is optional. If it is not specified, no resource claim
+                                    is used. If set, it must be a DNS subdomain.
+                                  type: string
+                                resourceClaimTemplateName:
+                                  description: |-
+                                    resourceClaimTemplateName is the name of a ResourceClaimTemplate
+                                    object in the same namespace.
+                                    This field is optional. If it is not specified, no resource claim
+                                    template is used. If set, it must be a DNS subdomain.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            maxItems: 4
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          schedulingConstraints:
+                            description: |
+                              WorkloadPodGroupSchedulingConstraints defines leaf-level scheduling
+                              constraints, such as topology.
+                            properties:
+                              topology:
+                                description: |-
+                                  topology specifies desired topological placements for all pods
+                                  within the pod group.
+                                  If unset, no topology placement is requested.
+                                items:
+                                  description: TopologyConstraint defines a topology
+                                    constraint for a PodGroup.
+                                  properties:
+                                    key:
+                                      description: |-
+                                        key specifies the key of the node label representing the topology domain.
+                                        All pods within the PodGroup must be colocated within the same domain instance.
+                                        Different PodGroups can land on different domain instances even if they derive from the same PodGroupTemplate.
+                                        Examples: "topology.kubernetes.io/rack"
+                                      type: string
+                                  required:
+                                  - key
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            type: object
+                          schedulingPolicy:
+                            description: |
+                              WorkloadPodGroupSchedulingPolicy defines the scheduling policy for a
+                              group of pods managed by a workload controller.
+                              Exactly one policy must be set.
+                            properties:
+                              basic:
+                                description: |-
+                                  basic specifies that standard, pod-by-pod Kubernetes scheduling
+                                  behavior should be used.
+                                type: object
+                              gang:
+                                description: gang specifies all-or-nothing scheduling
+                                  semantics.
+                                properties:
+                                  minCount:
+                                    description: |-
+                                      minCount is the minimum number of pods that must be scheduled
+                                      at the same time for the scheduler to admit the entire group.
+                                      This field is optional. If it is not specified, the controller
+                                      should inject a context-specific sane default (e.g.,
+                                      parallelism for a Job).
+                                      If set, it must be a positive integer.
+                                    format: int32
+                                    type: integer
+                                type: object
+                            type: object
+                        type: object
+                    type: object
                   schedulingConstraints:
-                    description: schedulingConstraints defines group-level topology
-                      constraints.
+                    description: schedulingConstraints defines placement constraints
+                      for all replicas.
                     properties:
                       topology:
                         description: |-
-                          topology defines the topology constraints for the pod group.
-                          Currently only a single topology constraint can be specified. This may change in the future.
+                          topology specifies desired topological placements for all child groups
+                          within the composite group.
+                          If unset, no topology placement is requested.
                         items:
                           description: TopologyConstraint defines a topology constraint
                             for a PodGroup.
@@ -18618,48 +18886,32 @@ spec:
                     type: object
                   schedulingPolicy:
                     description: |-
-                      schedulingPolicy selects Basic or Gang scheduling. An omitted or empty
-                      policy defaults to Gang for LWS. When Gang is selected, minCount must
-                      equal the replica size.
+                      schedulingPolicy defines scheduling for all replicas in the LWS. In
+                      phase 1 this level is lowered to one flat PodGroup.
                     properties:
                       basic:
                         description: |-
-                          basic specifies that the pods in this group should be scheduled using
-                          standard Kubernetes scheduling behavior. Setting this field at group creation time
-                          opts this group to basic scheduling; this field cannot be changed afterward.
+                          basic specifies that the child groups of this composite group should be
+                          scheduled independently.
                         type: object
-                        x-kubernetes-validations:
-                        - message: field is immutable
-                          rule: self == oldSelf
                       gang:
                         description: |-
-                          gang specifies that the pods in this group should be scheduled using
-                          all-or-nothing semantics. Setting this field at group creation time
-                          opts this group to gang scheduling; this field cannot be set or unset afterward.
-                          The minCount field within Gang scheduling policy remains mutable after group creation.
+                          gang specifies that the child groups of this composite group should be
+                          scheduled using all-or-nothing semantics.
                         properties:
-                          minCount:
+                          minGroupCount:
                             description: |-
-                              minCount is the minimum number of pods that must be schedulable or scheduled
-                              at the same time for the scheduler to admit the entire group.
-                              It must be a positive integer. This field is mutable to support workload scaling.
-
-                              Note that the scheduler operates on an eventually consistent model. Updates
-                              to minCount may not be immediately reflected in scheduling decisions due to
-                              propagation delays. If minCount is updated while a scheduling cycle is in
-                              progress for that group, the new value may not take effect until the next
-                              cycle. Moreover, minCount is only enforced during scheduling, meaning that
-                              modifications to this field do not affect already-scheduled pods, applying
-                              only to those evaluated in future cycles.
+                              minGroupCount is the minimum number of child groups that must be
+                              schedulable at the same time for the scheduler to admit the entire
+                              composite group.
+                              This field is optional. If it is not specified, the controller
+                              should inject a context-specific sane default (e.g., the number of
+                              child groups).
+                              If set, it must be a positive integer.
                             format: int32
                             type: integer
-                        required:
-                        - minCount
                         type: object
                     type: object
-                    x-kubernetes-validations:
-                    - message: field basic is immutable once set
-                      rule: '!has(oldSelf.basic) || has(self.basic)'
                 type: object
               startupPolicy:
                 default: LeaderCreated

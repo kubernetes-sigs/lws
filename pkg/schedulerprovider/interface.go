@@ -33,12 +33,14 @@ var (
 )
 
 const (
-	PodGroupNameFmt = "%s-%s-%s"
+	PodGroupNameFmt     = "%s-%s-%s"
+	RolePodGroupNameFmt = "%s-%s-%s-%s"
+	LWSGroupNameFmt     = "%s-lws"
 
 	// These linkage annotations are defined by Kubernetes KEP-6089. They are
 	// not exported by k8s.io/api yet.
 	GroupTemplateNameAnnotation       = "scheduling.k8s.io/group-template-name"
-	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
+	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-composite-podgroup"
 
 	ReasonAPINotAvailable                = "APINotAvailable"
 	ReasonUnsupportedProviderCapability  = "UnsupportedProviderCapability"
@@ -89,6 +91,16 @@ type SchedulerProvider interface {
 // An example can be like "lws-1-dd6699c7c", where "lws" is the LeaderWorkerSet name, "1" is the group index, and "dd6699c7c" is the revision hash.
 func GetPodGroupName(lwsName, groupIndex, revision string) string {
 	return fmt.Sprintf(PodGroupNameFmt, lwsName, groupIndex, revision)
+}
+
+// GetRolePodGroupName returns a revision-aware leader or worker PodGroup name.
+func GetRolePodGroupName(lwsName, groupIndex, role, revision string) string {
+	return fmt.Sprintf(RolePodGroupNameFmt, lwsName, groupIndex, role, revision)
+}
+
+// GetLWSGroupName returns the stable whole-LWS PodGroup name.
+func GetLWSGroupName(lwsName string) string {
+	return fmt.Sprintf(LWSGroupNameFmt, lwsName)
 }
 
 // ProviderType defines the type of scheduler provider

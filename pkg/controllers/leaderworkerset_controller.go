@@ -866,7 +866,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
 	if lws.Spec.Scheduling != nil {
-		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = "true"
+		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(lws)
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

@@ -55,6 +55,21 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 	if lws.Spec.Scheduling == nil {
 		return nil
 	}
+	if errs := ValidatePhaseOneWorkload(ctx, nil, lws); len(errs) > 0 {
+		return NewReconcileError(ReasonInvalidSchedulingConfiguration, errs.ToAggregate())
+	}
+	mode, err := SchedulingModeFor(lws)
+	if err != nil {
+		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+	}
+	if mode != SchedulingModeReplica {
+		return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports the typed API only at replica level"))
+	}
+	if config := lws.Spec.Scheduling.Replica; config != nil {
+		if (config.SchedulingPolicy != nil && config.SchedulingPolicy.Basic != nil) || config.SchedulingConstraints != nil || config.DisruptionMode != nil || len(config.ResourceClaims) > 0 {
+			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
+		}
+	}
 	minResources := utils.CalculatePGMinResources(lws)
 	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
 		index := strconv.FormatInt(int64(groupIndex), 10)

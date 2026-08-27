@@ -53,9 +53,11 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
 	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
-	// When set, each replica is represented by a Kubernetes PodGroup. This
-	// alpha field requires the WorkloadAwareScheduling LWS feature gate.
-	Scheduling *LeaderWorkerSetSchedulingConfigurationApplyConfiguration `json:"scheduling,omitempty"`
+	// It mirrors the LWS hierarchy: the complete set, each replica, and the
+	// leader and worker groups within a replica. In phase 1 exactly one level
+	// may be selected. This alpha field requires the WorkloadAwareScheduling
+	// LWS feature gate.
+	Scheduling *LeaderWorkerSetSchedulingApplyConfiguration `json:"scheduling,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -107,7 +109,7 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *Network
 // WithScheduling sets the Scheduling field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Scheduling field is set to the value of the last call.
-func (b *LeaderWorkerSetSpecApplyConfiguration) WithScheduling(value *LeaderWorkerSetSchedulingConfigurationApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithScheduling(value *LeaderWorkerSetSchedulingApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.Scheduling = value
 	return b
 }

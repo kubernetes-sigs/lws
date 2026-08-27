@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,11 +42,14 @@ const (
 	// Kubernetes identifies the upstream scheduling.k8s.io provider.
 	Kubernetes ProviderType = "kubernetes"
 
-	workloadTemplateName = "replica"
-
 	// WorkloadSchedulingAnnotationKey is copied to managed pod templates and
 	// tells the pod webhook to attach the upstream SchedulingGroup reference.
 	WorkloadSchedulingAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-aware-scheduling"
+
+	// SchedulingLevelLabelKey and PodGroupRoleLabelKey describe which LWS
+	// hierarchy level a runtime PodGroup represents.
+	SchedulingLevelLabelKey = "leaderworkerset.sigs.k8s.io/scheduling-level"
+	PodGroupRoleLabelKey    = "leaderworkerset.sigs.k8s.io/role"
 )
 
 // KubernetesProvider manages upstream Workload and PodGroup resources.
@@ -59,83 +61,13 @@ func NewKubernetesProvider(c client.Client) *KubernetesProvider {
 	return &KubernetesProvider{client: c}
 }
 
-// NewWorkloadItem maps the versioned LWS fields while retaining their source
-// paths for workloadbuilder validation.
-func NewWorkloadItem(lws *leaderworkerset.LeaderWorkerSet) *workloadbuilder.WorkloadItem {
-	size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
-	priorityClassName := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName
-	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-		priorityClassName = lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName
-	}
-
-	item := &workloadbuilder.WorkloadItem{
-		Name: workloadTemplateName,
-		Path: field.NewPath("spec", "scheduling"),
-		DefaultConfig: &workloadbuilder.SchedulingConfig{
-			Policy: &workloadbuilder.SchedulingPolicy{
-				Gang: &workloadbuilder.GangSchedulingPolicy{},
-			},
-			PriorityClassName: priorityClassName,
-		},
-		Callbacks: []workloadbuilder.SchedulingConfigFunc{
-			func(config *workloadbuilder.SchedulingConfig) {
-				if config.Policy != nil && config.Policy.Gang != nil && config.Policy.Gang.MinCount == nil {
-					config.Policy.Gang.MinCount = ptr.To(size)
-				}
-			},
-		},
-	}
-	if lws.Spec.Scheduling != nil {
-		input := toWorkloadBuilderInput(lws.Spec.Scheduling)
-		item.Input = workloadbuilder.WorkloadInput{
-			Policy: workloadbuilder.PolicyInput{
-				PodGroupData: input.policy,
-				PathElements: []string{"schedulingPolicy"},
-			},
-			Constraints: workloadbuilder.ConstraintsInput{
-				PodGroupData: input.constraints,
-				PathElements: []string{"schedulingConstraints"},
-			},
-			DisruptionMode: workloadbuilder.DisruptionModeInput{
-				PodGroupData: input.disruptionMode,
-				PathElements: []string{"disruptionMode"},
-			},
-			ResourceClaims: workloadbuilder.ResourceClaimsInput{
-				PodGroupData: input.resourceClaims,
-				PathElements: []string{"resourceClaims"},
-			},
-		}
-	}
-	return item
-}
-
-// NewWorkloadBuilder maps an LWS scheduling configuration onto the standard
-// Kubernetes workloadbuilder input. It is shared by admission and reconcile so
-// the two paths cannot drift.
-func NewWorkloadBuilder(lws *leaderworkerset.LeaderWorkerSet) *workloadbuilder.Builder {
-	owner := metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
-	return workloadbuilder.NewBuilder(NewWorkloadItem(lws), workloadbuilder.BuildOptions{
-		Name:      lws.Name,
-		Namespace: lws.Namespace,
-		Owner:     owner,
-		AllowedPolicies: []workloadbuilder.SchedulingPolicyOption{
-			workloadbuilder.BasicPolicy,
-			workloadbuilder.GangPolicy,
-		},
-		AllowedDisruptionModes: []workloadbuilder.DisruptionModeOption{
-			workloadbuilder.SingleMode,
-			workloadbuilder.AllMode,
-		},
-	})
-}
-
 // ReconcileScheduling enforces Workload -> PodGroup -> Pod creation order.
 func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
 	}
 
-	persisted, templateName, err := p.reconcileWorkload(ctx, lws)
+	persisted, err := p.reconcileWorkload(ctx, lws)
 	if err != nil {
 		return err
 	}
@@ -143,12 +75,27 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 	materializer := workloadbuilder.NewBuilderFromExistingWorkload(persisted, workloadbuilder.BuildOptions{
 		Owner: metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")),
 	})
-	desiredGroups := make(map[string]struct{}, replicas)
-	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
-		index := strconv.FormatInt(int64(groupIndex), 10)
-		name := GetPodGroupName(lws.Name, index, revision)
+	runtimeGroups, err := phaseOneRuntimeGroups(lws, replicas, revision)
+	if err != nil {
+		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+	}
+	parentName := lws.Annotations[ParentCompositePodGroupAnnotation]
+	if parentName != "" {
+		parent := &schedulingv1alpha3.CompositePodGroup{}
+		if err := p.client.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: parentName}, parent); err != nil {
+			return NewReconcileError(ReasonParentWorkloadNotReady, fmt.Errorf("get parent CompositePodGroup %s/%s: %w", lws.Namespace, parentName, err))
+		}
+	}
+	if templateName := lws.Annotations[GroupTemplateNameAnnotation]; templateName != "" {
+		for i := range runtimeGroups {
+			runtimeGroups[i].templateName = templateName
+		}
+	}
+	desiredGroups := make(map[string]struct{}, len(runtimeGroups))
+	for _, runtimeGroup := range runtimeGroups {
+		name := runtimeGroup.name
 		desiredGroups[name] = struct{}{}
-		podGroup, err := materializer.NewPodGroup(name, templateName)
+		podGroup, err := materializer.NewPodGroup(name, runtimeGroup.templateName)
 		if err != nil {
 			return NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("materialize PodGroup %q: %w", name, err))
 		}
@@ -156,22 +103,14 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 			APIVersion: schedulingv1beta1.SchemeGroupVersion.String(),
 			Kind:       "PodGroup",
 		}
-		podGroup.Labels = map[string]string{
-			leaderworkerset.SetNameLabelKey:    lws.Name,
-			leaderworkerset.GroupIndexLabelKey: index,
-			leaderworkerset.RevisionKey:        revision,
-		}
-		if parentName := lws.Annotations[ParentCompositePodGroupAnnotation]; parentName != "" {
-			parent := &schedulingv1alpha3.CompositePodGroup{}
-			if err := p.client.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: parentName}, parent); err != nil {
-				return NewReconcileError(ReasonParentWorkloadNotReady, fmt.Errorf("get parent CompositePodGroup %s/%s: %w", lws.Namespace, parentName, err))
-			}
+		podGroup.Labels = runtimeGroup.labels
+		if parentName != "" {
 			podGroup.Spec.ParentCompositePodGroupName = ptr.To(parentName)
 		}
 		existing := &schedulingv1beta1.PodGroup{}
 		key := types.NamespacedName{Namespace: podGroup.Namespace, Name: name}
 		if err := p.client.Get(ctx, key, existing); err == nil {
-			if err := validateExistingPodGroup(existing, podGroup); err != nil {
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, runtimeGroup.allowMinCountUpdate); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		} else if !apierrors.IsNotFound(err) {
@@ -191,7 +130,70 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 	return nil
 }
 
-func validateExistingPodGroup(current, desired *schedulingv1beta1.PodGroup) error {
+type runtimePodGroup struct {
+	name                string
+	templateName        string
+	labels              map[string]string
+	allowMinCountUpdate bool
+}
+
+func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) ([]runtimePodGroup, error) {
+	mode, err := SchedulingModeFor(lws)
+	if err != nil {
+		return nil, err
+	}
+	baseLabels := func(level SchedulingMode) map[string]string {
+		return map[string]string{
+			leaderworkerset.SetNameLabelKey: lws.Name,
+			SchedulingLevelLabelKey:         string(level),
+		}
+	}
+
+	switch mode {
+	case SchedulingModeLWS:
+		return []runtimePodGroup{{
+			name:                GetLWSGroupName(lws.Name),
+			templateName:        lwsWorkloadTemplateName,
+			labels:              baseLabels(mode),
+			allowMinCountUpdate: true,
+		}}, nil
+	case SchedulingModeReplica:
+		groups := make([]runtimePodGroup, 0, replicas)
+		for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
+			index := strconv.FormatInt(int64(groupIndex), 10)
+			labels := baseLabels(mode)
+			labels[leaderworkerset.GroupIndexLabelKey] = index
+			labels[leaderworkerset.RevisionKey] = revision
+			groups = append(groups, runtimePodGroup{
+				name:         GetPodGroupName(lws.Name, index, revision),
+				templateName: replicaWorkloadTemplateName,
+				labels:       labels,
+			})
+		}
+		return groups, nil
+	case SchedulingModeRole:
+		groups := make([]runtimePodGroup, 0, replicas*2)
+		for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
+			index := strconv.FormatInt(int64(groupIndex), 10)
+			for _, role := range []string{leaderWorkloadTemplateName, workerWorkloadTemplateName} {
+				labels := baseLabels(mode)
+				labels[leaderworkerset.GroupIndexLabelKey] = index
+				labels[leaderworkerset.RevisionKey] = revision
+				labels[PodGroupRoleLabelKey] = role
+				groups = append(groups, runtimePodGroup{
+					name:         GetRolePodGroupName(lws.Name, index, role, revision),
+					templateName: role,
+					labels:       labels,
+				})
+			}
+		}
+		return groups, nil
+	default:
+		return nil, fmt.Errorf("unsupported scheduling mode %q", mode)
+	}
+}
+
+func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.PodGroup, allowMinCountUpdate bool) error {
 	currentOwner := metav1.GetControllerOf(current)
 	desiredOwner := metav1.GetControllerOf(desired)
 	ownerMatches := currentOwner != nil && desiredOwner != nil &&
@@ -199,28 +201,61 @@ func validateExistingPodGroup(current, desired *schedulingv1beta1.PodGroup) erro
 	if ownerMatches && currentOwner.UID != "" && desiredOwner.UID != "" {
 		ownerMatches = currentOwner.UID == desiredOwner.UID
 	}
-	if !ownerMatches || !reflect.DeepEqual(current.Spec, desired.Spec) {
+	currentSpec := current.Spec.DeepCopy()
+	desiredSpec := desired.Spec.DeepCopy()
+	// The API server owns resolved priority fields and defaults disruptionMode
+	// to Single. Normalize those values before checking controller-owned drift.
+	desiredSpec.Priority = currentSpec.Priority
+	desiredSpec.PreemptionPolicy = currentSpec.PreemptionPolicy
+	defaultDisruptionMode := func(spec *schedulingv1beta1.PodGroupSpec) {
+		if spec.DisruptionMode == nil {
+			spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{
+				Single: &schedulingv1beta1.SingleDisruptionMode{},
+			}
+		}
+	}
+	defaultDisruptionMode(currentSpec)
+	defaultDisruptionMode(desiredSpec)
+	var changed bool
+	if allowMinCountUpdate && currentSpec.SchedulingPolicy.Gang != nil && desiredSpec.SchedulingPolicy.Gang != nil {
+		if currentSpec.SchedulingPolicy.Gang.MinCount != desiredSpec.SchedulingPolicy.Gang.MinCount {
+			current.Spec.SchedulingPolicy.Gang.MinCount = desired.Spec.SchedulingPolicy.Gang.MinCount
+			changed = true
+		}
+		currentSpec.SchedulingPolicy.Gang.MinCount = desiredSpec.SchedulingPolicy.Gang.MinCount
+	}
+	if !ownerMatches || !reflect.DeepEqual(currentSpec, desiredSpec) {
 		return fmt.Errorf("PodGroup %s/%s has immutable scheduling configuration drift", current.Namespace, current.Name)
+	}
+	if current.Labels == nil {
+		current.Labels = make(map[string]string, len(desired.Labels))
+	}
+	for key, value := range desired.Labels {
+		if current.Labels[key] != value {
+			current.Labels[key] = value
+			changed = true
+		}
+	}
+	if changed {
+		if err := c.Update(ctx, current); err != nil {
+			return fmt.Errorf("update mutable PodGroup fields for %s/%s: %w", current.Namespace, current.Name, err)
+		}
 	}
 	return nil
 }
 
-func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, string, error) {
+func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	if templateName := lws.Annotations[GroupTemplateNameAnnotation]; templateName != "" {
 		workload, err := p.findDelegatedWorkload(ctx, lws)
 		if err != nil {
-			return nil, "", NewReconcileError(ReasonParentWorkloadNotReady, err)
+			return nil, NewReconcileError(ReasonParentWorkloadNotReady, err)
 		}
-		return workload, templateName, nil
+		return workload, nil
 	}
 
-	builder := NewWorkloadBuilder(lws)
-	if errs := builder.Validate(ctx, workloadbuilder.ValidationInput{}); len(errs) > 0 {
-		return nil, "", NewReconcileError(ReasonInvalidSchedulingConfiguration, errs.ToAggregate())
-	}
-	desiredWorkload, err := builder.BuildWorkload()
+	desiredWorkload, err := buildFlatWorkload(ctx, lws)
 	if err != nil {
-		return nil, "", NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("build Workload: %w", err))
+		return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("build Workload: %w", err))
 	}
 	desiredWorkload.TypeMeta = metav1.TypeMeta{
 		APIVersion: schedulingv1beta1.SchemeGroupVersion.String(),
@@ -231,18 +266,24 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 	key := types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}
 	if err := p.client.Get(ctx, key, persisted); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return nil, "", workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get Workload %s: %w", key, err))
+			return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get Workload %s: %w", key, err))
 		}
-		if err := p.client.Create(ctx, desiredWorkload); err != nil && !apierrors.IsAlreadyExists(err) {
-			return nil, "", workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("create Workload %s: %w", key, err))
-		}
-		if err := p.client.Get(ctx, key, persisted); err != nil {
-			return nil, "", workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get persisted Workload %s: %w", key, err))
+		if err := p.client.Create(ctx, desiredWorkload); err == nil {
+			// Create returns the admitted object. Reuse it instead of issuing a
+			// cache-backed GET that may briefly observe NotFound.
+			persisted = desiredWorkload
+		} else {
+			if !apierrors.IsAlreadyExists(err) {
+				return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("create Workload %s: %w", key, err))
+			}
+			if err := p.client.Get(ctx, key, persisted); err != nil {
+				return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get persisted Workload %s: %w", key, err))
+			}
 		}
 	} else if err := updateMutableWorkloadFields(ctx, p.client, persisted, desiredWorkload); err != nil {
-		return nil, "", NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+		return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
-	return persisted, workloadTemplateName, nil
+	return persisted, nil
 }
 
 func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
@@ -287,26 +328,40 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 // updateMutableWorkloadFields updates the template's mutable scheduling policy
 // while preserving priority fields populated by admission.
 func updateMutableWorkloadFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.Workload) error {
-	if len(current.Spec.PodGroupTemplates) != 1 || len(desired.Spec.PodGroupTemplates) != 1 {
-		return fmt.Errorf("Workload %s/%s must contain exactly one PodGroup template", current.Namespace, current.Name)
+	if len(current.Spec.PodGroupTemplates) != len(desired.Spec.PodGroupTemplates) {
+		return fmt.Errorf("Workload %s/%s has immutable PodGroup template set drift", current.Namespace, current.Name)
 	}
-	oldTemplate := current.Spec.PodGroupTemplates[0]
-	newTemplate := desired.Spec.PodGroupTemplates[0]
-	oldPolicy := oldTemplate.SchedulingPolicy
-	newPolicy := newTemplate.SchedulingPolicy
-	if oldTemplate.Name != newTemplate.Name ||
-		(oldPolicy.Basic == nil) != (newPolicy.Basic == nil) ||
-		(oldPolicy.Gang == nil) != (newPolicy.Gang == nil) ||
-		!reflect.DeepEqual(oldTemplate.SchedulingConstraints, newTemplate.SchedulingConstraints) ||
-		!reflect.DeepEqual(oldTemplate.ResourceClaims, newTemplate.ResourceClaims) ||
-		!reflect.DeepEqual(oldTemplate.DisruptionMode, newTemplate.DisruptionMode) ||
-		oldTemplate.PriorityClassName != newTemplate.PriorityClassName {
-		return fmt.Errorf("Workload %s/%s has immutable scheduling configuration drift", current.Namespace, current.Name)
+	currentByName := make(map[string]int, len(current.Spec.PodGroupTemplates))
+	for i := range current.Spec.PodGroupTemplates {
+		currentByName[current.Spec.PodGroupTemplates[i].Name] = i
 	}
-	if oldPolicy.Gang != nil && newPolicy.Gang != nil && oldPolicy.Gang.MinCount != newPolicy.Gang.MinCount {
-		current.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount = newPolicy.Gang.MinCount
+
+	changed := false
+	for i := range desired.Spec.PodGroupTemplates {
+		newTemplate := desired.Spec.PodGroupTemplates[i]
+		oldIndex, found := currentByName[newTemplate.Name]
+		if !found {
+			return fmt.Errorf("Workload %s/%s has immutable PodGroup template set drift", current.Namespace, current.Name)
+		}
+		oldTemplate := current.Spec.PodGroupTemplates[oldIndex]
+		oldPolicy := oldTemplate.SchedulingPolicy
+		newPolicy := newTemplate.SchedulingPolicy
+		if (oldPolicy.Basic == nil) != (newPolicy.Basic == nil) ||
+			(oldPolicy.Gang == nil) != (newPolicy.Gang == nil) ||
+			!reflect.DeepEqual(oldTemplate.SchedulingConstraints, newTemplate.SchedulingConstraints) ||
+			!reflect.DeepEqual(oldTemplate.ResourceClaims, newTemplate.ResourceClaims) ||
+			!reflect.DeepEqual(oldTemplate.DisruptionMode, newTemplate.DisruptionMode) ||
+			oldTemplate.PriorityClassName != newTemplate.PriorityClassName {
+			return fmt.Errorf("Workload %s/%s has immutable scheduling configuration drift in template %q", current.Namespace, current.Name, newTemplate.Name)
+		}
+		if oldPolicy.Gang != nil && newPolicy.Gang != nil && oldPolicy.Gang.MinCount != newPolicy.Gang.MinCount {
+			current.Spec.PodGroupTemplates[oldIndex].SchedulingPolicy.Gang.MinCount = newPolicy.Gang.MinCount
+			changed = true
+		}
+	}
+	if changed {
 		if err := c.Update(ctx, current); err != nil {
-			return fmt.Errorf("update Workload %s/%s gang minCount: %w", current.Namespace, current.Name, err)
+			return fmt.Errorf("update Workload %s/%s gang minCount values: %w", current.Namespace, current.Name, err)
 		}
 	}
 	return nil
@@ -332,20 +387,19 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	}); err != nil {
 		return fmt.Errorf("list Pods before PodGroup cleanup: %w", err)
 	}
+	inUseGroups := make(map[string]struct{}, len(pods.Items))
+	for i := range pods.Items {
+		ref := pods.Items[i].Spec.SchedulingGroup
+		if ref != nil && ref.PodGroupName != nil {
+			inUseGroups[*ref.PodGroupName] = struct{}{}
+		}
+	}
 	for i := range groups.Items {
 		group := &groups.Items[i]
 		if _, keep := desired[group.Name]; keep {
 			continue
 		}
-		inUse := false
-		for j := range pods.Items {
-			ref := pods.Items[j].Spec.SchedulingGroup
-			if ref != nil && ref.PodGroupName != nil && *ref.PodGroupName == group.Name {
-				inUse = true
-				break
-			}
-		}
-		if !inUse {
+		if _, inUse := inUseGroups[group.Name]; !inUse {
 			if err := p.client.Delete(ctx, group); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("delete unused PodGroup %s/%s: %w", group.Namespace, group.Name, err)
 			}
@@ -381,14 +435,31 @@ func (p *KubernetesProvider) CreatePodGroupIfNotExists(context.Context, *leaderw
 // InjectPodGroupMetadata associates a managed Pod with its revision-specific
 // upstream PodGroup.
 func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
-	if pod.Annotations[WorkloadSchedulingAnnotationKey] != "true" {
+	mode := SchedulingMode(pod.Annotations[WorkloadSchedulingAnnotationKey])
+	if mode == "" {
 		return nil
 	}
-	name := GetPodGroupName(
-		pod.Labels[leaderworkerset.SetNameLabelKey],
-		pod.Labels[leaderworkerset.GroupIndexLabelKey],
-		pod.Labels[leaderworkerset.RevisionKey],
-	)
+	// "true" was emitted by the initial implementation and remains readable
+	// during an in-place controller upgrade.
+	if mode == "true" {
+		mode = SchedulingModeReplica
+	}
+	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+	var name string
+	switch mode {
+	case SchedulingModeLWS:
+		name = GetLWSGroupName(lwsName)
+	case SchedulingModeReplica:
+		name = GetPodGroupName(lwsName, pod.Labels[leaderworkerset.GroupIndexLabelKey], pod.Labels[leaderworkerset.RevisionKey])
+	case SchedulingModeRole:
+		role := workerWorkloadTemplateName
+		if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
+			role = leaderWorkloadTemplateName
+		}
+		name = GetRolePodGroupName(lwsName, pod.Labels[leaderworkerset.GroupIndexLabelKey], role, pod.Labels[leaderworkerset.RevisionKey])
+	default:
+		return fmt.Errorf("unsupported workload-aware scheduling mode %q", mode)
+	}
 	pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{PodGroupName: ptr.To(name)}
 	return nil
 }
