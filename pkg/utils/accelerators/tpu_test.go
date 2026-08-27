@@ -357,6 +357,50 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 		expectedError               bool
 	}{
 		{
+			name: "Leader requests TPU resources, leader pod",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "0",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "test-sample-0.default",
+			expectedTpuName:             "test-sample-0",
+			expectedTpuProcessAddresses: "test-sample-0.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Leader requests TPU resources, leader pod, size=2",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "0",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "2",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "test-sample-0.default,test-sample-0-1.default",
+			expectedTpuName:             "test-sample-0",
+			expectedTpuProcessAddresses: "test-sample-0.default:8476,test-sample-0-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
 			name: "Leader requests TPU resources",
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
@@ -526,6 +570,96 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 				},
 			},
 			expectedError: true,
+		},
+		{
+			name: "Worker 1 of group size 3 with subgroup size 1",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "prefill-0-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "1",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:           "true",
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "prefill-0-1.default",
+			expectedTpuName:             "prefill-0",
+			expectedTpuProcessAddresses: "prefill-0-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Worker 2 of group size 3 with subgroup size 1",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "prefill-0-2",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "2",
+						leaderworkerset.SubGroupIndexLabelKey: "2",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:           "true",
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "prefill-0-2.default",
+			expectedTpuName:             "prefill-0",
+			expectedTpuProcessAddresses: "prefill-0-2.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Leader does not request TPU resources, subGroupSize=1, worker 1",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "prefill-0-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "1",
+						leaderworkerset.SubGroupIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "prefill-0-1.default",
+			expectedTpuName:             "prefill-0",
+			expectedTpuProcessAddresses: "prefill-0-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Leader does not request TPU resources, subGroupSize=1, worker 2",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "prefill-0-2",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "2",
+						leaderworkerset.SubGroupIndexLabelKey: "2",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "1",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "prefill-0-2.default",
+			expectedTpuName:             "prefill-0",
+			expectedTpuProcessAddresses: "prefill-0-2.default:8476",
+			expectedTpuProcessPort:      "8476",
 		},
 		{
 			name: "Zero containers requesting TPUs",

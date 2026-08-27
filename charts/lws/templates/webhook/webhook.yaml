@@ -2,6 +2,10 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: lws-mutating-webhook-configuration
+{{ if .Values.enableCertManager }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/lws-serving-cert
+{{ end }}
 webhooks:
   - admissionReviewVersions:
       - v1
@@ -51,6 +55,10 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: lws-validating-webhook-configuration
+{{ if .Values.enableCertManager }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/lws-serving-cert
+{{ end }}
 webhooks:
   - admissionReviewVersions:
       - v1
@@ -96,3 +104,25 @@ webhooks:
         resources:
           - pods
     sideEffects: None
+  {{- if .Values.enableDisaggregatedSet }}
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: lws-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
+    failurePolicy: Fail
+    name: vdisaggregatedset.kb.io
+    rules:
+      - apiGroups:
+          - disaggregatedset.x-k8s.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - disaggregatedsets
+    sideEffects: None
+  {{- end }}

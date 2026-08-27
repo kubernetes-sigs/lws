@@ -8,6 +8,7 @@
     - [Installing the chart](#installing-the-chart)
         - [Install chart using Helm v3.0+](#install-chart-using-helm-v30)
         - [Verify that controller pods are running properly.](#verify-that-controller-pods-are-running-properly)
+    - [Upgrading the chart](#upgrading-the-chart)
     - [Configuration](#configuration)
 <!-- /toc -->
 
@@ -61,6 +62,65 @@ LWS supports prometheus metrics.
 Check out the [site](https://lws.sigs.k8s.io/docs/manage/prometheus/)
 for more information on installing LWS with metrics using our Helm chart.
 
+##### DisaggregatedSet
+
+The DisaggregatedSet CRD and the manager permissions required by its bundled
+controller are always installed with the chart. To also install the
+editor/viewer/admin ClusterRoles and validating webhook, set
+`enableDisaggregatedSet` to `true`.
+
+### Upgrading the chart
+
+The chart ships its CRDs under the special `crds/` directory. Helm installs the
+files in that directory only during the initial `helm install`; it never updates
+or deletes them on `helm upgrade` (see the
+[Helm documentation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)).
+
+This has two consequences when upgrading an existing release:
+
+- CRD schema changes (new fields, printer columns, conversion settings, etc.) do
+  **not** reach the cluster through `helm upgrade`.
+- A newly added CRD (for example `DisaggregatedSet`) is **not** installed by
+  `helm upgrade`.
+
+Apply the CRDs explicitly before upgrading so the cluster always has the schema
+the new chart version expects. `--server-side` lets the apply coexist with the
+ownership Helm records for the resource:
+
+```bash
+kubectl apply --server-side --force-conflicts \
+  -f charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml \
+  -f charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+helm upgrade lws charts/lws --namespace lws-system
+```
+
+> **Note**: neither `helm upgrade` nor `helm uninstall` + `helm install` will
+> update CRD schemas — Helm never modifies CRDs placed in the `crds/` directory
+> after the initial install, and does not delete them on `helm uninstall` either.
+> Always reconcile CRD schemas explicitly with the `kubectl apply` step above
+> before upgrading.
+
+#### Upgrading from v0.7.0 or earlier
+
+Chart versions up to v0.7.0 rendered the `LeaderWorkerSet` CRD from
+`templates/crds/`, so the CRD is part of the Helm release manifest. Starting
+with v0.8.0 the CRD ships from the `crds/` directory and is no longer part of
+the release. Without preparation, the first `helm upgrade` across that boundary
+treats the CRD as removed from the release and deletes it — cascading to the
+deletion of every `LeaderWorkerSet` in the cluster (see
+[#880](https://github.com/kubernetes-sigs/lws/issues/880)).
+
+Before the first upgrade from v0.7.0 or earlier, run this one-time step so Helm
+keeps the CRD when it leaves the release:
+
+```bash
+kubectl annotate crd leaderworkersets.leaderworkerset.x-k8s.io \
+  helm.sh/resource-policy=keep --overwrite
+```
+
+Then follow the regular upgrade flow above (apply the CRDs, then
+`helm upgrade`). Subsequent upgrades no longer need the annotation step.
+
 ### Configuration
 
 The following table lists the configurable parameters of the LWS chart and their default values.
@@ -70,7 +130,9 @@ The following table lists the configurable parameters of the LWS chart and their
 | `nameOverride`                             | nameOverride                                   | ``                                                  |
 | `fullnameOverride`                         | fullnameOverride                               | ``                                                  |
 | `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
+| `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
+| `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
 | `image.manager.repository`                 | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws` |
 | `image.manager.tag`                        | Tag for manager image                          | `main`                                              |

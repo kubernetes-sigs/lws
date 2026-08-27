@@ -1,0 +1,18 @@
+title: Fail-Fast Restart Budget and Init-Phase DNS for LeaderWorkerSet
+kep-number: 820
+authors:
+  - "@panpan0000"
+status: provisional
+creation-date: 2026-06-02
+reviewers:
+  - "@Edwinhr716"
+  - "@yankay"
+approvers:
+  - "@Edwinhr716"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+milestone:
+  alpha: "v0.9.0"

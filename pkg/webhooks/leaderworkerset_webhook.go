@@ -227,8 +227,13 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
-	if lws.Spec.Replicas != nil && *lws.Spec.Replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+	if lws.Spec.Replicas != nil {
+		if *lws.Spec.Replicas < 0 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+		}
+		if *lws.Spec.Replicas > 1000000 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
+		}
 	}
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
@@ -240,16 +245,16 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	maxUnavailable := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
 	maxUnavailablePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable")
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		allErrs = append(allErrs, validatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
+		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
 		// This is aligned with Statefulset.
-		allErrs = append(allErrs, isNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
+		allErrs = append(allErrs, IsNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
 	}
 
 	maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
 	maxSurgePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxSurge")
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		allErrs = append(allErrs, validatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
-		allErrs = append(allErrs, isNotMoreThan100Percent(maxSurge, maxSurgePath)...)
+		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
+		allErrs = append(allErrs, IsNotMoreThan100Percent(maxSurge, maxSurgePath)...)
 	}
 
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
@@ -286,8 +291,8 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 // This is mostly inspired by https://github.com/kubernetes/kubernetes/blob/be4b7176dc131ea842cab6882cd4a06dbfeed12a/pkg/apis/apps/validation/validation.go#L460,
 // but it's not importable.
 
-// validatePositiveIntOrPercent tests if a given value is a valid int or percentage.
-func validatePositiveIntOrPercent(intOrPercent intstr.IntOrString, fldPath *field.Path) field.ErrorList {
+// ValidatePositiveIntOrPercent tests if a given value is a valid int or percentage.
+func ValidatePositiveIntOrPercent(intOrPercent intstr.IntOrString, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	switch intOrPercent.Type {
 	case intstr.String:
@@ -302,9 +307,9 @@ func validatePositiveIntOrPercent(intOrPercent intstr.IntOrString, fldPath *fiel
 	return allErrs
 }
 
-// isNotMoreThan100Percent tests is a value can be represented as a percentage
+// IsNotMoreThan100Percent tests is a value can be represented as a percentage
 // and if this value is not more than 100%.
-func isNotMoreThan100Percent(intOrStringValue intstr.IntOrString, fldPath *field.Path) field.ErrorList {
+func IsNotMoreThan100Percent(intOrStringValue intstr.IntOrString, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	value, isPercent := getPercentValue(intOrStringValue)
 	if !isPercent || value <= 100 {

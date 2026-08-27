@@ -72,6 +72,8 @@ INTEGRATION_TARGET ?= ./test/integration/...
 E2E_KIND_VERSION ?= kindest/node:v1.37.0
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
+LWS_UPGRADE_FROM_VERSION ?= v0.9.0
+UPGRADE_KIND_CLUSTER_NAME ?= lws-upgrade
 
 # For local testing, we should allow user to use different kind cluster name
 # Default will delete default kind cluster
@@ -90,7 +92,7 @@ endif
 
 # Update these variables when preparing a new release or a release branch.
 # Then run `make prepare-release-branch`
-RELEASE_VERSION=v0.8.0
+RELEASE_VERSION=v0.10.0
 RELEASE_BRANCH=main
 # Version used form Helm which is not using the leading "v"
 CHART_VERSION := $(shell echo $(RELEASE_VERSION) | cut -c2-)
@@ -156,12 +158,11 @@ vet: ## Run go vet against code.
 test: manifests fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- ./api/... ./pkg/... ./cmd/... -coverprofile  $(ARTIFACTS)/cover.out
-	$(MAKE) -C disaggregatedset test
 
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
 kind:
-	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.27.0
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install sigs.k8s.io/kind@v0.32.0
 
 .PHONY: kind-image-build
 kind-image-build: PLATFORMS=linux/amd64
@@ -176,7 +177,13 @@ test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 .PHONY: test-e2e
 test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
-	$(MAKE) -C disaggregatedset test-e2e KIND=$(KIND) KUBECTL=$(KUBECTL) E2E_KIND_VERSION=$(E2E_KIND_VERSION) ARTIFACTS=$(ARTIFACTS)
+
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: test-e2e-upgrade-manifests
+
+.PHONY: test-e2e-upgrade-manifests
+test-e2e-upgrade-manifests: kustomize manifests fmt vet ginkgo kind-image-build
+	LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-cert-manager
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build
@@ -384,7 +391,7 @@ toc-verify:
 
 .PHONY: generate-apiref
 generate-apiref: genref
-	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference
+	cd $(PROJECT_DIR)/hack/genref/ && $(GENREF) -o $(PROJECT_DIR)/site/content/en/docs/reference --include leaderworkerset,disaggregatedset
 
 HELM = $(PROJECT_DIR)/bin/helm
 .PHONY: helm
@@ -405,5 +412,17 @@ hugo:
 .PHONY: crds
 crds: kustomize yq # update helm CRD files
 	$(KUSTOMIZE) build config/default \
-	| $(YQ) 'select(.kind == "CustomResourceDefinition")' \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "leaderworkersets.leaderworkerset.x-k8s.io")' \
 	> charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml
+	@test -s charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml \
+		|| { echo "ERROR: leaderworkerset CRD missing from kustomize output"; exit 1; }
+	$(KUSTOMIZE) build config/default \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "disaggregatedsets.disaggregatedset.x-k8s.io")' \
+	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml \
+		|| { echo "ERROR: disaggregatedset CRD missing from kustomize output"; exit 1; }
+	$(KUSTOMIZE) build config/default \
+	| $(YQ) 'select(.kind == "CustomResourceDefinition" and .metadata.name == "disaggregatedsetrolescalers.disaggregatedset.x-k8s.io")' \
+	> charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml
+	@test -s charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsetrolescalers.yaml \
+		|| { echo "ERROR: disaggregatedsetrolescaler CRD missing from kustomize output"; exit 1; }

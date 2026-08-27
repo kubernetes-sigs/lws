@@ -113,18 +113,18 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset or headless service
+	// this is critical to avoid race condition in all-or-nothing restart where resources may be created
+	// when the leader pod is being deleted
+	if pod.DeletionTimestamp != nil {
+		log.V(2).Info("skip creating worker sts and headless service since the leader pod is being deleted")
+		return ctrl.Result{}, nil
+	}
+
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-
-	// if it's not leader pod or leader pod is being deleted, we should not create the worker statefulset
-	// this is critical to avoid race condition in all-or-nothing restart where the worker sts may be created
-	// when the leader pod is being deleted
-	if pod.DeletionTimestamp != nil {
-		log.V(2).Info("skip creating the worker sts since the leader pod is being deleted")
-		return ctrl.Result{}, nil
 	}
 
 	if r.SchedulerProvider != nil {
@@ -191,7 +191,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
 			if client.IgnoreAlreadyExists(err) != nil {
-				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create worker statefulset for leader pod %s", pod.Name))
+				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create worker statefulset for leader pod %s: %v", pod.Name, err))
 			}
 			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
@@ -313,18 +313,13 @@ func (r *PodReconciler) setNodeSelectorForWorkerPods(ctx context.Context, pod *c
 }
 
 func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Pod, topologyKey string) (string, error) {
-	log := ctrl.LoggerFrom(ctx)
-
 	nodeName := pod.Spec.NodeName
 	ns := pod.Namespace
 
 	// Get node the leader pod is running on.
 	var node corev1.Node
 	if err := r.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: ns}, &node); err != nil {
-		// We'll ignore not-found errors, since there is nothing we can do here.
-		// A node may not exist temporarily due to a maintenance event or other scenarios.
-		log.Error(err, fmt.Sprintf("getting node %s", nodeName))
-		return "", client.IgnoreNotFound(err)
+		return "", fmt.Errorf("getting node %q: %w", nodeName, err)
 	}
 
 	// Get topology (e.g. node pool name) from node labels.
@@ -409,17 +404,24 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(&leaderPod),
+		leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
 	podAnnotations := make(map[string]string)
-	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
+	// Spec-derived values must come from the revision-applied spec (currentLws), not the
+	// live one: when an old-revision group is rebuilt mid rolling update, mixing the old
+	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
+			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
+		}
+		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
@@ -430,30 +432,32 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name
-	if lws.Spec.NetworkConfig == nil || *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
+	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 		serviceName = lws.Name
 	}
 	// construct statefulset apply configuration
+	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
-			WithReplicas(*lws.Spec.LeaderWorkerTemplate.Size - 1).
+			WithReplicas(*currentLws.Spec.LeaderWorkerTemplate.Size - 1).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(selectorMap))).
-		WithLabels(labelMap)
+		WithLabels(statefulSetLabels).
+		WithAnnotations(lws.Annotations)
 
-	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(&lws)
+	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(currentLws)
 	if len(pvcApplyConfiguration) > 0 {
 		statefulSetConfig.Spec.WithVolumeClaimTemplates(pvcApplyConfiguration...)
 	}
 
-	if lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
+	if currentLws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy != nil {
 		pvcRetentionPolicy := &appsapplyv1.StatefulSetPersistentVolumeClaimRetentionPolicyApplyConfiguration{
-			WhenDeleted: &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
-			WhenScaled:  &lws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
+			WhenDeleted: &currentLws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
+			WhenScaled:  &currentLws.Spec.LeaderWorkerTemplate.PersistentVolumeClaimRetentionPolicy.WhenScaled,
 		}
 		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
 	}

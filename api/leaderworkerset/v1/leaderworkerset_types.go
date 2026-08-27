@@ -45,6 +45,13 @@ const (
 	// the index/identity of the pod in the group.
 	WorkerIndexLabelKey string = "leaderworkerset.sigs.k8s.io/worker-index"
 
+	// Role label records whether a managed StatefulSet/Pod is the leader or a
+	// worker, so it can be selected directly instead of inferred from other
+	// labels. Values are RoleLeader or RoleWorker.
+	RoleLabelKey string = "leaderworkerset.sigs.k8s.io/role"
+	RoleLeader   string = "leader"
+	RoleWorker   string = "worker"
+
 	// Size will be added to pods as an annotation which corresponds to
 	// LeaderWorkerSet.Spec.LeaderWorkerTemplate.Size.
 	SizeAnnotationKey string = "leaderworkerset.sigs.k8s.io/size"
@@ -120,6 +127,8 @@ type LeaderWorkerSetSpec struct {
 	//
 	// +optional
 	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// leaderWorkerTemplate defines the template for leader/worker pods

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
@@ -38,6 +39,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -98,6 +100,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
 				},
@@ -115,6 +118,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -166,8 +170,12 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "1",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -183,6 +191,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -235,8 +244,12 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "2"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+						"leaderworkerset.sigs.k8s.io/replicas":           "2",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](2),
@@ -252,6 +265,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -302,6 +316,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
 				},
@@ -319,6 +334,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -369,6 +385,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
 				},
@@ -386,6 +403,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -439,8 +457,12 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/replicas":                    "1",
+						"leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology": "topologyKey",
+					},
 				},
 				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
 					Replicas: ptr.To[int32](1),
@@ -456,6 +478,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",
@@ -528,6 +551,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "1"},
 				},
@@ -545,6 +569,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -624,6 +649,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "0"},
 				},
@@ -641,6 +667,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -695,6 +722,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 					Labels: map[string]string{
 						"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
 					},
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/replicas": "2"},
 				},
@@ -712,6 +740,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
+								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -754,6 +783,52 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 				t.Errorf("unexpected StatefulSet apply configuration: %s", diff)
 			}
 		})
+	}
+}
+
+func TestLeaderStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Labels(map[string]string{
+			"app":                           "inference",
+			leaderworkerset.SetNameLabelKey: "user-value",
+		}).
+		Annotation(map[string]string{
+			"owner":                               "platform",
+			leaderworkerset.ReplicasAnnotationKey: "user-value",
+		}).
+		Replica(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+			},
+		}).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(1).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
+
+	stsApplyConfig, err := constructLeaderStatefulSetApplyConfiguration(lws, 0, 2, "revision-1")
+	if err != nil {
+		t.Fatalf("failed with error: %s", err.Error())
+	}
+
+	wantLabels := map[string]string{
+		"app":                           "inference",
+		leaderworkerset.SetNameLabelKey: "test-sample",
+		leaderworkerset.RevisionKey:     "revision-1",
+		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+	}
+	if diff := cmp.Diff(wantLabels, stsApplyConfig.Labels); diff != "" {
+		t.Errorf("unexpected StatefulSet labels: %s", diff)
+	}
+
+	wantAnnotations := map[string]string{
+		"owner":                               "platform",
+		leaderworkerset.ReplicasAnnotationKey: "2",
+	}
+	if diff := cmp.Diff(wantAnnotations, stsApplyConfig.Annotations); diff != "" {
+		t.Errorf("unexpected StatefulSet annotations: %s", diff)
 	}
 }
 
@@ -1144,6 +1219,67 @@ func TestGetUpdatedRevision(t *testing.T) {
 			gotUpdate := updatedRevision != nil
 			if gotUpdate != tc.expectUpdate {
 				t.Errorf("expected update=%t, got update=%t", tc.expectUpdate, gotUpdate)
+			}
+		})
+	}
+}
+
+func TestEnqueueLWSRequests(t *testing.T) {
+	tests := []struct {
+		name        string
+		statefulSet *appsv1.StatefulSet
+		want        []reconcile.Request
+	}{
+		{
+			name: "unrelated statefulset without lws label",
+			statefulSet: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unrelated-sts",
+					Namespace: "default",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "statefulset with empty lws label",
+			statefulSet: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-label-sts",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey: "",
+					},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "lws-managed statefulset with valid lws label",
+			statefulSet: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lws-sts",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey: "my-lws",
+					},
+				},
+			},
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      "my-lws",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := enqueueLWSRequests(context.Background(), tc.statefulSet)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("unexpected reconcile requests (-want +got):\n%s", diff)
 			}
 		})
 	}

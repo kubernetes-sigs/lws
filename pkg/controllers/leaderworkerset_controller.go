@@ -82,6 +82,7 @@ const (
 	GroupsProgressing = "GroupsProgressing"
 	GroupsUpdating    = "GroupsUpdating"
 	CreatingRevision  = "CreatingRevision"
+	FailedUpdate      = "FailedUpdate"
 
 	// Event actions
 	Create = "Create"
@@ -194,7 +195,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s", lws.Name))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
+		} else {
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, fmt.Sprintf("Failed to update leader statefulset %s: %v", lws.Name, err))
 		}
 		return ctrl.Result{}, err
 	}
@@ -280,14 +283,7 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-				return []reconcile.Request{
-					{NamespacedName: types.NamespacedName{
-						Name:      a.GetLabels()[leaderworkerset.SetNameLabelKey],
-						Namespace: a.GetNamespace(),
-					}},
-				}
-			}))
+			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests))
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
 	// Upstream Workload resources are watched only when that provider is active.
 	if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); ok {
@@ -296,6 +292,19 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
 	return builder.Complete(r)
+}
+
+func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Request {
+	name := a.GetLabels()[leaderworkerset.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{
+			Name:      name,
+			Namespace: a.GetNamespace(),
+		}},
+	}
 }
 
 func SetupIndexes(indexer client.FieldIndexer) error {
@@ -848,6 +857,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey: "0",
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.RevisionKey:         revisionKey,
+		leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
@@ -893,6 +903,14 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
 
 	// construct statefulset apply configuration
+	statefulSetLabels := mergeMetadata(lws.Labels, map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RevisionKey:     revisionKey,
+		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+	})
+	statefulSetAnnotations := mergeMetadata(lws.Annotations, map[string]string{
+		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
+	})
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
@@ -907,13 +925,8 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
 				}))).
-		WithLabels(map[string]string{
-			leaderworkerset.SetNameLabelKey: lws.Name,
-			leaderworkerset.RevisionKey:     revisionKey,
-		}).
-		WithAnnotations(map[string]string{
-			leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
-		})
+		WithLabels(statefulSetLabels).
+		WithAnnotations(statefulSetAnnotations)
 
 	pvcApplyConfiguration := controllerutils.GetPVCApplyConfiguration(lws)
 	if len(pvcApplyConfiguration) > 0 {
