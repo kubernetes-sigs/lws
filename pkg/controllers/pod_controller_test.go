@@ -34,7 +34,6 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -648,6 +647,7 @@ func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
 	}
 	replacementPod := oldPod.DeepCopy()
 	replacementPod.UID = "worker-replacement"
+	wantDeletedPod := oldPod.DeepCopy()
 
 	queue := workqueue.NewTypedRateLimitingQueue(
 		workqueue.DefaultTypedControllerRateLimiter[podReconcileRequest](),
@@ -657,6 +657,7 @@ func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
 	handler := podEventHandler()
 	handler.Delete(context.Background(), event.TypedDeleteEvent[client.Object]{Object: oldPod}, queue)
 	handler.Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: replacementPod}, queue)
+	oldPod.Labels[leaderworkerset.SetNameLabelKey] = "mutated-after-enqueue"
 
 	if got := queue.Len(); got != 2 {
 		t.Fatalf("queue length = %d, want 2 distinct requests", got)
@@ -672,23 +673,27 @@ func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
 		queue.Done(request)
 	}
 
-	wantDeleted := podReconcileRequest{
-		NamespacedName:  types.NamespacedName{Name: oldPod.Name, Namespace: oldPod.Namespace},
-		UID:             oldPod.UID,
-		Deleted:         true,
-		LWSName:         "test-sample",
-		WorkerIndex:     "1",
-		GroupIndex:      "0",
-		RevisionKey:     "revision-1",
-		OwnerAPIVersion: "apps/v1",
-		OwnerKind:       "StatefulSet",
-		OwnerName:       "test-sample-0",
-		OwnerUID:        "worker-sts",
+	gotDeleted := requests[oldPod.UID]
+	if gotDeleted.DeletedPod == nil {
+		t.Fatal("deleted Pod request does not contain a Pod snapshot")
 	}
-	if diff := cmp.Diff(wantDeleted, requests[oldPod.UID]); diff != "" {
+	if gotDeleted.DeletedPod == oldPod {
+		t.Fatal("deleted Pod request contains the informer object instead of a deep copy")
+	}
+	if gotDeleted.DeletedPod.DeletionTimestamp == nil {
+		t.Fatal("deleted Pod snapshot does not have a deletion timestamp")
+	}
+
+	wantDeletedPod.DeletionTimestamp = gotDeleted.DeletedPod.DeletionTimestamp.DeepCopy()
+	wantDeleted := podReconcileRequest{
+		NamespacedName: types.NamespacedName{Name: oldPod.Name, Namespace: oldPod.Namespace},
+		UID:            oldPod.UID,
+		DeletedPod:     wantDeletedPod,
+	}
+	if diff := cmp.Diff(wantDeleted, gotDeleted); diff != "" {
 		t.Fatalf("unexpected deleted Pod request (-want,+got):\n%s", diff)
 	}
-	if got := requests[replacementPod.UID]; got.Deleted {
+	if got := requests[replacementPod.UID]; got.DeletedPod != nil {
 		t.Fatalf("replacement Pod request is unexpectedly marked deleted: %#v", got)
 	}
 }
@@ -829,14 +834,14 @@ func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
 		Record: fakeEventRecorder{},
 	}
 
-	req := ctrl.Request{
+	req := podReconcileRequest{
 		NamespacedName: types.NamespacedName{
 			Name:      leaderPod.Name,
 			Namespace: leaderPod.Namespace,
 		},
 	}
 
-	res, err := reconciler.Reconcile(context.Background(), req)
+	res, err := reconciler.reconcilePod(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error during reconcile: %v", err)
 	}

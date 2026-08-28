@@ -61,71 +61,29 @@ type PodReconciler struct {
 	SchedulerProvider schedulerprovider.SchedulerProvider
 }
 
-// podReconcileRequest keeps the identity of a deleted Pod in the workqueue.
-// A StatefulSet can create a replacement with the same namespace and name
-// before reconciliation starts, so a namespaced name alone is insufficient.
+// podReconcileRequest keeps the identity and snapshot of a deleted Pod in the
+// workqueue. A StatefulSet can create a replacement with the same namespace
+// and name before reconciliation starts, so a namespaced name alone is
+// insufficient.
 type podReconcileRequest struct {
 	types.NamespacedName
-	UID             types.UID
-	Deleted         bool
-	LWSName         string
-	WorkerIndex     string
-	GroupIndex      string
-	RevisionKey     string
-	OwnerAPIVersion string
-	OwnerKind       string
-	OwnerName       string
-	OwnerUID        types.UID
+	UID        types.UID
+	DeletedPod *corev1.Pod
 }
 
 func podReconcileRequestForPod(pod *corev1.Pod, deleted bool) podReconcileRequest {
 	request := podReconcileRequest{
 		NamespacedName: client.ObjectKeyFromObject(pod),
 		UID:            pod.UID,
-		Deleted:        deleted,
 	}
-	if !deleted {
-		return request
-	}
-
-	request.LWSName = pod.Labels[leaderworkerset.SetNameLabelKey]
-	request.WorkerIndex = pod.Labels[leaderworkerset.WorkerIndexLabelKey]
-	request.GroupIndex = pod.Labels[leaderworkerset.GroupIndexLabelKey]
-	request.RevisionKey = pod.Labels[leaderworkerset.RevisionKey]
-	if owner := metav1.GetControllerOf(pod); owner != nil {
-		request.OwnerAPIVersion = owner.APIVersion
-		request.OwnerKind = owner.Kind
-		request.OwnerName = owner.Name
-		request.OwnerUID = owner.UID
+	if deleted {
+		request.DeletedPod = pod.DeepCopy()
+		if request.DeletedPod.DeletionTimestamp == nil {
+			deletionTimestamp := metav1.Now()
+			request.DeletedPod.DeletionTimestamp = &deletionTimestamp
+		}
 	}
 	return request
-}
-
-func (r podReconcileRequest) deletedPod() corev1.Pod {
-	deletionTimestamp := metav1.Now()
-	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name:              r.Name,
-		Namespace:         r.Namespace,
-		UID:               r.UID,
-		DeletionTimestamp: &deletionTimestamp,
-		Labels: map[string]string{
-			leaderworkerset.SetNameLabelKey:     r.LWSName,
-			leaderworkerset.WorkerIndexLabelKey: r.WorkerIndex,
-			leaderworkerset.GroupIndexLabelKey:  r.GroupIndex,
-			leaderworkerset.RevisionKey:         r.RevisionKey,
-		},
-	}}
-	if r.OwnerUID != "" {
-		controller := true
-		pod.OwnerReferences = []metav1.OwnerReference{{
-			APIVersion: r.OwnerAPIVersion,
-			Kind:       r.OwnerKind,
-			Name:       r.OwnerName,
-			UID:        r.OwnerUID,
-			Controller: &controller,
-		}}
-	}
-	return pod
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
@@ -138,14 +96,10 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
-func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return r.reconcilePod(ctx, podReconcileRequest{NamespacedName: req.NamespacedName})
-}
-
 func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
-	if req.Deleted {
-		pod = req.deletedPod()
+	if req.DeletedPod != nil {
+		pod = *req.DeletedPod.DeepCopy()
 	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
