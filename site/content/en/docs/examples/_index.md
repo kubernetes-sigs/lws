@@ -4,7 +4,7 @@ linkTitle: "Examples"
 weight: 6
 description: >
   This section contains examples of using LeaderWorkerSet and DisaggregatedSet with or without
-  specific inference runtime.
+  a specific inference runtime.
 ---
 
 Use the pages in this section for runtime-specific LeaderWorkerSet deployments
