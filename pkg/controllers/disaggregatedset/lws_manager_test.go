@@ -866,7 +866,7 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	require.NoError(t, manager.Create(context.Background(), params))
 
 	lwsName := disaggregatedsetutils.GenerateName("test-deploy", params.Slice, "abc123", "prefill")
-	lws, err := manager.Get(context.Background(), "default", lwsName)
+	lws, err := manager.Get(context.Background(), params.DisaggregatedSet, lwsName)
 	require.NoError(t, err)
 	require.NotNil(t, lws)
 	require.Equal(t, leaderworkersetv1.GroupIdentityHash, lws.Spec.GroupIdentity)
