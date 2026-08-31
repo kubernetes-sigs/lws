@@ -680,7 +680,8 @@ func TestComputeAllSteps_Golden(t *testing.T) {
 func TestSideProgress_New(t *testing.T) {
 	roles := []string{"prefill", "decode"}
 	target := map[string]int{"prefill": 8, "decode": 4}
-	totalSteps := 4 // = sideSize(target)
+	// Use a four-step scale to exercise the inverse independently of sideSize.
+	totalSteps := 4
 
 	cases := []struct {
 		name    string

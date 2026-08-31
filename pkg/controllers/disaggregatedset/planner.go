@@ -46,6 +46,14 @@ limitations under the License.
 // drain may temporarily relax this coordination only when strict aliveness
 // would otherwise make a valid zero-surge rollout permanently immobile.
 //
+// # Issued and completed progress
+//
+// Spec replicas are work already issued to the cluster and drive the next
+// planner step. Ready replicas are completed serving capacity; the executor
+// uses them to bound pending scale-up, authorize old-replica drains, and decide
+// when the target is ready. Keeping these values separate prevents repeated
+// reconciles from issuing the same step while pods are still starting.
+//
 // # Capacity envelope
 //
 // maxSurge and maxUnavailable remain absolute per-role API limits. The planner
@@ -59,7 +67,11 @@ limitations under the License.
 //	planning_floor   = max(0, min(initialOld, target) - unavail_pods)
 //
 // The executor independently enforces the raw per-role MaxSurge ceiling and
-// MaxUnavailable floor as hard safety bounds.
+// MaxUnavailable floor as hard safety bounds. It also limits issued-but-not-
+// ready replicas to a proportional pending allowance:
+//
+//	pending_allowance = ceil(roleSize × (maxSurge + maxUnavailable) / totalSteps)
+//	committed_ready   = min(status.readyReplicas, spec.replicas)
 //
 // # Per-tick step
 //
