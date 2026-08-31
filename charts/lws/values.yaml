@@ -5,6 +5,11 @@
 nameOverride: ""
 fullnameOverride: ""
 enablePrometheus: false
+serviceMonitor:
+  extraLabels: {}
+  # Example override:
+  #   extraLabels:
+  #     release: my-prometheus-sm-selector
 enableCertManager: false
 # enableDisaggregatedSet installs the DisaggregatedSet editor/viewer/admin
 # ClusterRoles and the validating webhook. The CRD (under crds/), the
@@ -49,6 +54,7 @@ resources:
     # requests:
     #   cpu: 100m
     #   memory: 128Mi
+priorityClassName: ""
 nodeSelector: {}
 tolerations: []
 affinity: {}

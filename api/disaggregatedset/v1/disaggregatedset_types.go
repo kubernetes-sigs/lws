@@ -43,6 +43,31 @@ const (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// RoleScalingMode controls the source of the replica count for a role.
+// +kubebuilder:validation:Enum=Static;External
+type RoleScalingMode string
+
+const (
+	// RoleScalingStatic uses the inline .spec.replicas value on the role.
+	RoleScalingStatic RoleScalingMode = "Static"
+
+	// RoleScalingExternal delegates replicas to an external autoscaler via an
+	// auto-created DisaggregatedSetRoleScaler named "<disaggregatedset>-<role>".
+	// .spec.replicas on the role is ignored.
+	RoleScalingExternal RoleScalingMode = "External"
+)
+
+// RoleScaling configures how replicas are determined for a role. Sub-struct
+// (not a bare enum) so future per-role scaling policies can be added without
+// a v2 API bump.
+type RoleScaling struct {
+	// Mode controls the source of the replica count. Static (default) uses
+	// inline spec.replicas; External uses the auto-created scaler CR.
+	// +kubebuilder:default=Static
+	// +optional
+	Mode RoleScalingMode `json:"mode,omitempty"`
+}
+
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
@@ -55,6 +80,12 @@ type DisaggregatedRoleSpec struct {
 	// +required
 	Name string `json:"name"`
 
+	// Scaling configures how replicas are determined. Omit for inline Static
+	// scaling (default). When set to External, the DisaggregatedSet controller
+	// auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.
+	// +optional
+	Scaling *RoleScaling `json:"scaling,omitempty"`
+
 	// LeaderWorkerSetTemplateSpec defines the LWS template for this role.
 	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
@@ -62,8 +93,13 @@ type DisaggregatedRoleSpec struct {
 	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 
-// DisaggregatedSetSpec defines the desired state of DisaggregatedSet
-// +kubebuilder:validation:XValidation:rule="self.roles.all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all roles or non-zero for all roles"
+// DisaggregatedSetSpec defines the desired state of DisaggregatedSet.
+//
+// The all-or-nothing replicas rule (either every role has replicas > 0, or
+// every role has replicas == 0) applies only to non-External roles. External
+// roles are exempt because their effective replicas live outside the DS spec —
+// they are driven via DisaggregatedSetRoleScaler.spec.replicas.
+// +kubebuilder:validation:XValidation:rule="self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas) && r.spec.replicas > 0)",message="replicas must be zero for all non-External roles or non-zero for all non-External roles"
 type DisaggregatedSetSpec struct {
 	// Roles defines the list of roles (at least 2 required).
 	// Each role has a unique name and its own configuration.
@@ -82,6 +118,43 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
+
+	// PlacementPolicy controls how a slice's roles are co-located and how the
+	// DisaggregatedSet's slices are spread across topology domains. When set, the
+	// controller injects pod affinity and anti-affinity into the managed
+	// LeaderWorkerSet pod templates. Placement is applied when a LeaderWorkerSet is
+	// created, so changing it takes effect on the next rollout.
+	// +optional
+	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// PlacementType selects the DisaggregatedSet placement guarantee.
+type PlacementType string
+
+const (
+	// PlacementNone injects no affinity. This is the default.
+	PlacementNone PlacementType = "None"
+	// PlacementExclusiveSlice co-locates a slice's roles in one topology domain and
+	// spreads this DisaggregatedSet's slices across domains. Other DisaggregatedSets
+	// may share a domain.
+	PlacementExclusiveSlice PlacementType = "ExclusiveSlice"
+	// PlacementExclusiveTopology is ExclusiveSlice plus domain exclusivity: a domain
+	// holds at most one slice across all DisaggregatedSets (a 1:1 domain-to-slice mapping).
+	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
+)
+
+// PlacementPolicy controls topology placement of a DisaggregatedSet's slices.
+type PlacementPolicy struct {
+	// Type selects the placement guarantee. Defaults to None.
+	// +optional
+	// +kubebuilder:default=None
+	// +kubebuilder:validation:Enum=None;ExclusiveSlice;ExclusiveTopology
+	Type PlacementType `json:"type,omitempty"`
+
+	// Topology is the node-label key that defines a domain, used as the affinity
+	// topologyKey. Required when Type is not None.
+	// +optional
+	Topology string `json:"topology,omitempty"`
 }
 
 // RoleStatus defines the observed state of a single role.
@@ -108,8 +181,13 @@ type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// RoleStatuses contains the status for each role.
-	// The order matches spec.roles.
+	// observedGeneration is the most recent generation observed for this DisaggregatedSet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// RoleStatuses contains the status for each role currently in spec.roles.
+	// The order matches spec.roles. A role removed from spec.roles has no entry
+	// here, even if LeaderWorkerSets for that role still exist while draining.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
@@ -121,7 +199,6 @@ type DisaggregatedSetStatus struct {
 	// Standard condition types include:
 	// - "Available": the resource is fully functional
 	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
@@ -129,6 +206,23 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// DisaggregatedSetConditionType is a valid value for DisaggregatedSetStatus.Conditions[].Type.
+type DisaggregatedSetConditionType string
+
+// These are built-in conditions of a DisaggregatedSet.
+const (
+	// DisaggregatedSetAvailable means every role has reached its desired replica
+	// count (across all slices), with all of those replicas ready and updated to
+	// the current revision. A role with a desired replica count of 0 (the
+	// all-roles-paused state) is satisfied once it has fully drained to 0.
+	DisaggregatedSetAvailable DisaggregatedSetConditionType = "Available"
+
+	// DisaggregatedSetProgressing means at least one role has not yet reached its
+	// desired replica count, or has replicas that are not ready or not updated to
+	// the current revision.
+	DisaggregatedSetProgressing DisaggregatedSetConditionType = "Progressing"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

@@ -63,13 +63,6 @@ metrics:
         secret:
           name: lws-metrics-server-cert
           key: ca.crt
-      cert:
-        secret:
-          name: lws-metrics-server-cert
-          key: tls.crt
-      keySecret:
-        name: lws-metrics-server-cert
-        key: tls.key
 ```
 
 The secrets must reference the cert manager generated secrets.

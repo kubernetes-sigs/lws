@@ -125,8 +125,9 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	}
 	tpuWorkerId := (workerIndex) % subGroupSize
 
-	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
+	if workerIndex != 0 && pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
+		subGroupIndex = (workerIndex - 1) / subGroupSize
 	}
 
 	tpuProcessPortInContainer, tpuProcessPort := podutils.GetEnvVarValueIfInContainer(container, TpuProcessPortName)

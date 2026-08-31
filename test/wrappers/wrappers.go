@@ -199,6 +199,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ReadyReplicas(n int32) *LeaderWorkerSe
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) UpdatedReplicas(n int32) *LeaderWorkerSetWrapper {
+	lwsWrapper.Status.UpdatedReplicas = n
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) CreationTimestamp(t time.Time) *LeaderWorkerSetWrapper {
 	lwsWrapper.ObjectMeta.CreationTimestamp = metav1.Time{Time: t}
 	return lwsWrapper

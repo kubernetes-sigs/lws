@@ -39,6 +39,29 @@ spec:
           spec:
             description: spec defines the desired state of DisaggregatedSet
             properties:
+              placementPolicy:
+                description: |-
+                  PlacementPolicy controls how a slice's roles are co-located and how the
+                  DisaggregatedSet's slices are spread across topology domains. When set, the
+                  controller injects pod affinity and anti-affinity into the managed
+                  LeaderWorkerSet pod templates. Placement is applied when a LeaderWorkerSet is
+                  created, so changing it takes effect on the next rollout.
+                properties:
+                  topology:
+                    description: |-
+                      Topology is the node-label key that defines a domain, used as the affinity
+                      topologyKey. Required when Type is not None.
+                    type: string
+                  type:
+                    default: None
+                    description: Type selects the placement guarantee. Defaults to
+                      None.
+                    enum:
+                    - None
+                    - ExclusiveSlice
+                    - ExclusiveTopology
+                    type: string
+                type: object
               roles:
                 description: |-
                   Roles defines the list of roles (at least 2 required).
@@ -76,6 +99,22 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    scaling:
+                      description: |-
+                        Scaling configures how replicas are determined. Omit for inline Static
+                        scaling (default). When set to External, the DisaggregatedSet controller
+                        auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.
+                      properties:
+                        mode:
+                          default: Static
+                          description: |-
+                            Mode controls the source of the replica count. Static (default) uses
+                            inline spec.replicas; External uses the auto-created scaler CR.
+                          enum:
+                          - Static
+                          - External
+                          type: string
+                      type: object
                     spec:
                       description: spec defines the behavior of an LWS.
                       properties:
@@ -18335,10 +18374,12 @@ spec:
             - roles
             type: object
             x-kubernetes-validations:
-            - message: replicas must be zero for all roles or non-zero for all roles
-              rule: self.roles.all(r, !has(r.spec.replicas) || r.spec.replicas ==
-                0) || self.roles.all(r, has(r.spec.replicas) && r.spec.replicas >
-                0)
+            - message: replicas must be zero for all non-External roles or non-zero
+                for all non-External roles
+              rule: self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r,
+                !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r,
+                !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas)
+                && r.spec.replicas > 0)
           status:
             description: status defines the observed state of DisaggregatedSet
             properties:
@@ -18350,7 +18391,6 @@ spec:
                   Standard condition types include:
                   - "Available": the resource is fully functional
                   - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
 
                   The status of each condition is one of True, False, or Unknown.
                 items:
@@ -18411,10 +18451,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the most recent generation observed
+                  for this DisaggregatedSet.
+                format: int64
+                type: integer
               roleStatuses:
                 description: |-
-                  RoleStatuses contains the status for each role.
-                  The order matches spec.roles.
+                  RoleStatuses contains the status for each role currently in spec.roles.
+                  The order matches spec.roles. A role removed from spec.roles has no entry
+                  here, even if LeaderWorkerSets for that role still exist while draining.
                 items:
                   description: RoleStatus defines the observed state of a single role.
                   properties:

@@ -1,6 +1,12 @@
 ---
-title: "Management of LWS"
+title: "Operations"
+linkTitle: "Operations"
 weight: 7
 description: >
-  This section contains the LWS management information.
+  Operations and management guides for LWS and DisaggregatedSet.
 ---
+
+This section covers operational guides and cluster management topics for LeaderWorkerSet and DisaggregatedSet:
+
+- [Configure external cert-manager](cert_manager/)
+- [Configure Prometheus metrics](prometheus/)

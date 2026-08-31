@@ -1,5 +1,7 @@
 ---
 title: LeaderWorkerSet API
+linkTitle: LeaderWorkerSet API
+weight: 10
 content_type: tool-reference
 package: leaderworkerset.x-k8s.io/v1
 auto_generated: true
@@ -332,7 +334,7 @@ The default value is 0.</p>
 </td>
 </tr>
 <tr><td><code>maxUnavailable</code> <B>[Required]</B><br/>
-<code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/util/intstr#IntOrString"><code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code></a>
 </td>
 <td>
    <p>maxUnavailable is the maximum number of replicas that can be unavailable during the update.
@@ -348,7 +350,7 @@ during the update.</p>
 </td>
 </tr>
 <tr><td><code>maxSurge</code> <B>[Required]</B><br/>
-<code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/util/intstr#IntOrString"><code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code></a>
 </td>
 <td>
    <p>maxSurge is the maximum number of replicas that can be scheduled above the original number of

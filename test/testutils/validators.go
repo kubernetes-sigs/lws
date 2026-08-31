@@ -187,6 +187,7 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 			leaderworkerset.SetNameLabelKey:     lws.Name,
 			leaderworkerset.WorkerIndexLabelKey: "0",
 			leaderworkerset.RevisionKey:         hash,
+			leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}

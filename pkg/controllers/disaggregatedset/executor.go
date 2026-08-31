@@ -58,12 +58,13 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
-	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, revision)
+	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -80,7 +81,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 		return executor.initRollingUpdate(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, oldRevisions)
 	}
 
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision)
+	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision, scalers)
 }
 
 func (executor *RollingUpdateExecutor) initRollingUpdate(
@@ -136,14 +137,15 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldRevisions)
 
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoleSet, specRoleSet)...)
-	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames)
-	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision)
+	config := extractRollingUpdateConfigMap(disaggregatedSet, allRoleNames, scalers)
+	initialOld, currentOld, currentNew, targetNew := buildPlannerStateMaps(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision, scalers)
 	budgetSteps := max(sideSize(initialOld), sideSize(targetNew))
 
 	// A revision is "stable enough" to advance when each role stays within its
@@ -225,6 +227,7 @@ func buildPlannerStateMaps(
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (initialOld, currentOld, currentNew, targetNew map[string]int) {
 	initialOld = make(map[string]int, len(allRoleNames))
 	currentOld = make(map[string]int, len(allRoleNames))
@@ -236,7 +239,8 @@ func buildPlannerStateMaps(
 		currentOld[roleName] = oldRevisions.GetTotalReplicasPerRole(roleName)
 
 		if specRoleSet[roleName] {
-			if lws := newRevision.Roles[roleName]; lws != nil {
+			lws := newRevision.Roles[roleName]
+			if lws != nil {
 				// Use ReadyReplicas (not Spec) so the planner advances on actual
 				// serving capacity. Slow-starting pods don't inflate currentNew,
 				// so the planner won't compound pending replicas. The
@@ -244,25 +248,57 @@ func buildPlannerStateMaps(
 				// growing past the surge ceiling.
 				currentNew[roleName] = int(lws.Status.ReadyReplicas)
 			}
-			targetNew[roleName] = getTargetReplicas(ds, roleName)
+			targetNew[roleName] = getTargetReplicas(ds, roleName, scalers, currentNew[roleName])
+			// No-shrink guard: an External role mid-rollout must not shrink the
+			// new-revision fleet if HPA writes a smaller value while the old
+			// revision is still draining. Releases once the rollout completes.
+			// currentNew tracks readiness for the planner, so compare against the
+			// actual spec footprint to preserve the original guard's semantics.
+			if isExternal(ds, roleName) && len(oldRevisions) > 0 && lws != nil {
+				targetNew[roleName] = max(targetNew[roleName], int(getLWSReplicas(lws)))
+			}
 		}
 	}
 	return
 }
 
-func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) int {
+// getTargetReplicas resolves the desired replica count. External roles read
+// spec.replicas from the scaler (always materialised since the CRD defaults it
+// to 0 and the controller seeds it at creation to avoid draining a running
+// Static→External flip).
+func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, currentNew int) int {
 	for _, p := range ds.Spec.Roles {
-		if p.Name == roleName {
-			if p.Spec.Replicas == nil {
-				return 1
-			}
-			return int(*p.Spec.Replicas)
+		if p.Name != roleName {
+			continue
 		}
+		if p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+			if s := scalers[roleName]; s != nil {
+				return int(s.Spec.Replicas)
+			}
+			return currentNew
+		}
+		if p.Spec.Replicas == nil {
+			return 1
+		}
+		return int(*p.Spec.Replicas)
 	}
 	return 1
 }
 
-func extractRollingUpdateConfigMap(ds *disaggregatedsetv1.DisaggregatedSet, allRoleNames []string) map[string]RollingUpdateConfig {
+func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
+	for _, p := range ds.Spec.Roles {
+		if p.Name == roleName {
+			return p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal
+		}
+	}
+	return false
+}
+
+func extractRollingUpdateConfigMap(
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	allRoleNames []string,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+) map[string]RollingUpdateConfig {
 	config := make(map[string]RollingUpdateConfig, len(allRoleNames))
 	for _, name := range allRoleNames {
 		config[name] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
@@ -270,7 +306,12 @@ func extractRollingUpdateConfigMap(ds *disaggregatedsetv1.DisaggregatedSet, allR
 
 	for _, role := range ds.Spec.Roles {
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
-			replicas := getTargetReplicas(ds, role.Name)
+			// For External roles this returns the scaler value (or currentNew=0
+			// if none is available); percentages against 0 collapse to 0, which
+			// matches how a paused rollout should behave.
+			replicas := getTargetReplicas(ds, role.Name, scalers, 0)
+			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
+			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
 			cfg := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
@@ -415,7 +456,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, newRevision.Revision, name)
 		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", currentNew[name], "to", desiredSpec)
-		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, desiredSpec); err != nil {
+		if err := executor.LWSManager.Scale(ctx, ds, lwsName, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
@@ -585,7 +626,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			// Address by the LWS's actual name so a legacy slice-0 object drains too.
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas)
-			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas); err != nil {
+			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
@@ -627,7 +668,7 @@ func (executor *RollingUpdateExecutor) ensureNewLWSExists(
 	initialReplicas int,
 ) (bool, error) {
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
-	existing, err := executor.LWSManager.Get(ctx, ds.Namespace, lwsName)
+	existing, err := executor.LWSManager.Get(ctx, ds, lwsName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LWS %s: %w", lwsName, err)
 	}

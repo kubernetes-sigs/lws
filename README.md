@@ -1,11 +1,7 @@
 # The LeaderWorkerSet and DisaggregatedSet APIs
 
-[![GoReport Widget]][GoReport Status]
 [![Latest Release](https://img.shields.io/github/v/release/kubernetes-sigs/lws?include_prereleases)](https://github.com/kubernetes-sigs/lws/releases/latest)
 [![Coverage Status](https://coveralls.io/repos/github/kubernetes-sigs/lws/badge.svg?branch=test-coverage)](https://coveralls.io/github/kubernetes-sigs/lws?branch=test-coverage)
-
-[GoReport Widget]: https://goreportcard.com/badge/github.com/kubernetes-sigs/lws
-[GoReport Status]: https://goreportcard.com/report/github.com/kubernetes-sigs/lws
 
 <img src="site/static/images/lws-ds-logos.svg" width="300" alt="lws logo">
 
@@ -20,7 +16,7 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
 
 ## Feature overview
 
-### Core LeaderWorkerSet (LWS) Features
+### Core Features: LeaderWorkerSet
 - **Group of Pods as a unit:** Supports a tightly managed group of pods that represent a “super pod”
   - **Unique pod identity:** Each pod in the group has a unique index from 0 to n-1.
   - **Parallel creation:** Pods in the group will have the same lifecycle and be created in parallel.
@@ -36,7 +32,7 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
   <img src="site/static/images/lws-concept.svg" width="550" alt="LWS Concept">
 </p>
 
-### Advanced DisaggregatedSet Features
+### Advanced Features: DisaggregatedSet
 - **Disaggregated Architecture Support:** Specifically designed for workloads where different phases (e.g., prefill and decode) run on separate infrastructure.
 - **Coordinated N-Dimensional Rollouts:** Updates multiple roles (2-10) in lockstep, preserving capacity ratios throughout the update process.
 - **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.

@@ -32,9 +32,6 @@ import (
 	"sigs.k8s.io/lws/test/testutils/disaggregatedset/kubectl"
 )
 
-// Operator namespace where the controller is deployed
-const namespace = "lws-system"
-
 var controllerPodName string
 
 // applyYAML applies a YAML string using kubectl
@@ -50,7 +47,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
 			if controllerPodName != "" {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", lwsNamespace)
 				controllerLogs, err := utils.Run(cmd)
 				if err == nil {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s\n", controllerLogs)
@@ -73,7 +70,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		It("should have the controller-manager running", func() {
 			By("checking if controller-manager is already deployed")
 			cmd := exec.Command("kubectl", "get", "deployment",
-				"lws-controller-manager", "-n", namespace, "-o", "name")
+				"lws-controller-manager", "-n", lwsNamespace, "-o", "name")
 			output, err := utils.Run(cmd)
 			if err == nil && strings.Contains(output, "deployment") {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller-manager already deployed, skipping deployment\n")
@@ -86,7 +83,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
 						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
+					"-n", lwsNamespace,
 				)
 
 				podOutput, err := utils.Run(cmd)
@@ -97,7 +94,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
 				cmd = exec.Command("kubectl", "get", "pods", controllerPodName,
-					"-o", "jsonpath={.status.phase}", "-n", namespace)
+					"-o", "jsonpath={.status.phase}", "-n", lwsNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
@@ -517,6 +514,44 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("kueue.x-k8s.io/queue-name"))
 				g.Expect(output).To(ContainSubstring("decode-queue"))
+			}, 60*time.Second, time.Second).Should(Succeed())
+		})
+	})
+
+	Context("Placement Policy", func() {
+		const deploymentName = "test-placement"
+
+		AfterEach(func() {
+			kubectl.CleanupDeployment(deploymentName)
+			// The cascading delete can race with the child StatefulSets
+			// recreating force-deleted pods, and terminating ExclusiveTopology
+			// pods still repel other sets' pods. Wait until the pods are fully
+			// gone so later specs can schedule on a single-node cluster.
+			Eventually(func() int {
+				return kubectl.CountPods(deploymentName)
+			}, 90*time.Second, time.Second).Should(Equal(0))
+		})
+
+		It("should inject placement affinity into the managed LWS pod templates", func() {
+			By("creating a DisaggregatedSet with an ExclusiveTopology placement policy")
+			cfg := fixtures.PrefillDecode(deploymentName,
+				fixtures.Role{Replicas: 1},
+				fixtures.Role{Replicas: 1},
+			)
+			cfg.PlacementType = "ExclusiveTopology"
+			cfg.PlacementTopology = "kubernetes.io/hostname"
+			Expect(applyYAML(cfg.YAML())).To(Succeed())
+
+			By("verifying the controller injected placement affinity into the prefill LWS worker template")
+			Eventually(func(g Gomega) {
+				output, err := kubectl.LWSByRole(deploymentName, "prefill").
+					JSONPath("{.items[0].spec.leaderWorkerTemplate.workerTemplate.spec.affinity}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("podAffinity"))
+				g.Expect(output).To(ContainSubstring("podAntiAffinity"))
+				g.Expect(output).To(ContainSubstring("kubernetes.io/hostname"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
+				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/slice"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
 	})

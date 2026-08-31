@@ -61,12 +61,14 @@ func testSchemeForUnit() *runtime.Scheme {
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 	scheme := testSchemeForUnit()
+	recorder := events.NewFakeRecorder(100)
 	return &DisaggregatedSetReconciler{
 		Client:         fakeClient,
 		Scheme:         scheme,
 		LWSManager:     NewLeaderWorkerSetManager(fakeClient),
 		ServiceManager: NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		ScalerManager:  NewScalerManager(fakeClient, recorder),
+		Record:         recorder,
 	}
 }
 
@@ -79,6 +81,19 @@ func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 	}
 }
 
+// testDSOwnerRef is the controller OwnerReference matching the "test"/"uid"
+// DisaggregatedSet fixture convention used throughout this file (see
+// setupABCScenario and the inline `ds := &disaggregatedsetv1.DisaggregatedSet{
+// ObjectMeta: metav1.ObjectMeta{Name: "test", ...}}` fixtures) — Scale checks
+// ownership (#981), so LWS fixtures built via buildTestLWS must carry it too.
+var testDSOwnerRef = metav1.OwnerReference{
+	APIVersion: disaggregatedsetv1.GroupVersion.String(),
+	Kind:       "DisaggregatedSet",
+	Name:       "test",
+	UID:        "uid",
+	Controller: ptr.To(true),
+}
+
 func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorkerSetWrapper {
 	return wrappers.BuildBasicLeaderWorkerSet(name, namespace).
 		Labels(map[string]string{
@@ -86,7 +101,8 @@ func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorker
 			disaggregatedsetv1.SetNameLabelKey:  "test",
 			disaggregatedsetv1.SliceLabelKey:    "0",
 			disaggregatedsetv1.RevisionLabelKey: revision,
-		})
+		}).
+		OwnerReference(testDSOwnerRef)
 }
 
 // getTestLWSReplicas is a helper to get the current replica count from a LWS.
@@ -261,6 +277,7 @@ func setupABCScenario(
 		Kind:       "DisaggregatedSet",
 		Name:       "test",
 		UID:        "uid",
+		Controller: ptr.To(true),
 	}
 	makeLabels := func(role, revision string) map[string]string {
 		return map[string]string{disaggregatedsetv1.RoleLabelKey: role, disaggregatedsetv1.SetNameLabelKey: "test", disaggregatedsetv1.SliceLabelKey: "0", disaggregatedsetv1.RevisionLabelKey: revision}
@@ -420,6 +437,7 @@ func TestReconcilerIntegration(t *testing.T) {
 			ownerRef := metav1.OwnerReference{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet", Name: tc.deployName, UID: "uid",
+				Controller: ptr.To(true),
 			}
 			makeLabels := func(role, revision string) map[string]string {
 				return map[string]string{
@@ -664,6 +682,38 @@ func TestIsRevisionStable_UsesRolloutSizeForPartialRevision(t *testing.T) {
 		"a partial 2P/1D revision with zero ready pods must not consume the full rollout tolerance")
 }
 
+func TestBuildPlannerStateMapsPreservesExternalSpecDuringRollout(t *testing.T) {
+	const roleName = "prefill"
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name:    roleName,
+			Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal},
+		}}},
+	}
+	newRevision := disaggregatedsetutils.RevisionRoles{
+		Revision: "new",
+		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			roleName: makeLWS(withReplicas(5), withReadyReplicas(3)),
+		},
+	}
+	oldRevisions := disaggregatedsetutils.RevisionRolesList{{Revision: "old"}}
+	scalers := map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{
+		roleName: {Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: 2}},
+	}
+
+	_, _, currentNew, targetNew := buildPlannerStateMaps(
+		ds,
+		[]string{roleName},
+		map[string]bool{roleName: true},
+		oldRevisions,
+		newRevision,
+		scalers,
+	)
+
+	assert.Equal(t, 3, currentNew[roleName], "planner progress must follow ready replicas")
+	assert.Equal(t, 5, targetNew[roleName], "an HPA shrink must not reduce the in-flight new revision spec")
+}
+
 // =============================================================================
 // Unit Tests for disaggregatedsetutils.GetRoleConfigs
 // =============================================================================
@@ -753,7 +803,7 @@ func TestExtractRollingUpdateConfig(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfigMap(ds, roleNames)
+			config := extractRollingUpdateConfigMap(ds, roleNames, nil)
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[testRolePrefill].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[testRolePrefill].MaxUnavailable)
@@ -862,7 +912,7 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			}
 
 			roleNames := []string{testRolePrefill, testRoleDecode}
-			config := extractRollingUpdateConfigMap(ds, roleNames)
+			config := extractRollingUpdateConfigMap(ds, roleNames, nil)
 
 			assert.Equal(t, tc.expectedPrefillSurge, config[testRolePrefill].MaxSurge)
 			assert.Equal(t, tc.expectedPrefillUnavail, config[testRolePrefill].MaxUnavailable)
@@ -974,7 +1024,7 @@ func TestScaleDownOld(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 
 			// Convert budget to current/target format
 			current := map[string]int{
@@ -1038,7 +1088,7 @@ func TestScaleDownOldWaitsForRetiredRevisionTermination(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 		WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 	executor := newTestExecutor(fakeClient)
-	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 	current := map[string]int{testRolePrefill: 4, testRoleDecode: 4}
 	target := map[string]RoleStepState{
 		testRolePrefill: {Replicas: 3},
@@ -1124,7 +1174,7 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 				WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 			executor := newTestExecutor(fakeClient)
-			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+			ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 
 			// Convert budget to current/target format for 3 roles
 			current := map[string]int{
@@ -1194,7 +1244,7 @@ func TestScaleUpNew(t *testing.T) {
 			executor := newTestExecutor(fakeClient)
 
 			ds := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace, UID: "uid"},
 			}
 
 			newRevision := disaggregatedsetutils.RevisionRoles{
@@ -1241,7 +1291,7 @@ func TestScaleUpNewUsesRawPerRoleSurgeCeiling(t *testing.T) {
 				Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(baseTime).Obj(),
 		).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 	executor := newTestExecutor(fakeClient)
-	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace}}
+	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"}}
 	newRevision := disaggregatedsetutils.RevisionRoles{Revision: "newhash", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 		testRolePrefill: makeLWS(withReplicas(8)),
 		testRoleDecode:  makeLWS(withReplicas(4)),
@@ -1313,7 +1363,7 @@ func TestEnsureNewLWSExists(t *testing.T) {
 				},
 			}
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "test-uid"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
@@ -1402,7 +1452,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				{Name: testRoleDecode, LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(int32(4))}}},
 			}
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 
@@ -1422,7 +1472,7 @@ func TestReconcileRollingUpdateABCScenario(t *testing.T) {
 				testRolePrefill: makeLWS(withReplicas(int(tc.cPrefill)), withReadyReplicas(int(tc.cPrefill))),
 				testRoleDecode:  makeLWS(withReplicas(int(tc.cDecode)), withReadyReplicas(int(tc.cDecode)))}}
 
-			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision)
+			_, err := executor.ReconcileRollingUpdate(context.TODO(), deployment, 0, oldRevisions, newRevision, nil)
 			require.NoError(t, err)
 
 			if tc.aPrefill > 0 || tc.aDecode > 0 {

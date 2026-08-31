@@ -41,7 +41,7 @@ To install a released version of LeaderWorkerSet in your cluster, run the follow
 
 
 ```shell
-VERSION=v0.9.0
+VERSION=v0.10.0
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -56,7 +56,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.9.0
+CHART_VERSION=0.10.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -67,19 +67,67 @@ helm install lws oci://registry.k8s.io/lws/charts/lws \
 You can also use the following command:
 
 ```shell
-VERSION=v0.9.0
+VERSION=v0.10.0
 helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
   --namespace lws-system \
   --create-namespace \
   --wait --timeout 300s
 ```
 
+### Upgrade by Helm
+
+Helm only installs the chart's CRDs during the initial `helm install`. It does
+not update or delete CRDs on `helm upgrade` (see the
+[Helm documentation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)),
+so CRD schema changes and newly added CRDs do not reach the cluster through
+`helm upgrade` alone.
+
+Apply the CRDs explicitly before upgrading, then upgrade the release in place:
+
+```shell
+CHART_VERSION=0.10.0
+helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
+kubectl apply --server-side --force-conflicts -f lws/crds
+helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
+  --version=$CHART_VERSION \
+  --namespace lws-system \
+  --wait --timeout 300s
+```
+
+{{% alert title="Note" color="info" %}}
+`helm upgrade` does not update CRD schemas — Helm never modifies CRDs placed
+in the `crds/` directory after the initial `helm install`, and does not delete
+them on `helm uninstall` either. Always reconcile CRD schemas explicitly with
+the `kubectl apply` step above before upgrading the chart.
+{{% /alert %}}
+
+#### Upgrading from v0.7.0 or earlier
+
+Chart versions up to v0.7.0 rendered the `LeaderWorkerSet` CRD from
+`templates/crds/`, so the CRD is part of the Helm release manifest. Starting
+with v0.8.0 the CRD ships from the special `crds/` directory and is no longer
+part of the release. Without preparation, the first `helm upgrade` across that
+boundary treats the CRD as removed from the release and deletes it — cascading
+to the deletion of every `LeaderWorkerSet` in the cluster (see
+[#880](https://github.com/kubernetes-sigs/lws/issues/880)).
+
+Before the first upgrade from v0.7.0 or earlier, run this one-time step so Helm
+keeps the CRD when it leaves the release:
+
+```shell
+kubectl annotate crd leaderworkersets.leaderworkerset.x-k8s.io \
+  helm.sh/resource-policy=keep --overwrite
+```
+
+Then follow the regular upgrade flow above (apply the CRDs, then
+`helm upgrade`). Subsequent upgrades no longer need the annotation step.
+
 ### Uninstall
 
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.9.0
+VERSION=v0.10.0
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -160,7 +208,7 @@ The optional validating webhook and user-facing editor/viewer/admin ClusterRoles
 by passing `--set enableDisaggregatedSet=true` to the Helm install command:
 
 ```shell
-CHART_VERSION=0.9.0
+CHART_VERSION=0.10.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
