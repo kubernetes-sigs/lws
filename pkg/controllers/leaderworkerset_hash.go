@@ -19,23 +19,17 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
@@ -58,13 +52,17 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	revision, err := r.getOrCreateRevisionForDeployment(ctx, deploy, lws)
+	revisionKey := ""
+	if deploy != nil {
+		revisionKey = revisionutils.GetRevisionKey(deploy)
+	}
+	revision, err := r.getOrCreateRevision(ctx, revisionKey, lws)
 	if err != nil {
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
 
-	updatedRevision, err := r.getUpdatedRevisionForDeployment(ctx, deploy, lws, revision)
+	updatedRevision, err := r.getUpdatedRevision(ctx, deploy != nil, lws, revision)
 	if err != nil {
 		log.Error(err, "Validating if LWS has been updated")
 		return ctrl.Result{}, err
@@ -123,44 +121,6 @@ func (r *LeaderWorkerSetReconciler) getLeaderDeployment(ctx context.Context, lws
 	return deploy, nil
 }
 
-// getOrCreateRevisionForDeployment mirrors getOrCreateRevisionIfNonExist with the
-// revision key read from the leader deployment instead of the leader statefulset.
-func (r *LeaderWorkerSetReconciler) getOrCreateRevisionForDeployment(ctx context.Context, deploy *appsv1.Deployment, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
-	revisionKey := ""
-	if deploy != nil {
-		revisionKey = revisionutils.GetRevisionKey(deploy)
-	}
-	if revision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); revision != nil || err != nil {
-		return revision, err
-	}
-	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
-	if err != nil {
-		return nil, err
-	}
-	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision)
-	if err == nil {
-		r.Record.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s", revision.Labels[leaderworkerset.RevisionKey]))
-	}
-	return newRevision, err
-}
-
-func (r *LeaderWorkerSetReconciler) getUpdatedRevisionForDeployment(ctx context.Context, deploy *appsv1.Deployment, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	if deploy == nil {
-		return nil, nil
-	}
-	currentRevision, err := revisionutils.NewRevision(ctx, r.Client, lws, "")
-	if err != nil {
-		return nil, err
-	}
-	if !revisionutils.EqualRevision(currentRevision, revision) {
-		if revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
-			return nil, nil
-		}
-		return currentRevision, nil
-	}
-	return nil, nil
-}
-
 func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -169,21 +129,13 @@ func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *
 		log.Error(err, "Constructing Deployment apply configuration.")
 		return err
 	}
-	if err := setControllerReferenceWithDeployment(lws, deploymentApplyConfig, r.Scheme); err != nil {
+	ownerRef, err := controllerOwnerReference(lws, r.Scheme)
+	if err != nil {
 		log.Error(err, "Setting controller reference.")
 		return err
 	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(deploymentApplyConfig)
-	if err != nil {
-		log.Error(err, "Converting Deployment configuration to json.")
-		return err
-	}
-	patch := &unstructured.Unstructured{Object: obj}
-	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{ //nolint
-		FieldManager: fieldManager,
-		Force:        ptr.To[bool](true),
-	})
-	if err != nil {
+	deploymentApplyConfig.WithOwnerReferences(ownerRef)
+	if err := r.serverSideApply(ctx, deploymentApplyConfig); err != nil {
 		log.Error(err, "Using server side apply to update leader deployment")
 		return err
 	}
@@ -195,35 +147,13 @@ func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *
 // maxUnavailable) maps directly onto the Deployment strategy; there is no
 // partition equivalent, ordering is delegated to the Deployment controller.
 func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsapplyv1.DeploymentApplyConfiguration, error) {
-	var podTemplateSpec corev1.PodTemplateSpec
-	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
-	} else {
-		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
-	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
+	podTemplateApplyConfiguration, err := buildLeaderPodTemplateApplyConfiguration(lws, revisionKey)
 	if err != nil {
 		return nil, err
 	}
-	var podTemplateApplyConfiguration coreapplyv1.PodTemplateSpecApplyConfiguration
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &podTemplateApplyConfiguration)
-	if err != nil {
-		return nil, err
-	}
-
-	podTemplateApplyConfiguration.WithLabels(map[string]string{
-		leaderworkerset.WorkerIndexLabelKey: "0",
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.RevisionKey:         revisionKey,
-	})
-	podAnnotations := map[string]string{
-		leaderworkerset.SizeAnnotationKey:          strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size)),
+	podTemplateApplyConfiguration.WithAnnotations(map[string]string{
 		leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
-	}
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-	}
-	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
+	})
 
 	// Deployments do not propagate a service name into pod subdomains the way
 	// statefulsets do, so the template carries the shared headless service as the
@@ -240,18 +170,12 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 			coreapplyv1.PodReadinessGate().WithConditionType(leaderworkerset.GroupReadyConditionType))
 	}
 
-	deploymentLabels := mergeMetadata(lws.Labels, map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-		leaderworkerset.RevisionKey:     revisionKey,
-	})
-	deploymentAnnotations := mergeMetadata(lws.Annotations, map[string]string{
-		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
-	})
+	deploymentLabels, deploymentAnnotations := leaderMetadata(lws, revisionKey)
 
 	deploymentConfig := appsapplyv1.Deployment(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.DeploymentSpec().
 			WithReplicas(*lws.Spec.Replicas).
-			WithTemplate(&podTemplateApplyConfiguration).
+			WithTemplate(podTemplateApplyConfiguration).
 			WithStrategy(appsapplyv1.DeploymentStrategy().
 				WithType(appsv1.RollingUpdateDeploymentStrategyType).
 				WithRollingUpdate(appsapplyv1.RollingUpdateDeployment().
@@ -297,21 +221,12 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 		lws.Status.ObservedGeneration = lws.Generation
 		updateStatus = true
 	}
-	if lws.Status.HPAPodSelector == "" {
-		labelSelector := &metav1.LabelSelector{
-			MatchLabels: map[string]string{
-				leaderworkerset.SetNameLabelKey:     lws.Name,
-				leaderworkerset.WorkerIndexLabelKey: "0",
-			},
-		}
-		selector, err := metav1.LabelSelectorAsSelector(labelSelector)
-		if err != nil {
-			log.Error(err, "Converting label selector to selector")
-			return false, err
-		}
-		lws.Status.HPAPodSelector = selector.String()
-		updateStatus = true
+	selectorUpdated, err := ensureHPAPodSelector(lws)
+	if err != nil {
+		log.Error(err, "Converting label selector to selector")
+		return false, err
 	}
+	updateStatus = updateStatus || selectorUpdated
 
 	var conditions []metav1.Condition
 	lwsReplicas := *lws.Spec.Replicas
@@ -341,25 +256,4 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 		}
 	}
 	return available, nil
-}
-
-// setControllerReferenceWithDeployment sets the controller reference on the
-// Deployment apply configuration.
-func setControllerReferenceWithDeployment(owner metav1.Object, deploy *appsapplyv1.DeploymentApplyConfiguration, scheme *runtime.Scheme) error {
-	ro, ok := owner.(runtime.Object)
-	if !ok {
-		return fmt.Errorf("%T is not a runtime.Object, cannot call SetOwnerReference", owner)
-	}
-	gvk, err := apiutil.GVKForObject(ro, scheme)
-	if err != nil {
-		return err
-	}
-	deploy.WithOwnerReferences(metaapplyv1.OwnerReference().
-		WithAPIVersion(gvk.GroupVersion().String()).
-		WithKind(gvk.Kind).
-		WithName(owner.GetName()).
-		WithUID(owner.GetUID()).
-		WithBlockOwnerDeletion(true).
-		WithController(true))
-	return nil
 }

@@ -65,9 +65,16 @@ func TestLeaderDeploymentApplyConfig(t *testing.T) {
 		t.Errorf("maxSurge = %v, want 2", got)
 	}
 
+	if got := deployConfig.Labels[leaderworkerset.RoleLabelKey]; got != leaderworkerset.RoleLeader {
+		t.Errorf("deployment role label = %q, want %q", got, leaderworkerset.RoleLeader)
+	}
+
 	template := deployConfig.Spec.Template
 	if got := template.Labels[leaderworkerset.RevisionKey]; got != "rev-1" {
 		t.Errorf("template revision label = %q, want rev-1", got)
+	}
+	if got := template.Labels[leaderworkerset.RoleLabelKey]; got != leaderworkerset.RoleLeader {
+		t.Errorf("template role label = %q, want %q", got, leaderworkerset.RoleLeader)
 	}
 	if got := template.Labels[leaderworkerset.WorkerIndexLabelKey]; got != "0" {
 		t.Errorf("template worker-index label = %q, want 0", got)
@@ -91,6 +98,40 @@ func TestLeaderDeploymentApplyConfig(t *testing.T) {
 	}
 	if !foundGate {
 		t.Error("expected group-ready readiness gate on leader template with size > 1")
+	}
+}
+
+func TestLeaderDeploymentApplyConfigPolicyAnnotations(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").
+		Replica(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+			},
+		}).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(4).
+		SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+		SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).
+		SubGroupSize(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	annotations := deployConfig.Spec.Template.Annotations
+	if got := annotations[leaderworkerset.SubdomainPolicyAnnotationKey]; got != string(leaderworkerset.SubdomainUniquePerReplica) {
+		t.Errorf("template subdomain policy annotation = %q, want UniquePerReplica", got)
+	}
+	if got := annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]; got != string(leaderworkerset.SubGroupPolicyTypeLeaderWorker) {
+		t.Errorf("template subgroup type annotation = %q, want LeaderWorker", got)
+	}
+	if got := annotations[leaderworkerset.SubGroupSizeAnnotationKey]; got != "2" {
+		t.Errorf("template subgroup size annotation = %q, want 2", got)
 	}
 }
 

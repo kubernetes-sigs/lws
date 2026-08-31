@@ -1211,7 +1211,7 @@ func TestGetUpdatedRevision(t *testing.T) {
 				tc.modifyRevision(revision)
 			}
 
-			updatedRevision, err := reconciler.getUpdatedRevision(context.TODO(), tc.sts, tc.lws, revision)
+			updatedRevision, err := reconciler.getUpdatedRevision(context.TODO(), tc.sts != nil, tc.lws, revision)
 			if err != nil {
 				t.Fatal(err)
 			}

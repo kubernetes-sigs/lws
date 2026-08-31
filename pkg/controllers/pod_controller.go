@@ -433,23 +433,32 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, 
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet
 func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1.StatefulSetApplyConfiguration, scheme *runtime.Scheme) error {
-	// Validate the owner.
-	ro, ok := owner.(runtime.Object)
-	if !ok {
-		return fmt.Errorf("%T is not a runtime.Object, cannot call SetOwnerReference", owner)
-	}
-	gvk, err := apiutil.GVKForObject(ro, scheme)
+	ownerRef, err := controllerOwnerReference(owner, scheme)
 	if err != nil {
 		return err
 	}
-	sts.WithOwnerReferences(metaapplyv1.OwnerReference().
+	sts.WithOwnerReferences(ownerRef)
+	return nil
+}
+
+// controllerOwnerReference builds the owner reference apply configuration that
+// marks owner as the managing controller.
+func controllerOwnerReference(owner metav1.Object, scheme *runtime.Scheme) (*metaapplyv1.OwnerReferenceApplyConfiguration, error) {
+	ro, ok := owner.(runtime.Object)
+	if !ok {
+		return nil, fmt.Errorf("%T is not a runtime.Object, cannot call SetOwnerReference", owner)
+	}
+	gvk, err := apiutil.GVKForObject(ro, scheme)
+	if err != nil {
+		return nil, err
+	}
+	return metaapplyv1.OwnerReference().
 		WithAPIVersion(gvk.GroupVersion().String()).
 		WithKind(gvk.Kind).
 		WithName(owner.GetName()).
 		WithUID(owner.GetUID()).
 		WithBlockOwnerDeletion(true).
-		WithController(true))
-	return nil
+		WithController(true), nil
 }
 
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
