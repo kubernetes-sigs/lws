@@ -336,14 +336,29 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		testing.MustCreateLws(ctx, k8sClient, lws)
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
+		var initialLeader corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &initialLeader)).To(gomega.Succeed())
 		workerKey := types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}
+		var initialWorker corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, workerKey, &initialWorker)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workerKey.Namespace, Name: workerKey.Name}})).To(gomega.Succeed())
-		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
 		var leaderAfterFirstRestart corev1.Pod
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &leaderAfterFirstRestart)
-		}, timeout, interval).Should(gomega.Succeed())
+		gomega.Eventually(func() (types.UID, error) {
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &leaderAfterFirstRestart)
+			return leaderAfterFirstRestart.UID, err
+		}, timeout, interval).ShouldNot(gomega.Equal(initialLeader.UID))
+		gomega.Eventually(func() (types.UID, error) {
+			var workerAfterFirstRestart corev1.Pod
+			if err := k8sClient.Get(ctx, workerKey, &workerAfterFirstRestart); err != nil {
+				return "", err
+			}
+			if workerAfterFirstRestart.DeletionTimestamp != nil {
+				return initialWorker.UID, nil
+			}
+			return workerAfterFirstRestart.UID, nil
+		}, timeout, interval).ShouldNot(gomega.Equal(initialWorker.UID))
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workerKey.Namespace, Name: workerKey.Name}})).To(gomega.Succeed())
 
 		testing.ExpectDegradedCondition(ctx, k8sClient, lws, "ReplicaRestartBudgetExceeded")
