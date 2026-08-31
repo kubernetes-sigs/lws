@@ -29,5 +29,5 @@ stage: alpha
 latest-milestone: "v0.11.0"
 
 feature-gates:
-  - name: WorkloadAwareGangScheduling
+  - name: WorkloadAwareScheduling
 disable-supported: true
