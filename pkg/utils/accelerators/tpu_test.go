@@ -126,6 +126,55 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessPort:      "8476",
 		},
 		{
+			name: "Hash identity, leader pod with assigned host name",
+			pod: &corev1.Pod{
+				Spec: func() corev1.PodSpec {
+					spec := wrappers.MakeLeaderPodSpecWithTPUResource()
+					spec.Hostname = "9f2ac71b"
+					return spec
+				}(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-7d9f8b6c4-x2kkp",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey: "true",
+					},
+				},
+			},
+			size:                        2,
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "9f2ac71b.default,test-sample-7d9f8b6c4-x2kkp-1.default",
+			expectedTpuName:             "test-sample-7d9f8b6c4-x2kkp",
+			expectedTpuProcessAddresses: "9f2ac71b.default:8476,test-sample-7d9f8b6c4-x2kkp-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Hash identity, worker pod with leader address annotation",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-7d9f8b6c4-x2kkp-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:            "true",
+						leaderworkerset.LeaderAddressAnnotationKey: "9f2ac71b.default.default",
+					},
+				},
+			},
+			size:                        2,
+			expectedTpuWorkerId:         "1",
+			expectedTpuWorkerHostNames:  "9f2ac71b.default,test-sample-7d9f8b6c4-x2kkp-1.default",
+			expectedTpuName:             "test-sample-7d9f8b6c4-x2kkp",
+			expectedTpuProcessAddresses: "9f2ac71b.default:8476,test-sample-7d9f8b6c4-x2kkp-1.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
 			name: "Test multi-container TPU_PROCESS_ADDRESSES, leader pod",
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
