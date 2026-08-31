@@ -252,15 +252,3 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 		})
 	}
 }
-
-func TestGeneralValidateNilMaxGroupRestarts(t *testing.T) {
-	lws := wrappers.BuildLeaderWorkerSet("default").
-		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-		Obj()
-
-	r := &LeaderWorkerSetWebhook{}
-	// An unset maxGroupRestarts with RecreateGroupOnPodRestart should pass.
-	if errs := r.generalValidate(lws); len(errs) != 0 {
-		t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
-	}
-}

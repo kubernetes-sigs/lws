@@ -30,7 +30,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/lru"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -42,20 +41,6 @@ const (
 	Timeout  = 2 * time.Minute
 	Interval = time.Millisecond * 250
 )
-
-func revisionHashMatches(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision, candidateHash string) (bool, error) {
-	if candidateHash == revisionutils.GetRevisionKey(currentRevision) {
-		return true, nil
-	}
-	legacyRevision, err := revisionutils.GetRevision(ctx, k8sClient, lws, candidateHash)
-	if err != nil {
-		return false, err
-	}
-	if legacyRevision == nil {
-		return false, nil
-	}
-	return revisionutils.SetMatchesRevision(lws, currentRevision, legacyRevision, lru.New(1)), nil
-}
 
 func ExpectLeaderSetExist(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, k8sClient client.Client) {
 	gomega.Eventually(func() bool {
@@ -86,14 +71,7 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return false, fmt.Errorf("expected %d headless services, got %d", numHeadlessServices, len(headlessServiceList.Items))
 		}
 
-		subdomainPolicy := leaderworkerset.SubdomainShared
-		if lws.Spec.NetworkConfig != nil {
-			if lws.Spec.NetworkConfig.SubdomainPolicy != nil {
-				subdomainPolicy = *lws.Spec.NetworkConfig.SubdomainPolicy
-			}
-		}
-
-		if subdomainPolicy == leaderworkerset.SubdomainShared {
+		if *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
@@ -117,7 +95,7 @@ func validateService(headlessService corev1.Service, serviceName string, wantSel
 		return false, errors.New("service type mismatch")
 	}
 	if !headlessService.Spec.PublishNotReadyAddresses {
-		return false, errors.New("service must publish not-ready addresses")
+		return false, errors.New("service publish not ready should be true")
 	}
 	if headlessService.OwnerReferences[0].Name != serviceName {
 		return false, fmt.Errorf("service name is %s, expected %s", headlessService.OwnerReferences[0].Name, serviceName)
@@ -177,13 +155,8 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 			return err
 		}
 		hash := revisionutils.GetRevisionKey(cr)
-		statefulSetHash := revisionutils.GetRevisionKey(&sts)
-		matchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, statefulSetHash)
-		if err != nil {
-			return err
-		}
-		if !matchesRevision {
-			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", statefulSetHash, hash)
+		if revisionutils.GetRevisionKey(&sts) != hash {
+			return fmt.Errorf("mismatch template revision hash for leader statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 		}
 		if sts.Spec.ServiceName != lws.Name {
 			return errors.New("leader StatefulSet service name should match leaderWorkerSet name")
@@ -209,25 +182,14 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		} else {
 			podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 		}
-		// Check pod template labels. A legacy revision hash is valid when its
-		// revision data is semantically equal to the current normalized spec.
-		if diff := cmp.Diff(map[string]string{
-			leaderworkerset.SetNameLabelKey:     sts.Spec.Template.Labels[leaderworkerset.SetNameLabelKey],
-			leaderworkerset.WorkerIndexLabelKey: sts.Spec.Template.Labels[leaderworkerset.WorkerIndexLabelKey],
-			leaderworkerset.RoleLabelKey:        sts.Spec.Template.Labels[leaderworkerset.RoleLabelKey],
-		}, map[string]string{
+		// check pod template has correct label
+		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
 			leaderworkerset.SetNameLabelKey:     lws.Name,
 			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.RevisionKey:         hash,
 			leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
 		}); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
-		}
-		labelMatchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, sts.Spec.Template.Labels[leaderworkerset.RevisionKey])
-		if err != nil {
-			return err
-		}
-		if !labelMatchesRevision {
-			return fmt.Errorf("leader StatefulSet pod template revision hash mismatch, got: %s, want: %s", sts.Spec.Template.Labels[leaderworkerset.RevisionKey], hash)
 		}
 		// we can't do a full diff of the pod template since there will be default fields added to pod template
 		if podTemplateSpec.Spec.Containers[0].Name != sts.Spec.Template.Spec.Containers[0].Name {
@@ -319,13 +281,8 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 				return err
 			}
 			hash := revisionutils.GetRevisionKey(cr)
-			statefulSetHash := revisionutils.GetRevisionKey(&sts)
-			matchesRevision, err := revisionHashMatches(ctx, k8sClient, &lws, cr, statefulSetHash)
-			if err != nil {
-				return err
-			}
-			if !matchesRevision {
-				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", statefulSetHash, hash)
+			if revisionutils.GetRevisionKey(&sts) != hash {
+				return fmt.Errorf("mismatch template revision hash for worker statefulset, got: %s, want: %s", revisionutils.GetRevisionKey(&sts), hash)
 			}
 			if *sts.Spec.Replicas != *lws.Spec.LeaderWorkerTemplate.Size-1 {
 				return errors.New("worker StatefulSet replicas should match leaderWorkerSet replicas")

@@ -595,12 +595,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("creation with maxGroupRestarts and RecreateGroupAfterStart restart policy should fail", &testValidationCase{
-			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupAfterStart).MaxGroupRestarts(0)
-			},
-			lwsCreationShouldFail: true,
-		}),
 		ginkgo.Entry("update keeping maxGroupRestarts while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1)

@@ -47,10 +47,12 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// The former named Default policy is deprecated, will be removed in the future,
 	// replace with None policy for the same behavior.
 	RestartPolicy *leaderworkersetv1.RestartPolicyType `json:"restartPolicy,omitempty"`
-	// maxGroupRestarts bounds how many times a group's leader pod can be recreated
-	// via the RecreateGroupOnPodRestart path before the group is marked terminally
-	// failed. It is opt-in: when unset (nil) the existing unbounded recreation
-	// behavior is preserved. This field is only valid when
+	// maxGroupRestarts bounds how many times the controller can recreate a group
+	// via the RecreateGroupOnPodRestart path. Once exhausted, the controller keeps
+	// the failed group for debugging and stops recreating it. Deleting the retained
+	// leader pod resets that revision/group's budget and allows recovery. It is
+	// opt-in: when unset (nil), the existing unbounded recreation behavior is
+	// preserved. This field is only valid when
 	// spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
 	// validating webhook rejects any other combination.
 	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`

@@ -104,14 +104,18 @@ const (
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
 
-	// GroupRestartCountAnnotationKey records the number of times the leader pod of a
-	// group has been recreated via the RecreateGroupOnPodRestart path. It is used
-	// to enforce an opt-in restart budget (spec.leaderWorkerTemplate.maxGroupRestarts).
-	GroupRestartCountAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-count"
-
-	// GroupRestartCountsAnnotationKey stores per-group restart counts on the LWS object
-	// so the budget survives leader pod recreation.
+	// GroupRestartCountsAnnotationKey stores a JSON map of restart budget consumed by
+	// controller-initiated group recreation. Keys use "<revision>/<groupIndex>" and
+	// values are non-negative integers.
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
+
+	// GroupRestartBudgetExhaustedAnnotationKey marks a leader pod that the LWS controller
+	// has retained after its group exhausted maxGroupRestarts.
+	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
+
+	// GroupRestartBudgetCleanupFinalizer ensures the restart count is reset before
+	// a retained leader pod is deleted for manual recovery.
+	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
 )
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
@@ -188,10 +192,12 @@ type LeaderWorkerTemplate struct {
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
-	// maxGroupRestarts bounds how many times a group's leader pod can be recreated
-	// via the RecreateGroupOnPodRestart path before the group is marked terminally
-	// failed. It is opt-in: when unset (nil) the existing unbounded recreation
-	// behavior is preserved. This field is only valid when
+	// maxGroupRestarts bounds how many times the controller can recreate a group
+	// via the RecreateGroupOnPodRestart path. Once exhausted, the controller keeps
+	// the failed group for debugging and stops recreating it. Deleting the retained
+	// leader pod resets that revision/group's budget and allows recovery. It is
+	// opt-in: when unset (nil), the existing unbounded recreation behavior is
+	// preserved. This field is only valid when
 	// spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
 	// validating webhook rejects any other combination.
 	//
@@ -438,12 +444,9 @@ const (
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
 
-	// LeaderWorkerSetFailed means lws has reached a terminal failure state. This
-	// is currently set when a group has exhausted the restart budget configured
-	// via spec.leaderWorkerTemplate.maxGroupRestarts. Existing built-in
-	// conditions (Available, Progressing, UpdateInProgress) remain orthogonal;
-	// callers must tolerate this new type safely.
-	LeaderWorkerSetFailed LeaderWorkerSetConditionType = "Failed"
+	// LeaderWorkerSetDegraded means one or more groups are retained after exhausting
+	// the restart budget. Other replicas can remain available or continue progressing.
+	LeaderWorkerSetDegraded LeaderWorkerSetConditionType = "Degraded"
 )
 
 // +genclient
