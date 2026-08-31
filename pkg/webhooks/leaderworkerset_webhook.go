@@ -100,13 +100,13 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	specPath := field.NewPath("spec")
 
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"))...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, *oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, field.NewPath("spec", "leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"))...)
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot enable subGroupSize after the lws is already created"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot enable subGroupSize after the lws is already created"))
 	}
 	if newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil && oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "cannot remove subGroupSize after enabled"))
 	}
 	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
@@ -244,18 +244,18 @@ func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet)
 	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
 	subGroupSize := int32(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize)
 	if subGroupSize < 1 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize must be equal or greater than 1"))
 	}
 	if (size%subGroupSize != 0) && ((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size or size - 1 must be divisible by subGroupSize"))
 	}
 	if size < subGroupSize {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "subGroupSize cannot be larger than size"))
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil &&
 		(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "SubGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize"), lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
 	}
 	return allErrs
 }
