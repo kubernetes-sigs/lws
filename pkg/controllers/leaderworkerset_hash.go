@@ -225,12 +225,17 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
+	// Deployments do not propagate a service name into pod subdomains the way
+	// statefulsets do, so the template carries the shared headless service as the
+	// default. Admission overrides it when subdomainPolicy is UniquePerReplica.
+	if podTemplateApplyConfiguration.Spec == nil {
+		podTemplateApplyConfiguration.Spec = coreapplyv1.PodSpec()
+	}
+	podTemplateApplyConfiguration.Spec.WithSubdomain(lws.Name)
+
 	// The gate keeps a leader pod not-ready until its worker statefulset is ready,
 	// so the Deployment's maxUnavailable budget counts whole groups.
 	if *lws.Spec.LeaderWorkerTemplate.Size > 1 {
-		if podTemplateApplyConfiguration.Spec == nil {
-			podTemplateApplyConfiguration.Spec = coreapplyv1.PodSpec()
-		}
 		podTemplateApplyConfiguration.Spec.WithReadinessGates(
 			coreapplyv1.PodReadinessGate().WithConditionType(leaderworkerset.GroupReadyConditionType))
 	}

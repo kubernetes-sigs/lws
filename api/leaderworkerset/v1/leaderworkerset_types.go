@@ -109,11 +109,9 @@ const (
 	// can tell the identity scheme apart without fetching the LWS object.
 	GroupIdentityAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-identity"
 
-	// LeaderAddressAnnotationKey carries the leader address on worker pods when
-	// GroupIdentity=Hash: the leader's DNS name derived from the group key, or the
-	// leader pod IP for groups admitted before hostnames were assigned. The address
-	// only needs to be stable for one group generation because the whole group is
-	// recreated together.
+	// LeaderAddressAnnotationKey carries the leader's DNS address on worker pods
+	// in both group identity modes, so that pod admission can inject
+	// LWS_LEADER_ADDRESS without recomputing it.
 	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
 )
 

@@ -128,47 +128,12 @@ func addEnvVarsIfNotExists(c *corev1.Container, firstEnv corev1.EnvVar, e ...cor
 	c.Env = newEnvVars
 }
 
-// AddLWSVariables adds environment variable to every container.
-func AddLWSVariables(pod *corev1.Pod) error {
-	lwsName, found := pod.Labels[leaderworkerset.SetNameLabelKey]
-	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no name label found for pod %v", klog.KObj(pod))
-	}
-
-	groupIndex, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no group index label found for pod %v", klog.KObj(pod))
-	}
-
+// AddLWSVariables adds environment variable to every container. leaderAddress
+// is the DNS address of the group's leader pod.
+func AddLWSVariables(pod *corev1.Pod, leaderAddress string) error {
 	leaderAddressEnvVar := corev1.EnvVar{
 		Name:  leaderworkerset.LwsLeaderAddress,
-		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
-	}
-	if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
-		// Hash leaders have no ordinal DNS record. Their DNS name comes from the
-		// hostname and subdomain the webhook derives from the group key; workers
-		// carry it in an annotation. Pods admitted before hostnames were assigned
-		// fall back to the leader pod IP.
-		if addr := pod.Annotations[leaderworkerset.LeaderAddressAnnotationKey]; addr != "" {
-			leaderAddressEnvVar = corev1.EnvVar{
-				Name:  leaderworkerset.LwsLeaderAddress,
-				Value: addr,
-			}
-		} else if LeaderPod(*pod) {
-			if pod.Spec.Hostname != "" && pod.Spec.Subdomain != "" {
-				leaderAddressEnvVar = corev1.EnvVar{
-					Name:  leaderworkerset.LwsLeaderAddress,
-					Value: fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
-				}
-			} else {
-				leaderAddressEnvVar = corev1.EnvVar{
-					Name: leaderworkerset.LwsLeaderAddress,
-					ValueFrom: &corev1.EnvVarSource{
-						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
-					},
-				}
-			}
-		}
+		Value: leaderAddress,
 	}
 
 	size, found := pod.Annotations[leaderworkerset.SizeAnnotationKey]

@@ -44,7 +44,12 @@ func hashLeaderPod(lwsName string, extraAnnotations map[string]string) *corev1.P
 			},
 			Annotations: annotations,
 		},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "leader"}}},
+		Spec: corev1.PodSpec{
+			// The leader Deployment's pod template carries the shared headless
+			// service as the subdomain default.
+			Subdomain:  lwsName,
+			Containers: []corev1.Container{{Name: "leader"}},
+		},
 	}
 }
 

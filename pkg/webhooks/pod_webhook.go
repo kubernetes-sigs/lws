@@ -100,11 +100,12 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 	}
 	// adding labels for pods
 	if podutils.LeaderPod(*pod) {
-		if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
+		hashIdentity := pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash)
+		var groupUniqueKey string
+		if hashIdentity {
 			// Hash-identity leaders are created through a Deployment: the pod name is
 			// not known at admission (generateName), so the group identity is a fresh
 			// random key rather than a name-derived ordinal.
-			var groupUniqueKey string
 			if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
 				groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
 				pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
@@ -114,62 +115,38 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
 				pod.Labels[leaderworkerset.GroupIndexLabelKey] = groupUniqueKey
 			}
-			if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
-				SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
-			}
-			// The group key also provides the leader's DNS identity: hostname is a
-			// prefix of the key and subdomain is the headless service the record
-			// lives under. Both fields are immutable, so admission is the only
-			// chance to set them.
-			hostPrefix := hashDNSPrefix(groupUniqueKey)
+			// The group key also provides the leader's hostname, a prefix of the key.
+			// The field is immutable, so admission is the only chance to set it. The
+			// subdomain default comes from the pod template.
 			if pod.Spec.Hostname == "" {
-				pod.Spec.Hostname = hostPrefix
+				pod.Spec.Hostname = hashDNSPrefix(groupUniqueKey)
 			}
-			if pod.Spec.Subdomain == "" {
-				subdomain := pod.Labels[leaderworkerset.SetNameLabelKey]
-				if sp, foundSP := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]; foundSP && sp == string(leaderworkerset.SubdomainUniquePerReplica) {
-					// Service names must begin with a letter, so the per-replica
-					// service cannot be named the raw key.
-					subdomain = fmt.Sprintf("%s-%s", subdomain, hostPrefix)
+		} else {
+			// add group index label to group pods
+			if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
+				_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+				if groupIndex == -1 {
+					return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 				}
-				pod.Spec.Subdomain = subdomain
+				pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 			}
-			_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
-			subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
-			if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
-				// The leader pod always lands on SubGroup 0. The subgroup hash
-				// derives from the group key instead of the leader pod name.
-				pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
-				subGroupUniqueKey := genGroupUniqueKey(groupUniqueKey, "0")
-				pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
-				if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-					SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
-				}
+			// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
+			if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
+				groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
+				pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+			} else {
+				groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 			}
-			if err := podutils.AddLWSVariables(pod); err != nil {
-				return err
-			}
-			return nil
-		}
-		// add group index label to group pods
-		if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
-			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-			if groupIndex == -1 {
-				return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
-			}
-			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 		}
 		subdomainPolicy, foundSubdomainPolicy := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
 		if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
-			pod.Spec.Subdomain = pod.Name
-		}
-		// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
-		var groupUniqueKey string
-		if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
-			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
-			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
-		} else {
-			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+			if hashIdentity {
+				// Service names must begin with a letter, so the per-replica
+				// service cannot be named the raw key.
+				pod.Spec.Subdomain = fmt.Sprintf("%s-%s", pod.Labels[leaderworkerset.SetNameLabelKey], pod.Spec.Hostname)
+			} else {
+				pod.Spec.Subdomain = pod.Name
+			}
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
@@ -177,9 +154,14 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" && (subGroupPolicyType != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)) {
-			// The leader pod always lands on SubGroup 0.
+			// The leader pod always lands on SubGroup 0. In hash mode the subgroup
+			// hash derives from the group key instead of the leader pod name.
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = "0"
-			subGroupUniqueKey := genGroupUniqueKey(pod.Name, "0")
+			subGroupKeyInput := pod.Name
+			if hashIdentity {
+				subGroupKeyInput = groupUniqueKey
+			}
+			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
@@ -227,7 +209,23 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	if err := podutils.AddLWSVariables(pod); err != nil {
+	// Worker pods carry the leader's DNS address in an annotation stamped on the
+	// worker statefulset template by the pod controller. Leader pods derive it
+	// from their own DNS identity. Pods with neither carry an ordinal identity
+	// and their labels name the leader.
+	leaderAddress := pod.Annotations[leaderworkerset.LeaderAddressAnnotationKey]
+	if leaderAddress == "" {
+		groupIndex, foundGroupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
+		if !foundGroupIndex {
+			return fmt.Errorf("no group index label found for pod %s", pod.Name)
+		}
+		host := fmt.Sprintf("%s-%s", pod.Labels[leaderworkerset.SetNameLabelKey], groupIndex)
+		if podutils.LeaderPod(*pod) && pod.Spec.Hostname != "" {
+			host = pod.Spec.Hostname
+		}
+		leaderAddress = fmt.Sprintf("%s.%s.%s", host, pod.Spec.Subdomain, pod.Namespace)
+	}
+	if err := podutils.AddLWSVariables(pod, leaderAddress); err != nil {
 		return err
 	}
 

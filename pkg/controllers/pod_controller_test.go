@@ -71,6 +71,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
 				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
+				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				Replica(1).
@@ -145,6 +149,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -226,6 +234,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -309,6 +321,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").

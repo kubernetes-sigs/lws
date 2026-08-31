@@ -79,6 +79,10 @@ func TestLeaderDeploymentApplyConfig(t *testing.T) {
 		t.Errorf("template size annotation = %q, want 2", got)
 	}
 
+	if got := template.Spec.Subdomain; got == nil || *got != "test-hash" {
+		t.Errorf("template subdomain = %v, want test-hash", got)
+	}
+
 	foundGate := false
 	for _, gate := range template.Spec.ReadinessGates {
 		if gate.ConditionType != nil && *gate.ConditionType == leaderworkerset.GroupReadyConditionType {

@@ -123,14 +123,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
-		// In hash mode the per-replica service carries the group key derived name
-		// the webhook stamped as the leader's subdomain, since Service names must
-		// begin with a letter and the pod name is not known at admission.
-		serviceName := pod.Name
-		if leaderWorkerSet.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && pod.Spec.Subdomain != "" {
-			serviceName = pod.Spec.Subdomain
-		}
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, serviceName, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
+		// The per-replica service is named after the leader's subdomain: the pod
+		// name in ordinal mode, a group key derived name in hash mode.
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Spec.Subdomain, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -172,32 +167,27 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
 		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
 	}
+	// Leader pods always have a DNS identity: the statefulset controller
+	// assigns it in ordinal mode, admission in hash mode. The worker statefulset
+	// service name and the leader address stamped on its template derive from it.
+	if pod.Spec.Hostname == "" || pod.Spec.Subdomain == "" {
+		return ctrl.Result{}, fmt.Errorf("leader pod %s/%s has no hostname or subdomain", pod.Namespace, pod.Name)
+	}
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if hashIdentity {
-		// Workers reach the leader through the DNS record the webhook derived
-		// from the group key. Leaders admitted before hostnames were assigned
-		// fall back to the pod IP, which is stable for the group's lifetime
-		// because the whole group is recreated together when the leader is
-		// replaced.
-		var leaderAddress string
-		if pod.Spec.Hostname != "" && pod.Spec.Subdomain != "" {
-			leaderAddress = fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace)
-		} else {
-			if pod.Status.PodIP == "" {
-				log.V(2).Info("waiting for leader pod IP before creating the worker statefulset")
-				return ctrl.Result{RequeueAfter: time.Second}, nil
-			}
-			leaderAddress = pod.Status.PodIP
-		}
-		statefulSet.Spec.Template.WithAnnotations(map[string]string{
-			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
-			leaderworkerset.LeaderAddressAnnotationKey: leaderAddress,
-		})
+	// Workers reach the leader through its DNS name, stamped on the worker
+	// statefulset template so pod admission can inject LWS_LEADER_ADDRESS
+	// without recomputing it.
+	templateAnnotations := map[string]string{
+		leaderworkerset.LeaderAddressAnnotationKey: fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace),
 	}
+	if hashIdentity {
+		templateAnnotations[leaderworkerset.GroupIdentityAnnotationKey] = string(leaderworkerset.GroupIdentityHash)
+	}
+	statefulSet.Spec.Template.WithAnnotations(templateAnnotations)
 
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
 	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
@@ -513,14 +503,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
-	serviceName := leaderPod.Name
-	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-		serviceName = lws.Name
-	} else if currentLws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && leaderPod.Spec.Subdomain != "" {
-		// The hash mode per-replica service is named by the leader's subdomain
-		// (group key derived), not the leader pod name.
-		serviceName = leaderPod.Spec.Subdomain
-	}
+	// The service name always matches the leader's subdomain in every mode and
+	// subdomain policy.
+	serviceName := leaderPod.Spec.Subdomain
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
