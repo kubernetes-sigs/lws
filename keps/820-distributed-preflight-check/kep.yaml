@@ -1,4 +1,4 @@
-title: Fail-Fast Restart Budget and Init-Phase DNS for LeaderWorkerSet
+title: Bounded Group Recovery and Init-Phase DNS for LeaderWorkerSet
 kep-number: 820
 authors:
   - "@panpan0000"

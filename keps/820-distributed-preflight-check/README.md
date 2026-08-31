@@ -1,20 +1,18 @@
-
-# KEP-820: Fail-Fast Restart Budget and Init-Phase DNS for LeaderWorkerSet
+# KEP-820: Bounded Group Recovery and Init-Phase DNS for LeaderWorkerSet
 
 <!-- toc -->
 - [Summary](#summary)
-  - [Story](#story)
 - [Goals](#goals)
 - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-- [Why No Failed Before](#why-no-failed-before)
+  - [User-visible behavior](#user-visible-behavior)
 - [Design Details](#design-details)
   - [API](#api)
-  - [Controller Behavior](#controller-behavior)
-  - [Status Semantics](#status-semantics)
-  - [Operational Notes](#operational-notes)
-- [Risks and Mitigations](#risks-and-mitigations)
-- [Drawbacks](#drawbacks)
+  - [Controller behavior](#controller-behavior)
+  - [Status and recovery](#status-and-recovery)
+  - [Counter lifetime](#counter-lifetime)
+  - [Init-phase DNS](#init-phase-dns)
+- [Risks and Drawbacks](#risks-and-drawbacks)
 - [Alternatives](#alternatives)
 - [Test Plan](#test-plan)
 - [Implementation History](#implementation-history)
@@ -24,70 +22,51 @@
 
 This KEP adds two capabilities to LeaderWorkerSet (LWS):
 
-1. `leaderWorkerTemplate.maxGroupRestarts` plus a terminal `Failed` condition for bounded retries.
-2. Eager per-leader headless Service creation so peer FQDNs exist from the
-   start of the init phase. LWS retains its historical behavior of publishing
-   not-ready addresses on these Services.
+1. `leaderWorkerTemplate.maxGroupRestarts` bounds automatic group recovery under
+   `RecreateGroupOnPodRestart`.
+2. LWS creates per-leader headless Services before leader Pods so peer FQDNs
+   exist during init.
 
-This proposal addresses two generic LWS gaps:
-- group recreation can loop forever without a terminal failure boundary.
-- peer DNS FQDN publication during the init-container phase depends on a
-  per-replica Service that is created lazily (after the leader pod appears),
-  so early init containers can hit NXDOMAIN races.
-It applies to any workload with init-phase peer communication and to any repeated
-group recreation caused by failures in init-containers or main containers.
-
-
-### Story
-
-When users run distributed pre-checks (for example NCCL tests) in LWS init-containers,
-a failure can push the group into an infinite recreate loop in the `RecreateGroupOnPodRestart` path.
-This KEP adds a fail-fast boundary after N group recreation attempts, and also makes
-leader FQDN resolvable from the start of the init phase (eager per-leader Service
-creation; not-ready address publishing stays on by default as it always has been).
-
+The restart budget applies to any failure that enters the
+`RecreateGroupOnPodRestart` path. Init-container preflight checks are one use
+case, not a separate lifecycle or status model.
 
 ## Goals
 
-1. Provide a native fail-fast mechanism after N group recreation attempts,
-   regardless of whether the trigger is init-container failure or main-container failure.
-2. Enable init-containers to resolve `LWS_LEADER_ADDRESS` during init phase.
-3. Keep the `maxGroupRestarts` feature backward compatible and opt-in (`nil` by default).
-4. Reuse existing env vars (`LWS_LEADER_ADDRESS`, `LWS_GROUP_SIZE`, `LWS_WORKER_INDEX`).
+1. Stop unbounded LWS-initiated group recreation after a user-selected number
+   of attempts.
+2. Retain the current failed group for diagnosis after the budget is exhausted.
+3. Report partial failure without making the whole LWS terminal.
+4. Define clear user actions for recovery.
+5. Make `LWS_LEADER_ADDRESS` resolvable during init.
+6. Preserve existing behavior when `maxGroupRestarts` is unset.
 
 ## Non-Goals
 
-1. Add new env vars for this feature.
-2. Ship built-in preflight images/scripts.
-3. Change container-level restart semantics.
-4. Add automatic remediation after failure.
+1. Change kubelet container restart behavior.
+2. Release resources automatically after the restart budget is exhausted.
+3. Add preflight-specific phases, images, scripts, or environment variables.
+4. Roll back or repair the workload automatically.
 
 ## Proposal
 
-Decision matrix:
+`maxGroupRestarts` is a circuit breaker for LWS-initiated `RecreateGroup`
+actions. It does not make the LWS or replica a Kubernetes terminal object.
 
-| Problem | Solution | Origin |
+### User-visible behavior
+
+| State or user action | LWS action | Status and recovery |
 |---|---|---|
-| Infinite recreate loop, no terminal state (including main-container repeated failure) | `maxGroupRestarts` + `Failed` condition | LWS requirement |
-| Init-container DNS publication races with lazy per-replica Service creation | Eager per-leader headless Service creation while preserving the historical not-ready address behavior | Kubeflow Trainer PR #3417 discussion |
-| "Why not startup/readiness probe?" | Keep as rejected alternative | Trainer discussion on probe semantics |
-| Need more env vars? | No, reuse existing LWS envs | Existing LWS behavior |
+| Budget remains | Delete the leader and recreate the group | `Progressing=True` while recovery is active |
+| Budget exhausted | Stop LWS-initiated recreation and retain the current group | `Degraded=True`, reason `ReplicaRestartBudgetExceeded`; `Progressing=False` if nothing else is progressing |
+| User deletes the retained leader/group | Create a replacement group with a fresh budget for that replica | Logs from the deleted Pods are lost; `Degraded` clears after the group recovers |
+| User updates the Pod template | Roll out a new revision with a fresh per-replica budget | Normal rollout conditions apply |
+| User increases `maxGroupRestarts` | Resume automatic recovery with the additional budget | The retained group may be recreated on the next reconcile |
 
-User-visible behavior change:
-
-1. Default behavior is unchanged.
-   - If `maxGroupRestarts` is unset, group recreation remains unbounded.
-   - LWS-owned headless Services continue publishing not-ready addresses as they
-     always have (effectively `true`).
-2. If users set `leaderWorkerTemplate.maxGroupRestarts: N`,
-   LWS allows at most `N` group recreations in `RecreateGroupOnPodRestart` path.
-3. After the limit is exceeded, LWS sets `Failed=True` and stops further group recreation.
-4. `Failed` is a new LWS condition type added by this KEP.
-   - Current built-in conditions are `Available`, `Progressing`, `UpdateInProgress`.
-   - Controllers/clients that parse `status.conditions` should tolerate and handle the new type.
-5. Under `UniquePerReplica`, the LWS reconciler now eagerly creates one headless
-   Service per leader pod, so the leader's DNS records exist before any init
-   container starts and no longer race with the pod reconciler's lazy creation.
+`ReadyReplicas` continues to report the number of ready groups. `Available`,
+`Progressing`, and `Degraded` are independent. For example, an LWS with nine
+ready replicas and one retained failed replica may have `Available=True`,
+`Progressing=False`, and `Degraded=True`.
 
 Example:
 
@@ -104,146 +83,137 @@ spec:
     subdomainPolicy: UniquePerReplica
 ```
 
-## Why No Failed Before
-
-Historically, LWS was designed with a "keep reconciling" model:
-
-1. Built-in conditions (`Available`, `Progressing`, `UpdateInProgress`) describe
-   availability/progress/rollout, not terminal failure.
-2. For restart paths, previous behavior assumed continuous self-healing was preferred
-   over introducing a terminal state at LWS level.
-3. There was no user-configured retry budget in API, so introducing `Failed` would
-   have been ambiguous ("failed after how many attempts?").
-
-This KEP changes that precondition by adding an explicit budget
-(`maxGroupRestarts`). With a clear threshold, `Failed` now has deterministic and
-user-controlled semantics, and avoids unbounded recreate loops.
-
 ## Design Details
 
 ### API
 
-API changes in this KEP:
-
-1. **Spec field additions (new user knobs)**:
-   - `spec.leaderWorkerTemplate.maxGroupRestarts` (*int32, optional, minimum 0)
-2. **Validation constraint**: `maxGroupRestarts` is only valid when `restartPolicy` is `RecreateGroupOnPodRestart`. The validating webhook rejects any LWS with `maxGroupRestarts` set but a different restart policy.
-3. **Status semantic extension**:
-   - no new status field is added;
-   - `status.conditions[]` introduces a new condition type value: `Failed`.
-4. **Compatibility**:
-   - CRD schema shape for `status.conditions` stays the same (`[]metav1.Condition`);
-   - clients/controllers that switch on known condition types must handle unknown/new values safely.
+This KEP adds one optional spec field and one condition type:
 
 ```go
-type NetworkConfig struct {
-    // +kubebuilder:validation:Enum={Shared,UniquePerReplica}
-    SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
-}
-
 type LeaderWorkerTemplate struct {
+    // maxGroupRestarts is the maximum number of LWS-initiated group
+    // recreations allowed for a replica before automatic recovery is
+    // suppressed. When unset, group recreation remains unbounded.
     // +optional
     // +kubebuilder:validation:Minimum=0
     MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 }
 
 const (
-    LeaderWorkerSetFailed LeaderWorkerSetConditionType = "Failed"
-)
-
-const (
-    GroupRestartCountAnnotationKey = "leaderworkerset.sigs.k8s.io/group-restart-count"
+    LeaderWorkerSetDegraded LeaderWorkerSetConditionType = "Degraded"
 )
 ```
 
-### Controller Behavior
+`maxGroupRestarts` is valid only with `restartPolicy:
+RecreateGroupOnPodRestart`. The validating webhook rejects other combinations.
 
-1. **Webhook validation**:
-   before creating or updating an LWS, the validating webhook checks that `maxGroupRestarts` is only set when `restartPolicy: RecreateGroupOnPodRestart`. If `maxGroupRestarts` is set with a different restart policy, the webhook denies the request with a clear error message.
-2. Restart reconcile path:
-   for `RecreateGroupOnPodRestart`, controller checks group restart budget before leader deletion.
-3. In `RecreateGroupOnPodRestart` path, before deleting leader pod:
-   - read `group-restart-count` annotation;
-   - if `count >= maxGroupRestarts`, stop recreation and mark replica failed;
-   - otherwise increment annotation and continue current recreation flow.
-4. The counter is group-level, not init-only: any failure path that enters
-   `RecreateGroupOnPodRestart` contributes to the same retry budget.
-5. Under `UniquePerReplica`, the LWS reconciler eagerly creates a per-leader
-   headless Service (named after the leader pod, selector `{lws-name, group-index}`)
-   for every existing leader pod, so the leader FQDN used by `LWS_LEADER_ADDRESS`
-   exists before init containers run instead of being created lazily by the pod
-   reconciler. Under `Shared`, the single shared Service is already created
-   eagerly and keeps its current timing.
-6. Counter persistence is annotation-based so controller restarts do not reset state.
+No per-group phase or preflight-specific status is added. `Degraded=True` is an
+LWS-level aggregate condition. Its `Reason` is
+`ReplicaRestartBudgetExceeded`, and its message identifies the affected
+replica or replicas.
 
-### Status Semantics
+### Controller behavior
 
-1. `maxGroupRestarts` unset: current behavior (unbounded recreation).
-2. `maxGroupRestarts: 0`: first group-level failure becomes terminal.
-3. `maxGroupRestarts` requires `restartPolicy: RecreateGroupOnPodRestart` (enforced by webhook).
-4. Any replica exceeding limit sets LWS condition `Failed=True`
-   with reason `MaxGroupRestartsExceeded`.
-5. Failed replica is excluded from available-ready accounting.
+For each failure handled by `RecreateGroupOnPodRestart`:
 
-### Operational Notes
+1. If the replica has remaining budget, increment the count and delete the
+   leader. Existing group recreation then creates a replacement.
+2. If the budget is exhausted, do not delete the leader. Record that automatic
+   recovery is suppressed for the current replica and set `Degraded=True`.
+3. Repeated Pod events while suppressed are idempotent and do not increase the
+   restart count.
 
-1. Restart counting:
-   one "group restart" means one leader deletion in `RecreateGroupOnPodRestart` path.
-2. Counter persistence:
-   - the `group-restart-count` annotation on the leader pod is the source of truth
-     the LWS-level reconciler reads to surface `Failed`;
-   - the `group-restart-counts` annotation on the LWS object survives leader pod
-     recreation, so a recreated leader inherits the group's counter and neither
-     pod recreation nor controller restarts reset the budget;
-   - the budget read path takes the max of the two sides and sync only raises
-     (never downgrades) the pod annotation, so a lagging annotation from a
-     partial write cannot undercount the budget.
-3. After terminal failure:
-   no further group recreation is attempted for the failed replica; pod is retained for debugging.
-4. DNS behavior:
-   LWS continues publishing not-ready addresses, matching the historical behavior.
-5. `startupPolicy: LeaderReady` interaction:
-   worker groups are still created only after leader is ready; this proposal does not alter that gate.
+The count records LWS-initiated group recreations. Exhaustion is tracked
+separately, so reaching the limit does not record a restart that did not occur.
 
-## Risks and Mitigations
+Suppression applies only to the LWS `RecreateGroup` action. Kubelet may continue
+to restart containers, and StatefulSet, rollout, scale, eviction, and deletion
+behavior remain active.
 
-1. Strict `maxGroupRestarts` may fail transient issues.
-   Mitigation: opt-in, user-controlled threshold.
-2. Annotation increment and delete are not fully atomic.
-   Mitigation: acceptable best-effort bound for fail-fast policy.
+### Status and recovery
 
-## Drawbacks
+`Degraded=True` means at least one desired replica is currently retained after
+exhausting its automatic recovery budget. It can coexist with `Available=True`
+and `Progressing=True`.
 
-1. A strict restart budget can convert transient failures into terminal failure.
-2. Keeping failed pods for debugging may hold cluster resources until user cleanup.
+If no other replica or rollout is making progress, LWS sets
+`Progressing=False` with reason `ReplicaRestartBudgetExceeded`. If other work is
+still progressing, both `Progressing=True` and `Degraded=True` are valid.
+
+When a retained group becomes ready in place, LWS clears `Degraded`, but it does
+not automatically reset the budget. This prevents a workload that briefly
+becomes ready before failing again from bypassing the limit.
+
+Deleting the retained leader or group is an explicit recovery action. LWS
+clears that replica's suppressed state and count, and the replacement starts
+with a fresh budget. A new Pod-template revision also starts with a fresh budget.
+
+### Counter lifetime
+
+The counter is scoped to a replica ordinal and Pod-template revision. It
+survives controller restarts and LWS-initiated group recreation. LWS clears it
+when:
+
+- the user deletes the retained replica for recovery;
+- the replica moves to a new Pod-template revision; or
+- scale-down removes the replica ordinal.
+
+Increasing `maxGroupRestarts` adds usable budget to the current count. Merely
+becoming Ready does not reset the counter.
+
+### Init-phase DNS
+
+Under `UniquePerReplica`, the LWS reconciler creates a headless Service for each
+leader ordinal before the leader StatefulSet creates its Pod. The Service uses
+the selector `{lws-name, group-index}`. Under `Shared`, LWS continues to create
+the shared Service eagerly.
+
+LWS keeps its existing behavior of publishing not-ready addresses. No new DNS
+API field is added.
+
+## Risks and Drawbacks
+
+1. A small restart budget may stop recovery after a transient failure. The
+   field is opt-in and user controlled.
+2. Retained Pods preserve the current diagnostic context but continue to reserve
+   scheduled resources, including GPUs. Logs remain subject to kubelet and
+   container-runtime retention.
+3. Deleting the retained group releases its resources and logs. Users should
+   collect diagnostics before recovery.
+4. Counter and suppression updates must tolerate controller restarts and
+   concurrent failures in different replicas.
 
 ## Alternatives
 
-1. Startup/readiness probes: rejected.
-   Probes run with main process and do not provide strict pre-main gating; they also
-   do not solve the Service creation timing race for init-phase DNS.
-2. Entrypoint wrapper script: rejected due to image/command coupling.
-3. Sidecar-based checks: rejected due to lifecycle mismatch for one-shot gate.
-4. User manually patches Service: rejected because controller reconciliation overwrites it.
+1. **Set `Failed=True` on the LWS.** Rejected because LWS is a continuously
+   reconciled, multi-replica workload. One exhausted replica must not make the
+   whole object terminal.
+2. **Delete the group after exhaustion.** Rejected because its owner would
+   recreate it and restart the loop. Preventing replacement would require a
+   separate per-replica suspension design and would discard the current logs.
+3. **Use startup or readiness probes.** Rejected because probes do not bound
+   group-level recreation or solve Service creation timing during init.
+4. **Use entrypoint wrappers or sidecars.** Rejected because they couple the
+   policy to workload images and do not provide an LWS-level recovery budget.
 
 ## Test Plan
 
-1. Unit:
-   - restart counter read/increment logic;
-   - threshold transition to `Failed`.
-   - headless Services continue publishing not-ready addresses.
-2. Integration:
-   - bounded recreate behavior with `maxGroupRestarts`;
-   - no regression when `maxGroupRestarts` is unset;
-   - eager per-leader headless Service creation for both subdomain policies.
-3. e2e:
-   - init-container peer check succeeds with the historical not-ready address behavior;
-   - repeated init failure reaches `Failed` after configured limit.
+1. Unit and integration tests cover unset, zero, and non-zero budgets; exact
+   recreate counts; suppression without leader deletion; and idempotent events.
+2. Status tests cover partial degradation, all replicas degraded, concurrent
+   progress, and recovery to `Degraded=False`.
+3. Recovery tests cover manual deletion, a new Pod-template revision, increasing
+   the limit, scale-down cleanup, and controller restart.
+4. DNS tests verify eager Service creation for `Shared` and
+   `UniquePerReplica`, including scale-up and rolling updates.
+5. An end-to-end test verifies that a repeatedly failing init container exhausts
+   the budget, retains its group, and exposes the expected condition.
 
 ## Implementation History
 
 - 2026-04-16: Initial draft.
-- 2026-04-16: Simplified structure and clarified universal scope beyond preflight-only use.
-- 2026-08: Simplified the KEP to preserve the historical not-ready address
-  behavior without adding a new API knob; the implementation change is the
-  eager per-leader Service creation that closes the init-phase DNS timing race.
+- 2026-04-16: Clarified that the restart budget applies beyond preflight checks.
+- 2026-08: Removed the `publishNotReadyAddresses` API knob and kept the existing
+  not-ready address behavior.
+- 2026-08: Replaced whole-LWS terminal failure with bounded per-replica recovery,
+  aggregate degradation, and explicit recovery semantics.
