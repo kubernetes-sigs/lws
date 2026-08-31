@@ -304,11 +304,17 @@ const (
 	// will share. The host names look like:
 	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
 	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	// With groupIdentity Hash, the leader host name is an 8 character prefix of
+	// the group key and worker host names extend the leader pod name:
+	// Group a1b2c3d4...: a1b2c3d4.my-lws, my-lws-7d9f8b6c4-x2kkp-1.my-lws
 	SubdomainShared SubdomainPolicy = "Shared"
 	// UniquePerReplica will create a headless service per replica
 	// The pod host names look like:
 	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
 	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	// With groupIdentity Hash, the per replica service is named with the group
+	// key prefix instead of the replica ordinal:
+	// Group a1b2c3d4...: a1b2c3d4.my-lws-a1b2c3d4, my-lws-7d9f8b6c4-x2kkp-1.my-lws-a1b2c3d4
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 
