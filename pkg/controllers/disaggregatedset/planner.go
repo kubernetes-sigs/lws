@@ -19,13 +19,15 @@ limitations under the License.
 // # Rolling update algorithm
 //
 // A rollout has two sides — OLD (draining) and NEW (scaling up) — that
-// advance independently in discrete minUnit ticks. Per side:
+// advance independently in discrete smallestReplicaFraction ticks. Per side:
 //
-//	totalSteps = max(role_sizes)   // finest granularity: one pod of the largest role
-//	minUnit    = 1 / totalSteps    // side-level fraction per tick
+//	totalSteps              = max(role_sizes)          // one step per pod of the largest role
+//	smallestReplicaFraction = 1 / max(role_sizes)      // side-level fraction per tick
+//	largestReplicaFraction  = 1 / minPositive(role_sizes) // largest one-pod fraction
 //
-// Example: on a 5P/2D side, minUnit = 20%. Prefill moves one pod per tick;
-// decode holds at its current count for several ticks between its own moves.
+// Example: on a 5P/2D side, smallestReplicaFraction = 20%. Prefill moves one
+// pod per tick; decode holds at its current count between some ticks. The
+// largestReplicaFraction is 50% and bounds the rounding gap between roles.
 //
 // wantReplicas for a role at step k uses CEIL on both sides:
 //   - NEW: ceil(roleSize × k / totalSteps)
@@ -47,8 +49,9 @@ limitations under the License.
 // # Capacity envelope
 //
 // maxSurge and maxUnavailable remain absolute per-role API limits. The planner
-// projects them onto the shared minUnit scale to choose ratio-preserving moves;
-// consequently a role may intentionally use less than its allowed maximum:
+// projects them onto the shared smallestReplicaFraction scale to choose
+// ratio-preserving moves; consequently a role may intentionally use less than
+// its allowed maximum:
 //
 //	surge_pods      = ceil(roleSize × maxSurge       / totalSteps)
 //	unavail_pods    = ceil(roleSize × maxUnavailable / totalSteps)
@@ -108,8 +111,8 @@ type RollingUpdateConfig struct {
 
 // sideSize returns the side's total step count = max(replica count across
 // roles in the side). Returns 0 if the side has no work (all replicas 0).
-// Using max gives the finest granularity: one minUnit = 1/max_role_size,
-// matching the largest role's atomic pod. See package doc.
+// Using max gives the finest granularity: one smallestReplicaFraction equals
+// 1/max_role_size, matching the largest role's atomic pod. See package doc.
 func sideSize(replicas map[string]int) int {
 	maxN := 0
 	for _, n := range replicas {
@@ -195,7 +198,7 @@ func wantReplicas(roleSize, step, totalSteps int, drained bool) int {
 //
 // See the package doc for the algorithm. In short:
 //  1. Find each side's progress (the slowest role's fraction-done step).
-//  2. Aim to advance each side by one step (= one minimalUnit).
+//  2. Aim to advance each side by one step (= its smallestReplicaFraction).
 //  3. For each role, compute the desired count at that next step, then cap by
 //     the surge / unavailable budgets.
 func ComputeNextStep(
@@ -215,11 +218,11 @@ func ComputeNextStep(
 	// rollouts (initialOld == target) they're equal.
 	budgetSteps := max(newTotalSteps, oldTotalSteps)
 
-	// 2. Two step concepts. progressStep is the baseline advance (+1 minUnit
-	// per tick) used for completion detection. specTargetStep is where spec
-	// can reach *this tick*: baseline + surge (NEW) / + unavail (OLD). This
-	// lets each tick fill the full surge/unavail budget in one round-trip
-	// instead of leaving it on the table.
+	// 2. Two step concepts. progressStep is the baseline advance (+1
+	// smallestReplicaFraction per tick) used for completion detection.
+	// specTargetStep is where spec can reach *this tick*: baseline + surge
+	// (NEW) / + unavail (OLD). This lets each tick fill the full surge/unavail
+	// budget in one round-trip instead of leaving it on the table.
 	newProgress := sideProgress(roleNames, currentNew, targetNew, newTotalSteps, false)
 	oldProgress := sideProgress(roleNames, currentOld, initialOld, oldTotalSteps, true)
 	// OLD may already be ahead because MaxUnavailable was spent on an earlier
@@ -254,7 +257,8 @@ func ComputeNextStep(
 
 		cfg := config[role]
 		roleSize := max(initialOld[role], targetNew[role])
-		// Project the per-role API limits onto the shared minUnit scale.
+		// Project the per-role API limits onto the shared
+		// smallestReplicaFraction scale.
 		// Largest role can use the full allowance; smaller roles intentionally
 		// use less to keep the planned move proportional.
 		surgePods := projectBudget(roleSize, cfg.MaxSurge, budgetSteps)

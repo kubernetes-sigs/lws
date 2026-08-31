@@ -746,8 +746,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 	})
 
 	Context("Slow Rollout with Imbalanced Roles", func() {
-		// This test validates that minimalUnit / sync-point coordination works
-		// in practice when pods have realistic startup and termination latency.
+		// This test validates that replica-fraction coordination works in
+		// practice when pods have realistic startup and termination latency.
 		// All other rollout tests use pause images that become ready in ~1s, so
 		// per-role timing is symmetric and the executor's isRevisionStable gate
 		// is never stressed. Here we use 5s startup + 3-6s random termination
@@ -755,8 +755,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		// (faster role parked at boundary waiting for slower role) become
 		// observable.
 		//
-		// Config: 8P/4D, planner minUnit = 1/max(8,4) = 1/8. Decode
-		// absorbs every other tick, so its observable rounding window is 1/4.
+		// Config: 8P/4D, smallestReplicaFraction = 1/max(8,4) = 1/8.
+		// Decode absorbs every other tick, so largestReplicaFraction = 1/4.
 		// Expected rollout time: ~60-90s.
 		const deploymentName = "test-slow-rollout"
 		const (
@@ -845,12 +845,12 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			}
 
 			By("verifying sync-point coordination invariant on new-replica progress")
-			// minimalUnit = 1/4. Neither role's progress (newReplicas/target)
-			// should be more than 1 sync window (= minimalUnit) ahead of the
-			// other. Equivalently: |newP/targetP - newD/targetD| <= 1/4.
+			// largestReplicaFraction = 1/min(8,4) = 1/4. Neither role's
+			// progress (newReplicas/target) should be more than that fraction
+			// ahead of the other: |newP/targetP - newD/targetD| <= 1/4.
 			// Small epsilon accounts for the moment between executor API calls
 			// where one role's spec has updated and the other hasn't yet.
-			const minimalUnit = 0.25
+			const largestReplicaFraction = 0.25
 			const epsilon = 0.01
 			for i, state := range observedStates {
 				if state.NewPrefill == 0 && state.NewDecode == 0 {
@@ -862,9 +862,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				if diff < 0 {
 					diff = -diff
 				}
-				Expect(diff).To(BeNumerically("<=", minimalUnit+epsilon),
-					"sync coordination violated at state %d %s: progress diff %.3f > minimalUnit %.3f",
-					i, state, diff, minimalUnit)
+				Expect(diff).To(BeNumerically("<=", largestReplicaFraction+epsilon),
+					"sync coordination violated at state %d %s: progress diff %.3f > largestReplicaFraction %.3f",
+					i, state, diff, largestReplicaFraction)
 			}
 
 			By("printing observed rollout summary")

@@ -71,7 +71,7 @@ func totalPerRole(s UpdateStep, role string) int {
 }
 
 // =============================================================================
-// Minimal Unit Tests
+// Smallest Replica Fraction Tests
 // =============================================================================
 
 // TestSideSize verifies the step-count helper: number of steps a side has =
@@ -263,11 +263,11 @@ func TestRolloutSafetyInvariantsExhaustive(t *testing.T) {
 
 // TestSyncCoordination_NewSide checks the in-side coordination invariant:
 // for the NEW side, no role's progress fraction (current/target) is more than
-// one minimalUnit ahead of another's. This is what the OLD test asserted
-// using sync-window indices; the invariant is the same, expressed in
+// the largestReplicaFraction ahead of another's. This is what the OLD test
+// asserted using sync-window indices; the invariant is the same, expressed in
 // fractions directly.
 func TestSyncCoordination_NewSide(t *testing.T) {
-	// 8 prefill, 3 decode → minimalUnit = 1/3 (~33%).
+	// 8 prefill, 3 decode → largestReplicaFraction = 1/min(8,3) = 1/3.
 	roles := []string{"P", "DL"}
 	initial := makeRoles(roles, []int{8, 3})
 	target := makeRoles(roles, []int{8, 3})
@@ -276,7 +276,7 @@ func TestSyncCoordination_NewSide(t *testing.T) {
 	require.True(t, completes(steps, roles, target))
 
 	const epsilon = 1e-9
-	minU := 1.0 / 3.0
+	const largestReplicaFraction = 1.0 / 3.0
 	for i, s := range steps {
 		pFrac := float64(s.New["P"].Replicas) / float64(target["P"])
 		dlFrac := float64(s.New["DL"].Replicas) / float64(target["DL"])
@@ -284,9 +284,9 @@ func TestSyncCoordination_NewSide(t *testing.T) {
 		if diff < 0 {
 			diff = -diff
 		}
-		assert.LessOrEqual(t, diff, minU+epsilon,
-			"step %d: P frac %.3f vs DL frac %.3f (diff %.3f > minU %.3f)",
-			i, pFrac, dlFrac, diff, minU)
+		assert.LessOrEqual(t, diff, largestReplicaFraction+epsilon,
+			"step %d: P frac %.3f vs DL frac %.3f (diff %.3f > largestReplicaFraction %.3f)",
+			i, pFrac, dlFrac, diff, largestReplicaFraction)
 	}
 }
 
@@ -314,7 +314,9 @@ func TestRolloutEndsAtTarget(t *testing.T) {
 // =============================================================================
 
 func TestPerRoleGranularity_DecodeStepping(t *testing.T) {
-	// With 2P, 10D: minimalUnit = 1/2 = 50%. Decode advances 1 at a time.
+	// With 2P, 10D, smallestReplicaFraction = 1/max(2,10) = 1/10,
+	// so decode advances one replica at a time. The prefill role's step is the
+	// largestReplicaFraction: 1/min(2,10) = 1/2.
 	roles := []string{"P", "D"}
 	initial := makeRoles(roles, []int{2, 10})
 	target := makeRoles(roles, []int{2, 10})
@@ -514,13 +516,13 @@ func TestSurgeUnavailAcceleration(t *testing.T) {
 }
 
 // =============================================================================
-// Two-minimalUnit Tests
+// Side-Specific Smallest Replica Fraction Tests
 // =============================================================================
 
-// TestTwoMinimalUnits_IndependentProgression verifies that with different
-// old/new step counts, each side advances at its own rhythm. A=4P/4D →
-// C=12P/3D gives oldSize=4 (drain in 4 steps) and newSize=3 (scale up in 3).
-func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
+// TestSideSpecificSmallestReplicaFractions_IndependentProgression verifies
+// that each side advances at its own smallestReplicaFraction. A=4P/4D →
+// C=12P/3D gives an old-side fraction of 1/4 and a new-side fraction of 1/12.
+func TestSideSpecificSmallestReplicaFractions_IndependentProgression(t *testing.T) {
 	roles := []string{"prefill", "decode"}
 	initial := map[string]int{"prefill": 4, "decode": 4}
 	target := map[string]int{"prefill": 12, "decode": 3}
@@ -542,12 +544,12 @@ func TestTwoMinimalUnits_IndependentProgression(t *testing.T) {
 	}
 }
 
-// TestTwoMinimalUnits_TinyRevisionAbsorbed verifies that summing the old side
-// dilutes a tiny revision: a 1P/1D revision mixed with a 20P/4D one yields
-// an old-side step count of max(21,5) = 21 (the largest role sets pace).
-// The drain rhythm is governed by the sum, so the tiny revision doesn't
-// poison coordination.
-func TestTwoMinimalUnits_TinyRevisionAbsorbed(t *testing.T) {
+// TestSideSpecificSmallestReplicaFractions_TinyRevisionAbsorbed verifies that
+// summing the old side dilutes a tiny revision: a 1P/1D revision mixed with a
+// 20P/4D one yields an old-side step count of max(21,5) = 21 (the largest role
+// sets pace). The drain rhythm is governed by the sum, so the tiny revision
+// doesn't poison coordination.
+func TestSideSpecificSmallestReplicaFractions_TinyRevisionAbsorbed(t *testing.T) {
 	combined := map[string]int{"prefill": 21, "decode": 5}
 	assert.Equal(t, 21, sideSize(combined),
 		"summed old side should have 21 steps (max), driven by largest role")
