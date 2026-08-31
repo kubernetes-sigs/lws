@@ -36,9 +36,21 @@ If you need to add capacity without disturbing pods that are already serving, sc
 
 ## Resizing With Subgroups
 
-`subGroupSize` is immutable, but `size` is not. The two are validated against each other on every update, so a resize that breaks the [subgroup sizing rules](../subgroups/) is rejected by the webhook with `size or size - 1 must be divisible by subGroupSize`.
+`subGroupSize` is immutable, but `size` is not, and the two are validated against each other on every update. A resize that breaks the [subgroup sizing rules](../subgroups/) is rejected, and which sizes are valid depends on the subgroup policy type.
 
-The rejection is reported against `spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize`, even though `size` is the field you changed. With `subGroupSize: 8`, valid sizes are 8, 9, 16, 17, 24, 25 and so on. To move to a size that does not fit, recreate the LeaderWorkerSet with both fields set together.
+Under `LeaderWorker`, the default, either `size` or `size - 1` must be divisible by `subGroupSize`. With `subGroupSize: 8` that allows 8, 9, 16, 17, 24, 25 and so on, and anything else is rejected with:
+
+```
+size or size - 1 must be divisible by subGroupSize
+```
+
+Under `LeaderExcluded` the leader belongs to no subgroup, so `size - 1` must be divisible on its own. With `subGroupSize: 8` that allows 9, 17, 25 and so on. Note that `size: 8` is rejected here even though it is valid under the default policy:
+
+```
+size-1 must be divisible by subGroupSize when using LeaderExcluded
+```
+
+Either way the rejection is reported against `spec.leaderWorkerTemplate.SubGroupPolicy.subGroupSize`, naming a field you did not change. To move to a size that does not fit, recreate the LeaderWorkerSet with both `size` and `subGroupSize` set together.
 
 ## Crossing size: 1
 
