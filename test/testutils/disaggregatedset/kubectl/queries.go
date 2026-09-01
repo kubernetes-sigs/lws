@@ -114,23 +114,6 @@ func CountRunningPods(deploymentName string) int {
 	return len(GetNonEmptyLines(output))
 }
 
-// CountReadyPods returns the number of pods whose Ready condition is true.
-func CountReadyPods(deploymentName string) int {
-	output, err := Pods(deploymentName).
-		JSONPath(`{range .items[*]}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\n"}{end}{end}`).
-		RunQuiet()
-	if err != nil {
-		return 0
-	}
-	ready := 0
-	for _, status := range strings.Fields(output) {
-		if status == "True" {
-			ready++
-		}
-	}
-	return ready
-}
-
 // CountLWS returns the number of LWS resources for a deployment.
 func CountLWS(deploymentName string) int {
 	output, err := LWS(deploymentName).Output("name").RunQuiet()
@@ -219,10 +202,6 @@ func sumInts(output string) int {
 // CleanupDeployment removes a DisaggregatedSet and all related resources.
 func CleanupDeployment(deploymentName string) {
 	_, _ = Delete("disaggregatedset", deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
-	// RoleScalers are normally garbage-collected through the DisaggregatedSet
-	// owner reference. Delete them explicitly as well so a following test can
-	// safely reuse the same DisaggregatedSet name without racing that GC.
-	_, _ = Delete("disaggregatedsetrolescaler").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
 	_, _ = Delete("lws").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
 	_, _ = Delete("pods").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().GracePeriod(0).Force().RunQuiet()
 	_, _ = Delete("svc").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()

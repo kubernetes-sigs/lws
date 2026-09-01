@@ -51,13 +51,6 @@ func ForRunningPodCountWithTimeout(deploymentName string, count int, timeout tim
 	}, timeout, DefaultInterval).Should(Succeed())
 }
 
-// ForReadyPodCountWithTimeout waits until exactly count pods report Ready.
-func ForReadyPodCountWithTimeout(deploymentName string, count int, timeout time.Duration) {
-	Eventually(func(g Gomega) {
-		g.Expect(CountReadyPods(deploymentName)).To(Equal(count))
-	}, timeout, DefaultInterval).Should(Succeed())
-}
-
 // ForLWSCount waits until the deployment has exactly count LWS resources.
 func ForLWSCount(deploymentName string, count int) {
 	Eventually(func(g Gomega) {

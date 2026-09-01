@@ -39,14 +39,8 @@ type Role struct {
 	LWSLabels      map[string]string // LWS CR metadata labels (for Kueue, exclusive-topology)
 	LWSAnnotations map[string]string // LWS CR metadata annotations
 
-	// Slow-pod simulation. When StartupDelaySeconds > 0, the fixture overrides
-	// Image with busybox and renders a readinessProbe that succeeds after the
-	// startup delay. When TerminationDelayMax > 0, a preStop hook sleeps a
-	// random duration in [TerminationDelayMin, TerminationDelayMax] seconds and
-	// terminationGracePeriodSeconds is set to TerminationDelayMax + 5.
+	// StartupDelaySeconds adds a readiness delay for rollout tests.
 	StartupDelaySeconds int
-	TerminationDelayMin int
-	TerminationDelayMax int
 }
 
 // Config holds configuration for generating DisaggregatedSet YAML.
@@ -127,7 +121,7 @@ spec:
 			}
 		}
 
-		slow := p.StartupDelaySeconds > 0 || p.TerminationDelayMax > 0
+		slow := p.StartupDelaySeconds > 0
 		image := p.Image
 		if image == "" {
 			// Default image depends on whether the caller wants slow-pod
@@ -160,37 +154,17 @@ spec:
 		}
 
 		sb.WriteString("          spec:\n")
-		if slow && p.TerminationDelayMax > 0 {
-			sb.WriteString(fmt.Sprintf("            terminationGracePeriodSeconds: %d\n", p.TerminationDelayMax+5))
-		}
 		sb.WriteString("            containers:\n")
 		sb.WriteString("            - name: main\n")
 		sb.WriteString(fmt.Sprintf("              image: %s\n", image))
 		if slow {
-			startup := p.StartupDelaySeconds
-			if startup <= 0 {
-				startup = 1
-			}
 			sb.WriteString("              command: [\"sh\", \"-c\"]\n")
-			sb.WriteString(fmt.Sprintf("              args: [\"sleep %d && touch /tmp/ready && exec sleep infinity\"]\n", startup))
+			sb.WriteString("              args: [\"exec sleep infinity\"]\n")
 			sb.WriteString("              readinessProbe:\n")
 			sb.WriteString("                exec:\n")
-			sb.WriteString("                  command: [\"test\", \"-f\", \"/tmp/ready\"]\n")
+			sb.WriteString("                  command: [\"true\"]\n")
+			sb.WriteString(fmt.Sprintf("                initialDelaySeconds: %d\n", p.StartupDelaySeconds))
 			sb.WriteString("                periodSeconds: 1\n")
-			if p.TerminationDelayMax > 0 {
-				lo := p.TerminationDelayMin
-				if lo < 0 {
-					lo = 0
-				}
-				span := p.TerminationDelayMax - lo + 1
-				if span < 1 {
-					span = 1
-				}
-				sb.WriteString("              lifecycle:\n")
-				sb.WriteString("                preStop:\n")
-				sb.WriteString("                  exec:\n")
-				sb.WriteString(fmt.Sprintf("                    command: [\"sh\", \"-c\", \"sleep $(( (RANDOM %% %d) + %d ))\"]\n", span, lo))
-			}
 		}
 	}
 
