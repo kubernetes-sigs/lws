@@ -19,6 +19,7 @@ package v1
 
 import (
 	v1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1alpha3 "k8s.io/client-go/applyconfigurations/scheduling/v1alpha3"
 )
 
 // LeaderWorkerSetSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetScheduling type for use
@@ -28,11 +29,19 @@ import (
 type LeaderWorkerSetSchedulingApplyConfiguration struct {
 	// schedulingPolicy defines scheduling for all replicas in the LWS. In
 	// phase 1 this level is lowered to one flat PodGroup.
+	// Immutable after creation.
 	SchedulingPolicy *v1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 	// schedulingConstraints defines placement constraints for all replicas.
+	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
 	// disruptionMode controls how replica groups may be disrupted.
+	// Immutable after creation.
 	DisruptionMode *v1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+	// resourceClaims lists dynamic resource claims shared by pods across the
+	// LWS. In phase 1 this is supported only when this level is lowered to a
+	// flat PodGroup, and is mutually exclusive with replica scheduling.
+	// Immutable after creation.
+	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration `json:"resourceClaims,omitempty"`
 	// replica defines level-2 scheduling for each LWS replica.
 	Replica *LeaderWorkerSetReplicaSchedulingApplyConfiguration `json:"replica,omitempty"`
 }
@@ -64,6 +73,19 @@ func (b *LeaderWorkerSetSchedulingApplyConfiguration) WithSchedulingConstraints(
 // If called multiple times, the DisruptionMode field is set to the value of the last call.
 func (b *LeaderWorkerSetSchedulingApplyConfiguration) WithDisruptionMode(value v1alpha3.WorkloadCompositePodGroupDisruptionMode) *LeaderWorkerSetSchedulingApplyConfiguration {
 	b.DisruptionMode = &value
+	return b
+}
+
+// WithResourceClaims adds the given value to the ResourceClaims field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ResourceClaims field.
+func (b *LeaderWorkerSetSchedulingApplyConfiguration) WithResourceClaims(values ...*schedulingv1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration) *LeaderWorkerSetSchedulingApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithResourceClaims")
+		}
+		b.ResourceClaims = append(b.ResourceClaims, *values[i])
+	}
 	return b
 }
 

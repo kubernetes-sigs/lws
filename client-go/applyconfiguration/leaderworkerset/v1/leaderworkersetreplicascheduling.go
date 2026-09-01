@@ -30,18 +30,22 @@ import (
 // its leader and worker leaves are materialized independently.
 type LeaderWorkerSetReplicaSchedulingApplyConfiguration struct {
 	// schedulingPolicy defines scheduling for a leader and its workers.
+	// Immutable after creation.
 	SchedulingPolicy *v1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 	// schedulingConstraints defines placement constraints for a replica.
+	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
 	// disruptionMode controls how the leader and worker groups may be disrupted.
+	// Immutable after creation.
 	DisruptionMode *v1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
 	// resourceClaims lists dynamic resource claims shared by replica members.
 	// It is mutually exclusive with leader and worker scheduling leaves.
+	// Immutable after creation.
 	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration `json:"resourceClaims,omitempty"`
 	// leader defines level-3 scheduling for the leader PodGroup.
-	Leader *LeaderWorkerSetPodGroupSchedulingApplyConfiguration `json:"leader,omitempty"`
+	Leader *LeaderWorkerSetLeaderSchedulingApplyConfiguration `json:"leader,omitempty"`
 	// worker defines level-3 scheduling for the worker PodGroup.
-	Worker *LeaderWorkerSetPodGroupSchedulingApplyConfiguration `json:"worker,omitempty"`
+	Worker *LeaderWorkerSetWorkerSchedulingApplyConfiguration `json:"worker,omitempty"`
 }
 
 // LeaderWorkerSetReplicaSchedulingApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetReplicaScheduling type for use with
@@ -90,7 +94,7 @@ func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithResourceClaims(
 // WithLeader sets the Leader field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Leader field is set to the value of the last call.
-func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithLeader(value *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) *LeaderWorkerSetReplicaSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithLeader(value *LeaderWorkerSetLeaderSchedulingApplyConfiguration) *LeaderWorkerSetReplicaSchedulingApplyConfiguration {
 	b.Leader = value
 	return b
 }
@@ -98,7 +102,7 @@ func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithLeader(value *L
 // WithWorker sets the Worker field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Worker field is set to the value of the last call.
-func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithWorker(value *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) *LeaderWorkerSetReplicaSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetReplicaSchedulingApplyConfiguration) WithWorker(value *LeaderWorkerSetWorkerSchedulingApplyConfiguration) *LeaderWorkerSetReplicaSchedulingApplyConfiguration {
 	b.Worker = value
 	return b
 }

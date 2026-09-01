@@ -21,27 +21,37 @@ import (
 	v1alpha3 "k8s.io/client-go/applyconfigurations/scheduling/v1alpha3"
 )
 
-// LeaderWorkerSetPodGroupSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetPodGroupScheduling type for use
+// LeaderWorkerSetWorkerSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetWorkerScheduling type for use
 // with apply.
 //
-// LeaderWorkerSetPodGroupScheduling defines scheduling for one leaf PodGroup.
-type LeaderWorkerSetPodGroupSchedulingApplyConfiguration struct {
-	SchedulingPolicy      *v1alpha3.WorkloadPodGroupSchedulingPolicyApplyConfiguration      `json:"schedulingPolicy,omitempty"`
+// LeaderWorkerSetWorkerScheduling defines scheduling for the worker leaf
+// PodGroup. It is a distinct type so worker-specific fields can evolve without
+// changing leader scheduling.
+type LeaderWorkerSetWorkerSchedulingApplyConfiguration struct {
+	// schedulingPolicy defines scheduling for the worker PodGroup.
+	// Immutable after creation.
+	SchedulingPolicy *v1alpha3.WorkloadPodGroupSchedulingPolicyApplyConfiguration `json:"schedulingPolicy,omitempty"`
+	// schedulingConstraints defines placement constraints for the worker PodGroup.
+	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadPodGroupSchedulingConstraintsApplyConfiguration `json:"schedulingConstraints,omitempty"`
-	DisruptionMode        *v1alpha3.WorkloadPodGroupDisruptionModeApplyConfiguration        `json:"disruptionMode,omitempty"`
-	ResourceClaims        []v1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration        `json:"resourceClaims,omitempty"`
+	// disruptionMode controls how worker pods may be disrupted.
+	// Immutable after creation.
+	DisruptionMode *v1alpha3.WorkloadPodGroupDisruptionModeApplyConfiguration `json:"disruptionMode,omitempty"`
+	// resourceClaims lists dynamic resource claims shared by worker pods.
+	// Immutable after creation.
+	ResourceClaims []v1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration `json:"resourceClaims,omitempty"`
 }
 
-// LeaderWorkerSetPodGroupSchedulingApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetPodGroupScheduling type for use with
+// LeaderWorkerSetWorkerSchedulingApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetWorkerScheduling type for use with
 // apply.
-func LeaderWorkerSetPodGroupScheduling() *LeaderWorkerSetPodGroupSchedulingApplyConfiguration {
-	return &LeaderWorkerSetPodGroupSchedulingApplyConfiguration{}
+func LeaderWorkerSetWorkerScheduling() *LeaderWorkerSetWorkerSchedulingApplyConfiguration {
+	return &LeaderWorkerSetWorkerSchedulingApplyConfiguration{}
 }
 
 // WithSchedulingPolicy sets the SchedulingPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the SchedulingPolicy field is set to the value of the last call.
-func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithSchedulingPolicy(value *v1alpha3.WorkloadPodGroupSchedulingPolicyApplyConfiguration) *LeaderWorkerSetPodGroupSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetWorkerSchedulingApplyConfiguration) WithSchedulingPolicy(value *v1alpha3.WorkloadPodGroupSchedulingPolicyApplyConfiguration) *LeaderWorkerSetWorkerSchedulingApplyConfiguration {
 	b.SchedulingPolicy = value
 	return b
 }
@@ -49,7 +59,7 @@ func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithSchedulingPoli
 // WithSchedulingConstraints sets the SchedulingConstraints field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the SchedulingConstraints field is set to the value of the last call.
-func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithSchedulingConstraints(value *v1alpha3.WorkloadPodGroupSchedulingConstraintsApplyConfiguration) *LeaderWorkerSetPodGroupSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetWorkerSchedulingApplyConfiguration) WithSchedulingConstraints(value *v1alpha3.WorkloadPodGroupSchedulingConstraintsApplyConfiguration) *LeaderWorkerSetWorkerSchedulingApplyConfiguration {
 	b.SchedulingConstraints = value
 	return b
 }
@@ -57,7 +67,7 @@ func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithSchedulingCons
 // WithDisruptionMode sets the DisruptionMode field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the DisruptionMode field is set to the value of the last call.
-func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithDisruptionMode(value *v1alpha3.WorkloadPodGroupDisruptionModeApplyConfiguration) *LeaderWorkerSetPodGroupSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetWorkerSchedulingApplyConfiguration) WithDisruptionMode(value *v1alpha3.WorkloadPodGroupDisruptionModeApplyConfiguration) *LeaderWorkerSetWorkerSchedulingApplyConfiguration {
 	b.DisruptionMode = value
 	return b
 }
@@ -65,7 +75,7 @@ func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithDisruptionMode
 // WithResourceClaims adds the given value to the ResourceClaims field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the ResourceClaims field.
-func (b *LeaderWorkerSetPodGroupSchedulingApplyConfiguration) WithResourceClaims(values ...*v1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration) *LeaderWorkerSetPodGroupSchedulingApplyConfiguration {
+func (b *LeaderWorkerSetWorkerSchedulingApplyConfiguration) WithResourceClaims(values ...*v1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration) *LeaderWorkerSetWorkerSchedulingApplyConfiguration {
 	for i := range values {
 		if values[i] == nil {
 			panic("nil value passed to WithResourceClaims")

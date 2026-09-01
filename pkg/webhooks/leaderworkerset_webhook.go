@@ -178,6 +178,9 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 			if hasParent && parentName == "" {
 				allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(schedulerprovider.ParentCompositePodGroupAnnotation), "must name a parent CompositePodGroup"))
 			}
+			if mode, err := schedulerprovider.SchedulingModeFor(lws); err == nil && mode == schedulerprovider.SchedulingModeRole {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "delegated phase-1 scheduling supports only whole-LWS or replica mode"))
+			}
 		}
 	}
 	if oldLws != nil && oldLws.Spec.Scheduling == nil {

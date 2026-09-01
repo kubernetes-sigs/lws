@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,7 +55,7 @@ func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 	require.NoError(t, err)
 
 	workload := &schedulingv1beta1.Workload{}
-	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), workload))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
 	require.Len(t, workload.Spec.PodGroupTemplates, 1)
 	assert.Equal(t, replicaWorkloadTemplateName, workload.Spec.PodGroupTemplates[0].Name)
 	require.NotNil(t, workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang)
@@ -64,11 +65,11 @@ func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 	assert.Equal(t, "LeaderWorkerSet", workload.Spec.ControllerRef.Kind)
 	assert.Equal(t, lws.Name, workload.Spec.ControllerRef.Name)
 
-	for groupIndex, name := range []string{"test-lws-0-revision-1", "test-lws-1-revision-1"} {
+	for groupIndex, name := range []string{KubernetesPodGroupName(lws, "0", "revision-1"), KubernetesPodGroupName(lws, "1", "revision-1")} {
 		podGroup := &schedulingv1beta1.PodGroup{}
 		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, podGroup))
 		require.NotNil(t, podGroup.Spec.WorkloadRef)
-		assert.Equal(t, lws.Name, podGroup.Spec.WorkloadRef.WorkloadName)
+		assert.Equal(t, KubernetesWorkloadName(lws), podGroup.Spec.WorkloadRef.WorkloadName)
 		assert.Equal(t, replicaWorkloadTemplateName, podGroup.Spec.WorkloadRef.TemplateName)
 		assert.Equal(t, int32(3), podGroup.Spec.SchedulingPolicy.Gang.MinCount)
 		assert.Equal(t, fmt.Sprint(groupIndex), podGroup.Labels[leaderworkerset.GroupIndexLabelKey])
@@ -116,6 +117,88 @@ func TestBuildFlatWorkloadReplicaConfiguration(t *testing.T) {
 	assert.Equal(t, ptr.To("shared-gpu"), template.ResourceClaims[0].ResourceClaimName)
 }
 
+func TestBuildFlatWorkloadWholeLWSResourceClaims(t *testing.T) {
+	lws := testScheduledLWS()
+	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+		SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+			Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+		},
+		ResourceClaims: []schedulingv1alpha3.WorkloadPodGroupResourceClaim{{
+			Name:                      "gpu",
+			ResourceClaimTemplateName: ptr.To("shared-gpu-template"),
+		}},
+	}
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.ResourceClaims = []corev1.PodResourceClaim{{
+		Name:                      "gpu",
+		ResourceClaimTemplateName: ptr.To("shared-gpu-template"),
+	}}
+
+	workload, err := buildFlatWorkload(context.Background(), lws)
+	require.NoError(t, err)
+	require.Len(t, workload.Spec.PodGroupTemplates, 1)
+	require.Len(t, workload.Spec.PodGroupTemplates[0].ResourceClaims, 1)
+	assert.Equal(t, "gpu", workload.Spec.PodGroupTemplates[0].ResourceClaims[0].Name)
+	assert.Equal(t, lws.Name, workload.Labels[leaderworkerset.SetNameLabelKey])
+}
+
+func TestKubernetesProviderIsolatesRecreatedLWSByUID(t *testing.T) {
+	ctx := context.Background()
+	oldLWS := testScheduledLWS()
+	newLWS := oldLWS.DeepCopy()
+	newLWS.UID = types.UID("replacement-lws-uid")
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	provider := NewKubernetesProvider(fakeClient)
+
+	require.NoError(t, provider.ReconcileScheduling(ctx, oldLWS, 1, "revision-1"))
+	require.NoError(t, provider.ReconcileScheduling(ctx, newLWS, 1, "revision-1"))
+	assert.NotEqual(t, KubernetesWorkloadName(oldLWS), KubernetesWorkloadName(newLWS))
+
+	for _, lws := range []*leaderworkerset.LeaderWorkerSet{oldLWS, newLWS} {
+		workload := &schedulingv1beta1.Workload{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
+		assert.Equal(t, lws.UID, metav1.GetControllerOf(workload).UID)
+		group := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, group))
+		assert.Equal(t, lws.UID, metav1.GetControllerOf(group).UID)
+	}
+}
+
+func TestKubernetesProviderRejectsForeignWorkloadAtComputedName(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	foreign := &schedulingv1beta1.Workload{ObjectMeta: metav1.ObjectMeta{
+		Name: KubernetesWorkloadName(lws), Namespace: lws.Namespace,
+	}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()
+
+	err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
+	require.Error(t, err)
+	assert.Equal(t, ReasonWorkloadCreateFailed, ReconcileErrorReason(err))
+	groups := &schedulingv1beta1.PodGroupList{}
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	assert.Empty(t, groups.Items)
+}
+
+func TestKubernetesSchedulingNamesAreUIDQualifiedAndBounded(t *testing.T) {
+	lws := testScheduledLWS()
+	lws.Name = strings.Repeat("a", 253)
+	other := lws.DeepCopy()
+	other.UID = types.UID("other-uid")
+
+	for _, name := range []string{
+		KubernetesWorkloadName(lws),
+		KubernetesLWSGroupName(lws),
+		KubernetesPodGroupName(lws, "1000000", strings.Repeat("b", 63)),
+		KubernetesRolePodGroupName(lws, "1000000", workerWorkloadTemplateName, strings.Repeat("b", 63)),
+	} {
+		assert.LessOrEqual(t, len(name), 253)
+	}
+	workloadName := KubernetesWorkloadName(lws)
+	uidHash := workloadName[strings.LastIndexByte(workloadName, '-')+1:]
+	assert.Contains(t, KubernetesRolePodGroupName(lws, "0", workerWorkloadTemplateName, "revision"), "-"+uidHash+"-0-worker-revision")
+	assert.NotEqual(t, KubernetesWorkloadName(lws), KubernetesWorkloadName(other))
+}
+
 func TestKubernetesProviderWholeLWSMode(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
@@ -128,13 +211,13 @@ func TestKubernetesProviderWholeLWSMode(t *testing.T) {
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	workload := &schedulingv1beta1.Workload{}
-	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), workload))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
 	require.Len(t, workload.Spec.PodGroupTemplates, 1)
 	assert.Equal(t, lwsWorkloadTemplateName, workload.Spec.PodGroupTemplates[0].Name)
 	assert.Equal(t, int32(6), workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount)
 
 	group := &schedulingv1beta1.PodGroup{}
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: "test-lws-lws"}, group))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}, group))
 	assert.Equal(t, lwsWorkloadTemplateName, group.Spec.WorkloadRef.TemplateName)
 	assert.Equal(t, string(SchedulingModeLWS), group.Labels[SchedulingLevelLabelKey])
 	assert.NotContains(t, group.Labels, leaderworkerset.RevisionKey)
@@ -143,20 +226,59 @@ func TestKubernetesProviderWholeLWSMode(t *testing.T) {
 	// mutable gang minimum instead of creating a revision-specific group.
 	lws.Spec.Replicas = ptr.To[int32](3)
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 3, "revision-2"))
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: "test-lws-lws"}, group))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}, group))
 	assert.Equal(t, int32(9), group.Spec.SchedulingPolicy.Gang.MinCount)
+
+	// At zero replicas the Workload is retained with a valid placeholder, but
+	// the runtime whole-LWS PodGroup is removed. Scale-up updates the Workload
+	// before recreating the group.
+	lws.Spec.Replicas = ptr.To[int32](0)
+	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 0, "revision-3"))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
+	assert.Equal(t, int32(1), workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount)
+	err := fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}, group)
+	assert.True(t, apierrors.IsNotFound(err))
+
+	lws.Spec.Replicas = ptr.To[int32](1)
+	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-4"))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}, group))
+	assert.Equal(t, int32(3), group.Spec.SchedulingPolicy.Gang.MinCount)
+}
+
+func TestKubernetesProviderBlocksPodsWhileDesiredPodGroupIsTerminating(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+		SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+			Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+
+	group := &schedulingv1beta1.PodGroup{}
+	key := types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}
+	require.NoError(t, fakeClient.Get(ctx, key, group))
+	group.Finalizers = []string{"test.scheduling.k8s.io/protection"}
+	require.NoError(t, fakeClient.Update(ctx, group))
+	require.NoError(t, fakeClient.Delete(ctx, group))
+
+	err := provider.ReconcileScheduling(ctx, lws, 2, "revision-1")
+	require.Error(t, err)
+	assert.Equal(t, ReasonPodGroupCleanupBlocked, ReconcileErrorReason(err))
 }
 
 func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
-	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "leader-priority"}}
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "high-priority"}}
 	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
 		Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-			Leader: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{
+			Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{
 				SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}},
 			},
-			Worker: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{
+			Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
 				SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}},
 			},
 		},
@@ -165,18 +287,18 @@ func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1"))
 	workload := &schedulingv1beta1.Workload{}
-	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), workload))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
 	require.Len(t, workload.Spec.PodGroupTemplates, 2)
 	assert.Equal(t, leaderWorkloadTemplateName, workload.Spec.PodGroupTemplates[0].Name)
 	assert.Equal(t, int32(1), workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount)
-	assert.Equal(t, "leader-priority", workload.Spec.PodGroupTemplates[0].PriorityClassName)
+	assert.Equal(t, "high-priority", workload.Spec.PodGroupTemplates[0].PriorityClassName)
 	assert.Equal(t, workerWorkloadTemplateName, workload.Spec.PodGroupTemplates[1].Name)
 	assert.Equal(t, int32(2), workload.Spec.PodGroupTemplates[1].SchedulingPolicy.Gang.MinCount)
 	assert.Equal(t, "high-priority", workload.Spec.PodGroupTemplates[1].PriorityClassName)
 
 	for role, name := range map[string]string{
-		leaderWorkloadTemplateName: "test-lws-0-leader-revision-1",
-		workerWorkloadTemplateName: "test-lws-0-worker-revision-1",
+		leaderWorkloadTemplateName: KubernetesRolePodGroupName(lws, "0", leaderWorkloadTemplateName, "revision-1"),
+		workerWorkloadTemplateName: KubernetesRolePodGroupName(lws, "0", workerWorkloadTemplateName, "revision-1"),
 	} {
 		group := &schedulingv1beta1.PodGroup{}
 		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, group))
@@ -190,7 +312,7 @@ func TestBuildFlatWorkloadSynthesizesOmittedRoleAsBasic(t *testing.T) {
 	lws := testScheduledLWS()
 	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
 		Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-			Worker: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{
+			Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
 				SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
 					Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{},
 				},
@@ -233,7 +355,7 @@ func TestPhaseOnePolicyDefaults(t *testing.T) {
 		"role omitted policies default basic": {
 			configure: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-					Leader: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{},
+					Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{},
 				}
 			},
 			wantNames: []string{leaderWorkloadTemplateName, workerWorkloadTemplateName},
@@ -290,13 +412,13 @@ func TestKubernetesProviderIdempotentReconcileDoesNotWrite(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
 	writes := 0
-	workloadGets := 0
+	workloadLists := 0
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*schedulingv1beta1.Workload); ok {
-				workloadGets++
+		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := obj.(*schedulingv1beta1.WorkloadList); ok {
+				workloadLists++
 			}
-			return c.Get(ctx, key, obj, opts...)
+			return c.List(ctx, obj, opts...)
 		},
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			writes++
@@ -315,11 +437,13 @@ func TestKubernetesProviderIdempotentReconcileDoesNotWrite(t *testing.T) {
 
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	require.Positive(t, writes)
-	assert.Equal(t, 1, workloadGets, "initial creation should not re-read the Workload through the cache")
+	assert.Equal(t, 1, workloadLists, "ownership discovery uses one label-filtered Workload list")
 	writes = 0
+	workloadLists = 0
 
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	assert.Zero(t, writes, "an unchanged reconciliation must not write scheduling resources")
+	assert.Equal(t, 1, workloadLists)
 }
 
 func TestUpdateMutablePodGroupFieldsAcceptsAPIDefaults(t *testing.T) {
@@ -348,8 +472,9 @@ func TestCleanupUnusedPodGroupsRetainsGroupsReferencedByPods(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
 	labels := map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}
-	used := &schedulingv1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Name: "used", Namespace: lws.Namespace, Labels: labels}}
-	unused := &schedulingv1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Name: "unused", Namespace: lws.Namespace, Labels: labels}}
+	owner := *metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
+	used := &schedulingv1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Name: "used", Namespace: lws.Namespace, Labels: labels, OwnerReferences: []metav1.OwnerReference{owner}}}
+	unused := &schedulingv1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Name: "unused", Namespace: lws.Namespace, Labels: labels, OwnerReferences: []metav1.OwnerReference{owner}}}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: lws.Namespace, Labels: labels},
 		Spec:       corev1.PodSpec{SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: ptr.To("used")}},
@@ -375,8 +500,12 @@ func TestKubernetesProviderInjectPodGroupMetadata(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			workloadName := "test-lws-uidhash"
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{WorkloadSchedulingAnnotationKey: string(tc.mode)},
+				Annotations: map[string]string{
+					WorkloadSchedulingAnnotationKey: string(tc.mode),
+					WorkloadNameAnnotationKey:       workloadName,
+				},
 				Labels: map[string]string{
 					leaderworkerset.SetNameLabelKey:     "test-lws",
 					leaderworkerset.GroupIndexLabelKey:  "4",
@@ -388,7 +517,7 @@ func TestKubernetesProviderInjectPodGroupMetadata(t *testing.T) {
 			require.NoError(t, NewKubernetesProvider(nil).InjectPodGroupMetadata(pod))
 			require.NotNil(t, pod.Spec.SchedulingGroup)
 			require.NotNil(t, pod.Spec.SchedulingGroup.PodGroupName)
-			assert.Equal(t, tc.want, *pod.Spec.SchedulingGroup.PodGroupName)
+			assert.Equal(t, strings.Replace(tc.want, "test-lws", workloadName, 1), *pod.Spec.SchedulingGroup.PodGroupName)
 		})
 	}
 }
@@ -438,7 +567,7 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 4, "revision-1"))
 	assert.Equal(t, 1, parentGets, "the shared parent must be checked once per reconciliation")
 	group := &schedulingv1beta1.PodGroup{}
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: "test-lws-0-revision-1"}, group))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, group))
 	require.NotNil(t, group.Spec.WorkloadRef)
 	assert.Equal(t, "parent-workload", group.Spec.WorkloadRef.WorkloadName)
 	assert.Equal(t, "child-template", group.Spec.WorkloadRef.TemplateName)

@@ -49,7 +49,7 @@ const (
 
 func workloadBuildOptions(lws *leaderworkerset.LeaderWorkerSet) workloadbuilder.BuildOptions {
 	return workloadbuilder.BuildOptions{
-		Name:      lws.Name,
+		Name:      KubernetesWorkloadName(lws),
 		Namespace: lws.Namespace,
 		Owner:     metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")),
 		AllowedPolicies: []workloadbuilder.SchedulingPolicyOption{
@@ -71,7 +71,8 @@ func SchedulingModeFor(lws *leaderworkerset.LeaderWorkerSet) (SchedulingMode, er
 	}
 
 	scheduling := lws.Spec.Scheduling
-	topActive := scheduling.SchedulingPolicy != nil || scheduling.SchedulingConstraints != nil || scheduling.DisruptionMode != nil
+	topActive := scheduling.SchedulingPolicy != nil || scheduling.SchedulingConstraints != nil ||
+		scheduling.DisruptionMode != nil || len(scheduling.ResourceClaims) > 0
 	replicaFieldsActive := false
 	roleActive := false
 	if scheduling.Replica != nil {
@@ -129,16 +130,22 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 	switch mode {
 	case SchedulingModeLWS:
 		config := lws.Spec.Scheduling
+		minCount := replicas * size
+		if minCount == 0 {
+			// A Workload template must remain valid while a whole-LWS gang is
+			// scaled to zero. No runtime PodGroup is created until scale-up.
+			minCount = 1
+		}
 		item := newLeafItem(
 			lwsWorkloadTemplateName,
 			field.NewPath("spec", "scheduling"),
 			lowerCompositePolicy(config.SchedulingPolicy),
 			lowerCompositeConstraints(config.SchedulingConstraints),
 			lowerCompositeDisruptionMode(config.DisruptionMode),
-			nil,
+			config.ResourceClaims,
 			basicSchedulingPolicy(),
 			leaderPriority,
-			replicas*size,
+			minCount,
 		)
 		return []*workloadbuilder.WorkloadItem{item}, mode, nil
 	case SchedulingModeReplica:
@@ -162,11 +169,11 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 		replica := lws.Spec.Scheduling.Replica
 		leader := replica.Leader
 		if leader == nil {
-			leader = &leaderworkerset.LeaderWorkerSetPodGroupScheduling{}
+			leader = &leaderworkerset.LeaderWorkerSetLeaderScheduling{}
 		}
 		worker := replica.Worker
 		if worker == nil {
-			worker = &leaderworkerset.LeaderWorkerSetPodGroupScheduling{}
+			worker = &leaderworkerset.LeaderWorkerSetWorkerScheduling{}
 		}
 		return []*workloadbuilder.WorkloadItem{
 			newLeafItem(
@@ -348,6 +355,11 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 		if err == nil && oldMode != mode {
 			allErrs = append(allErrs, field.Forbidden(path, "cannot switch the active scheduling level after creation"))
 		}
+		if oldPriority, oldConsistent := workloadPriorityClassName(oldLWS); oldConsistent {
+			if newPriority, newConsistent := workloadPriorityClassName(lws); newConsistent && newPriority != oldPriority {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "leaderWorkerTemplate"), "cannot change priorityClassName while workload-aware scheduling is configured"))
+			}
+		}
 	}
 
 	if mode == SchedulingModeLWS || mode == SchedulingModeReplica {
@@ -378,19 +390,24 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 	return allErrs
 }
 
+func workloadPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
+	workerPriority := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate == nil {
+		return workerPriority, true
+	}
+	leaderPriority := lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName
+	return leaderPriority, leaderPriority == workerPriority
+}
+
 func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode) field.ErrorList {
 	path := field.NewPath("spec", "scheduling")
 	size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
-	replicas := ptr.Deref(lws.Spec.Replicas, 1)
 	var allErrs field.ErrorList
 
 	if mode == SchedulingModeLWS {
 		policy := lws.Spec.Scheduling.SchedulingPolicy
 		if policy != nil && policy.Gang != nil && policy.Gang.MinGroupCount != nil {
 			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy", "gang", "minGroupCount"), "minGroupCount requires CompositePodGroup support and is not available in phase 1"))
-		}
-		if compositePolicyIsGang(policy, false) && replicas*size < 1 {
-			allErrs = append(allErrs, field.Invalid(path.Child("schedulingPolicy", "gang"), policy, "whole-LWS gang membership must be positive"))
 		}
 	}
 	if mode == SchedulingModeReplica {
@@ -407,8 +424,12 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "leaderWorkerTemplate", "size"), size, "leader/worker scheduling requires size >= 2"))
 		}
 		replica := lws.Spec.Scheduling.Replica
-		allErrs = append(allErrs, validateLeafGangMembership(replica.Leader, 1, path.Child("replica", "leader"))...)
-		allErrs = append(allErrs, validateLeafGangMembership(replica.Worker, size-1, path.Child("replica", "worker"))...)
+		if replica.Leader != nil {
+			allErrs = append(allErrs, validateLeafGangMembership(replica.Leader.SchedulingPolicy, 1, path.Child("replica", "leader"))...)
+		}
+		if replica.Worker != nil {
+			allErrs = append(allErrs, validateLeafGangMembership(replica.Worker.SchedulingPolicy, size-1, path.Child("replica", "worker"))...)
+		}
 	}
 
 	gangContainsBothRoles := mode == SchedulingModeLWS && compositePolicyIsGang(lws.Spec.Scheduling.SchedulingPolicy, false)
@@ -432,13 +453,16 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 		leaderTemplate = lws.Spec.LeaderWorkerTemplate.LeaderTemplate
 	}
 	workerTemplate := &lws.Spec.LeaderWorkerTemplate.WorkerTemplate
-	if mode != SchedulingModeRole && leaderTemplate.Spec.PriorityClassName != workerTemplate.Spec.PriorityClassName {
-		allErrs = append(allErrs, field.Invalid(path, nil, "pods in the same flat PodGroup must use the same priorityClassName"))
+	if leaderTemplate.Spec.PriorityClassName != workerTemplate.Spec.PriorityClassName {
+		allErrs = append(allErrs, field.Invalid(path, nil, "all managed pod templates must use the same priorityClassName"))
 	}
 	if leaderTemplate.Spec.SchedulingGroup != nil || workerTemplate.Spec.SchedulingGroup != nil {
 		allErrs = append(allErrs, field.Forbidden(path, "managed pod templates must not set spec.schedulingGroup"))
 	}
 
+	if mode == SchedulingModeLWS {
+		allErrs = append(allErrs, validateClaims(lws.Spec.Scheduling.ResourceClaims, []*corev1.PodTemplateSpec{leaderTemplate, workerTemplate}, path.Child("resourceClaims"))...)
+	}
 	if mode == SchedulingModeReplica && lws.Spec.Scheduling.Replica != nil {
 		allErrs = append(allErrs, validateClaims(lws.Spec.Scheduling.Replica.ResourceClaims, []*corev1.PodTemplateSpec{leaderTemplate, workerTemplate}, path.Child("replica", "resourceClaims"))...)
 	}
@@ -454,12 +478,12 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 	return allErrs
 }
 
-func validateLeafGangMembership(config *leaderworkerset.LeaderWorkerSetPodGroupScheduling, expected int32, path *field.Path) field.ErrorList {
-	if config == nil || config.SchedulingPolicy == nil || config.SchedulingPolicy.Gang == nil || config.SchedulingPolicy.Gang.MinCount == nil {
+func validateLeafGangMembership(policy *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy, expected int32, path *field.Path) field.ErrorList {
+	if policy == nil || policy.Gang == nil || policy.Gang.MinCount == nil {
 		return nil
 	}
-	if *config.SchedulingPolicy.Gang.MinCount != expected {
-		return field.ErrorList{field.Invalid(path.Child("schedulingPolicy", "gang", "minCount"), *config.SchedulingPolicy.Gang.MinCount, fmt.Sprintf("must equal complete leaf membership %d", expected))}
+	if *policy.Gang.MinCount != expected {
+		return field.ErrorList{field.Invalid(path.Child("schedulingPolicy", "gang", "minCount"), *policy.Gang.MinCount, fmt.Sprintf("must equal complete leaf membership %d", expected))}
 	}
 	return nil
 }
@@ -548,6 +572,7 @@ func buildFlatWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet
 		}
 		if result == nil {
 			result = workload
+			result.Labels = map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}
 			continue
 		}
 		result.Spec.PodGroupTemplates = append(result.Spec.PodGroupTemplates, workload.Spec.PodGroupTemplates...)

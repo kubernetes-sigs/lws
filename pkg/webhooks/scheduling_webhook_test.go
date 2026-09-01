@@ -67,12 +67,22 @@ func TestValidateScheduling(t *testing.T) {
 			},
 			wantErrs: 1,
 		},
-		"role leaves may use different priorities": {
+		"role leaves must use the workload priority": {
 			gates: features.Gates{features.WorkloadAwareScheduling: true},
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "other-priority"}}
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-					Leader: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{},
+					Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{},
+				}
+			},
+			wantErrs: 1,
+		},
+		"whole LWS gang supports zero replicas": {
+			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.Replicas = ptr.To[int32](0)
+				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+					Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
 				}
 			},
 		},
@@ -81,7 +91,7 @@ func TestValidateScheduling(t *testing.T) {
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.StartupPolicy = leaderworkerset.LeaderReadyStartupPolicy
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-					Worker: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{
+					Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
 						SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
 							Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{},
 						},
@@ -93,7 +103,7 @@ func TestValidateScheduling(t *testing.T) {
 			gates: features.Gates{features.WorkloadAwareScheduling: true},
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
-					Worker: &leaderworkerset.LeaderWorkerSetPodGroupScheduling{
+					Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
 						SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
 							Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{MinCount: ptr.To[int32](1)},
 						},
@@ -153,6 +163,73 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		newLWS := oldLWS.DeepCopy()
 		newLWS.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](4)
 		assert.Empty(t, hook.validateScheduling(context.Background(), oldLWS, newLWS))
+	})
+
+	t.Run("priority class is immutable", func(t *testing.T) {
+		oldLWS := validScheduledLWS()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName = "new-priority"
+		errs := hook.validateScheduling(context.Background(), oldLWS, newLWS)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "cannot change priorityClassName")
+	})
+
+	t.Run("delegation rejects role mode", func(t *testing.T) {
+		controller := true
+		lws := validScheduledLWS()
+		lws.Annotations = map[string]string{schedulerprovider.GroupTemplateNameAnnotation: "template"}
+		lws.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "example.test/v1", Kind: "Parent", Name: "parent", Controller: &controller,
+		}}
+		lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+			Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{},
+		}
+		errs := hook.validateScheduling(context.Background(), nil, lws)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "supports only whole-LWS or replica mode")
+	})
+}
+
+func TestValidateSchedulingKEPConstraints(t *testing.T) {
+	hook := &LeaderWorkerSetWebhook{
+		FeatureGates:      features.Gates{features.WorkloadAwareScheduling: true},
+		SchedulerProvider: schedulerprovider.Kubernetes,
+	}
+
+	t.Run("top resource claim must match every represented template", func(t *testing.T) {
+		lws := validScheduledLWS()
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			PriorityClassName: "high-priority",
+			Containers:        []corev1.Container{{Name: "leader", Image: "leader:latest"}},
+		}}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.ResourceClaims = []corev1.PodResourceClaim{{
+			Name: "gpu", ResourceClaimName: ptr.To("shared-gpu"),
+		}}
+		lws.Spec.Scheduling.ResourceClaims = []schedulingv1alpha3.WorkloadPodGroupResourceClaim{{
+			Name: "gpu", ResourceClaimName: ptr.To("shared-gpu"),
+		}}
+		errs := hook.validateScheduling(context.Background(), nil, lws)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "matching reference in every member pod template")
+	})
+
+	t.Run("top resource claims are mutually exclusive with replica scheduling", func(t *testing.T) {
+		lws := validScheduledLWS()
+		lws.Spec.Scheduling.ResourceClaims = []schedulingv1alpha3.WorkloadPodGroupResourceClaim{{Name: "gpu"}}
+		lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{}
+		errs := hook.validateScheduling(context.Background(), nil, lws)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "exactly one active scheduling level")
+	})
+
+	t.Run("managed templates cannot preset schedulingGroup", func(t *testing.T) {
+		lws := validScheduledLWS()
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+			PodGroupName: ptr.To("user-managed"),
+		}
+		errs := hook.validateScheduling(context.Background(), nil, lws)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "must not set spec.schedulingGroup")
 	})
 }
 

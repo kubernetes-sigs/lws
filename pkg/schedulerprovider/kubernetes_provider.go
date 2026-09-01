@@ -19,8 +19,10 @@ package schedulerprovider
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"reflect"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
@@ -31,7 +33,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
+	"k8s.io/utils/dump"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -45,12 +50,68 @@ const (
 	// WorkloadSchedulingAnnotationKey is copied to managed pod templates and
 	// tells the pod webhook to attach the upstream SchedulingGroup reference.
 	WorkloadSchedulingAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-aware-scheduling"
+	// WorkloadNameAnnotationKey carries the UID-qualified Workload prefix to
+	// Pods, whose webhook request does not include the owning LWS object.
+	WorkloadNameAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-name"
 
 	// SchedulingLevelLabelKey and PodGroupRoleLabelKey describe which LWS
 	// hierarchy level a runtime PodGroup represents.
 	SchedulingLevelLabelKey = "leaderworkerset.sigs.k8s.io/scheduling-level"
 	PodGroupRoleLabelKey    = "leaderworkerset.sigs.k8s.io/role"
 )
+
+// KubernetesWorkloadName returns the Job-style UID-qualified Workload name.
+// UID qualification isolates a newly-created LWS from deletion-protected
+// scheduling objects that belonged to an older object with the same name.
+func KubernetesWorkloadName(lws *leaderworkerset.LeaderWorkerSet) string {
+	hasher := fnv.New32a()
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(lws.UID))
+	hash := utilrand.SafeEncodeString(fmt.Sprint(hasher.Sum32()))
+	maxPrefixLen := validation.DNS1123SubdomainMaxLength - len(hash) - 1
+	prefix := lws.Name
+	if len(prefix) > maxPrefixLen {
+		prefix = prefix[:maxPrefixLen]
+	}
+	return prefix + "-" + hash
+}
+
+func kubernetesRuntimeName(workloadName string, parts ...string) string {
+	// Keep the trailing UID hash from the Workload name when truncating the
+	// human-readable prefix to make room for runtime-specific suffixes.
+	separator := strings.LastIndexByte(workloadName, '-')
+	prefix := workloadName
+	identity := ""
+	if separator > 0 {
+		prefix = workloadName[:separator]
+		identity = workloadName[separator+1:]
+	}
+	allParts := make([]string, 0, len(parts)+1)
+	if identity != "" {
+		allParts = append(allParts, identity)
+	}
+	allParts = append(allParts, parts...)
+	suffix := strings.Join(allParts, "-")
+	maxPrefixLen := validation.DNS1123SubdomainMaxLength - len(suffix) - 1
+	if len(prefix) > maxPrefixLen {
+		prefix = prefix[:maxPrefixLen]
+	}
+	return prefix + "-" + suffix
+}
+
+// KubernetesLWSGroupName returns the UID-qualified whole-LWS PodGroup name.
+func KubernetesLWSGroupName(lws *leaderworkerset.LeaderWorkerSet) string {
+	return kubernetesRuntimeName(KubernetesWorkloadName(lws), "lws")
+}
+
+// KubernetesPodGroupName returns a UID-qualified replica PodGroup name.
+func KubernetesPodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string) string {
+	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, revision)
+}
+
+// KubernetesRolePodGroupName returns a UID-qualified role PodGroup name.
+func KubernetesRolePodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, role, revision string) string {
+	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, role, revision)
+}
 
 // KubernetesProvider manages upstream Workload and PodGroup resources.
 type KubernetesProvider struct {
@@ -110,13 +171,28 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 		existing := &schedulingv1beta1.PodGroup{}
 		key := types.NamespacedName{Namespace: podGroup.Namespace, Name: name}
 		if err := p.client.Get(ctx, key, existing); err == nil {
+			if !existing.DeletionTimestamp.IsZero() {
+				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
+			}
 			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, runtimeGroup.allowMinCountUpdate); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		} else if !apierrors.IsNotFound(err) {
 			return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("get PodGroup %s: %w", key, err))
-		} else if err := p.client.Create(ctx, podGroup); err != nil && !apierrors.IsAlreadyExists(err) {
-			return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("create PodGroup %s/%s: %w", podGroup.Namespace, name, err))
+		} else if err := p.client.Create(ctx, podGroup); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("create PodGroup %s/%s: %w", podGroup.Namespace, name, err))
+			}
+			// Resolve a create race, verifying ownership before reuse.
+			if err := p.client.Get(ctx, key, existing); err != nil {
+				return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("get existing PodGroup %s: %w", key, err))
+			}
+			if !existing.DeletionTimestamp.IsZero() {
+				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
+			}
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, runtimeGroup.allowMinCountUpdate); err != nil {
+				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+			}
 		}
 	}
 
@@ -148,11 +224,16 @@ func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32,
 			SchedulingLevelLabelKey:         string(level),
 		}
 	}
+	// Hash the UID once per reconciliation, not once per runtime group.
+	workloadName := KubernetesWorkloadName(lws)
 
 	switch mode {
 	case SchedulingModeLWS:
+		if replicas == 0 {
+			return nil, nil
+		}
 		return []runtimePodGroup{{
-			name:                GetLWSGroupName(lws.Name),
+			name:                kubernetesRuntimeName(workloadName, "lws"),
 			templateName:        lwsWorkloadTemplateName,
 			labels:              baseLabels(mode),
 			allowMinCountUpdate: true,
@@ -165,7 +246,7 @@ func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32,
 			labels[leaderworkerset.GroupIndexLabelKey] = index
 			labels[leaderworkerset.RevisionKey] = revision
 			groups = append(groups, runtimePodGroup{
-				name:         GetPodGroupName(lws.Name, index, revision),
+				name:         kubernetesRuntimeName(workloadName, index, revision),
 				templateName: replicaWorkloadTemplateName,
 				labels:       labels,
 			})
@@ -181,7 +262,7 @@ func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32,
 				labels[leaderworkerset.RevisionKey] = revision
 				labels[PodGroupRoleLabelKey] = role
 				groups = append(groups, runtimePodGroup{
-					name:         GetRolePodGroupName(lws.Name, index, role, revision),
+					name:         kubernetesRuntimeName(workloadName, index, role, revision),
 					templateName: role,
 					labels:       labels,
 				})
@@ -196,11 +277,7 @@ func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32,
 func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.PodGroup, allowMinCountUpdate bool) error {
 	currentOwner := metav1.GetControllerOf(current)
 	desiredOwner := metav1.GetControllerOf(desired)
-	ownerMatches := currentOwner != nil && desiredOwner != nil &&
-		currentOwner.APIVersion == desiredOwner.APIVersion && currentOwner.Kind == desiredOwner.Kind && currentOwner.Name == desiredOwner.Name
-	if ownerMatches && currentOwner.UID != "" && desiredOwner.UID != "" {
-		ownerMatches = currentOwner.UID == desiredOwner.UID
-	}
+	ownerMatches := controllerReferencesEqual(currentOwner, desiredOwner)
 	currentSpec := current.Spec.DeepCopy()
 	desiredSpec := desired.Spec.DeepCopy()
 	// The API server owns resolved priority fields and defaults disruptionMode
@@ -262,28 +339,79 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 		Kind:       "Workload",
 	}
 
-	persisted := &schedulingv1beta1.Workload{}
-	key := types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}
+	persisted, err := p.findOwnedWorkload(ctx, lws)
+	if err != nil {
+		return nil, workloadAPIError(ReasonWorkloadCreateFailed, err)
+	}
+	if persisted != nil {
+		if persisted.Name != desiredWorkload.Name {
+			return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("owned Workload %s/%s does not have the expected UID-qualified name %q", persisted.Namespace, persisted.Name, desiredWorkload.Name))
+		}
+		if err := updateMutableWorkloadFields(ctx, p.client, persisted, desiredWorkload); err != nil {
+			return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+		}
+		return persisted, nil
+	}
+
+	if err := p.client.Create(ctx, desiredWorkload); err == nil {
+		// Create returns the admitted object. Reuse it instead of issuing a
+		// cache-backed GET that may briefly observe NotFound.
+		return desiredWorkload, nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("create Workload %s/%s: %w", desiredWorkload.Namespace, desiredWorkload.Name, err))
+	}
+
+	// Resolve an AlreadyExists race without adopting an object owned by a
+	// different LWS UID.
+	persisted = &schedulingv1beta1.Workload{}
+	key := types.NamespacedName{Namespace: desiredWorkload.Namespace, Name: desiredWorkload.Name}
 	if err := p.client.Get(ctx, key, persisted); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get Workload %s: %w", key, err))
-		}
-		if err := p.client.Create(ctx, desiredWorkload); err == nil {
-			// Create returns the admitted object. Reuse it instead of issuing a
-			// cache-backed GET that may briefly observe NotFound.
-			persisted = desiredWorkload
-		} else {
-			if !apierrors.IsAlreadyExists(err) {
-				return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("create Workload %s: %w", key, err))
-			}
-			if err := p.client.Get(ctx, key, persisted); err != nil {
-				return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get persisted Workload %s: %w", key, err))
-			}
-		}
-	} else if err := updateMutableWorkloadFields(ctx, p.client, persisted, desiredWorkload); err != nil {
+		return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("get existing Workload %s: %w", key, err))
+	}
+	if !workloadControlledByLWS(persisted, lws) {
+		return nil, NewReconcileError(ReasonWorkloadCreateFailed, fmt.Errorf("Workload %s already exists but is not controlled by this LeaderWorkerSet UID", key))
+	}
+	if err := updateMutableWorkloadFields(ctx, p.client, persisted, desiredWorkload); err != nil {
 		return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
 	return persisted, nil
+}
+
+func (p *KubernetesProvider) findOwnedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
+	workloads := &schedulingv1beta1.WorkloadList{}
+	if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}); err != nil {
+		return nil, fmt.Errorf("list Workloads for LeaderWorkerSet %s/%s: %w", lws.Namespace, lws.Name, err)
+	}
+	var selected *schedulingv1beta1.Workload
+	for i := range workloads.Items {
+		candidate := &workloads.Items[i]
+		if !workloadControlledByLWS(candidate, lws) {
+			continue
+		}
+		if selected != nil {
+			return nil, fmt.Errorf("multiple Workloads are controlled by LeaderWorkerSet %s/%s UID %q", lws.Namespace, lws.Name, lws.UID)
+		}
+		selected = candidate
+	}
+	return selected, nil
+}
+
+func workloadControlledByLWS(workload *schedulingv1beta1.Workload, lws *leaderworkerset.LeaderWorkerSet) bool {
+	wantOwner := metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
+	owner := metav1.GetControllerOf(workload)
+	ref := workload.Spec.ControllerRef
+	return controllerReferencesEqual(owner, wantOwner) && ref != nil &&
+		ref.APIGroup == leaderworkerset.GroupVersion.Group && ref.Kind == "LeaderWorkerSet" && ref.Name == lws.Name
+}
+
+func controllerReferencesEqual(current, desired *metav1.OwnerReference) bool {
+	if current == nil || desired == nil {
+		return false
+	}
+	return current.APIVersion == desired.APIVersion && current.Kind == desired.Kind &&
+		current.Name == desired.Name && current.UID == desired.UID
 }
 
 func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
@@ -328,6 +456,10 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 // updateMutableWorkloadFields updates the template's mutable scheduling policy
 // while preserving priority fields populated by admission.
 func updateMutableWorkloadFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.Workload) error {
+	if !controllerReferencesEqual(metav1.GetControllerOf(current), metav1.GetControllerOf(desired)) ||
+		!reflect.DeepEqual(current.Spec.ControllerRef, desired.Spec.ControllerRef) {
+		return fmt.Errorf("Workload %s/%s is not controlled by the expected LeaderWorkerSet UID", current.Namespace, current.Name)
+	}
 	if len(current.Spec.PodGroupTemplates) != len(desired.Spec.PodGroupTemplates) {
 		return fmt.Errorf("Workload %s/%s has immutable PodGroup template set drift", current.Namespace, current.Name)
 	}
@@ -337,6 +469,15 @@ func updateMutableWorkloadFields(ctx context.Context, c client.Client, current, 
 	}
 
 	changed := false
+	if current.Labels == nil {
+		current.Labels = make(map[string]string, len(desired.Labels))
+	}
+	for key, value := range desired.Labels {
+		if current.Labels[key] != value {
+			current.Labels[key] = value
+			changed = true
+		}
+	}
 	for i := range desired.Spec.PodGroupTemplates {
 		newTemplate := desired.Spec.PodGroupTemplates[i]
 		oldIndex, found := currentByName[newTemplate.Name]
@@ -394,8 +535,12 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 			inUseGroups[*ref.PodGroupName] = struct{}{}
 		}
 	}
+	desiredOwner := metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
 	for i := range groups.Items {
 		group := &groups.Items[i]
+		if !controllerReferencesEqual(metav1.GetControllerOf(group), desiredOwner) {
+			continue
+		}
 		if _, keep := desired[group.Name]; keep {
 			continue
 		}
@@ -403,24 +548,6 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 			if err := p.client.Delete(ctx, group); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("delete unused PodGroup %s/%s: %w", group.Namespace, group.Name, err)
 			}
-		}
-	}
-	return p.cleanupUnusedWorkloads(ctx, lws)
-}
-
-func (p *KubernetesProvider) cleanupUnusedWorkloads(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
-	workloads := &schedulingv1beta1.WorkloadList{}
-	if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace)); err != nil {
-		return fmt.Errorf("list Workloads before cleanup: %w", err)
-	}
-	for i := range workloads.Items {
-		workload := &workloads.Items[i]
-		owner := metav1.GetControllerOf(workload)
-		if owner == nil || owner.APIVersion != leaderworkerset.GroupVersion.String() || owner.Kind != "LeaderWorkerSet" || owner.Name != lws.Name || workload.Name == lws.Name {
-			continue
-		}
-		if err := p.client.Delete(ctx, workload); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete obsolete Workload %s/%s: %w", workload.Namespace, workload.Name, err)
 		}
 	}
 	return nil
@@ -444,19 +571,24 @@ func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	if mode == "true" {
 		mode = SchedulingModeReplica
 	}
-	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+	workloadName := pod.Annotations[WorkloadNameAnnotationKey]
+	if workloadName == "" {
+		// Keep Pods stamped by an older controller version schedulable during a
+		// rolling controller upgrade.
+		workloadName = pod.Labels[leaderworkerset.SetNameLabelKey]
+	}
 	var name string
 	switch mode {
 	case SchedulingModeLWS:
-		name = GetLWSGroupName(lwsName)
+		name = kubernetesRuntimeName(workloadName, "lws")
 	case SchedulingModeReplica:
-		name = GetPodGroupName(lwsName, pod.Labels[leaderworkerset.GroupIndexLabelKey], pod.Labels[leaderworkerset.RevisionKey])
+		name = kubernetesRuntimeName(workloadName, pod.Labels[leaderworkerset.GroupIndexLabelKey], pod.Labels[leaderworkerset.RevisionKey])
 	case SchedulingModeRole:
 		role := workerWorkloadTemplateName
 		if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 			role = leaderWorkloadTemplateName
 		}
-		name = GetRolePodGroupName(lwsName, pod.Labels[leaderworkerset.GroupIndexLabelKey], role, pod.Labels[leaderworkerset.RevisionKey])
+		name = kubernetesRuntimeName(workloadName, pod.Labels[leaderworkerset.GroupIndexLabelKey], role, pod.Labels[leaderworkerset.RevisionKey])
 	default:
 		return fmt.Errorf("unsupported workload-aware scheduling mode %q", mode)
 	}

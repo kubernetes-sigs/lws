@@ -877,6 +877,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	}
 	if lws.Spec.Scheduling != nil {
 		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(lws)
+		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(lws)
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

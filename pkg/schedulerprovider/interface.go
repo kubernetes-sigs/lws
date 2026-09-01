@@ -40,7 +40,7 @@ const (
 	// These linkage annotations are defined by Kubernetes KEP-6089. They are
 	// not exported by k8s.io/api yet.
 	GroupTemplateNameAnnotation       = "scheduling.k8s.io/group-template-name"
-	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-composite-podgroup"
+	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
 
 	ReasonAPINotAvailable                = "APINotAvailable"
 	ReasonUnsupportedProviderCapability  = "UnsupportedProviderCapability"
