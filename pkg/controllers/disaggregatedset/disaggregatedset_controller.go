@@ -465,7 +465,6 @@ func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, d
 
 func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		Client:     r.Client,
 		Record:     r.Record,
 		LWSManager: r.LWSManager,
 	}

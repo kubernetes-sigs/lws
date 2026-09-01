@@ -19,40 +19,37 @@ package kubectl
 import (
 	"bufio"
 	"bytes"
-	"errors"
+	"context"
 	"fmt"
 	"io"
-	"os"
+	"maps"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
-// LWSEvent is one MODIFIED / ADDED / DELETED event observed by an LWSWatcher.
+// LWSEvent is one LWS state observed by an LWSWatcher.
 type LWSEvent struct {
-	Timestamp time.Time
-	EventType string // ADDED, MODIFIED, DELETED
-	Revision  string
-	Role      string
-	Spec      int
+	Revision string
+	Role     string
+	Spec     int
 }
 
 // LWSWatcher watches LWS resources for a DisaggregatedSet via a
 // `kubectl get --watch --output-watch-events` subprocess. Every event
-// (ADDED, MODIFIED, DELETED) is captured with a timestamp into an in-memory
-// history. Used by drain-order tests to observe every state transition
+// (ADDED, MODIFIED, DELETED) is captured in an in-memory history. Used by
+// drain-order tests to observe every state transition
 // (including sub-millisecond transients that external polling misses).
 type LWSWatcher struct {
-	cmd      *exec.Cmd
-	stdout   io.ReadCloser
-	mu       sync.Mutex
-	history  []LWSEvent
-	scanErr  error
-	stopping bool
-	stderr   *bytes.Buffer
-	done     chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+	cmd     *exec.Cmd
+	mu      sync.Mutex
+	history []LWSEvent
+	scanErr error
+	stderr  *bytes.Buffer
+	done    chan struct{}
 }
 
 // NewLWSWatcher starts a watcher on LWSes labeled with the given DisaggregatedSet
@@ -72,30 +69,30 @@ func NewLWSWatcher(deploymentName string) (*LWSWatcher, error) {
 		"-o", `custom-columns=EVENT:.type,REV:.object.metadata.labels['disaggregatedset\.x-k8s\.io/revision'],ROLE:.object.metadata.labels['disaggregatedset\.x-k8s\.io/role'],SPEC:.object.spec.replicas`,
 		"--no-headers",
 	}
-	cmd := exec.Command("kubectl", args...)
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("watcher pipe: %w", err)
 	}
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, fmt.Errorf("watcher start: %w", err)
 	}
 
 	w := &LWSWatcher{
-		cmd:    cmd,
-		stdout: stdout,
-		stderr: stderr,
-		done:   make(chan struct{}),
+		ctx: ctx, cancel: cancel, cmd: cmd, stderr: stderr, done: make(chan struct{}),
 	}
-	go w.readLoop()
+	go w.readLoop(stdout)
 	return w, nil
 }
 
-func (w *LWSWatcher) readLoop() {
+func (w *LWSWatcher) readLoop(stdout io.Reader) {
 	defer close(w.done)
-	scanner := bufio.NewScanner(w.stdout)
+	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -110,15 +107,13 @@ func (w *LWSWatcher) readLoop() {
 		w.history = append(w.history, event)
 		w.mu.Unlock()
 	}
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && w.ctx.Err() == nil {
 		w.setReadError(fmt.Errorf("read LWS watch: %w", err))
 		return
 	}
-	w.mu.Lock()
-	if !w.stopping && w.scanErr == nil {
-		w.scanErr = io.ErrUnexpectedEOF
+	if w.ctx.Err() == nil {
+		w.setReadError(io.ErrUnexpectedEOF)
 	}
-	w.mu.Unlock()
 }
 
 func parseLWSEvent(line string) (LWSEvent, error) {
@@ -134,13 +129,10 @@ func parseLWSEvent(line string) (LWSEvent, error) {
 	if err != nil {
 		return LWSEvent{}, fmt.Errorf("parse LWS watch spec %q: %w", parts[3], err)
 	}
-	return LWSEvent{
-		Timestamp: time.Now(),
-		EventType: parts[0],
-		Revision:  parts[1],
-		Role:      parts[2],
-		Spec:      spec,
-	}, nil
+	if parts[0] == "DELETED" {
+		spec = 0
+	}
+	return LWSEvent{Revision: parts[1], Role: parts[2], Spec: spec}, nil
 }
 
 func (w *LWSWatcher) setReadError(err error) {
@@ -154,41 +146,20 @@ func (w *LWSWatcher) setReadError(err error) {
 // Stop terminates the kubectl subprocess, waits for the read loop, and returns
 // any parsing or watch-process failure.
 func (w *LWSWatcher) Stop() error {
-	w.mu.Lock()
-	w.stopping = true
-	w.mu.Unlock()
-
-	var killErr error
-	if w.cmd.Process != nil {
-		killErr = w.cmd.Process.Kill()
-	}
+	w.cancel()
 	<-w.done
-	waitErr := w.cmd.Wait()
+	_ = w.cmd.Wait()
 
 	w.mu.Lock()
 	readErr := w.scanErr
-	stderr := ""
-	if w.stderr != nil {
-		stderr = strings.TrimSpace(w.stderr.String())
-	}
 	w.mu.Unlock()
 	if readErr != nil {
+		stderr := strings.TrimSpace(w.stderr.String())
 		if stderr != "" {
 			return fmt.Errorf("LWS watcher: %w: %s", readErr, stderr)
 		}
 		return readErr
 	}
-	if killErr != nil {
-		if errors.Is(killErr, os.ErrProcessDone) {
-			if waitErr != nil {
-				return fmt.Errorf("LWS watcher exited before stop: %w", waitErr)
-			}
-			return fmt.Errorf("LWS watcher exited before stop")
-		}
-		return fmt.Errorf("stop LWS watcher: %w", killErr)
-	}
-	// Killing a healthy long-running watch normally makes Wait return a signal
-	// error; that is the expected shutdown path.
 	return nil
 }
 
@@ -236,7 +207,7 @@ func sawDrainedFirst(history []LWSEvent, firstRev, secondRev string) bool {
 			expectedRoles[ev.Revision][ev.Role] = true
 		}
 	}
-	if !sameRoles(expectedRoles[firstRev], expectedRoles[secondRev]) {
+	if len(expectedRoles[firstRev]) == 0 || !maps.Equal(expectedRoles[firstRev], expectedRoles[secondRev]) {
 		return false
 	}
 
@@ -245,7 +216,6 @@ func sawDrainedFirst(history []LWSEvent, firstRev, secondRev string) bool {
 		firstRev:  {},
 		secondRev: {},
 	}
-	seen := map[string]bool{}
 	seenRoles := map[string]map[string]bool{
 		firstRev:  {},
 		secondRev: {},
@@ -255,38 +225,20 @@ func sawDrainedFirst(history []LWSEvent, firstRev, secondRev string) bool {
 		if ev.Revision != firstRev && ev.Revision != secondRev {
 			continue
 		}
-		seen[ev.Revision] = true
 		seenRoles[ev.Revision][ev.Role] = true
-		if ev.EventType == "DELETED" {
-			delete(specByRevRole[ev.Revision], ev.Role)
-		} else {
-			specByRevRole[ev.Revision][ev.Role] = ev.Spec
-		}
+		specByRevRole[ev.Revision][ev.Role] = ev.Spec
 		firstTotal := sumMap(specByRevRole[firstRev])
 		secondTotal := sumMap(specByRevRole[secondRev])
 		if firstTotal > 0 {
 			firstWasPositive = true
 		}
-		if seen[firstRev] && seen[secondRev] &&
-			sameRoles(seenRoles[firstRev], expectedRoles[firstRev]) &&
-			sameRoles(seenRoles[secondRev], expectedRoles[secondRev]) &&
+		if maps.Equal(seenRoles[firstRev], expectedRoles[firstRev]) &&
+			maps.Equal(seenRoles[secondRev], expectedRoles[secondRev]) &&
 			firstWasPositive && firstTotal == 0 && secondTotal > 0 {
 			return true
 		}
 	}
 	return false
-}
-
-func sameRoles(a, b map[string]bool) bool {
-	if len(a) == 0 || len(a) != len(b) {
-		return false
-	}
-	for role := range a {
-		if !b[role] {
-			return false
-		}
-	}
-	return true
 }
 
 func sumMap(m map[string]int) int {

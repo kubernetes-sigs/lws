@@ -19,7 +19,6 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"slices"
 	"time"
 
@@ -27,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -44,7 +42,6 @@ const (
 )
 
 type RollingUpdateExecutor struct {
-	Client     client.Client
 	Record     events.EventRecorder
 	LWSManager *LeaderWorkerSetManager
 }
@@ -53,14 +50,13 @@ type RollingUpdateExecutor struct {
 // has completed and is serving through Ready. The planner advances Spec; Ready
 // only authorizes additional in-flight work and old-replica drains.
 type roleRolloutState struct {
-	InitialOld       int
-	OldSpec          int
-	OldReady         int
-	NewSpec          int
-	NewReady         int
-	Target           int
-	PendingAllowance int
-	Config           RollingUpdateConfig
+	InitialOld int
+	OldSpec    int
+	OldReady   int
+	NewSpec    int
+	NewReady   int
+	Target     int
+	Config     RollingUpdateConfig
 }
 
 type rolloutState map[string]roleRolloutState
@@ -99,7 +95,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 		return executor.initRollingUpdate(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, oldRevisions)
 	}
 
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision, scalers)
+	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, oldRevisions, *newRevision, scalers)
 }
 
 func (executor *RollingUpdateExecutor) initRollingUpdate(
@@ -151,7 +147,6 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
 	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
@@ -182,14 +177,13 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	}
 	nextStep := plan.Step
 	nextStep.New = boundNewReplicaTargets(allRoleNames, state, nextStep.New)
+	ensureExecutableStep(allRoleNames, state, nextStep)
 
-	maxSafeDrain := buildMaxSafeDrain(allRoleNames, state)
-	ensureExecutableStep(allRoleNames, state, nextStep, maxSafeDrain)
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
-	allowUncoordinatedDrain := true
+	newGrowthPlanned := false
 	for _, name := range allRoleNames {
 		if nextStep.New[name].Replicas > state[name].NewSpec {
-			allowUncoordinatedDrain = false
+			newGrowthPlanned = true
 			break
 		}
 	}
@@ -199,20 +193,16 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	// API calls: e.g. with surge=0, scaling up first would briefly make
 	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
 	// currentOld down.
-	drained, err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past, maxSafeDrain, allowUncoordinatedDrain)
-	if err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, state, nextStep.Past, !newGrowthPlanned); err != nil {
 		return ctrl.Result{}, err
 	}
-	scaled, err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, state, nextStep.New)
-	if err != nil {
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, nextStep.New); err != nil {
 		return ctrl.Result{}, err
-	}
-	if !drained && !scaled {
-		log.V(1).Info("Rolling update is waiting for capacity or readiness")
-		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	return ctrl.Result{}, nil
+	// Object updates normally trigger the next reconcile immediately. The
+	// timer also covers a legal no-op while pending replicas become Ready.
+	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
 // --- Helpers ---
@@ -282,23 +272,6 @@ func buildRolloutState(
 		state[roleName] = roleState
 	}
 
-	initialOld := make(map[string]int, len(allRoleNames))
-	targetNew := make(map[string]int, len(allRoleNames))
-	for _, roleName := range allRoleNames {
-		initialOld[roleName] = state[roleName].InitialOld
-		targetNew[roleName] = state[roleName].Target
-	}
-	budgetSteps := max(sideSize(initialOld), sideSize(targetNew))
-	for _, roleName := range allRoleNames {
-		roleState := state[roleName]
-		roleSize := max(roleState.InitialOld, roleState.Target)
-		roleState.PendingAllowance = projectBudget(
-			roleSize,
-			roleState.Config.MaxSurge+roleState.Config.MaxUnavailable,
-			budgetSteps,
-		)
-		state[roleName] = roleState
-	}
 	return state
 }
 
@@ -419,7 +392,7 @@ func isRolloutReady(roleNames []string, state rolloutState) bool {
 
 // boundNewReplicaTargets applies the executor's hard limits to a planner
 // proposal. A role may only consume surge headroom that exists in the current
-// Spec footprint, and may only have PendingAllowance issued-but-not-ready
+// Spec footprint, and may only have its pending allowance issued-but-not-ready
 // replicas. Existing Spec is never reduced here, even if an externally
 // modified object is already outside either bound.
 func boundNewReplicaTargets(
@@ -427,51 +400,49 @@ func boundNewReplicaTargets(
 	state rolloutState,
 	proposed map[string]RoleStepState,
 ) map[string]RoleStepState {
-	targets := make(map[string]int, len(roleNames))
 	provisional := make(map[string]int, len(roleNames))
+	budgetSteps := 0
 	for _, name := range roleNames {
 		roleState := state[name]
-		targets[name] = roleState.Target
+		budgetSteps = max(budgetSteps, roleState.InitialOld, roleState.Target)
+	}
+	for _, name := range roleNames {
+		roleState := state[name]
 		roleSize := max(roleState.InitialOld, roleState.Target)
 		maxBySurge := roleSize + roleState.Config.MaxSurge - roleState.OldSpec
-		maxByPending := roleState.NewReady + roleState.PendingAllowance
+		pendingAllowance := projectBudget(
+			roleSize,
+			roleState.Config.MaxSurge+roleState.Config.MaxUnavailable,
+			budgetSteps,
+		)
+		maxByPending := roleState.NewReady + pendingAllowance
 		upperBound := max(roleState.NewSpec, min(maxBySurge, maxByPending))
 		provisional[name] = max(roleState.NewSpec, min(proposed[name].Replicas, upperBound))
 	}
 
-	// Independent per-role clamps can break coordination. For example, with a
-	// 2:3 ratio, letting only the two-replica role move from 1 to 2 produces
-	// progress of 100% versus 33%, beyond the largestReplicaFraction (1/2).
-	// Let roles consume different amounts of their pending windows, but cap the
-	// resulting progress spread at the largest one-pod fraction. This is less
-	// restrictive than requiring an exact shared step: a one-replica role has
-	// an atomic fraction of 1 and must not block a larger role entirely.
-	var minProgress *big.Rat
-	minPositiveTarget := 0
+	// Per-role readiness clamps can trim different parts of the proposal. Keep
+	// the resulting progress within one largestReplicaFraction of the slowest
+	// role. Integer cross-products keep this exact without rational-number state.
+	slowCount, slowTarget, minTarget := 0, 0, 0
 	for _, name := range roleNames {
-		target := targets[name]
+		target := state[name].Target
 		if target <= 0 {
 			continue
 		}
-		progress := new(big.Rat).SetFrac64(int64(provisional[name]), int64(target))
-		if minProgress == nil || progress.Cmp(minProgress) < 0 {
-			minProgress = progress
+		if minTarget == 0 || target < minTarget {
+			minTarget = target
 		}
-		if minPositiveTarget == 0 || target < minPositiveTarget {
-			minPositiveTarget = target
-		}
-	}
-	maxCoordinatedProgress := new(big.Rat).SetInt64(1)
-	if minPositiveTarget > 0 {
-		maxCoordinatedProgress.Add(minProgress, new(big.Rat).SetFrac64(1, int64(minPositiveTarget)))
-		if maxCoordinatedProgress.Cmp(new(big.Rat).SetInt64(1)) > 0 {
-			maxCoordinatedProgress.SetInt64(1)
+		if slowTarget == 0 || int64(provisional[name])*int64(slowTarget) < int64(slowCount)*int64(target) {
+			slowCount, slowTarget = provisional[name], target
 		}
 	}
 	bounded := make(map[string]RoleStepState, len(roleNames))
 	for _, name := range roleNames {
 		roleState := state[name]
-		coordinatedTarget := floorScaledFraction(roleState.Target, maxCoordinatedProgress)
+		coordinatedTarget := roleState.Target
+		if minTarget > 0 {
+			coordinatedTarget = replicaLimit(roleState.Target, slowCount, slowTarget, minTarget)
+		}
 		bounded[name] = RoleStepState{
 			Replicas: max(roleState.NewSpec, min(provisional[name], coordinatedTarget)),
 		}
@@ -479,51 +450,39 @@ func boundNewReplicaTargets(
 	return bounded
 }
 
-func floorScaledFraction(scale int, fraction *big.Rat) int {
-	if scale <= 0 {
-		return 0
-	}
-	numerator := new(big.Int).Mul(big.NewInt(int64(scale)), fraction.Num())
-	return int(new(big.Int).Quo(numerator, fraction.Denom()).Int64())
+// replicaLimit returns floor(target * (slowCount/slowTarget + 1/minTarget)).
+// Each multiplication is bounded by two replica counts, which originate from
+// int32 API fields and therefore fit in int64.
+func replicaLimit(target, slowCount, slowTarget, minTarget int) int {
+	base := int64(target) * int64(slowCount)
+	whole, remainder := base/int64(slowTarget), base%int64(slowTarget)
+	extra := (remainder*int64(minTarget) + int64(target)*int64(slowTarget)) /
+		(int64(slowTarget) * int64(minTarget))
+	return min(target, int(whole+extra))
 }
 
-// buildMaxSafeDrain returns the maximum number of old replicas that may be
-// removed per role without crossing the raw MaxUnavailable availability
-// floor. Ready is capped at Spec before entering state so replicas already
-// committed to termination cannot authorize another drain.
-func buildMaxSafeDrain(
-	roleNames []string,
-	state rolloutState,
-) map[string]int {
-	maxSafeDrain := make(map[string]int, len(roleNames))
+// maxSafeDrain returns the number of old replicas that may be removed without
+// crossing the raw MaxUnavailable availability floor. Ready is capped at Spec
+// before entering state, so terminating replicas cannot be spent twice.
+func maxSafeDrain(state roleRolloutState) int {
+	floor := max(0, min(state.InitialOld, state.Target)-state.Config.MaxUnavailable)
+	return min(state.OldSpec, max(0, state.OldReady+state.NewReady-floor))
+}
+
+// The planner may pair a drain with growth that readiness/coordination bounds
+// later remove. If that leaves a permanent no-op, spend one safe drain to open
+// replacement capacity.
+func ensureExecutableStep(roleNames []string, state rolloutState, step *UpdateStep) {
 	for _, name := range roleNames {
 		roleState := state[name]
-		floor := max(0, min(roleState.InitialOld, roleState.Target)-roleState.Config.MaxUnavailable)
-		maxSafeDrain[name] = min(roleState.OldSpec, max(0, roleState.OldReady+roleState.NewReady-floor))
-	}
-	return maxSafeDrain
-}
-
-// ensureExecutableStep recovers a floor-safe drain when pending/coordination
-// bounds remove every scale-up proposed by the planner and its paired
-// aliveness rule had suppressed all drains. Without this post-bound check,
-// valid zero-surge states can become permanent no-ops. The executor still
-// applies its per-revision aliveness policy before issuing the selected drain.
-func ensureExecutableStep(
-	roleNames []string,
-	state rolloutState,
-	step *UpdateStep,
-	maxSafeDrain map[string]int,
-) {
-	for _, name := range roleNames {
-		if step.New[name].Replicas > state[name].NewSpec ||
-			min(max(0, state[name].OldSpec-step.Past[name].Replicas), maxSafeDrain[name]) > 0 {
+		if step.New[name].Replicas > roleState.NewSpec ||
+			min(max(0, roleState.OldSpec-step.Past[name].Replicas), maxSafeDrain(roleState)) > 0 {
 			return
 		}
 	}
 	for _, name := range roleNames {
 		roleState := state[name]
-		if roleState.OldSpec > 0 && maxSafeDrain[name] > 0 {
+		if roleState.OldSpec > 0 && maxSafeDrain(roleState) > 0 {
 			step.Past[name] = RoleStepState{Replicas: roleState.OldSpec - 1}
 			return
 		}
@@ -540,10 +499,7 @@ func maxTimestamp(wl disaggregatedsetutils.RevisionRoles) time.Time {
 	return maxTS
 }
 
-func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList, roleNames []string) disaggregatedsetutils.RevisionRolesList {
-	if len(roleNames) == 0 {
-		return revisions
-	}
+func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList) disaggregatedsetutils.RevisionRolesList {
 	sorted := slices.Clone(revisions)
 	slices.SortFunc(sorted, func(a, b disaggregatedsetutils.RevisionRoles) int {
 		return maxTimestamp(b).Compare(maxTimestamp(a))
@@ -556,44 +512,30 @@ func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList, ro
 func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	allRoleNames []string,
-	specRoleSet map[string]bool,
-	state rolloutState,
+	roleNames []string,
 	targetNew map[string]RoleStepState,
-) (bool, error) {
+) error {
 	log := logf.FromContext(ctx)
-	changed := false
-	for _, name := range allRoleNames {
-		if !specRoleSet[name] {
-			continue
-		}
+	for _, name := range roleNames {
 		lws := newRevision.Roles[name]
 		if lws == nil {
 			continue
 		}
 		currentSpec := int(getLWSReplicas(lws))
 		desiredSpec := targetNew[name].Replicas
-		roleState := state[name]
-		roleSize := max(roleState.InitialOld, roleState.Target)
-		maxBySurge := roleSize + roleState.Config.MaxSurge - roleState.OldSpec
-		maxByPending := roleState.NewReady + roleState.PendingAllowance
-		desiredSpec = max(currentSpec, min(desiredSpec, maxBySurge, maxByPending))
-
 		if currentSpec >= desiredSpec {
 			continue
 		}
-		lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, newRevision.Revision, name)
-		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", state[name].NewReady, "to", desiredSpec)
+		lwsName := lws.Name
+		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", committedReadyReplicas(lws), "to", desiredSpec)
 		if err := executor.LWSManager.Scale(ctx, ds, lwsName, desiredSpec); err != nil {
-			return changed, fmt.Errorf("failed to scale %s: %w", lwsName, err)
+			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
 			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentSpec, desiredSpec)
-		changed = true
 	}
-	return changed, nil
+	return nil
 }
 
 func (executor *RollingUpdateExecutor) scaleDownOld(
@@ -601,184 +543,103 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
-	currentOld map[string]int,
+	state rolloutState,
 	targetOld map[string]RoleStepState,
-	maxSafeDrain map[string]int,
 	allowUncoordinatedDrain bool,
-) (bool, error) {
+) error {
 	budget := make(map[string]int, len(roleNames))
 	for _, name := range roleNames {
-		budget[name] = max(0, min(currentOld[name]-targetOld[name].Replicas, maxSafeDrain[name]))
+		roleState := state[name]
+		budget[name] = max(0, min(roleState.OldSpec-targetOld[name].Replicas, maxSafeDrain(roleState)))
 	}
 
 	log := logf.FromContext(ctx)
-	changed := false
-	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
-		allDone := true
+	for _, wl := range sortByNewestTimestamp(oldRevisions) {
+		plannedDrain := make(map[string]int, len(roleNames))
 		for _, name := range roleNames {
-			if budget[name] > 0 {
-				allDone = false
-				break
+			if lws := wl.Roles[name]; lws != nil {
+				plannedDrain[name] = min(budget[name], int(getLWSReplicas(lws)))
 			}
 		}
-		if allDone {
-			break
-		}
-
-		// A revision is retired when all of its role Specs are zero. Status may
-		// still contain terminating replicas, but they are already committed to
-		// disappear and cannot block progress or provide drain capacity.
-		specAllZero := true
-		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
-				continue
-			}
-			if getLWSReplicas(lws) > 0 {
-				specAllZero = false
-			}
-		}
-		if specAllZero {
+		if !anyPositive(plannedDrain) {
 			continue
 		}
 
-		budgetedDrain := make(map[string]int, len(roleNames))
-		plannedDrain := make(map[string]int, len(roleNames))
-		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
-				continue
-			}
-			replicas := int(getLWSReplicas(lws))
-			budgetedDrain[name] = min(budget[name], replicas)
-			plannedDrain[name] = budgetedDrain[name]
-		}
+		coordinateRevisionDrain(roleNames, wl.Roles, plannedDrain, state, allowUncoordinatedDrain)
 
-		// Per-revision aliveness: if the planned drain would take some role
-		// to 0 while another role stays > 0, choose between:
-		//   - Retire the whole revision atomically when ReadyReplicas leave
-		//     enough room above every role's raw availability floor.
-		//   - Skip drains that would hit 0 (keep those roles alive; budget
-		//     rolls to the next revision or next reconcile). Preserves
-		//     ratio and avoids over-draining ready pods below floor.
-		anyAliveAfter, wouldOrphan, canRetireSafely := false, false, true
 		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
-				continue
-			}
-			replicas := int(getLWSReplicas(lws))
-			if replicas == 0 {
-				continue
-			}
-			after := replicas - plannedDrain[name]
-			if after > 0 {
-				anyAliveAfter = true
-			}
-			if replicas > maxSafeDrain[name] {
-				canRetireSafely = false
-			}
-		}
-		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
-				continue
-			}
-			replicas := int(getLWSReplicas(lws))
-			if replicas == 0 {
-				continue
-			}
-			after := replicas - plannedDrain[name]
-			if after == 0 && anyAliveAfter {
-				wouldOrphan = true
-				break
-			}
-		}
-		if wouldOrphan {
-			if canRetireSafely {
-				for _, name := range roleNames {
-					lws, exists := wl.Roles[name]
-					if !exists {
-						continue
-					}
-					plannedDrain[name] = int(getLWSReplicas(lws))
-				}
-			} else {
-				for _, name := range roleNames {
-					lws, exists := wl.Roles[name]
-					if !exists {
-						continue
-					}
-					replicas := int(getLWSReplicas(lws))
-					if replicas > 0 && replicas-plannedDrain[name] == 0 {
-						plannedDrain[name] = 0
-					}
-				}
-			}
-		}
-
-		// Aliveness is a coordination preference, while the raw availability
-		// floor is the safety boundary. If orphan prevention suppressed every
-		// otherwise budgeted drain and whole-revision retirement is unsafe, wait
-		// when NEW can grow. If no growth is possible, use only the original
-		// budgeted move rather than force-retiring the revision or wedging forever.
-		if !hasPositiveDrain(plannedDrain) && hasPositiveDrain(budgetedDrain) {
-			if !allowUncoordinatedDrain {
-				// Do not spill the budget into an older revision. Scaling NEW in
-				// this reconcile may make whole-revision retirement safe on the
-				// next pass.
-				return changed, nil
-			}
-			log.V(1).Info("Applying budgeted drain to avoid an aliveness deadlock",
-				"revision", wl.Revision)
-			plannedDrain = budgetedDrain
-		}
-
-		revisionDrained := false
-		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
+			lws := wl.Roles[name]
+			if lws == nil || plannedDrain[name] == 0 {
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
 			drain := plannedDrain[name]
-			if drain <= 0 {
-				continue
-			}
 			newReplicas := replicas - drain
 			// Address by the LWS's actual name so a legacy slice-0 object drains too.
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas)
 			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas); err != nil {
-				return changed, fmt.Errorf("failed to scale %s: %w", lwsName, err)
+				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas)
-			budget[name] -= drain
-			revisionDrained = true
-			changed = true
 		}
-		// Newest-first drain-order invariant: once we've touched a revision,
-		// finish this reconcile without moving budget to older revisions.
-		// Next reconcile picks up the next revision if this one is done.
-		// Cost: extra reconciles for multi-revision cases; benefit: the
-		// observable "B drained to 0 before A" property holds even on fast
-		// clusters where reconciles chain in <100ms.
-		if revisionDrained {
-			break
-		}
+		// Never move a budget past the newest revision that can consume it.
+		return nil
 	}
 
-	return changed, nil
+	return nil
 }
 
-func hasPositiveDrain(drains map[string]int) bool {
-	for _, drain := range drains {
-		if drain > 0 {
-			return true
+// coordinateRevisionDrain keeps all roles in an old revision alive together
+// when possible. It may retire the whole revision if every role fits within
+// its availability budget. If strict coordination would make a legal rollout
+// immobile, the already-budgeted drain is allowed as a last resort.
+func coordinateRevisionDrain(
+	roleNames []string,
+	roles map[string]*leaderworkersetv1.LeaderWorkerSet,
+	drain map[string]int,
+	state rolloutState,
+	allowUncoordinated bool,
+) {
+	anyAliveAfter, anyRetired, canRetire := false, false, true
+	for _, name := range roleNames {
+		lws := roles[name]
+		if lws == nil || getLWSReplicas(lws) == 0 {
+			continue
+		}
+		replicas := int(getLWSReplicas(lws))
+		anyAliveAfter = anyAliveAfter || replicas > drain[name]
+		anyRetired = anyRetired || drain[name] == replicas
+		canRetire = canRetire && replicas <= maxSafeDrain(state[name])
+	}
+	if !anyAliveAfter || !anyRetired {
+		return
+	}
+	if canRetire {
+		for _, name := range roleNames {
+			if lws := roles[name]; lws != nil {
+				drain[name] = int(getLWSReplicas(lws))
+			}
+		}
+		return
+	}
+
+	hasPartialDrain := false
+	for _, name := range roleNames {
+		if lws := roles[name]; lws != nil {
+			replicas := int(getLWSReplicas(lws))
+			hasPartialDrain = hasPartialDrain || drain[name] > 0 && drain[name] < replicas
 		}
 	}
-	return false
+	if !hasPartialDrain && allowUncoordinated {
+		return
+	}
+	for _, name := range roleNames {
+		if lws := roles[name]; lws != nil && drain[name] == int(getLWSReplicas(lws)) {
+			drain[name] = 0
+		}
+	}
 }
 
 // --- LWS creation ---

@@ -1398,40 +1398,11 @@ type rolloutTestCase struct {
 
 // getCurrentRolloutState queries the cluster for current LWS replica counts
 func getCurrentRolloutState(deploymentName, oldRevision string) rolloutState {
-	output, err := kubectl.LWS(deploymentName).
-		JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision},{.metadata.labels.disaggregatedset\.x-k8s\.io/role},{.spec.replicas}{"\n"}{end}`).
-		RunQuiet()
+	observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
 	if err != nil {
 		return rolloutState{}
 	}
-
-	state := rolloutState{}
-	for _, line := range kubectl.GetNonEmptyLines(output) {
-		parts := strings.Split(line, ",")
-		if len(parts) != 3 {
-			continue
-		}
-		revision := parts[0]
-		role := parts[1]
-		replicas, _ := strconv.Atoi(parts[2])
-
-		isOld := revision == oldRevision
-		if role == "prefill" {
-			if isOld {
-				state.OldPrefill = replicas
-			} else {
-				state.NewPrefill = replicas
-			}
-		} else if role == "decode" {
-			if isOld {
-				state.OldDecode = replicas
-			} else {
-				state.NewDecode = replicas
-			}
-		}
-	}
-
-	return state
+	return observation.Spec
 }
 
 // getCurrentRolloutObservation returns both the issued Spec footprint and the
