@@ -122,7 +122,6 @@ function kind_load_image {
     local image="$1"
     local archive
     archive="$(mktemp)"
-    trap 'rm -f "$archive"' RETURN
     docker save "$image" -o "$archive"
 
     while IFS= read -r node; do

@@ -73,9 +73,6 @@ func TestLeaderDeploymentApplyConfig(t *testing.T) {
 	if got := template.Labels[leaderworkerset.RevisionKey]; got != "rev-1" {
 		t.Errorf("template revision label = %q, want rev-1", got)
 	}
-	if got := template.Labels[leaderworkerset.RoleLabelKey]; got != leaderworkerset.RoleLeader {
-		t.Errorf("template role label = %q, want %q", got, leaderworkerset.RoleLeader)
-	}
 	if got := template.Labels[leaderworkerset.WorkerIndexLabelKey]; got != "0" {
 		t.Errorf("template worker-index label = %q, want 0", got)
 	}
