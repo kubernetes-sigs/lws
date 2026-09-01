@@ -183,12 +183,12 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 			podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 		}
 		// check pod template has correct label
-		if diff := cmp.Diff(sts.Spec.Template.Labels, map[string]string{
+		wantPodLabels := map[string]string{
 			leaderworkerset.SetNameLabelKey:     lws.Name,
 			leaderworkerset.WorkerIndexLabelKey: "0",
 			leaderworkerset.RevisionKey:         hash,
-			leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
-		}); diff != "" {
+		}
+		if diff := cmp.Diff(sts.Spec.Template.Labels, wantPodLabels); diff != "" {
 			return errors.New("leader StatefulSet pod template doesn't have the correct labels: " + diff)
 		}
 		// we can't do a full diff of the pod template since there will be default fields added to pod template
