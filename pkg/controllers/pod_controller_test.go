@@ -737,7 +737,7 @@ func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T)
 			},
 		},
 		Spec: corev1.PodSpec{
-			Hostname:  "9f2ac71b",
+			Hostname:  "test-sample-9f2ac71b",
 			Subdomain: "test-sample-9f2ac71b",
 		},
 	}

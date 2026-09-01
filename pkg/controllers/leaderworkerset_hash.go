@@ -62,10 +62,13 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{}, err
 	}
 
-	updatedRevision, err := r.getUpdatedRevision(ctx, deploy != nil, lws, revision)
-	if err != nil {
-		log.Error(err, "Validating if LWS has been updated")
-		return ctrl.Result{}, err
+	var updatedRevision *appsv1.ControllerRevision
+	if deploy != nil {
+		updatedRevision, err = r.getUpdatedRevision(ctx, lws, revision)
+		if err != nil {
+			log.Error(err, "Validating if LWS has been updated")
+			return ctrl.Result{}, err
+		}
 	}
 	if updatedRevision != nil {
 		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)

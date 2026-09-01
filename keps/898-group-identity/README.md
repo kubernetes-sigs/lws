@@ -66,7 +66,7 @@ The ordinal system makes it impossible to remove or relocate one specific group.
 
 Add `spec.groupIdentity` with values `Ordinal` and `Hash`, defaulted to `Ordinal` by the webhook and immutable after creation.
 
-In hash mode the controller manages leader pods through a Deployment named after the LeaderWorkerSet. Each new leader pod is assigned a random 40 character group key at admission, stored in both the `group-index` and `group-key` labels. The webhook also sets the leader's hostname to an 8 character prefix of the group key, while the Deployment template sets its subdomain to the LeaderWorkerSet headless service, giving each leader a DNS name for its lifetime. The per-group worker StatefulSet is named after its leader pod, and workers reach their leader through that DNS name in the `LWS_LEADER_ADDRESS` environment variable, the same form as ordinal mode.
+In hash mode the controller manages leader pods through a Deployment named after the LeaderWorkerSet. Each new leader pod is assigned a random 40 character group key at admission, stored in both the `group-index` and `group-key` labels. The webhook also sets the leader's hostname to the LeaderWorkerSet name plus an 8 character prefix of the group key, while the Deployment template sets its subdomain to the LeaderWorkerSet headless service, giving each leader a DNS name for its lifetime. The per-group worker StatefulSet is named after its leader pod, and workers reach their leader through that DNS name in the `LWS_LEADER_ADDRESS` environment variable, the same form as ordinal mode.
 
 Scale down is delegated to the ReplicaSet, which deletes unscheduled and not-ready pods before healthy ones. Since a leader pod is only fully ready once its whole group is ready (via a readiness gate, described below), the ReplicaSet's ranking operates on group health.
 
@@ -133,7 +133,7 @@ Leader pods carry a `leaderworkerset.sigs.k8s.io/group-ready` readiness gate. Th
 
 The pod webhook assigns each new leader pod a group key, a SHA1 over the namespace and a random 16 character string. A random input is required because leader pods are created through `generateName`, so at mutating admission time the pod has no name or UID to derive a key from. The key is stored in both the `group-index` and `group-key` labels on the leader and inherited by its workers. Exclusive placement continues to key off `group-key` exactly as in ordinal mode.
 
-The webhook also sets the leader's `hostname` to an 8 character prefix of the group key, while the Deployment template sets its `subdomain` to the LeaderWorkerSet headless service, which gives each leader a per-pod DNS record under the service. The key is truncated because the full 40 characters would consume most of the 63 character service name budget. Under `subdomainPolicy: UniquePerReplica` the per-replica headless service is named from the LeaderWorkerSet name plus the same prefix, since Service names must begin with a letter and the raw key cannot be used as a name.
+The webhook also sets the leader's `hostname` to the LeaderWorkerSet name plus an 8 character prefix of the group key, while the Deployment template sets its `subdomain` to the LeaderWorkerSet headless service, which gives each leader a per-pod DNS record under the service. The key is truncated because the full 40 characters would consume most of the 63 character service name budget. Under `subdomainPolicy: UniquePerReplica` the per-replica headless service name matches the leader host name.
 
 ### Worker StatefulSets and Leader Address
 

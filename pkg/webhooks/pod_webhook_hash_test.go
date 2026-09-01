@@ -63,8 +63,8 @@ func TestHashLeaderDNSDefaults(t *testing.T) {
 	if key == "" {
 		t.Fatal("expected a group key to be assigned")
 	}
-	if pod.Spec.Hostname != hashDNSPrefix(key) {
-		t.Errorf("expected hostname %q, got %q", hashDNSPrefix(key), pod.Spec.Hostname)
+	if want := hashLeaderHostname("hash-dns", key); pod.Spec.Hostname != want {
+		t.Errorf("expected hostname %q, got %q", want, pod.Spec.Hostname)
 	}
 	if pod.Spec.Subdomain != "hash-dns" {
 		t.Errorf("expected subdomain %q, got %q", "hash-dns", pod.Spec.Subdomain)
@@ -93,7 +93,10 @@ func TestHashLeaderUniquePerReplicaSubdomain(t *testing.T) {
 		t.Fatalf("defaulting hash leader: %v", err)
 	}
 	key := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
-	want := fmt.Sprintf("hash-upr-%s", hashDNSPrefix(key))
+	want := hashLeaderHostname("hash-upr", key)
+	if pod.Spec.Hostname != want {
+		t.Errorf("expected hostname %q, got %q", want, pod.Spec.Hostname)
+	}
 	if pod.Spec.Subdomain != want {
 		t.Errorf("expected per-replica subdomain %q, got %q", want, pod.Spec.Subdomain)
 	}

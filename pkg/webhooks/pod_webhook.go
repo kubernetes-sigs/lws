@@ -106,46 +106,30 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			// Hash-identity leaders are created through a Deployment: the pod name is
 			// not known at admission (generateName), so the group identity is a fresh
 			// random key rather than a name-derived ordinal.
-			if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
-				groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
-				pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
-			} else {
-				groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
-			}
-			if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
-				pod.Labels[leaderworkerset.GroupIndexLabelKey] = groupUniqueKey
-			}
-			// The group key also provides the leader's hostname, a prefix of the key.
-			// The field is immutable, so admission is the only chance to set it. The
-			// subdomain default comes from the pod template.
+			groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
+			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+			pod.Labels[leaderworkerset.GroupIndexLabelKey] = groupUniqueKey
+			// The host name is immutable, so admission is the only chance to set it.
+			// The subdomain default comes from the pod template.
 			if pod.Spec.Hostname == "" {
-				pod.Spec.Hostname = hashDNSPrefix(groupUniqueKey)
+				pod.Spec.Hostname = hashLeaderHostname(pod.Labels[leaderworkerset.SetNameLabelKey], groupUniqueKey)
 			}
 		} else {
-			// add group index label to group pods
-			if _, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]; !found {
-				_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-				if groupIndex == -1 {
-					return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
-				}
-				pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
+			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+			if groupIndex == -1 {
+				return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 			}
-			// add group unique key label for exclusive placement, and use it to check whether the node affinity has been applied
-			if _, foundGroupKey := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; !foundGroupKey {
-				groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
-				pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
-			} else {
-				groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
-			}
+			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
+			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
+			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 		}
 		subdomainPolicy, foundSubdomainPolicy := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
 		if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {
+			// The per replica service is named after the leader: the pod name in
+			// ordinal mode, the assigned host name in hash mode.
+			pod.Spec.Subdomain = pod.Name
 			if hashIdentity {
-				// Service names must begin with a letter, so the per-replica
-				// service cannot be named the raw key.
-				pod.Spec.Subdomain = fmt.Sprintf("%s-%s", pod.Labels[leaderworkerset.SetNameLabelKey], pod.Spec.Hostname)
-			} else {
-				pod.Spec.Subdomain = pod.Name
+				pod.Spec.Subdomain = pod.Spec.Hostname
 			}
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
@@ -242,11 +226,14 @@ func genGroupUniqueKey(ns string, podName string) string {
 // the LeaderWorkerSet's share of the 63 character name budgets large.
 const hashDNSPrefixLength = 8
 
-func hashDNSPrefix(groupUniqueKey string) string {
-	if len(groupUniqueKey) < hashDNSPrefixLength {
-		return groupUniqueKey
+// hashLeaderHostname is the host name of a hash identity leader: the lws name
+// plus a prefix of the group key, the same shape as worker and ordinal names.
+func hashLeaderHostname(lwsName, groupUniqueKey string) string {
+	key := groupUniqueKey
+	if len(key) > hashDNSPrefixLength {
+		key = key[:hashDNSPrefixLength]
 	}
-	return groupUniqueKey[:hashDNSPrefixLength]
+	return fmt.Sprintf("%s-%s", lwsName, key)
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
