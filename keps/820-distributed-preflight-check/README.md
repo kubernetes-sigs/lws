@@ -233,7 +233,9 @@ limit.
 The LWS annotation stores a JSON map whose keys use
 `<revision>/<groupIndex>` and whose values are non-negative restart counts. The
 counter survives controller restarts and LWS-initiated group recreation. Counts
-from older Pod-template revisions are ignored. LWS clears a count when:
+from older Pod-template revisions are retained while a rollout is active and
+ignored for recovery decisions. Once the rollout completes, LWS removes those
+obsolete revision keys. LWS clears a count when:
 
 - the user deletes the retained leader for recovery; or
 - scale-down removes the replica ordinal.

@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -212,6 +211,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, revisionutils.GetRevisionKey(revision)); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Leader Reconcile completed.")
 	return ctrl.Result{}, nil
@@ -221,39 +223,41 @@ func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx contex
 	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
 		return nil
 	}
-	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
-	if err != nil {
-		return err
-	}
-	changed := false
-	for key := range counts {
-		separator := strings.LastIndexByte(key, '/')
-		if separator < 0 {
-			return fmt.Errorf("invalid group restart count key %q", key)
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		changed := false
+		for key := range counts {
+			separator := strings.LastIndexByte(key, '/')
+			if separator < 0 {
+				return false, fmt.Errorf("invalid group restart count key %q", key)
+			}
+			groupIndex, err := strconv.ParseInt(key[separator+1:], 10, 32)
+			if err != nil {
+				return false, fmt.Errorf("invalid group restart count key %q: %w", key, err)
+			}
+			if groupIndex >= int64(*latest.Spec.Replicas) {
+				delete(counts, key)
+				changed = true
+			}
 		}
-		groupIndex, err := strconv.ParseInt(key[separator+1:], 10, 32)
-		if err != nil {
-			return fmt.Errorf("invalid group restart count key %q: %w", key, err)
+		return changed, nil
+	})
+}
+
+func (r *LeaderWorkerSetReconciler) cleanupObsoleteGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		changed := false
+		for key := range counts {
+			separator := strings.LastIndexByte(key, '/')
+			if separator < 0 {
+				return false, fmt.Errorf("invalid group restart count key %q", key)
+			}
+			if key[:separator] != revisionKey {
+				delete(counts, key)
+				changed = true
+			}
 		}
-		if groupIndex >= int64(*lws.Spec.Replicas) {
-			delete(counts, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-	patch := client.MergeFrom(lws.DeepCopy())
-	if len(counts) == 0 {
-		delete(lws.Annotations, leaderworkerset.GroupRestartCountsAnnotationKey)
-	} else {
-		raw, err := json.Marshal(counts)
-		if err != nil {
-			return err
-		}
-		lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
-	}
-	return r.Patch(ctx, lws, patch)
+		return changed, nil
+	})
 }
 
 func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
@@ -504,6 +508,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
+	readyNonDegradedCount, degradedGroupCount := 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -545,8 +550,15 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		if index < int(*lws.Spec.Replicas) {
+			degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+			if degraded {
+				degradedGroupCount++
+			}
 			if ready {
 				readyNonBurstWorkerCount++
+				if !degraded {
+					readyNonDegradedCount++
+				}
 			}
 			if index >= int(lwsPartition) && ready && updated {
 				partitionedUpdatedAndReadyCount++
@@ -565,13 +577,19 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
-	degraded := hasDegradedGroup(leaderPodList)
-	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
+	degraded := degradedGroupCount > 0
+	rolloutInProgress := partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount
+	allReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
+	// A degraded group is terminal only when all other desired groups are ready.
+	// A missing or unready non-degraded group can still make progress, even
+	// though Degraded remains true for the retained group.
+	progressing := rolloutInProgress || readyNonDegradedCount+degradedGroupCount < int(*lws.Spec.Replicas)
+	if rolloutInProgress {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
-	} else if readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount {
+	} else if allReady {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
 	} else if degraded {
 		conditions = append(conditions,
@@ -579,6 +597,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 			makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery is stopped for one or more replicas"),
 			makeFalseCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws, "ReplicaRestartBudgetExceeded", "No rolling update is in progress"),
 		)
+		if progressing {
+			conditions[len(conditions)-2] = makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
 	}

@@ -561,6 +561,42 @@ func TestClearGroupRestartCountResetsOnlyCurrentRevisionAndGroup(t *testing.T) {
 	}
 }
 
+func TestPersistGroupRestartCountPreservesConcurrentGroupUpdates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	stored := wrappers.BuildLeaderWorkerSet("default").Obj()
+	stored.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/1":2}`,
+	}
+	stale := stored.DeepCopy()
+	stale.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = `{"revision-a/0":1}`
+	leader := wrappers.MakePodWithLabels(stored.Name, "0", "0", stored.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stored).Build()
+	r := &PodReconciler{Client: fakeClient}
+	if err := r.persistGroupRestartCount(context.Background(), stale, leader, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stored), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["revision-a/0"] != 1 || counts["revision-a/1"] != 2 {
+		t.Fatalf("concurrent group count was lost: %#v", counts)
+	}
+}
+
 func TestParseGroupRestartCountsRejectsNegativeCount(t *testing.T) {
 	if _, err := parseGroupRestartCounts(`{"revision-a/0":-1}`); err == nil {
 		t.Fatal("expected negative persisted count to be rejected")

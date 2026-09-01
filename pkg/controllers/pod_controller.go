@@ -35,6 +35,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -339,21 +340,17 @@ func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.Leade
 }
 
 func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
-	patch := client.MergeFrom(lws.DeepCopy())
-	if lws.Annotations == nil {
-		lws.Annotations = map[string]string{}
-	}
-	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
-	if err != nil {
-		return err
-	}
-	counts[groupRestartCountKey(leader)] = next
-	raw, err := json.Marshal(counts)
-	if err != nil {
-		return err
-	}
-	lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
-	return r.Patch(ctx, lws, patch)
+	key := client.ObjectKeyFromObject(lws)
+	countKey := groupRestartCountKey(leader)
+	return mutateGroupRestartCounts(ctx, r.Client, key, func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		// A retry may observe a newer count written by another reconcile. Never
+		// overwrite it with a value computed from a stale LWS object.
+		if counts[countKey] >= next {
+			return false, nil
+		}
+		counts[countKey] = next
+		return true, nil
+	})
 }
 
 func (r *PodReconciler) markGroupRestartBudgetExhausted(ctx context.Context, leader *corev1.Pod) (bool, error) {
@@ -402,29 +399,54 @@ func (r *PodReconciler) removeGroupRestartBudgetFinalizer(ctx context.Context, p
 }
 
 func (r *PodReconciler) clearGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) error {
-	if lws.Annotations == nil {
-		return nil
-	}
-	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
-	if err != nil {
-		return err
-	}
-	key := groupRestartCountKey(leader)
-	if _, found := counts[key]; !found {
-		return nil
-	}
-	patch := client.MergeFrom(lws.DeepCopy())
-	delete(counts, key)
-	if len(counts) == 0 {
-		delete(lws.Annotations, leaderworkerset.GroupRestartCountsAnnotationKey)
-	} else {
-		raw, err := json.Marshal(counts)
+	countKey := groupRestartCountKey(leader)
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		if _, found := counts[countKey]; !found {
+			return false, nil
+		}
+		delete(counts, countKey)
+		return true, nil
+	})
+}
+
+// mutateGroupRestartCounts performs a conflict-safe read-modify-write of the
+// LWS restart-count annotation. The callback must only mutate counts when it
+// returns changed=true. Fetching the LWS on every retry prevents concurrent
+// group updates from losing each other's keys.
+func mutateGroupRestartCounts(ctx context.Context, c client.Client, key client.ObjectKey, mutate func(*leaderworkerset.LeaderWorkerSet, map[string]int32) (changed bool, err error)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &leaderworkerset.LeaderWorkerSet{}
+		if err := c.Get(ctx, key, latest); err != nil {
+			return err
+		}
+
+		var raw string
+		if latest.Annotations != nil {
+			raw = latest.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]
+		}
+		counts, err := parseGroupRestartCounts(raw)
 		if err != nil {
 			return err
 		}
-		lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
-	}
-	return r.Patch(ctx, lws, patch)
+		changed, err := mutate(latest, counts)
+		if err != nil || !changed {
+			return err
+		}
+
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		if len(counts) == 0 {
+			delete(latest.Annotations, leaderworkerset.GroupRestartCountsAnnotationKey)
+		} else {
+			raw, err := json.Marshal(counts)
+			if err != nil {
+				return err
+			}
+			latest.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
+		}
+		return c.Update(ctx, latest)
+	})
 }
 
 func (r *PodReconciler) workerPodBelongsToLeader(ctx context.Context, pod corev1.Pod, leader corev1.Pod) (bool, error) {
