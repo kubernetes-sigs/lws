@@ -286,18 +286,11 @@ func SetupIndexes(indexer client.FieldIndexer) error {
 func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revisionKey string, leaderWorkerSetUpdated bool) (stsPartition int32, replicas int32, err error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
-	lwsReplicas := int32(1)
-	if lws.Spec.Replicas != nil {
-		lwsReplicas = *lws.Spec.Replicas
-	}
+	lwsReplicas := *lws.Spec.Replicas
 
 	defer func() {
 		// Limit the replicas with less than lwsPartition will not be updated.
-		var rolloutPartition int32
-		if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil {
-			rolloutPartition = *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-		}
-		stsPartition = max(stsPartition, rolloutPartition)
+		stsPartition = max(stsPartition, *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition)
 	}()
 
 	// Case 1:
@@ -308,19 +301,13 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 
 	stsReplicas := *sts.Spec.Replicas
-	var maxSurge, maxUnavailable int
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		maxSurge, err = intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), true)
-		if err != nil {
-			return 0, 0, err
-		}
-		maxUnavailable, err = intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
-		if err != nil {
-			return 0, 0, err
-		}
-	} else {
-		maxSurge = 0
-		maxUnavailable = 1
+	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), true)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	if err != nil {
+		return 0, 0, err
 	}
 	// No need to burst more than the replicas.
 	if maxSurge > int(lwsReplicas) {
@@ -350,10 +337,7 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		return partition, wantReplicas(lwsReplicas), nil
 	}
 
-	var partition int32
-	if sts.Spec.UpdateStrategy.RollingUpdate != nil && sts.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
-		partition = *sts.Spec.UpdateStrategy.RollingUpdate.Partition
-	}
+	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
 	rollingUpdateCompleted := partition == 0 && stsReplicas == lwsReplicas
 	// Case 3:
 	// In normal cases, return the values directly.
@@ -449,10 +433,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
-	var lwsPartition int32
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil {
-		lwsPartition = *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-	}
+	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 
 	// Iterate through all leaderPods.
 	for _, pod := range leaderPodList.Items {
@@ -833,23 +814,14 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
-	lwsReplicas := 1
-	if lws.Spec.Replicas != nil {
-		lwsReplicas = int(*lws.Spec.Replicas)
+	lwsReplicas := int(*lws.Spec.Replicas)
+	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
+	if err != nil {
+		return nil, err
 	}
-	var lwsMaxUnavailable, lwsMaxSurge int
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		lwsMaxUnavailable, err = intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
-		if err != nil {
-			return nil, err
-		}
-		lwsMaxSurge, err = intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		lwsMaxUnavailable = 1
-		lwsMaxSurge = 0
+	lwsMaxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
+	if err != nil {
+		return nil, err
 	}
 	if lwsMaxSurge > lwsReplicas {
 		lwsMaxSurge = lwsReplicas
@@ -869,7 +841,7 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.RevisionKey:     revisionKey,
 	})
 	statefulSetAnnotations := mergeMetadata(lws.Annotations, map[string]string{
-		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(lwsReplicas),
+		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 	})
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
