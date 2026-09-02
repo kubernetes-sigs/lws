@@ -851,7 +851,6 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		leaderworkerset.WorkerIndexLabelKey: "0",
 		leaderworkerset.SetNameLabelKey:     lws.Name,
 		leaderworkerset.RevisionKey:         revisionKey,
-		leaderworkerset.RoleLabelKey:        leaderworkerset.RoleLeader,
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))

@@ -404,7 +404,6 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(&leaderPod),
-		leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
@@ -438,6 +437,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
+	statefulSetLabels[leaderworkerset.RoleLabelKey] = leaderworkerset.RoleWorker
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
