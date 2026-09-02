@@ -103,6 +103,8 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -122,6 +124,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
 
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return r.reconcileHash(ctx, lws)
+	}
+
 	leaderSts, err := r.getLeaderStatefulSet(ctx, lws)
 	if err != nil {
 		log.Error(err, "Fetching leader statefulset")
@@ -135,16 +141,25 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Handles two cases:
 	// Case 1: Upgrading the LWS controller from a version that doesn't support controller revision
 	// Case 2: Creating the controller revision for a newly created LWS object
-	revision, err := r.getOrCreateRevisionIfNonExist(ctx, leaderSts, lws, r.Record)
+	revisionKey := ""
+	if leaderSts != nil {
+		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
+		// the revisionKey was used to detect update instead of controller revision.
+		revisionKey = revisionutils.GetRevisionKey(leaderSts)
+	}
+	revision, err := r.getOrCreateRevision(ctx, revisionKey, lws)
 	if err != nil {
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
 
-	updatedRevision, err := r.getUpdatedRevision(ctx, leaderSts, lws, revision)
-	if err != nil {
-		log.Error(err, "Validating if LWS has been updated")
-		return ctrl.Result{}, err
+	var updatedRevision *appsv1.ControllerRevision
+	if leaderSts != nil {
+		updatedRevision, err = r.getUpdatedRevision(ctx, lws, revision)
+		if err != nil {
+			log.Error(err, "Validating if LWS has been updated")
+			return ctrl.Result{}, err
+		}
 	}
 	lwsUpdated := updatedRevision != nil
 	if lwsUpdated {
@@ -225,6 +240,7 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
@@ -391,29 +407,28 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 		log.Error(err, "Setting controller reference.")
 		return err
 	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(leaderStatefulSetApplyConfig)
-	if err != nil {
-		log.Error(err, "Converting StatefulSet configuration to json.")
-		return err
-	}
-	patch := &unstructured.Unstructured{
-		Object: obj,
-	}
-	// Use server side apply and add fieldmanager to the lws owned fields
-	// If there are conflicts in the fields owned by the lws controller, lws will obtain the ownership and force override
-	// these fields to the ones desired by the lws controller
-	// TODO b/316776287 add E2E test for SSA
-	// TODO: Deprecated: Use client.Client.Apply() and client.Client.SubResource("subrsource").Apply() instead.
-	err = r.Patch(ctx, patch, client.Apply, &client.PatchOptions{ //nolint
-		FieldManager: fieldManager,
-		Force:        ptr.To[bool](true),
-	})
-	if err != nil {
+	if err := r.serverSideApply(ctx, leaderStatefulSetApplyConfig); err != nil {
 		log.Error(err, "Using server side apply to update leader statefulset")
 		return err
 	}
 
 	return nil
+}
+
+// serverSideApply applies the configuration with the lws field manager. If there
+// are conflicts in the fields owned by the lws controller, lws obtains the
+// ownership and force overrides them to the desired values.
+// TODO b/316776287 add E2E test for SSA
+// TODO: Deprecated: Use client.Client.Apply() and client.Client.SubResource("subrsource").Apply() instead.
+func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyConfig any) error {
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applyConfig)
+	if err != nil {
+		return err
+	}
+	return r.Patch(ctx, &unstructured.Unstructured{Object: obj}, client.Apply, &client.PatchOptions{ //nolint
+		FieldManager: fieldManager,
+		Force:        ptr.To[bool](true),
+	})
 }
 
 // updates the condition of the leaderworkerset to either Progressing or Available.
@@ -538,22 +553,12 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 		updateStatus = true
 	}
 
-	if lws.Status.HPAPodSelector == "" {
-		labelSelector := &metav1.LabelSelector{
-			MatchLabels: map[string]string{
-				leaderworkerset.SetNameLabelKey:     lws.Name,
-				leaderworkerset.WorkerIndexLabelKey: "0", // select leaders
-			},
-		}
-		selector, err := metav1.LabelSelectorAsSelector(labelSelector)
-		if err != nil {
-			log.Error(err, "Converting label selector to selector")
-			return false, err
-		}
-
-		lws.Status.HPAPodSelector = selector.String()
-		updateStatus = true
+	selectorUpdated, err := ensureHPAPodSelector(lws)
+	if err != nil {
+		log.Error(err, "Converting label selector to selector")
+		return false, err
 	}
+	updateStatus = updateStatus || selectorUpdated
 
 	// check if an update is needed
 	updateConditions, updateDone, err := r.updateConditions(ctx, lws, revisionKey)
@@ -570,6 +575,26 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 		}
 	}
 	return updateDone, nil
+}
+
+// ensureHPAPodSelector sets the leader pod selector on the status once. Returns
+// true when the status changed.
+func ensureHPAPodSelector(lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+	if lws.Status.HPAPodSelector != "" {
+		return false, nil
+	}
+	labelSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0", // select leaders
+		},
+	}
+	selector, err := metav1.LabelSelectorAsSelector(labelSelector)
+	if err != nil {
+		return false, err
+	}
+	lws.Status.HPAPodSelector = selector.String()
+	return true, nil
 }
 
 type replicaState struct {
@@ -725,15 +750,11 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 	return sts, nil
 }
 
-func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, recorder events.EventRecorder) (*appsv1.ControllerRevision, error) {
-	revisionKey := ""
-	if sts != nil {
-		// Uses the hash in the leader sts to avoid detecting update in the case where LWS controller is upgraded from a version where
-		// the revisionKey was used to detect update instead of controller revision.
-		revisionKey = revisionutils.GetRevisionKey(sts)
-	}
-	if stsRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); stsRevision != nil || err != nil {
-		return stsRevision, err
+// getOrCreateRevision returns the revision with the given key, creating it when
+// none exists. revisionKey is empty when the leader workload does not exist yet.
+func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, revisionKey string, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
+	if existingRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); existingRevision != nil || err != nil {
+		return existingRevision, err
 	}
 	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
 	if err != nil {
@@ -745,16 +766,12 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevisionIfNonExist(ctx context.Co
 		if revisionKey != "" {
 			message = fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
 		}
-		recorder.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, message)
+		r.Record.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, message)
 	}
 	return newRevision, err
 }
 
-func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	if sts == nil {
-		return nil, nil
-	}
-
+func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	currentRevision, err := revisionutils.NewRevision(ctx, r.Client, lws, "")
 	if err != nil {
 		return nil, err
@@ -771,15 +788,15 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, sts 
 	return nil, nil
 }
 
-// constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+// buildLeaderPodTemplateApplyConfiguration constructs the leader pod template
+// shared by the leader statefulset and the leader deployment.
+func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*coreapplyv1.PodTemplateSpecApplyConfiguration, error) {
 	var podTemplateSpec corev1.PodTemplateSpec
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
 	} else {
 		podTemplateSpec = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	}
-	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
 		return nil, err
@@ -814,6 +831,30 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
+	return &podTemplateApplyConfiguration, nil
+}
+
+// leaderMetadata returns the labels and annotations for the leader workload
+// object, shared by the leader statefulset and the leader deployment.
+func leaderMetadata(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (map[string]string, map[string]string) {
+	labels := mergeMetadata(lws.Labels, map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RevisionKey:     revisionKey,
+		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+	})
+	annotations := mergeMetadata(lws.Annotations, map[string]string{
+		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
+	})
+	return labels, annotations
+}
+
+// constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
+func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+	podTemplateApplyConfiguration, err := buildLeaderPodTemplateApplyConfiguration(lws, revisionKey)
+	if err != nil {
+		return nil, err
+	}
+
 	lwsReplicas := int(*lws.Spec.Replicas)
 	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
 	if err != nil {
@@ -836,20 +877,13 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 	stsMaxUnavailable := intstr.FromInt32(stsMaxUnavailableInt)
 
 	// construct statefulset apply configuration
-	statefulSetLabels := mergeMetadata(lws.Labels, map[string]string{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-		leaderworkerset.RevisionKey:     revisionKey,
-		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
-	})
-	statefulSetAnnotations := mergeMetadata(lws.Annotations, map[string]string{
-		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
-	})
+	statefulSetLabels, statefulSetAnnotations := leaderMetadata(lws, revisionKey)
 	statefulSetConfig := appsapplyv1.StatefulSet(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(lws.Name).
 			WithReplicas(replicas).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
-			WithTemplate(&podTemplateApplyConfiguration).
+			WithTemplate(podTemplateApplyConfiguration).
 			WithUpdateStrategy(appsapplyv1.StatefulSetUpdateStrategy().WithType(appsv1.StatefulSetUpdateStrategyType(lws.Spec.RolloutStrategy.Type)).WithRollingUpdate(
 				appsapplyv1.RollingUpdateStatefulSetStrategy().WithMaxUnavailable(stsMaxUnavailable).WithPartition(partition),
 			)).

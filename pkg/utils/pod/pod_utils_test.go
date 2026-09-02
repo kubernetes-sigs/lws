@@ -154,7 +154,7 @@ func TestAddLWSVariables(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := AddLWSVariables(tc.pod)
+			err := AddLWSVariables(tc.pod, tc.expectedLwsLeaderAddress)
 			if err != nil {
 				t.Fatalf("Error parsing parent: %s", err.Error())
 			}

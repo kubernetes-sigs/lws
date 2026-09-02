@@ -818,3 +818,88 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		require.Contains(t, err.Error(), "253 characters")
 	})
 }
+
+func TestValidateCreateGroupIdentity(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+
+	buildDisaggregatedSet := func(spec leaderworkerset.LeaderWorkerSetSpec) *disaggv1.DisaggregatedSet {
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Roles: []disaggv1.DisaggregatedRoleSpec{
+					{
+						Name:                        "prefill",
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: spec},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		obj         *disaggv1.DisaggregatedSet
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "hash role is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with subGroupPolicy is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
+						SubGroupSize: ptr.To(int32(2)),
+					},
+				},
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with volumeClaimTemplates is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{}},
+				},
+			}),
+			expectError: true,
+			errorMsg:    "volumeClaimTemplates are not supported with groupIdentity Hash",
+		},
+		{
+			name: "ordinal role with subGroupPolicy is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityOrdinal,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
+						SubGroupSize: ptr.To(int32(2)),
+					},
+				},
+			}),
+			expectError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := webhook.ValidateCreate(ctx, tc.obj)
+			if tc.expectError {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
