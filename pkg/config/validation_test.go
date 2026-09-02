@@ -108,6 +108,24 @@ func TestValidate(t *testing.T) {
 				},
 			},
 		},
+		"kubernetes schedulerProvider": {
+			cfg: &configapi.Configuration{
+				GangSchedulingManagement: &configapi.GangSchedulingManagement{
+					SchedulerProvider: ptr.To("kubernetes"),
+				},
+			},
+		},
+		"unknown feature gate": {
+			cfg: &configapi.Configuration{
+				FeatureGates: map[string]bool{"UnknownGate": true},
+			},
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeNotSupported,
+					Field: "featureGates",
+				},
+			},
+		},
 	}
 
 	for name, tc := range testCases {

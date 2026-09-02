@@ -24,7 +24,7 @@ import (
 // Interface provides access to all the informers in this group version.
 type Interface interface {
 	// LeaderWorkerSets returns a LeaderWorkerSetInformer.
-	LeaderWorkerSets() LeaderWorkerSetInformer
+	LeaderWorkerSets() TypedLeaderWorkerSetInformer
 }
 
 type version struct {
@@ -38,7 +38,7 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
-// LeaderWorkerSets returns a LeaderWorkerSetInformer.
-func (v *version) LeaderWorkerSets() LeaderWorkerSetInformer {
+// LeaderWorkerSets returns a TypedLeaderWorkerSetInformer.
+func (v *version) LeaderWorkerSets() TypedLeaderWorkerSetInformer {
 	return &leaderWorkerSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

@@ -63,3 +63,5 @@ affinity: {}
 # gangSchedulingManagement:
 #   schedulerProvider: volcano
 gangSchedulingManagement: {}
+# Alpha LWS feature gates. WorkloadAwareScheduling is disabled by default.
+featureGates: {}

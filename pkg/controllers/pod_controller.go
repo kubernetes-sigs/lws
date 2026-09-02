@@ -426,6 +426,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		}
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
+	if currentLws.Spec.Scheduling != nil {
+		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(currentLws)
+		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(&lws)
+	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	serviceName := leaderPod.Name
 	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
