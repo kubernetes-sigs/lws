@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -86,6 +87,63 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			persistedLWS := &leaderworkerset.LeaderWorkerSet{}
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
 			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingReady))).To(gomega.BeTrue())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("uses the UID-indexed parent Workload for delegated scheduling", func() {
+		controller := true
+		parent := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "delegated-parent", Namespace: ns.Name},
+			Data:       runtime.RawExtension{Raw: []byte("{}")},
+			Revision:   1,
+		}
+		gomega.Expect(k8sClient.Create(ctx, parent)).To(gomega.Succeed())
+		parentOwner := metav1.OwnerReference{
+			APIVersion: appsv1.SchemeGroupVersion.String(),
+			Kind:       "ControllerRevision",
+			Name:       parent.Name,
+			UID:        parent.UID,
+			Controller: &controller,
+		}
+		workload := &schedulingv1beta1.Workload{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "delegated-parent-workload",
+				Namespace:       ns.Name,
+				OwnerReferences: []metav1.OwnerReference{parentOwner},
+			},
+			Spec: schedulingv1beta1.WorkloadSpec{
+				ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{
+					APIGroup: appsv1.GroupName, Kind: parentOwner.Kind, Name: parentOwner.Name,
+				},
+				PodGroupTemplates: []schedulingv1beta1.PodGroupTemplate{{
+					Name: "child-template",
+					SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+						Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					},
+				}},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, workload)).To(gomega.Succeed())
+
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("delegated-child").
+			Replica(1).
+			Size(3).
+			Obj()
+		lws.OwnerReferences = []metav1.OwnerReference{parentOwner}
+		lws.Annotations = map[string]string{schedulerprovider.GroupTemplateNameAnnotation: "child-template"}
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(1))
+			g.Expect(groups.Items[0].Spec.WorkloadRef).NotTo(gomega.BeNil())
+			g.Expect(groups.Items[0].Spec.WorkloadRef.WorkloadName).To(gomega.Equal(workload.Name))
+			g.Expect(groups.Items[0].Spec.WorkloadRef.TemplateName).To(gomega.Equal("child-template"))
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 

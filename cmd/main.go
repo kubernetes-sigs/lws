@@ -179,6 +179,14 @@ func main() {
 	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
 	}
+	if cfg.GangSchedulingManagement != nil &&
+		cfg.GangSchedulingManagement.SchedulerProvider != nil &&
+		*cfg.GangSchedulingManagement.SchedulerProvider == string(schedulerprovider.Kubernetes) {
+		if err := schedulerprovider.SetupKubernetesIndexes(mgr.GetFieldIndexer()); err != nil {
+			setupLog.Error(err, "unable to setup Kubernetes scheduler provider indexes")
+			os.Exit(1)
+		}
+	}
 
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
@@ -227,7 +235,6 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		mgr.GetEventRecorder("leaderworkerset"),
 		sp,
 	)
-	lwsController.FeatureGates = featureGates
 	if err := lwsController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
 		os.Exit(1)

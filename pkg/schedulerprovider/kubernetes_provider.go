@@ -58,7 +58,26 @@ const (
 	// hierarchy level a runtime PodGroup represents.
 	SchedulingLevelLabelKey = "leaderworkerset.sigs.k8s.io/scheduling-level"
 	PodGroupRoleLabelKey    = "leaderworkerset.sigs.k8s.io/role"
+
+	// workloadControllerUIDIndex lets LWS reconciliation find owned or delegated
+	// Workloads without scanning every Workload in the namespace.
+	workloadControllerUIDIndex = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
 )
+
+// SetupKubernetesIndexes registers cache indexes used only by the upstream
+// Kubernetes scheduling provider. Callers should not register these indexes
+// when that provider is disabled, because doing so starts a Workload informer.
+func SetupKubernetesIndexes(indexer client.FieldIndexer) error {
+	return indexer.IndexField(context.Background(), &schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues)
+}
+
+func workloadControllerUIDIndexValues(raw client.Object) []string {
+	owner := metav1.GetControllerOf(raw)
+	if owner == nil || owner.UID == "" {
+		return nil
+	}
+	return []string{string(owner.UID)}
+}
 
 // KubernetesWorkloadName returns the Job-style UID-qualified Workload name.
 // UID qualification isolates a newly-created LWS from deletion-protected
@@ -379,8 +398,8 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 
 func (p *KubernetesProvider) findOwnedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	workloads := &schedulingv1beta1.WorkloadList{}
-	if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace), client.MatchingLabels{
-		leaderworkerset.SetNameLabelKey: lws.Name,
+	if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace), client.MatchingFields{
+		workloadControllerUIDIndex: string(lws.UID),
 	}); err != nil {
 		return nil, fmt.Errorf("list Workloads for LeaderWorkerSet %s/%s: %w", lws.Namespace, lws.Name, err)
 	}
@@ -419,31 +438,41 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 	if owner == nil {
 		return nil, fmt.Errorf("%s requires a controller owner", GroupTemplateNameAnnotation)
 	}
-	workloads := &schedulingv1beta1.WorkloadList{}
-	if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace)); err != nil {
-		return nil, fmt.Errorf("list delegated Workloads: %w", err)
-	}
 
 	var selected *schedulingv1beta1.Workload
 	for owner != nil {
+		if owner.UID == "" {
+			return nil, fmt.Errorf("controller owner %s %s/%s has no UID", owner.Kind, lws.Namespace, owner.Name)
+		}
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
 		if err != nil {
 			return nil, fmt.Errorf("parse owner apiVersion %q: %w", owner.APIVersion, err)
 		}
+		workloads := &schedulingv1beta1.WorkloadList{}
+		if err := p.client.List(ctx, workloads, client.InNamespace(lws.Namespace), client.MatchingFields{
+			workloadControllerUIDIndex: string(owner.UID),
+		}); err != nil {
+			return nil, fmt.Errorf("list delegated Workloads for controller owner UID %q: %w", owner.UID, err)
+		}
 		for i := range workloads.Items {
-			ref := workloads.Items[i].Spec.ControllerRef
-			if ref != nil && ref.APIGroup == gv.Group && ref.Kind == owner.Kind && ref.Name == owner.Name {
-				selected = &workloads.Items[i]
+			candidate := &workloads.Items[i]
+			ref := candidate.Spec.ControllerRef
+			if controllerReferencesEqual(metav1.GetControllerOf(candidate), owner) && ref != nil &&
+				ref.APIGroup == gv.Group && ref.Kind == owner.Kind && ref.Name == owner.Name {
+				if selected != nil {
+					return nil, fmt.Errorf("multiple parent Workloads match the LWS controller-owner chain: %s/%s and %s/%s", selected.Namespace, selected.Name, candidate.Namespace, candidate.Name)
+				}
+				selected = candidate
 			}
 		}
 
 		parent := &unstructured.Unstructured{}
 		parent.SetGroupVersionKind(schema.GroupVersionKind{Group: gv.Group, Version: gv.Version, Kind: owner.Kind})
 		if err := p.client.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: owner.Name}, parent); err != nil {
-			if selected != nil && apierrors.IsNotFound(err) {
-				break
-			}
 			return nil, fmt.Errorf("follow controller owner %s %s/%s: %w", owner.Kind, lws.Namespace, owner.Name, err)
+		}
+		if parent.GetUID() != owner.UID {
+			return nil, fmt.Errorf("controller owner %s %s/%s UID changed from %q to %q", owner.Kind, lws.Namespace, owner.Name, owner.UID, parent.GetUID())
 		}
 		owner = metav1.GetControllerOf(parent)
 	}

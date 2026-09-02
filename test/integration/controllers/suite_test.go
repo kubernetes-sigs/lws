@@ -38,7 +38,6 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/controllers"
-	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	//+kubebuilder:scaffold:imports
 )
@@ -115,9 +114,10 @@ var _ = BeforeSuite(func() {
 
 	kubernetesProvider := schedulerprovider.NewKubernetesProvider(k8sManager.GetClient())
 	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("leaderworkerset"), kubernetesProvider)
-	lwsController.FeatureGates = features.Gates{features.WorkloadAwareScheduling: true}
 
 	err = controllers.SetupIndexes(k8sManager.GetFieldIndexer())
+	Expect(err).ToNot(HaveOccurred())
+	err = schedulerprovider.SetupKubernetesIndexes(k8sManager.GetFieldIndexer())
 	Expect(err).ToNot(HaveOccurred())
 	err = lwsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())

@@ -46,7 +46,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -60,7 +59,6 @@ type LeaderWorkerSetReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
-	FeatureGates      features.Gates
 	SchedulerProvider schedulerprovider.SchedulerProvider
 
 	revisionEqualityCache *lru.Cache
@@ -176,10 +174,6 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if lws.Spec.Scheduling != nil {
-		if !r.FeatureGates.Enabled(features.WorkloadAwareScheduling) {
-			err := fmt.Errorf("spec.scheduling requires the WorkloadAwareScheduling feature gate")
-			return ctrl.Result{}, r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonInvalidSchedulingConfiguration, err)
-		}
 		if r.SchedulerProvider == nil {
 			err := fmt.Errorf("spec.scheduling requires a configured scheduler provider")
 			return ctrl.Result{}, r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonUnsupportedProviderCapability, err)

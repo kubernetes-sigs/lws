@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	// WorkloadAwareScheduling enables the typed spec.scheduling API and the
-	// upstream Kubernetes Workload/PodGroup provider.
+	// WorkloadAwareScheduling enables new opt-ins to the typed spec.scheduling
+	// API. Existing scheduled objects continue reconciling when it is disabled.
 	WorkloadAwareScheduling = "WorkloadAwareScheduling"
 )
 

@@ -165,6 +165,14 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		assert.Empty(t, hook.validateScheduling(context.Background(), oldLWS, newLWS))
 	})
 
+	t.Run("existing scheduling remains updateable after gate is disabled", func(t *testing.T) {
+		oldLWS := validScheduledLWS()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.Replicas = ptr.To[int32](0)
+		disabledHook := &LeaderWorkerSetWebhook{SchedulerProvider: schedulerprovider.Kubernetes}
+		assert.Empty(t, disabledHook.validateScheduling(context.Background(), oldLWS, newLWS))
+	})
+
 	t.Run("priority class is immutable", func(t *testing.T) {
 		oldLWS := validScheduledLWS()
 		newLWS := oldLWS.DeepCopy()

@@ -46,10 +46,15 @@ func init() {
 	_ = schedulingv1beta1.AddToScheme(scheme)
 }
 
+func newKubernetesFakeClientBuilder() *fake.ClientBuilder {
+	return fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues)
+}
+
 func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
 
 	err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "revision-1")
 	require.NoError(t, err)
@@ -146,7 +151,7 @@ func TestKubernetesProviderIsolatesRecreatedLWSByUID(t *testing.T) {
 	oldLWS := testScheduledLWS()
 	newLWS := oldLWS.DeepCopy()
 	newLWS.UID = types.UID("replacement-lws-uid")
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
 	provider := NewKubernetesProvider(fakeClient)
 
 	require.NoError(t, provider.ReconcileScheduling(ctx, oldLWS, 1, "revision-1"))
@@ -169,7 +174,7 @@ func TestKubernetesProviderRejectsForeignWorkloadAtComputedName(t *testing.T) {
 	foreign := &schedulingv1beta1.Workload{ObjectMeta: metav1.ObjectMeta{
 		Name: KubernetesWorkloadName(lws), Namespace: lws.Namespace,
 	}}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(foreign).Build()
 
 	err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
 	require.Error(t, err)
@@ -207,7 +212,7 @@ func TestKubernetesProviderWholeLWSMode(t *testing.T) {
 			Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	workload := &schedulingv1beta1.Workload{}
@@ -253,7 +258,7 @@ func TestKubernetesProviderBlocksPodsWhileDesiredPodGroupIsTerminating(t *testin
 			Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
 	provider := NewKubernetesProvider(fakeClient)
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 
@@ -283,7 +288,7 @@ func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 			},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1"))
 	workload := &schedulingv1beta1.Workload{}
@@ -391,7 +396,7 @@ func TestKubernetesProviderDoesNotCreatePodGroupsWhenWorkloadCreationFails(t *te
 	lws := testScheduledLWS()
 	createErr := errors.New("injected Workload create failure")
 	podGroupCreated := false
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			switch obj.(type) {
 			case *schedulingv1beta1.Workload:
@@ -413,7 +418,7 @@ func TestKubernetesProviderIdempotentReconcileDoesNotWrite(t *testing.T) {
 	lws := testScheduledLWS()
 	writes := 0
 	workloadLists := 0
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
 			if _, ok := obj.(*schedulingv1beta1.WorkloadList); ok {
 				workloadLists++
@@ -437,7 +442,7 @@ func TestKubernetesProviderIdempotentReconcileDoesNotWrite(t *testing.T) {
 
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	require.Positive(t, writes)
-	assert.Equal(t, 1, workloadLists, "ownership discovery uses one label-filtered Workload list")
+	assert.Equal(t, 1, workloadLists, "ownership discovery uses one UID-indexed Workload list")
 	writes = 0
 	workloadLists = 0
 
@@ -465,7 +470,7 @@ func TestUpdateMutablePodGroupFieldsAcceptsAPIDefaults(t *testing.T) {
 	current.Spec.Priority = ptr.To[int32](0)
 	current.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
 
-	require.NoError(t, updateMutablePodGroupFields(context.Background(), fake.NewClientBuilder().WithScheme(scheme).Build(), current, desired, false))
+	require.NoError(t, updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, false))
 }
 
 func TestCleanupUnusedPodGroupsRetainsGroupsReferencedByPods(t *testing.T) {
@@ -479,7 +484,7 @@ func TestCleanupUnusedPodGroupsRetainsGroupsReferencedByPods(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: lws.Namespace, Labels: labels},
 		Spec:       corev1.PodSpec{SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: ptr.To("used")}},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(used, unused, pod).Build()
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(used, unused, pod).Build()
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).cleanupUnusedPodGroups(ctx, lws, nil))
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(used), &schedulingv1beta1.PodGroup{}))
@@ -526,13 +531,14 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	ctx := context.Background()
 	controller := true
 	lws := testScheduledLWS()
-	lws.OwnerReferences = []metav1.OwnerReference{{
+	parentOwner := metav1.OwnerReference{
 		APIVersion: "example.test/v1",
 		Kind:       "ParentJob",
 		Name:       "parent",
 		UID:        types.UID("parent-uid"),
 		Controller: &controller,
-	}}
+	}
+	lws.OwnerReferences = []metav1.OwnerReference{parentOwner}
 	lws.Annotations = map[string]string{
 		GroupTemplateNameAnnotation:       "child-template",
 		ParentCompositePodGroupAnnotation: "parent-group",
@@ -541,8 +547,9 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	parent.SetGroupVersionKind(schema.GroupVersionKind{Group: "example.test", Version: "v1", Kind: "ParentJob"})
 	parent.SetName("parent")
 	parent.SetNamespace(lws.Namespace)
+	parent.SetUID(parentOwner.UID)
 	workload := &schedulingv1beta1.Workload{
-		ObjectMeta: metav1.ObjectMeta{Name: "parent-workload", Namespace: lws.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "parent-workload", Namespace: lws.Namespace, OwnerReferences: []metav1.OwnerReference{parentOwner}},
 		Spec: schedulingv1beta1.WorkloadSpec{
 			ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{APIGroup: "example.test", Kind: "ParentJob", Name: "parent"},
 			PodGroupTemplates: []schedulingv1beta1.PodGroupTemplate{{
@@ -553,18 +560,32 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 			}},
 		},
 	}
+	staleOwner := parentOwner
+	staleOwner.UID = types.UID("stale-parent-uid")
+	staleWorkload := workload.DeepCopy()
+	staleWorkload.Name = "stale-parent-workload"
+	staleWorkload.OwnerReferences = []metav1.OwnerReference{staleOwner}
 	parentGroup := &schedulingv1alpha3.CompositePodGroup{ObjectMeta: metav1.ObjectMeta{Name: "parent-group", Namespace: lws.Namespace}}
 	parentGets := 0
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(parent, workload, parentGroup).WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*schedulingv1alpha3.CompositePodGroup); ok {
-				parentGets++
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
-	}).Build()
+	workloadLists := 0
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(parent, workload, staleWorkload, parentGroup).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*schedulingv1alpha3.CompositePodGroup); ok {
+					parentGets++
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := obj.(*schedulingv1beta1.WorkloadList); ok {
+					workloadLists++
+				}
+				return c.List(ctx, obj, opts...)
+			},
+		}).Build()
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 4, "revision-1"))
+	assert.Equal(t, 1, workloadLists, "each owner level uses one UID-indexed Workload lookup")
 	assert.Equal(t, 1, parentGets, "the shared parent must be checked once per reconciliation")
 	group := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, group))
@@ -579,6 +600,41 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	rootWorkload := &schedulingv1beta1.Workload{}
 	err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), rootWorkload)
 	assert.True(t, apierrors.IsNotFound(err), "a delegated LWS must not create a second Workload")
+}
+
+func TestKubernetesProviderDelegatedWorkloadRejectsAmbiguousParent(t *testing.T) {
+	ctx := context.Background()
+	controller := true
+	owner := metav1.OwnerReference{
+		APIVersion: "example.test/v1",
+		Kind:       "ParentJob",
+		Name:       "parent",
+		UID:        types.UID("parent-uid"),
+		Controller: &controller,
+	}
+	lws := testScheduledLWS()
+	lws.OwnerReferences = []metav1.OwnerReference{owner}
+	lws.Annotations = map[string]string{GroupTemplateNameAnnotation: "child-template"}
+	parent := &unstructured.Unstructured{}
+	parent.SetGroupVersionKind(schema.GroupVersionKind{Group: "example.test", Version: "v1", Kind: "ParentJob"})
+	parent.SetName(owner.Name)
+	parent.SetNamespace(lws.Namespace)
+	parent.SetUID(owner.UID)
+	workload := func(name string) *schedulingv1beta1.Workload {
+		return &schedulingv1beta1.Workload{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lws.Namespace, OwnerReferences: []metav1.OwnerReference{owner}},
+			Spec: schedulingv1beta1.WorkloadSpec{ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{
+				APIGroup: "example.test", Kind: owner.Kind, Name: owner.Name,
+			}},
+		}
+	}
+	fakeClient := newKubernetesFakeClientBuilder().
+		WithObjects(parent, workload("parent-workload-a"), workload("parent-workload-b")).
+		Build()
+
+	_, err := NewKubernetesProvider(fakeClient).findDelegatedWorkload(ctx, lws)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "multiple parent Workloads")
 }
 
 func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {
