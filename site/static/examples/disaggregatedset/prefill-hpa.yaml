@@ -1,0 +1,18 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: disagg-nginx-demo-prefill
+spec:
+  scaleTargetRef:
+    apiVersion: disaggregatedset.x-k8s.io/v1
+    kind: DisaggregatedSetRoleScaler
+    name: disagg-nginx-demo-prefill
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50

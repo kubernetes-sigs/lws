@@ -41,84 +41,7 @@ See the [installation guide](/docs/installation/#disaggregatedset) for setup ins
 This example uses nginx containers to demonstrate a prefill + decode disaggregated topology without
 requiring a real LLM. It closely mirrors the pattern used in production disaggregated inference.
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: disagg-nginx-demo
-  namespace: default
-spec:
-  roles:
-  # Prefill role: larger pool, higher parallelism
-  - name: prefill
-    spec:
-      replicas: 2
-      rolloutStrategy:
-        rollingUpdateConfiguration:
-          maxSurge: 0
-          maxUnavailable: 1
-      leaderWorkerTemplate:
-        size: 2          # 1 leader + 1 worker per group
-        workerTemplate:
-          metadata:
-            labels:
-              role: prefill
-              component: disaggregation
-          spec:
-            containers:
-            - name: nginx
-              image: nginx:1.29.3
-              ports:
-              - containerPort: 80
-              resources:
-                requests:
-                  cpu: "100m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "64Mi"
-              readinessProbe:
-                httpGet:
-                  path: /
-                  port: 80
-                initialDelaySeconds: 5
-                periodSeconds: 2
-
-  # Decode role: smaller pool, lower latency
-  - name: decode
-    spec:
-      replicas: 1
-      rolloutStrategy:
-        rollingUpdateConfiguration:
-          maxSurge: 1
-          maxUnavailable: 0
-      leaderWorkerTemplate:
-        size: 1          # 1 leader only per group
-        workerTemplate:
-          metadata:
-            labels:
-              role: decode
-              component: disaggregation
-          spec:
-            containers:
-            - name: nginx
-              image: nginx:1.29.3
-              ports:
-              - containerPort: 80
-              resources:
-                requests:
-                  cpu: "100m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "64Mi"
-              readinessProbe:
-                httpGet:
-                  path: /
-                  port: 80
-                initialDelaySeconds: 5
-                periodSeconds: 2
-```
+{{< include file="/examples/disaggregatedset/nginx-2role.yaml" lang="yaml" >}}
 
 ### Apply and Verify
 
@@ -146,92 +69,7 @@ This example models a 3-phase disaggregated serving topology: prefill (KV cache 
 decode (token generation), and encode (context encoding). It uses placeholder containers
 (`registry.k8s.io/pause:3.9`) to demonstrate the scheduling topology without requiring GPU resources.
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: disagg-3role-demo
-  namespace: default
-spec:
-  roles:
-  # Prefill: generates KV cache from input tokens — CPU/GPU intensive
-  - name: prefill
-    spec:
-      replicas: 4
-      rolloutStrategy:
-        rollingUpdateConfiguration:
-          maxSurge: 1
-          maxUnavailable: 0
-      leaderWorkerTemplate:
-        size: 2
-        workerTemplate:
-          metadata:
-            labels:
-              role: prefill
-          spec:
-            containers:
-            - name: model
-              image: registry.k8s.io/pause:3.9
-              resources:
-                requests:
-                  cpu: "100m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "64Mi"
-
-  # Decode: generates tokens autoregressively — memory-bandwidth intensive
-  - name: decode
-    spec:
-      replicas: 2
-      rolloutStrategy:
-        rollingUpdateConfiguration:
-          maxSurge: 1
-          maxUnavailable: 0
-      leaderWorkerTemplate:
-        size: 1
-        workerTemplate:
-          metadata:
-            labels:
-              role: decode
-          spec:
-            containers:
-            - name: model
-              image: registry.k8s.io/pause:3.9
-              resources:
-                requests:
-                  cpu: "100m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "64Mi"
-
-  # Encode: context encoding — optional, separate scaling
-  - name: encode
-    spec:
-      replicas: 2
-      rolloutStrategy:
-        rollingUpdateConfiguration:
-          maxSurge: 1
-          maxUnavailable: 0
-      leaderWorkerTemplate:
-        size: 1
-        workerTemplate:
-          metadata:
-            labels:
-              role: encode
-          spec:
-            containers:
-            - name: model
-              image: registry.k8s.io/pause:3.9
-              resources:
-                requests:
-                  cpu: "100m"
-                  memory: "64Mi"
-                limits:
-                  cpu: "100m"
-                  memory: "64Mi"
-```
+{{< include file="/examples/disaggregatedset/llm-3role.yaml" lang="yaml" >}}
 
 ### Apply and Verify
 
@@ -370,26 +208,7 @@ spec:
 The controller auto-creates a `DisaggregatedSetRoleScaler` named `<DisaggregatedSet-name>-<role-name>`
 that exposes the `/scale` subresource. Point an HPA (or KEDA ScaledObject) at it:
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: disagg-nginx-demo-prefill
-spec:
-  scaleTargetRef:
-    apiVersion: disaggregatedset.x-k8s.io/v1
-    kind: DisaggregatedSetRoleScaler
-    name: disagg-nginx-demo-prefill
-  minReplicas: 2
-  maxReplicas: 8
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
-```
+{{< include file="/examples/disaggregatedset/prefill-hpa.yaml" lang="yaml" >}}
 
 The autoscaler writes the desired count through `/scale`, and the controller drives the role's
 LeaderWorkerSets from it. The scaler's `status.selector` matches one pod per group (the leader),

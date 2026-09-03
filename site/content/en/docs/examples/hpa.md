@@ -151,65 +151,13 @@ Here's a complete example showing how to set up HPA with LeaderWorkerSet:
 
 First, create a LeaderWorkerSet with proper resource requests:
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 3
-    leaderTemplate:
-      spec:
-        containers:
-        - name: leader
-          image: nginx:1.14.2
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: nginx:1.14.2
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
-```
+{{< include file="/examples/hpa/leaderworkerset-sample.yaml" lang="yaml" >}}
 
 ### Step 2: Create HPA
 
 Apply the HPA configuration targeting the LeaderWorkerSet:
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: lws-hpa
-spec:
-  minReplicas: 2
-  maxReplicas: 8
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
-  scaleTargetRef:
-    apiVersion: leaderworkerset.x-k8s.io/v1
-    kind: LeaderWorkerSet
-    name: leaderworkerset-sample
-```
+{{< include file="/examples/hpa/cpu-hpa.yaml" lang="yaml" >}}
 
 ### Step 3: Verify HPA Setup
 
@@ -290,70 +238,13 @@ After clearing the load, you will see within 5-10 minutes:
 
 You can also configure HPA to scale based on memory utilization:
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: lws-memory-hpa
-spec:
-  minReplicas: 1
-  maxReplicas: 5
-  metrics:
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 70
-  scaleTargetRef:
-    apiVersion: leaderworkerset.x-k8s.io/v1
-    kind: LeaderWorkerSet
-    name: leaderworkerset-sample
-```
+{{< include file="/examples/hpa/memory-hpa.yaml" lang="yaml" >}}
 
 ### Multi-metric Configuration
 
 Configure HPA to use multiple metrics:
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: lws-multi-metric-hpa
-spec:
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 70
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-      - type: Percent
-        value: 50
-        periodSeconds: 60
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      policies:
-      - type: Percent
-        value: 100
-        periodSeconds: 15
-  scaleTargetRef:
-    apiVersion: leaderworkerset.x-k8s.io/v1
-    kind: LeaderWorkerSet
-    name: leaderworkerset-sample
-```
+{{< include file="/examples/hpa/multi-metric-hpa.yaml" lang="yaml" >}}
 
 ## Important Considerations
 
