@@ -604,19 +604,19 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				TargetDecode:  8,
 				PrefillSurge:  intstr.FromInt(2),
 				DecodeSurge:   intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":10,"decode":2}' --target '{"prefill":6,"decode":8}' --surge '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner (each revision follows its own curve)
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 10, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 8, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 1: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 0, NewDecode: 0},  // step 2: old role0 -2
-					{OldPrefill: 6, OldDecode: 2, NewPrefill: 2, NewDecode: 2},  // step 3: new role0 +2, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 2, NewDecode: 2},  // step 4: old role0 -2, old role1 -1
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 3, NewDecode: 4},  // step 5: new role0 +1, new role1 +2
-					{OldPrefill: 4, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 6: new role0 +1, new role1 +1
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 4, NewDecode: 5},  // step 7: old role0 -2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 5, NewDecode: 7},  // step 8: new role0 +1, new role1 +2
-					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9: new role0 +1, new role1 +1
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10: old role0 -2, old role1 -1
+					{OldPrefill: 9, OldDecode: 2, NewPrefill: 2, NewDecode: 3},  // step 1
+					{OldPrefill: 8, OldDecode: 2, NewPrefill: 3, NewDecode: 5},  // step 2
+					{OldPrefill: 7, OldDecode: 2, NewPrefill: 4, NewDecode: 7},  // step 3
+					{OldPrefill: 6, OldDecode: 2, NewPrefill: 5, NewDecode: 8},  // step 4
+					{OldPrefill: 5, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 5
+					{OldPrefill: 4, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 6
+					{OldPrefill: 3, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 7
+					{OldPrefill: 2, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 8
+					{OldPrefill: 1, OldDecode: 1, NewPrefill: 6, NewDecode: 8},  // step 9
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 6, NewDecode: 8},  // step 10
 				},
 			},
 			{
@@ -629,13 +629,14 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				DecodeSurge:    intstr.FromInt(0),
 				PrefillUnavail: intstr.FromInt(2),
 				DecodeUnavail:  intstr.FromInt(2),
-				// Expected steps from: go run ./hack/plan-steps --source '{"prefill":4,"decode":4}' --target '{"prefill":4,"decode":4}' --surge '{"prefill":0,"decode":0}' --unavailable '{"prefill":2,"decode":2}'
+				// Expected steps from percentage-block planner. NEW catches up
+				// immediately after OLD spends the unavailable budget.
 				ExpectedSteps: []rolloutState{
 					{OldPrefill: 4, OldDecode: 4, NewPrefill: 0, NewDecode: 0}, // step 0: initial
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1: drain 2 each
-					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2: scale up 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3: drain 2 each
-					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4: scale up 2 each
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 0, NewDecode: 0}, // step 1
+					{OldPrefill: 2, OldDecode: 2, NewPrefill: 2, NewDecode: 2}, // step 2
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 2, NewDecode: 2}, // step 3
+					{OldPrefill: 0, OldDecode: 0, NewPrefill: 4, NewDecode: 4}, // step 4
 				},
 			},
 		}
@@ -725,7 +726,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				Expect(observedStates[len(observedStates)-1]).To(Equal(finalState), "final state should match")
 
 				// Verify invariants throughout rollout
-				By("verifying surge limits were respected")
+				By("verifying raw surge limits were respected")
 				maxPrefillSurge := tc.PrefillSurge.IntValue()
 				maxDecodeSurge := tc.DecodeSurge.IntValue()
 				for _, state := range observedStates {
@@ -742,6 +743,76 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				}
 			})
 		}
+	})
+
+	Context("Slow Rollout with Imbalanced Roles", func() {
+		const deploymentName = "test-slow-rollout"
+		const (
+			prefill        = 8
+			decode         = 4
+			maxSurge       = 2
+			maxUnavailable = 2
+			startupDelay   = 30
+		)
+
+		AfterEach(func() {
+			kubectl.CleanupDeployment(deploymentName)
+		})
+
+		It("should pipeline work while earlier replicas are unready", func() {
+			slowRole := func(replicas int) fixtures.Role {
+				return fixtures.Role{
+					Replicas:            replicas,
+					HasRollout:          true,
+					MaxSurge:            intstr.FromInt(maxSurge),
+					MaxUnavailable:      intstr.FromInt(maxUnavailable),
+					StartupDelaySeconds: startupDelay,
+				}
+			}
+
+			By("creating and waiting for the initial revision")
+			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, slowRole(prefill), slowRole(decode)).YAML())).To(Succeed())
+			var oldRevision string
+			Eventually(func() string {
+				oldRevision = kubectl.GetRevision(deploymentName)
+				return oldRevision
+			}).ShouldNot(BeEmpty())
+			Eventually(func(g Gomega) {
+				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(observation.OldReadyPrefill).To(Equal(prefill))
+				g.Expect(observation.OldReadyDecode).To(Equal(decode))
+			}, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("triggering a rolling update with a pod-template annotation")
+			updatedPrefill := slowRole(prefill)
+			updatedPrefill.Annotations = map[string]string{"rollout-version": "v2"}
+			updatedDecode := slowRole(decode)
+			updatedDecode.Annotations = map[string]string{"rollout-version": "v2"}
+			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, updatedPrefill, updatedDecode).YAML())).To(Succeed())
+
+			By("observing a second fraction before the first becomes ready")
+			Eventually(func(g Gomega) {
+				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(observation.Spec.NewPrefill).To(BeNumerically(">=", 4))
+				g.Expect(observation.Spec.NewDecode).To(BeNumerically(">=", 2))
+				g.Expect(observation.NewReadyPrefill).To(BeNumerically("<", 2))
+				g.Expect(observation.NewReadyDecode).To(BeNumerically("<", 1))
+			}, 20*time.Second, 250*time.Millisecond).Should(Succeed())
+
+			By("waiting for the rollout to complete")
+			Eventually(func(g Gomega) {
+				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(observation.Spec).To(Equal(rolloutState{
+					NewPrefill: prefill,
+					NewDecode:  decode,
+				}))
+				g.Expect(observation.NewReadyPrefill).To(Equal(prefill))
+				g.Expect(observation.NewReadyDecode).To(Equal(decode))
+			}, 8*time.Minute, time.Second).Should(Succeed())
+		})
 	})
 
 	Context("N-Role Rolling Update (3 roles)", func() {
@@ -1003,14 +1074,14 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Mid-rollout A→B→C (newest-first drain)", func() {
+	Context("Mid-rollout A→B→C", func() {
 		const deploymentName = "test-abc-drain"
 
 		AfterEach(func() {
 			kubectl.CleanupDeployment(deploymentName)
 		})
 
-		It("should drain B (broken intermediate) before A (stable original)", func() {
+		It("should complete after the target changes mid-rollout", func() {
 			By("creating initial deployment A (6 replicas per role)")
 			yamlA := fixtures.PrefillDecode(deploymentName,
 				fixtures.Role{Replicas: 6, HasRollout: true, MaxSurge: intstr.FromInt(1)},
@@ -1088,30 +1159,11 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			}, 30*time.Second, time.Second).Should(Succeed())
 			_, _ = fmt.Fprintf(GinkgoWriter, "=== Revision C (the fix / target): %s ===\n\n", revisionC)
 
-			By("tracking drain order: B must drain to 0 before A")
-			bDrainedFirst := false
-			aDrainedBeforeB := false
-
-			Eventually(func(g Gomega) bool {
-				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
-				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
-				cTotal := kubectl.GetTotalReplicas(deploymentName, revisionC)
-
-				_, _ = fmt.Fprintf(GinkgoWriter, "A(%s)=%d  B(%s)=%d  C(%s)=%d\n",
-					revisionA[:8], aTotal, revisionB[:8], bTotal, revisionC[:8], cTotal)
-
-				if bTotal == 0 && aTotal > 0 {
-					bDrainedFirst = true
-				}
-				if aTotal == 0 && bTotal > 0 {
-					aDrainedBeforeB = true
-				}
-
-				return aTotal == 0 && bTotal == 0
+			By("waiting for both A and B to fully drain")
+			Eventually(func() bool {
+				return kubectl.GetTotalReplicas(deploymentName, revisionA) == 0 &&
+					kubectl.GetTotalReplicas(deploymentName, revisionB) == 0
 			}, 5*time.Minute, 500*time.Millisecond).Should(BeTrue(), "both A and B should fully drain")
-
-			Expect(bDrainedFirst).To(BeTrue(), "B (newer intermediate) should drain to 0 before A (stable original)")
-			Expect(aDrainedBeforeB).To(BeFalse(), "A should NOT drain to 0 while B still has replicas")
 
 			By("verifying final state: only C at target replicas")
 			kubectl.ForSingleActiveRevision(deploymentName, revisionA)
@@ -1179,6 +1231,14 @@ type rolloutState struct {
 	NewDecode  int
 }
 
+type rolloutObservation struct {
+	Spec            rolloutState
+	OldReadyPrefill int
+	OldReadyDecode  int
+	NewReadyPrefill int
+	NewReadyDecode  int
+}
+
 func (s rolloutState) String() string {
 	return fmt.Sprintf("old(p=%d,d=%d) new(p=%d,d=%d)", s.OldPrefill, s.OldDecode, s.NewPrefill, s.NewDecode)
 }
@@ -1206,38 +1266,62 @@ type rolloutTestCase struct {
 
 // getCurrentRolloutState queries the cluster for current LWS replica counts
 func getCurrentRolloutState(deploymentName, oldRevision string) rolloutState {
-	output, err := kubectl.LWS(deploymentName).
-		JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision},{.metadata.labels.disaggregatedset\.x-k8s\.io/role},{.spec.replicas}{"\n"}{end}`).
-		RunQuiet()
+	observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
 	if err != nil {
 		return rolloutState{}
 	}
+	return observation.Spec
+}
 
-	state := rolloutState{}
+// getCurrentRolloutObservation returns both the issued Spec footprint and the
+// Ready capacity committed to that footprint. Ready is capped at Spec per LWS
+// so terminating replicas from an earlier scale-down are not counted twice.
+func getCurrentRolloutObservation(deploymentName, oldRevision string) (rolloutObservation, error) {
+	output, err := kubectl.LWS(deploymentName).
+		JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision},{.metadata.labels.disaggregatedset\.x-k8s\.io/role},{.spec.replicas},{.status.readyReplicas}{"\n"}{end}`).
+		RunQuiet()
+	if err != nil {
+		return rolloutObservation{}, err
+	}
+
+	observation := rolloutObservation{}
 	for _, line := range kubectl.GetNonEmptyLines(output) {
 		parts := strings.Split(line, ",")
-		if len(parts) != 3 {
-			continue
+		if len(parts) != 4 {
+			return rolloutObservation{}, fmt.Errorf("unexpected rollout observation %q", line)
 		}
-		revision := parts[0]
-		role := parts[1]
-		replicas, _ := strconv.Atoi(parts[2])
-
-		isOld := revision == oldRevision
-		if role == "prefill" {
-			if isOld {
-				state.OldPrefill = replicas
-			} else {
-				state.NewPrefill = replicas
+		spec, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return rolloutObservation{}, fmt.Errorf("parse spec in rollout observation %q: %w", line, err)
+		}
+		ready := 0
+		if parts[3] != "" && parts[3] != "<no value>" {
+			ready, err = strconv.Atoi(parts[3])
+			if err != nil {
+				return rolloutObservation{}, fmt.Errorf("parse ready count in rollout observation %q: %w", line, err)
 			}
-		} else if role == "decode" {
+		}
+		ready = min(ready, spec)
+
+		isOld := parts[0] == oldRevision
+		switch parts[1] {
+		case "prefill":
 			if isOld {
-				state.OldDecode = replicas
+				observation.Spec.OldPrefill += spec
+				observation.OldReadyPrefill += ready
 			} else {
-				state.NewDecode = replicas
+				observation.Spec.NewPrefill += spec
+				observation.NewReadyPrefill += ready
+			}
+		case "decode":
+			if isOld {
+				observation.Spec.OldDecode += spec
+				observation.OldReadyDecode += ready
+			} else {
+				observation.Spec.NewDecode += spec
+				observation.NewReadyDecode += ready
 			}
 		}
 	}
-
-	return state
+	return observation, nil
 }
