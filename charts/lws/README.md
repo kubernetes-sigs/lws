@@ -88,11 +88,13 @@ the new chart version expects. `--server-side` lets the apply coexist with the
 ownership Helm records for the resource:
 
 ```bash
-kubectl apply --server-side --force-conflicts \
-  -f charts/lws/crds/leaderworkerset.x-k8s.io_leaderworkersets.yaml \
-  -f charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
+kubectl apply --server-side --force-conflicts -f charts/lws/crds
 helm upgrade lws charts/lws --namespace lws-system
 ```
+
+Applying the whole `crds/` directory covers every CRD the chart ships,
+including `disaggregatedsetrolescalers` (added in v0.10.0), which backs
+`scaling.mode: External`.
 
 > **Note**: neither `helm upgrade` nor `helm uninstall` + `helm install` will
 > update CRD schemas — Helm never modifies CRDs placed in the `crds/` directory

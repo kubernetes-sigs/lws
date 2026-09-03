@@ -3,7 +3,8 @@ title: "Examples"
 linkTitle: "Examples"
 weight: 6
 description: >
-  This section contains examples of using LWS with or without specific inference runtime.
+  This section contains examples of using LeaderWorkerSet and DisaggregatedSet with or without
+  a specific inference runtime.
 ---
 
 Use the pages in this section for runtime-specific LeaderWorkerSet deployments

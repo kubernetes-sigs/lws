@@ -263,8 +263,8 @@ default single slice) creates:
 - `my-inference-0-58f79fdb78-decode`
 
 > **Note:** The revision hash is dynamic and changes on each rollout. Never rely on hardcoded
-> child LWS names — always use label selectors to query them. Controllers at `v0.9.0` or older
-> predate slices and omit the `<slice>` segment.
+> child LWS names — always use label selectors to query them. The `<slice>` segment was added in
+> `v0.10.0`; controllers at `v0.9.0` or older predate slices and omit it.
 
 You can list all child LWS resources for a given DisaggregatedSet with:
 
@@ -291,9 +291,8 @@ kubectl get leaderworkerset -l disaggregatedset.x-k8s.io/name=disagg-nginx-demo 
 
 ## Operating a DisaggregatedSet
 
-> **Note:** `spec.slices`, `spec.placementPolicy`, and `scaling.mode: External` were added after
-> the `v0.9.0` release and ship in the next release. Controllers at `v0.9.0` or older reject
-> these fields.
+> **Note:** `spec.slices`, `spec.placementPolicy`, and `scaling.mode: External` are available
+> since `v0.10.0`. Controllers at `v0.9.0` or older reject these fields.
 
 ### Scaling slices
 
