@@ -579,7 +579,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	var conditions []metav1.Condition
 	degraded := degradedGroupCount > 0
 	rolloutInProgress := partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount
-	allReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
+	allReplicasReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
 	// A degraded group is terminal only when all other desired groups are ready.
 	// A missing or unready non-degraded group can still make progress, even
 	// though Degraded remains true for the retained group.
@@ -589,7 +589,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
-	} else if allReady {
+	} else if allReplicasReady {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
 	} else if degraded {
 		conditions = append(conditions,
