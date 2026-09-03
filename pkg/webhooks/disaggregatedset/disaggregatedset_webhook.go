@@ -28,6 +28,7 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
@@ -130,8 +131,8 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 
 	const (
 		dns1035MaxLen                     = 63
-		revisionLen                       = 8  // hex characters in the revision hash
-		serviceSuffixLen                  = 4  // len("-prv")
+		revisionLen                       = 8 // hex characters in the revision hash
+		serviceSuffixLen                  = len(disaggregatedsetutils.PrivateServiceSuffix)
 		separators                        = 3  // three "-" between dsName, slice, revision, roleName
 		statefulSetRevisionLabelSuffixLen = 11 // len("-<10-char-hash>")
 	)
