@@ -24,11 +24,20 @@ description: >
 
 ## Before you begin
 
+**LWS requires a Kubernetes cluster running Kubernetes 1.33 through 1.36.**
+
+LWS validates each supported version with a required E2E presubmit job:
+
+- [Kubernetes 1.33](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-33)
+- [Kubernetes 1.34](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-34)
+- [Kubernetes 1.35](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-35)
+- [Kubernetes 1.36](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-36)
+
+Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
+
 Make sure the following conditions are met:
 
-- A Kubernetes cluster with version >= 1.26 is **Required**, or it will behave unexpected. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
-    - For any cluster with version 1.26, you need to enable the [feature gate][feature_gate] for [Start Ordinal][start_ordinal] manually. For version greater than 1.26, it's enabled by default.
-    - Rolling update with max unavailable Pods, you must enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate, which is still in alpha since Kubernetes v1.24, see discussion [here][max_unavailable_enhancement]. Or lws will roll out the pods one by one.
+- On Kubernetes 1.33 and 1.34, enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate to use rolling updates with max unavailable Pods. The feature graduated to beta and became enabled by default in Kubernetes 1.35; see the [enhancement proposal][max_unavailable_enhancement]. Otherwise, LWS rolls out the Pods one by one.
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
@@ -253,8 +262,6 @@ helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
   --set enableDisaggregatedSet=true
 ```
 
-[feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
-[start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
 [max_unavailable]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods
 [max_unavailable_enhancement]: https://github.com/kubernetes/enhancements/issues/961
 [helm_charts]: https://github.com/kubernetes-sigs/lws/releases

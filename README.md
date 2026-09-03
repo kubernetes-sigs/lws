@@ -45,6 +45,16 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
 
 ## Installation
 
+**Requires a Kubernetes cluster running Kubernetes 1.33 through 1.36.**
+
+LWS validates each supported Kubernetes minor version with a required E2E
+presubmit job:
+
+- [Kubernetes 1.33](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-33)
+- [Kubernetes 1.34](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-34)
+- [Kubernetes 1.35](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-35)
+- [Kubernetes 1.36](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-36)
+
 Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
 
 ## Examples
