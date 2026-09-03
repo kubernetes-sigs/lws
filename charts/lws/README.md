@@ -130,6 +130,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `nameOverride`                             | nameOverride                                   | ``                                                  |
 | `fullnameOverride`                         | fullnameOverride                               | ``                                                  |
 | `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
+| `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
 | `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |

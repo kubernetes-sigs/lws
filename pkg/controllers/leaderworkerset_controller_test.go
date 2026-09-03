@@ -119,7 +119,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -192,7 +191,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -266,7 +264,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -335,7 +332,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -404,7 +400,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -479,7 +474,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":                "2",
@@ -570,7 +564,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -668,7 +661,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -741,7 +733,6 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/name":                   "test-sample",
 								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey2,
-								"leaderworkerset.sigs.k8s.io/role":                   "leader",
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size": "1",
@@ -1150,31 +1141,18 @@ func TestGetUpdatedRevision(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		sts            *appsv1.StatefulSet
 		lws            *leaderworkerset.LeaderWorkerSet
 		modifyRevision func(*appsv1.ControllerRevision)
 		expectUpdate   bool
 	}{
 		{
-			name:         "sts is nil, should return nil",
-			sts:          nil,
-			lws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
-			expectUpdate: false,
-		},
-		{
-			name: "revision matches current spec, no update",
-			sts: &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
-			},
+			name:         "revision matches current spec, no update",
 			lws:          wrappers.BuildLeaderWorkerSet("default").Obj(),
 			expectUpdate: false,
 		},
 		{
 			name: "revision has old serialization with creationTimestamp null, semantic match, no update",
-			sts: &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
-			},
-			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
+			lws:  wrappers.BuildLeaderWorkerSet("default").Obj(),
 			modifyRevision: func(rev *appsv1.ControllerRevision) {
 				// Simulate old (before v1.34) client-go serialization that includes "creationTimestamp":null
 				rev.Data.Raw = []byte(strings.ReplaceAll(string(rev.Data.Raw), `"metadata":{}`, `"metadata":{"creationTimestamp":null}`))
@@ -1183,10 +1161,7 @@ func TestGetUpdatedRevision(t *testing.T) {
 		},
 		{
 			name: "revision has different spec, should trigger update",
-			sts: &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-sample", Namespace: "default"},
-			},
-			lws: wrappers.BuildLeaderWorkerSet("default").Obj(),
+			lws:  wrappers.BuildLeaderWorkerSet("default").Obj(),
 			modifyRevision: func(rev *appsv1.ControllerRevision) {
 				// Simulate a real spec change by modifying the container name
 				rev.Data.Raw = []byte(strings.ReplaceAll(string(rev.Data.Raw), `"name":"leader"`, `"name":"changed"`))
@@ -1212,7 +1187,7 @@ func TestGetUpdatedRevision(t *testing.T) {
 				tc.modifyRevision(revision)
 			}
 
-			updatedRevision, err := reconciler.getUpdatedRevision(context.TODO(), tc.sts, tc.lws, revision)
+			updatedRevision, err := reconciler.getUpdatedRevision(context.TODO(), tc.lws, revision)
 			if err != nil {
 				t.Fatal(err)
 			}

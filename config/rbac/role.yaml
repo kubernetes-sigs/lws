@@ -18,9 +18,7 @@ rules:
   - ""
   resources:
   - pods
-  - services
   verbs:
-  - create
   - delete
   - get
   - list
@@ -36,10 +34,30 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - get
   - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - update
   - watch
 - apiGroups:
@@ -68,6 +86,7 @@ rules:
   - apps
   resources:
   - controllerrevisions
+  - deployments
   - statefulsets
   verbs:
   - create
@@ -88,6 +107,7 @@ rules:
   - apps
   resources:
   - controllerrevisions/status
+  - deployments/status
   - statefulsets/status
   verbs:
   - get

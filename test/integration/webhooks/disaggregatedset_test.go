@@ -148,3 +148,50 @@ var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(leaderworkerset.ExclusiveKeyAnnotationKey))
 	})
 })
+
+var _ = ginkgo.Describe("disaggregatedset group identity", func() {
+
+	var ns *corev1.Namespace
+	ginkgo.BeforeEach(func() {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ns-",
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+	})
+
+	buildDisaggregatedSet := func(name string) *wrappers.DisaggregatedSetWrapper {
+		disagg := wrappers.BuildDisaggregatedSet(name, ns.Name).
+			WithRole("prefill", 1, "nginx:1.14.2").
+			WithRole("decode", 1, "nginx:1.14.2")
+		for i := range disagg.Spec.Roles {
+			disagg.Spec.Roles[i].Spec.RolloutStrategy.Type = leaderworkerset.RollingUpdateStrategyType
+			disagg.Spec.Roles[i].Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+		}
+		return disagg
+	}
+
+	ginkgo.It("persists a Hash groupIdentity role through the CRD schema", func() {
+		disagg := buildDisaggregatedSet("gi-hash").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+
+		fetched := &disaggregatedset.DisaggregatedSet{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: ns.Name}, fetched)).To(gomega.Succeed())
+		gomega.Expect(fetched.Spec.Roles[0].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityHash))
+		// The role without an explicit value gets the CRD default.
+		gomega.Expect(fetched.Spec.Roles[1].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityOrdinal))
+	})
+
+	ginkgo.It("rejects a Hash role with volumeClaimTemplates at admission", func() {
+		disagg := buildDisaggregatedSet("gi-hash-vct").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+		}}
+		err := k8sClient.Create(ctx, disagg)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("volumeClaimTemplates are not supported with groupIdentity Hash"))
+	})
+})

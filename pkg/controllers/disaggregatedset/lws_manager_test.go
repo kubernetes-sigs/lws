@@ -828,3 +828,76 @@ func TestManagerGetForRoleIgnoresForeignOwnedLWS(t *testing.T) {
 		assert.Equal(t, name, got.Name)
 	})
 }
+
+func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	manager := NewLeaderWorkerSetManager(fakeClient)
+
+	params := disaggregatedsetutils.CreateParams{
+		DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-deploy",
+				Namespace: "default",
+				UID:       "test-uid",
+			},
+		},
+		Role:     "prefill",
+		Revision: "abc123",
+		Replicas: 2,
+		Labels: map[string]string{
+			disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
+			disaggregatedsetv1.RoleLabelKey:     "prefill",
+			disaggregatedsetv1.RevisionLabelKey: "abc123",
+		},
+		Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+				GroupIdentity: leaderworkersetv1.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+					Size: ptr.To(int32(2)),
+				},
+			}},
+		},
+	}
+
+	require.NoError(t, manager.Create(context.Background(), params))
+
+	lwsName := disaggregatedsetutils.GenerateName("test-deploy", params.Slice, "abc123", "prefill")
+	lws, err := manager.Get(context.Background(), params.DisaggregatedSet, lwsName)
+	require.NoError(t, err)
+	require.NotNil(t, lws)
+	require.Equal(t, leaderworkersetv1.GroupIdentityHash, lws.Spec.GroupIdentity)
+}
+
+func TestComputeRevisionGroupIdentity(t *testing.T) {
+	buildRoles := func(groupIdentity leaderworkersetv1.GroupIdentityType) []disaggregatedsetv1.DisaggregatedRoleSpec {
+		return []disaggregatedsetv1.DisaggregatedRoleSpec{
+			{
+				Name: "prefill",
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					GroupIdentity: groupIdentity,
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+						Size: ptr.To(int32(1)),
+					},
+				}},
+			},
+		}
+	}
+
+	t.Run("empty and explicit Ordinal produce the same revision", func(t *testing.T) {
+		// Objects persisted before the field existed must keep their revision
+		// once the API server starts defaulting groupIdentity to Ordinal.
+		require.Equal(t,
+			disaggregatedsetutils.ComputeRevision(buildRoles("")),
+			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)))
+	})
+
+	t.Run("Hash produces a different revision", func(t *testing.T) {
+		require.NotEqual(t,
+			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)),
+			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityHash)))
+	})
+}

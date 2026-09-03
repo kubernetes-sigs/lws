@@ -116,7 +116,23 @@ const (
 	// GroupRestartBudgetCleanupFinalizer ensures the restart count is reset before
 	// a retained leader pod is deleted for manual recovery.
 	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
+
+	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
+	// LeaderWorkerSet runs with GroupIdentity=Hash so that admission and controllers
+	// can tell the identity scheme apart without fetching the LWS object.
+	GroupIdentityAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-identity"
+
+	// LeaderAddressAnnotationKey carries the leader's DNS address on worker pods
+	// in both group identity modes, so that pod admission can inject
+	// LWS_LEADER_ADDRESS without recomputing it.
+	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
 )
+
+// GroupReadyConditionType is the pod readiness gate condition set on leader pods when
+// GroupIdentity=Hash. The pod controller marks it True once the group's worker
+// statefulset is ready, which makes Deployment rollout pacing count whole groups
+// instead of bare leader pods.
+const GroupReadyConditionType corev1.PodConditionType = "leaderworkerset.sigs.k8s.io/group-ready"
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 // LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).
@@ -160,7 +176,31 @@ type LeaderWorkerSetSpec struct {
 	// networkConfig defines the network configuration of the group
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+
+	// groupIdentity determines how group identities are assigned.
+	// Ordinal (default) manages leaders through a StatefulSet: groups are named
+	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
+	// Hash manages leaders through a Deployment: group names are hash-suffixed,
+	// scale down prefers unscheduled and not-ready groups over healthy ones, and
+	// rollouts are paced by a group readiness gate on the leader pods.
+	// This field is immutable.
+	// +kubebuilder:default=Ordinal
+	// +kubebuilder:validation:Enum={Ordinal,Hash}
+	// +optional
+	GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
 }
+
+// GroupIdentityType defines how group identities are assigned.
+type GroupIdentityType string
+
+const (
+	// GroupIdentityOrdinal names groups by contiguous StatefulSet ordinals.
+	GroupIdentityOrdinal GroupIdentityType = "Ordinal"
+
+	// GroupIdentityHash names groups by hash-suffixed leader pod names managed
+	// through a Deployment.
+	GroupIdentityHash GroupIdentityType = "Hash"
+)
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
 // Defaults to the worker template if not specified. The idea is to allow users to create a
@@ -290,11 +330,18 @@ const (
 	// will share. The host names look like:
 	// Replica 0: my-lws-0.my-lws, my-lws-0-1.my-lws
 	// Replica 1: my-lws-1.my-lws, my-lws-1-1.my-lws
+	// With groupIdentity Hash, the leader host name is the lws name plus an 8
+	// character prefix of the group key and worker host names extend the leader
+	// pod name:
+	// Group a1b2c3d4...: my-lws-a1b2c3d4.my-lws, my-lws-7d9f8b6c4-x2kkp-1.my-lws
 	SubdomainShared SubdomainPolicy = "Shared"
 	// UniquePerReplica will create a headless service per replica
 	// The pod host names look like:
 	// Replica 0: my-lws-0.my-lws-0,my-lws-0-1.my-lws-0, my-lws-0-2.my-lws-0
 	// Replica 1: my-lws-1.my-lws-1,my-lws-1-1.my-lws-1, my-lws-1-2.my-lws-1
+	// With groupIdentity Hash, the per replica service name matches the leader
+	// host name:
+	// Group a1b2c3d4...: my-lws-a1b2c3d4.my-lws-a1b2c3d4, my-lws-7d9f8b6c4-x2kkp-1.my-lws-a1b2c3d4
 	SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 

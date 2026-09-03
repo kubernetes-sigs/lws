@@ -33,9 +33,11 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -70,6 +72,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -108,7 +114,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
-								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -145,6 +150,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -188,7 +197,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
-								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
@@ -226,6 +234,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -268,7 +280,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.SetNameLabelKey:         "test-sample",
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
-								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 							},
 							Annotations: map[string]string{
@@ -309,6 +320,10 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 						leaderworkerset.RevisionKey:             updateRevisionKey,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Hostname:  "test-sample",
+					Subdomain: "test-sample",
 				},
 			},
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -368,7 +383,6 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 								leaderworkerset.GroupIndexLabelKey:      "1",
 								leaderworkerset.GroupUniqueHashLabelKey: "test-key",
 								leaderworkerset.RevisionKey:             updateRevisionKey,
-								leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 							},
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":        "1",
@@ -784,5 +798,284 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 				t.Fatalf("leader pod should still exist, err = %v", err)
 			}
 		})
+	}
+}
+
+func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
+	controller := true
+	oldPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-0-1",
+			Namespace: "default",
+			UID:       "worker-old",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "1",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+				leaderworkerset.RevisionKey:         "revision-1",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+				Name:       "test-sample-0",
+				UID:        "worker-sts",
+				Controller: &controller,
+			}},
+		},
+	}
+	replacementPod := oldPod.DeepCopy()
+	replacementPod.UID = "worker-replacement"
+	wantDeletedPod := oldPod.DeepCopy()
+
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[podReconcileRequest](),
+	)
+	defer queue.ShutDown()
+
+	handler := podEventHandler()
+	handler.Delete(context.Background(), event.TypedDeleteEvent[client.Object]{Object: oldPod}, queue)
+	handler.Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: replacementPod}, queue)
+	oldPod.Labels[leaderworkerset.SetNameLabelKey] = "mutated-after-enqueue"
+
+	if got := queue.Len(); got != 2 {
+		t.Fatalf("queue length = %d, want 2 distinct requests", got)
+	}
+
+	requests := make(map[types.UID]podReconcileRequest, 2)
+	for range 2 {
+		request, shutdown := queue.Get()
+		if shutdown {
+			t.Fatal("queue shut down before returning both requests")
+		}
+		requests[request.UID] = request
+		queue.Done(request)
+	}
+
+	gotDeleted := requests[oldPod.UID]
+	if gotDeleted.DeletedPod == nil {
+		t.Fatal("deleted Pod request does not contain a Pod snapshot")
+	}
+	if gotDeleted.DeletedPod == oldPod {
+		t.Fatal("deleted Pod request contains the informer object instead of a deep copy")
+	}
+	if gotDeleted.DeletedPod.DeletionTimestamp == nil {
+		t.Fatal("deleted Pod snapshot does not have a deletion timestamp")
+	}
+
+	wantDeletedPod.DeletionTimestamp = gotDeleted.DeletedPod.DeletionTimestamp.DeepCopy()
+	wantDeleted := podReconcileRequest{
+		NamespacedName: types.NamespacedName{Name: oldPod.Name, Namespace: oldPod.Namespace},
+		UID:            oldPod.UID,
+		DeletedPod:     wantDeletedPod,
+	}
+	if diff := cmp.Diff(wantDeleted, gotDeleted); diff != "" {
+		t.Fatalf("unexpected deleted Pod request (-want,+got):\n%s", diff)
+	}
+	if got := requests[replacementPod.UID]; got.DeletedPod != nil {
+		t.Fatalf("replacement Pod request is unexpectedly marked deleted: %#v", got)
+	}
+}
+
+func TestStatefulSetEventHandlerEnqueuesControllerPod(t *testing.T) {
+	controller := true
+	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sample-0",
+		Namespace: "default",
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Name:       "test-sample-0",
+			UID:        "leader-current",
+			Controller: &controller,
+		}},
+	}}
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[podReconcileRequest](),
+	)
+	defer queue.ShutDown()
+
+	statefulSetEventHandler().Create(
+		context.Background(),
+		event.TypedCreateEvent[client.Object]{Object: statefulSet},
+		queue,
+	)
+
+	request, shutdown := queue.Get()
+	if shutdown {
+		t.Fatal("queue shut down before returning the request")
+	}
+	queue.Done(request)
+	want := podReconcileRequest{
+		NamespacedName: types.NamespacedName{Name: "test-sample-0", Namespace: "default"},
+		UID:            "leader-current",
+	}
+	if diff := cmp.Diff(want, request); diff != "" {
+		t.Fatalf("unexpected StatefulSet owner request (-want,+got):\n%s", diff)
+	}
+}
+
+func TestReconcileDeletedWorkerAfterSameNameReplacement(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+		Obj()
+	revisionKey := "revision-1"
+
+	leaderPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sample-0",
+		Namespace: lws.Namespace,
+		UID:       "leader-current",
+		Labels: map[string]string{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+			leaderworkerset.GroupIndexLabelKey:  "0",
+			leaderworkerset.RevisionKey:         revisionKey,
+		},
+	}}
+	workerStatefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name:            leaderPod.Name,
+		Namespace:       leaderPod.Namespace,
+		UID:             "worker-sts-current",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leaderPod, corev1.SchemeGroupVersion.WithKind("Pod"))},
+	}}
+	workerLabels := map[string]string{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "1",
+		leaderworkerset.GroupIndexLabelKey:  "0",
+		leaderworkerset.RevisionKey:         revisionKey,
+	}
+	deletedWorker := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            "test-sample-0-1",
+		Namespace:       lws.Namespace,
+		UID:             "worker-old",
+		Labels:          workerLabels,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workerStatefulSet, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+	}}
+	replacementWorker := deletedWorker.DeepCopy()
+	replacementWorker.UID = "worker-replacement"
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		lws, leaderPod, workerStatefulSet, replacementWorker,
+	).Build()
+	reconciler := PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+	if _, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(deletedWorker, true)); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var leader corev1.Pod
+	err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &leader)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("leader Pod still exists after deleted worker replacement, err = %v", err)
+	}
+}
+
+func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		SubdomainPolicy(subdomainPolicy).
+		Obj()
+
+	deletionTimestamp := metav1.Now()
+	leaderPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-sample-0",
+			Namespace:         "default",
+			DeletionTimestamp: &deletionTimestamp,
+			Finalizers:        []string{"leaderworkerset.sigs.k8s.io/test"},
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-sample",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "0",
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, &leaderPod).Build()
+	reconciler := PodReconciler{
+		Client: client,
+		Scheme: scheme,
+		Record: fakeEventRecorder{},
+	}
+
+	req := podReconcileRequest{
+		NamespacedName: types.NamespacedName{
+			Name:      leaderPod.Name,
+			Namespace: leaderPod.Namespace,
+		},
+	}
+
+	res, err := reconciler.reconcilePod(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error during reconcile: %v", err)
+	}
+	if res.Requeue {
+		t.Errorf("expected no requeue, got %v", res)
+	}
+
+	var svcList corev1.ServiceList
+	if err := client.List(context.Background(), &svcList); err != nil {
+		t.Fatalf("failed to list services: %v", err)
+	}
+	if len(svcList.Items) != 0 {
+		t.Errorf("expected 0 services created for deleting leader pod, got %d", len(svcList.Items))
+	}
+}
+
+func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Name("test-sample").
+		Replica(1).
+		Size(2).
+		SubdomainPolicy(subdomainPolicy).
+		Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	revision, err := revisionutils.NewRevision(context.TODO(), client, lws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaderPod := corev1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-sample-7d9f8b6c4-x2kkp",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.WorkerIndexLabelKey:     "0",
+				leaderworkerset.SetNameLabelKey:         "test-sample",
+				leaderworkerset.GroupIndexLabelKey:      "test-key",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(revision),
+			},
+		},
+		Spec: corev1.PodSpec{
+			Hostname:  "test-sample-9f2ac71b",
+			Subdomain: "test-sample-9f2ac71b",
+		},
+	}
+
+	cfg, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *cfg.Spec.ServiceName; got != "test-sample-9f2ac71b" {
+		t.Errorf("expected the worker StatefulSet to use the group key derived service name, got %q", got)
 	}
 }

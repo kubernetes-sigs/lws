@@ -36,11 +36,16 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -59,19 +64,47 @@ type PodReconciler struct {
 	SchedulerProvider schedulerprovider.SchedulerProvider
 }
 
+// podReconcileRequest keeps the identity and snapshot of a deleted Pod in the
+// workqueue. A StatefulSet can create a replacement with the same namespace
+// and name before reconciliation starts, so a namespaced name alone is
+// insufficient.
+type podReconcileRequest struct {
+	types.NamespacedName
+	UID        types.UID
+	DeletedPod *corev1.Pod
+}
+
+func podReconcileRequestForPod(pod *corev1.Pod, deleted bool) podReconcileRequest {
+	request := podReconcileRequest{
+		NamespacedName: client.ObjectKeyFromObject(pod),
+		UID:            pod.UID,
+	}
+	if deleted {
+		request.DeletedPod = pod.DeepCopy()
+		if request.DeletedPod.DeletionTimestamp == nil {
+			deletionTimestamp := metav1.Now()
+			request.DeletedPod.DeletionTimestamp = &deletionTimestamp
+		}
+	}
+	return request
+}
+
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
 	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
 //+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;watch;update;patch
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=create;delete;get;list;patch;update;watch
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=delete;get;list;patch;update;watch
+//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
-func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
-	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, &pod); err != nil {
+	if req.DeletedPod != nil {
+		pod = *req.DeletedPod.DeepCopy()
+	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(&pod))
@@ -135,7 +168,9 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
-		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Name, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
+		// The per-replica service is named after the leader's subdomain: the pod
+		// name in ordinal mode, a group key derived name in hash mode.
+		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Spec.Subdomain, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -152,10 +187,21 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	hashIdentity := leaderWorkerSet.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash
+
 	// logic for handling leader pod
-	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy && !podutils.IsPodReady(&pod) {
-		log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
-		return ctrl.Result{}, nil
+	if leaderWorkerSet.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy {
+		leaderStarted := podutils.IsPodReady(&pod)
+		if hashIdentity {
+			// With hash identity, full pod readiness includes the group-ready gate,
+			// which in turn waits for the workers. Gate worker creation on container
+			// readiness instead to avoid a deadlock.
+			leaderStarted = podutils.ContainersReady(&pod)
+		}
+		if !leaderStarted {
+			log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
+			return ctrl.Result{}, nil
+		}
 	}
 	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
 	if err != nil {
@@ -166,10 +212,27 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
 		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
 	}
+	// Leader pods always have a DNS identity: the statefulset controller
+	// assigns it in ordinal mode, admission in hash mode. The worker statefulset
+	// service name and the leader address stamped on its template derive from it.
+	if pod.Spec.Hostname == "" || pod.Spec.Subdomain == "" {
+		return ctrl.Result{}, fmt.Errorf("leader pod %s/%s has no hostname or subdomain", pod.Namespace, pod.Name)
+	}
 	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Workers reach the leader through its DNS name, stamped on the worker
+	// statefulset template so pod admission can inject LWS_LEADER_ADDRESS
+	// without recomputing it.
+	templateAnnotations := map[string]string{
+		leaderworkerset.LeaderAddressAnnotationKey: fmt.Sprintf("%s.%s.%s", pod.Spec.Hostname, pod.Spec.Subdomain, pod.Namespace),
+	}
+	if hashIdentity {
+		templateAnnotations[leaderworkerset.GroupIdentityAnnotationKey] = string(leaderworkerset.GroupIdentityHash)
+	}
+	statefulSet.Spec.Template.WithAnnotations(templateAnnotations)
 
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
 	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
@@ -197,6 +260,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		Object: obj,
 	}
 
+	workerStsReady := false
 	var workerSts appsv1.StatefulSet
 	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
 		if client.IgnoreNotFound(err) != nil {
@@ -209,9 +273,46 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
+	} else {
+		workerStsReady = statefulsetutils.StatefulsetReady(workerSts)
+	}
+
+	if hashIdentity {
+		// Maintain the group-ready readiness gate so Deployment rollout pacing
+		// counts whole groups instead of bare leader pods.
+		if err := r.syncGroupReadyCondition(ctx, &pod, workerStsReady); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
+}
+
+// syncGroupReadyCondition patches the leader pod's group-ready condition to match
+// the readiness of its worker statefulset.
+func (r *PodReconciler) syncGroupReadyCondition(ctx context.Context, pod *corev1.Pod, ready bool) error {
+	status := corev1.ConditionFalse
+	reason := "WorkerStatefulSetNotReady"
+	if ready {
+		status = corev1.ConditionTrue
+		reason = "WorkerStatefulSetReady"
+	}
+	if _, existing := podutils.GetPodCondition(&pod.Status, leaderworkerset.GroupReadyConditionType); existing != nil && existing.Status == status {
+		return nil
+	}
+	newPod := pod.DeepCopy()
+	condition := corev1.PodCondition{
+		Type:               leaderworkerset.GroupReadyConditionType,
+		Status:             status,
+		Reason:             reason,
+		LastTransitionTime: metav1.Now(),
+	}
+	if idx, _ := podutils.GetPodCondition(&newPod.Status, leaderworkerset.GroupReadyConditionType); idx >= 0 {
+		newPod.Status.Conditions[idx] = condition
+	} else {
+		newPod.Status.Conditions = append(newPod.Status.Conditions, condition)
+	}
+	return r.Status().Patch(ctx, newPod, client.MergeFrom(pod))
 }
 
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
@@ -239,9 +340,15 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 
 	var leader corev1.Pod
 	if !podutils.LeaderPod(pod) {
-		leaderPodName, ordinal := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
-		if ordinal == -1 {
-			return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+		// Prefer the annotation over name parsing: with hash identity the leader
+		// name is not ordinal-derived.
+		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+		if leaderPodName == "" {
+			var ordinal int
+			leaderPodName, ordinal = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+			if ordinal == -1 {
+				return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+			}
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			// If the error is not found, it is likely caused by the fact that the leader was deleted but the worker statefulset
@@ -542,23 +649,32 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, 
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet
 func setControllerReferenceWithStatefulSet(owner metav1.Object, sts *appsapplyv1.StatefulSetApplyConfiguration, scheme *runtime.Scheme) error {
-	// Validate the owner.
-	ro, ok := owner.(runtime.Object)
-	if !ok {
-		return fmt.Errorf("%T is not a runtime.Object, cannot call SetOwnerReference", owner)
-	}
-	gvk, err := apiutil.GVKForObject(ro, scheme)
+	ownerRef, err := controllerOwnerReference(owner, scheme)
 	if err != nil {
 		return err
 	}
-	sts.WithOwnerReferences(metaapplyv1.OwnerReference().
+	sts.WithOwnerReferences(ownerRef)
+	return nil
+}
+
+// controllerOwnerReference builds the owner reference apply configuration that
+// marks owner as the managing controller.
+func controllerOwnerReference(owner metav1.Object, scheme *runtime.Scheme) (*metaapplyv1.OwnerReferenceApplyConfiguration, error) {
+	ro, ok := owner.(runtime.Object)
+	if !ok {
+		return nil, fmt.Errorf("%T is not a runtime.Object, cannot call SetOwnerReference", owner)
+	}
+	gvk, err := apiutil.GVKForObject(ro, scheme)
+	if err != nil {
+		return nil, err
+	}
+	return metaapplyv1.OwnerReference().
 		WithAPIVersion(gvk.GroupVersion().String()).
 		WithKind(gvk.Kind).
 		WithName(owner.GetName()).
 		WithUID(owner.GetUID()).
 		WithBlockOwnerDeletion(true).
-		WithController(true))
-	return nil
+		WithController(true), nil
 }
 
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
@@ -588,7 +704,6 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		leaderworkerset.SetNameLabelKey:         lws.Name,
 		leaderworkerset.GroupUniqueHashLabelKey: leaderPod.Labels[leaderworkerset.GroupUniqueHashLabelKey],
 		leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(&leaderPod),
-		leaderworkerset.RoleLabelKey:            leaderworkerset.RoleWorker,
 	}
 
 	podTemplateApplyConfiguration.WithLabels(labelMap)
@@ -612,12 +727,12 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
-	serviceName := leaderPod.Name
-	if currentLws.Spec.NetworkConfig == nil || *currentLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainShared {
-		serviceName = lws.Name
-	}
+	// The service name always matches the leader's subdomain in every mode and
+	// subdomain policy.
+	serviceName := leaderPod.Spec.Subdomain
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
+	statefulSetLabels[leaderworkerset.RoleLabelKey] = leaderworkerset.RoleWorker
 	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
@@ -646,8 +761,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
+	return builder.TypedControllerManagedBy[podReconcileRequest](mgr).
+		Named("pod").
+		Watches(&corev1.Pod{}, podEventHandler()).
+		Watches(&appsv1.StatefulSet{}, statefulSetEventHandler()).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			if pod, ok := object.(*corev1.Pod); ok {
 				_, exist := pod.Labels[leaderworkerset.SetNameLabelKey]
@@ -658,5 +775,47 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return exist
 			}
 			return false
-		})).Owns(&appsv1.StatefulSet{}).Complete(r)
+		})).
+		Complete(reconcile.TypedFunc[podReconcileRequest](r.reconcilePod))
+}
+
+func podEventHandler() handler.TypedEventHandler[client.Object, podReconcileRequest] {
+	enqueue := func(object client.Object, deleted bool, queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+		pod, ok := object.(*corev1.Pod)
+		if !ok || pod == nil {
+			return
+		}
+		queue.Add(podReconcileRequestForPod(pod, deleted))
+	}
+	return handler.TypedFuncs[client.Object, podReconcileRequest]{
+		CreateFunc: func(_ context.Context, event event.TypedCreateEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, false, queue)
+		},
+		UpdateFunc: func(_ context.Context, event event.TypedUpdateEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.ObjectNew, false, queue)
+		},
+		DeleteFunc: func(_ context.Context, event event.TypedDeleteEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, true, queue)
+		},
+		GenericFunc: func(_ context.Context, event event.TypedGenericEvent[client.Object], queue workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+			enqueue(event.Object, false, queue)
+		},
+	}
+}
+
+func statefulSetEventHandler() handler.TypedEventHandler[client.Object, podReconcileRequest] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []podReconcileRequest {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if !ok || statefulSet == nil {
+			return nil
+		}
+		owner := metav1.GetControllerOf(statefulSet)
+		if owner == nil || owner.APIVersion != corev1.SchemeGroupVersion.String() || owner.Kind != "Pod" {
+			return nil
+		}
+		return []podReconcileRequest{{
+			NamespacedName: types.NamespacedName{Name: owner.Name, Namespace: statefulSet.Namespace},
+			UID:            owner.UID,
+		}}
+	})
 }

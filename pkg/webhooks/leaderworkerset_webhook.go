@@ -54,6 +54,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.RecreateGroupOnPodRestart
 	}
 
+	if lws.Spec.GroupIdentity == "" {
+		lws.Spec.GroupIdentity = v1.GroupIdentityOrdinal
+	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
 	}
@@ -110,6 +114,10 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 	if newLws.Spec.NetworkConfig != nil && newLws.Spec.NetworkConfig.SubdomainPolicy == nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("networkConfig", "subdomainPolicy"), oldLws.Spec.NetworkConfig.SubdomainPolicy, "cannot set subdomainPolicy as null"))
+	}
+
+	if normalizeGroupIdentity(newLws.Spec.GroupIdentity) != normalizeGroupIdentity(oldLws.Spec.GroupIdentity) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("groupIdentity"), newLws.Spec.GroupIdentity, "groupIdentity is immutable"))
 	}
 
 	return nil, allErrs.ToAggregate()
@@ -198,6 +206,37 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		))
 	}
 
+	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
+
+	return allErrs
+}
+
+func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
+	if gi == "" {
+		return v1.GroupIdentityOrdinal
+	}
+	return gi
+}
+
+// ValidateGroupIdentity rejects the parts of the API surface whose semantics
+// depend on stable StatefulSet identity and are not supported when leaders are
+// Deployment-managed. It is a no-op unless the spec asks for groupIdentity Hash.
+// Exported so the DisaggregatedSet webhook can run the same checks against each
+// role's inline LeaderWorkerSet spec at DisaggregatedSet admission time, where a
+// bad combination would otherwise only surface as LWS creation failures during
+// reconciliation.
+func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if normalizeGroupIdentity(spec.GroupIdentity) != v1.GroupIdentityHash {
+		return allErrs
+	}
+	giPath := specPath.Child("groupIdentity")
+	if len(spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
+		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "volumeClaimTemplates are not supported with groupIdentity Hash"))
+	}
+	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
+		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
+	}
 	return allErrs
 }
 
