@@ -9,14 +9,14 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 ---
 
 
-## Resource Types
+## Resource Types 
 
 
 - [LeaderWorkerSet](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSet)
-
+  
 
 ## `LeaderWorkerSet`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSet}
-
+    
 
 **Appears in:**
 
@@ -28,10 +28,11 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
+    
 <tr><td><code>apiVersion</code><br/>string</td><td><code>leaderworkerset.x-k8s.io/v1</code></td></tr>
 <tr><td><code>kind</code><br/>string</td><td><code>LeaderWorkerSet</code></td></tr>
-
+    
+  
 <tr><td><code>spec</code> <B>[Required]</B><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec"><code>LeaderWorkerSetSpec</code></a>
 </td>
@@ -50,7 +51,7 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </table>
 
 ## `GroupIdentityType`     {#leaderworkerset-x-k8s-io-v1-GroupIdentityType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -64,7 +65,7 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 
 
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
-
+    
 
 **Appears in:**
 
@@ -85,8 +86,8 @@ Worker pods are named using the format: leaderWorkerSetName-leaderIndex-workerIn
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -146,7 +147,7 @@ This field is immutable.</p>
 </table>
 
 ## `LeaderWorkerSetStatus`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetStatus}
-
+    
 
 **Appears in:**
 
@@ -159,8 +160,8 @@ This field is immutable.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>conditions</code><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
@@ -209,7 +210,7 @@ we only select the leader pods.</p>
 </table>
 
 ## `LeaderWorkerTemplate`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate}
-
+    
 
 **Appears in:**
 
@@ -227,8 +228,8 @@ API whenever possible.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>leaderTemplate</code> <B>[Required]</B><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
 </td>
@@ -306,7 +307,7 @@ the VolumeClaimTemplates.</p>
 </table>
 
 ## `NetworkConfig`     {#leaderworkerset-x-k8s-io-v1-NetworkConfig}
-
+    
 
 **Appears in:**
 
@@ -317,8 +318,8 @@ the VolumeClaimTemplates.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>subdomainPolicy</code> <B>[Required]</B><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubdomainPolicy"><code>SubdomainPolicy</code></a>
 </td>
@@ -331,7 +332,7 @@ the headless service, defaults to shared</p>
 </table>
 
 ## `RestartPolicyType`     {#leaderworkerset-x-k8s-io-v1-RestartPolicyType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -343,7 +344,7 @@ the headless service, defaults to shared</p>
 
 
 ## `RollingUpdateConfiguration`     {#leaderworkerset-x-k8s-io-v1-RollingUpdateConfiguration}
-
+    
 
 **Appears in:**
 
@@ -356,8 +357,8 @@ the headless service, defaults to shared</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>partition</code><br/>
 <code>int32</code>
 </td>
@@ -410,7 +411,7 @@ When rolling update completes, replicas will fall back to the original replicas.
 </table>
 
 ## `RolloutStrategy`     {#leaderworkerset-x-k8s-io-v1-RolloutStrategy}
-
+    
 
 **Appears in:**
 
@@ -424,8 +425,8 @@ will use to perform replica updates.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>type</code> <B>[Required]</B><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-RolloutStrategyType"><code>RolloutStrategyType</code></a>
 </td>
@@ -444,7 +445,7 @@ will use to perform replica updates.</p>
 </table>
 
 ## `RolloutStrategyType`     {#leaderworkerset-x-k8s-io-v1-RolloutStrategyType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -456,7 +457,7 @@ will use to perform replica updates.</p>
 
 
 ## `StartupPolicyType`     {#leaderworkerset-x-k8s-io-v1-StartupPolicyType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -468,7 +469,7 @@ will use to perform replica updates.</p>
 
 
 ## `SubGroupPolicy`     {#leaderworkerset-x-k8s-io-v1-SubGroupPolicy}
-
+    
 
 **Appears in:**
 
@@ -481,8 +482,8 @@ will use to perform replica updates.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>subGroupPolicyType</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicyType"><code>SubGroupPolicyType</code></a>
 </td>
@@ -507,7 +508,7 @@ the extra pod, and will be part of the first subgroup.</p>
 </table>
 
 ## `SubGroupPolicyType`     {#leaderworkerset-x-k8s-io-v1-SubGroupPolicyType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -519,7 +520,7 @@ the extra pod, and will be part of the first subgroup.</p>
 
 
 ## `SubdomainPolicy`     {#leaderworkerset-x-k8s-io-v1-SubdomainPolicy}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -529,4 +530,4 @@ the extra pod, and will be part of the first subgroup.</p>
 
 
 
-
+  
