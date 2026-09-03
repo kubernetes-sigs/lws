@@ -68,10 +68,14 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 
 	if lws.Spec.RolloutStrategy.Type == v1.RollingUpdateStrategyType && lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &v1.RollingUpdateConfiguration{
+			UpdateOrder:    v1.ScaleFirstUpdateOrder,
 			MaxUnavailable: intstr.FromInt32(1),
 			MaxSurge:       intstr.FromInt32(0),
 			Partition:      ptr.To[int32](0),
 		}
+	}
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder == "" {
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder = v1.ScaleFirstUpdateOrder
 	}
 
 	if lws.Spec.NetworkConfig == nil {
@@ -184,6 +188,9 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	if maxUnavailableValue == 0 && maxSurgeValue == 0 && *lws.Spec.Replicas != 0 {
 		// Both MaxSurge and MaxUnavailable cannot be zero.
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
+	}
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder == v1.RolloutFirstUpdateOrder && maxUnavailableValue == 0 && *lws.Spec.Replicas != 0 {
+		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `updateOrder` is RolloutFirst"))
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
