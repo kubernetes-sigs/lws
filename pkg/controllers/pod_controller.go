@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -121,14 +122,23 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// get the leaderWorkerSet object
 	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderWorkerSet); err != nil {
-		if apierrors.IsNotFound(err) && hasFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		if apierrors.IsNotFound(err) && controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
 		}
 		// If lws not found, it's mostly because deleted, ignore the error as Pods will be GCed finally.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// LWS deletion is workload teardown, not manual recovery of a retained group.
+	// Do not mutate restart accounting or trigger group recreation while the owner
+	// is terminating. A retained leader's finalizer must not delay LWS deletion.
+	if leaderWorkerSet.DeletionTimestamp != nil {
+		if controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
+		}
+		return ctrl.Result{}, nil
+	}
 	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil &&
-		hasFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 		if err := r.clearGroupRestartCount(ctx, &leaderWorkerSet, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -375,6 +385,12 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
+	// Once a group is retained, spec edits do not implicitly restart it. External
+	// deletion of the retained leader is the explicit recovery action handled by
+	// reconcilePod, which also resets this group's counter.
+	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+		return false, nil
+	}
 	// If a restart budget is configured, enforce it: any recreate-triggering
 	// failure contributes to the same counter. nil keeps the unbounded legacy
 	// behavior.
@@ -392,14 +408,9 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			}
 			if marked {
 				r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded",
-					"Stopped recreating group %s after %d controller-initiated restarts", groupIndex, count)
+					"StopRecreatingGroup", "Stopped recreating group %s after %d controller-initiated restarts", groupIndex, count)
 			}
 			return false, nil
-		}
-		if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
-			if err := r.resumeGroupRestartRecovery(ctx, &leader); err != nil {
-				return false, fmt.Errorf("resuming automatic recovery for %s: %w", leader.Name, err)
-			}
 		}
 		if err := r.persistGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
 			return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
@@ -469,39 +480,13 @@ func (r *PodReconciler) markGroupRestartBudgetExhausted(ctx context.Context, lea
 		leader.Annotations = map[string]string{}
 	}
 	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
-	leader.Finalizers = append(leader.Finalizers, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+	controllerutil.AddFinalizer(leader, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
 	return true, r.Patch(ctx, leader, patch)
-}
-
-func hasFinalizer(object client.Object, finalizer string) bool {
-	for _, current := range object.GetFinalizers() {
-		if current == finalizer {
-			return true
-		}
-	}
-	return false
-}
-
-func removeFinalizer(object client.Object, target string) {
-	finalizers := object.GetFinalizers()[:0]
-	for _, finalizer := range object.GetFinalizers() {
-		if finalizer != target {
-			finalizers = append(finalizers, finalizer)
-		}
-	}
-	object.SetFinalizers(finalizers)
-}
-
-func (r *PodReconciler) resumeGroupRestartRecovery(ctx context.Context, pod *corev1.Pod) error {
-	patch := client.MergeFrom(pod.DeepCopy())
-	delete(pod.Annotations, leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey)
-	removeFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
-	return r.Patch(ctx, pod, patch)
 }
 
 func (r *PodReconciler) removeGroupRestartBudgetFinalizer(ctx context.Context, pod *corev1.Pod) error {
 	patch := client.MergeFrom(pod.DeepCopy())
-	removeFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+	controllerutil.RemoveFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
 	return r.Patch(ctx, pod, patch)
 }
 

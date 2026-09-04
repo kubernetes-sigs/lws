@@ -40,21 +40,22 @@ Pods for inspection.
 ## Summary
 
 This KEP adds `leaderWorkerTemplate.maxGroupRestarts` to bound automatic group
-recovery under `RecreateGroupOnPodRestart`. When a replica exhausts the budget,
-LeaderWorkerSet (LWS) stops recreating that group, retains its Pods for
-inspection, and reports `Degraded=True` without making the whole LWS terminal.
+recovery under `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`. When a
+replica exhausts the budget, LeaderWorkerSet (LWS) stops recreating that group,
+retains its Pods for inspection, and reports `Degraded=True` without making the
+whole LWS terminal.
 
-The budget applies to every failure handled by `RecreateGroupOnPodRestart`.
-Init-container preflight checks are one use case, not a separate lifecycle or
-status model.
+The budget applies to every failure for which either policy would recreate the
+group. Init-container preflight checks are one use case, not a separate
+lifecycle or status model.
 
 ## Motivation
 
-`RecreateGroupOnPodRestart` currently has no upper bound. A persistent failure
-can repeatedly delete and recreate an entire group, consume cluster and
-control-plane resources, and discard the Pods that contain the most useful
-failure state. Operators need a circuit breaker that stops this loop while
-leaving healthy replicas and unrelated rollouts active.
+The group-recreating restart policies currently have no upper bound. A
+persistent failure can repeatedly delete and recreate an entire group, consume
+cluster and control-plane resources, and discard the Pods that contain the most
+useful failure state. Operators need a circuit breaker that stops this loop
+while leaving healthy replicas and unrelated rollouts active.
 
 ### Goals
 
@@ -64,6 +65,7 @@ leaving healthy replicas and unrelated rollouts active.
 3. Report partial failure without making the whole LWS terminal.
 4. Define how users inspect and recover a retained group.
 5. Preserve existing behavior when `maxGroupRestarts` is unset.
+6. Apply the same budget semantics to both group-recreating restart policies.
 
 ### Non-Goals
 
@@ -71,6 +73,8 @@ leaving healthy replicas and unrelated rollouts active.
 2. Release resources automatically after the restart budget is exhausted.
 3. Add preflight-specific phases, images, scripts, or environment variables.
 4. Roll back or repair the workload automatically.
+5. Track restart budgets across the unstable identities used by
+   `groupIdentity: Hash`.
 
 ## Proposal
 
@@ -97,8 +101,10 @@ the StatefulSet creates a replacement group with a fresh budget.
 
 - Suppression covers only the LWS `RecreateGroup` action. Kubelet may continue
   restarting containers in retained Pods.
-- Retained Pods preserve logs and status but continue reserving scheduled
-  resources, including GPUs.
+- The retained group includes its leader Pod, worker StatefulSet, and worker
+  Pods. LWS does not delete or scale those objects after exhaustion. Their Pods
+  preserve logs and status but continue reserving scheduled resources,
+  including GPUs.
 - Pod status comes from Kubernetes and the workload. A failed init container
   will usually appear as `Init:Error` or `Init:CrashLoopBackOff`; LWS does not
   change it to `Completed`.
@@ -110,7 +116,8 @@ the StatefulSet creates a replacement group with a fresh budget.
 **Risk:** A small budget may stop recovery after a transient failure.
 
 **Mitigation:** The field is optional. When unset, LWS keeps the current
-unbounded recreation behavior. Users can also increase the limit at runtime.
+unbounded recreation behavior. Before a group is retained, users can adjust the
+limit at runtime.
 
 **Risk:** Retained Pods keep their resource reservations.
 
@@ -145,15 +152,18 @@ const (
 )
 ```
 
-`maxGroupRestarts` is valid only with `restartPolicy:
-RecreateGroupOnPodRestart`. The validating webhook rejects other combinations.
+`maxGroupRestarts` is valid with `restartPolicy: RecreateGroupOnPodRestart` or
+`RecreateGroupAfterStart`. The validating webhook rejects other restart
+policies. It also rejects `groupIdentity: Hash` because a recreated Hash group
+receives a new identity and cannot use an ordinal-based restart counter safely.
 
 No per-group phase or preflight-specific status is added. `Degraded=True` is an
 LWS-level aggregate condition with reason `ReplicaRestartBudgetExceeded`.
 
 ### Controller behavior
 
-For each failure handled by `RecreateGroupOnPodRestart`:
+For each failure for which `RecreateGroupOnPodRestart` or
+`RecreateGroupAfterStart` would recreate the group:
 
 1. If the replica has remaining budget, consume one restart and request leader
    deletion. Existing group recreation then creates a replacement.
@@ -170,16 +180,17 @@ suppressed attempt does not increment the count.
 |---|---|---|
 | Budget remains | Delete the leader and recreate the group | `Progressing=True` while recovery is active |
 | Budget exhausted | Retain the group and stop `RecreateGroup` | `Degraded=True`, reason `ReplicaRestartBudgetExceeded`; `Progressing=False` if nothing else is progressing |
-| Increase `maxGroupRestarts` | Apply the larger limit on the next failure-triggered Pod reconcile | If budget is available, clear suppression, consume one restart, and recreate the group |
+| Change `maxGroupRestarts` on a retained group | Keep the retained group unchanged | Only explicit deletion of the retained leader resumes recovery |
+| Increase `maxGroupRestarts` before exhaustion | Use the larger limit for the next failure | The current count is preserved |
 | Decrease `maxGroupRestarts` | Keep the current group unchanged until its next failure | The next failure uses the smaller limit; if the current count already meets it, retain the group immediately |
 | Delete only retained workers | Allow their StatefulSet to replace them | Leader remains retained and the count does not change |
 | Delete the retained leader | Clear that revision/replica count, then allow deletion | Recreate the whole group with a fresh budget |
 | Delete all Pods in the retained group | Process the leader deletion as explicit recovery | Recreate the whole group with a fresh budget |
 | Update the Pod template | Roll out a new revision | The new revision uses a fresh per-replica budget |
 
-Editing `maxGroupRestarts` alone does not directly delete a retained Pod. A
-larger limit resumes automatic recreation when the Pod controller next handles
-a failure event. A smaller limit affects the next failure and does not disrupt a
+Editing or unsetting `maxGroupRestarts` does not resume a retained group. This
+avoids making an unrelated Pod update an implicit recovery trigger. Before
+exhaustion, a changed limit applies to the next failure and does not disrupt a
 currently healthy group.
 
 For an LWS named `serving` with ten replicas where group 0 is retained after an
@@ -219,10 +230,16 @@ Deleting the LWS object is not group recovery; it deletes the whole workload.
 
 ### Status and recovery
 
-The retained leader carries an exhausted-state annotation and a cleanup
-finalizer. The finalizer clears the current revision and replica count before
-manual leader deletion completes. If the LWS itself no longer exists, the Pod
-controller removes the finalizer without attempting counter cleanup.
+The LWS carries the restart-count map. The retained leader carries an
+exhausted-state annotation and a cleanup finalizer. Deleting that leader is the
+explicit per-group recovery action: the finalizer clears the current revision
+and replica count before deletion completes. LWS cannot reliably distinguish a
+human-issued deletion from eviction or another external deletion, so any
+external deletion of the retained leader starts a new recovery epoch.
+
+Deleting the LWS is workload teardown, not group recovery. Once the LWS has a
+deletion timestamp, the Pod controller removes the retained leader's cleanup
+finalizer without changing restart counts or issuing another `RecreateGroup`.
 
 Readiness alone does not clear suppression or reset the budget. This prevents a
 workload that briefly becomes ready before failing again from bypassing the
@@ -240,8 +257,8 @@ obsolete revision keys. LWS clears a count when:
 - the user deletes the retained leader for recovery; or
 - scale-down removes the replica ordinal.
 
-Increasing `maxGroupRestarts` adds usable budget to the current count. Merely
-becoming Ready does not reset the counter.
+Changing `maxGroupRestarts` does not clear an exhausted marker or reset a
+counter. Merely becoming Ready does not reset the counter either.
 
 ### Test Plan
 
@@ -255,12 +272,17 @@ changes necessary to implement this enhancement.
 - Exact count behavior with no increment on a suppressed attempt.
 - Retention without leader deletion and idempotent repeated events.
 - `Degraded` and `Progressing` condition transitions.
-- Manual deletion, increased limits, new revisions, and scale-down cleanup.
+- Manual deletion, limit changes, new revisions, and scale-down cleanup.
+- LWS deletion releases retained Pod finalizers without treating teardown as
+  recovery.
 
 #### Integration tests
 
-- Webhook acceptance with `RecreateGroupOnPodRestart` and rejection with other
-  restart policies.
+- Webhook acceptance with both group-recreating restart policies and rejection
+  with other restart policies.
+- Webhook rejection of `groupIdentity: Hash` with `maxGroupRestarts`.
+- The controller behavior table above, including exhaustion, explicit recovery,
+  and LWS deletion.
 - Spec updates that change restart policy only after clearing the limit.
 
 #### e2e tests
@@ -317,6 +339,14 @@ exhausted replica should not make the whole object terminal.
 Rejected because its owner would recreate it and restart the loop. Preventing
 replacement would require a separate per-replica suspension design and would
 discard the current logs.
+
+Deleting only the other Pods is not a general solution either. The triggering
+failure can be in any worker, so retaining only the leader can discard the
+relevant logs. Ordinal leader groups are also managed by one StatefulSet, which
+cannot omit an arbitrary ordinal. Retaining an arbitrary failed worker while
+deleting its owner chain would require orphan/adopt lifecycle semantics. That
+broader group-deletion design is outside this KEP and is tracked in
+[#956](https://github.com/kubernetes-sigs/lws/issues/956).
 
 ### Use startup or readiness probes
 

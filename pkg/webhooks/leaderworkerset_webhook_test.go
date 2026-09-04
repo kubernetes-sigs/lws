@@ -218,16 +218,15 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 				MaxGroupRestarts(1).
 				Obj(),
 			wantErr:   true,
-			errSubstr: "maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+			errSubstr: "maxGroupRestarts is only supported when restartPolicy recreates the group",
 		},
 		{
-			name: "MaxGroupRestarts with RecreateGroupAfterStart is rejected",
+			name: "MaxGroupRestarts with RecreateGroupAfterStart is allowed",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(leaderworkerset.RecreateGroupAfterStart).
 				MaxGroupRestarts(0).
 				Obj(),
-			wantErr:   true,
-			errSubstr: "maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+			wantErr: false,
 		},
 	}
 

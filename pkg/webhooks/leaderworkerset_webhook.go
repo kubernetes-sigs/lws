@@ -194,15 +194,15 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
-	// maxGroupRestarts is only meaningful under RecreateGroupOnPodRestart. Reject
-	// it explicitly for any other policy so that the counter has a deterministic
-	// contract.
+	// maxGroupRestarts applies to the two policies that recreate an entire group.
+	// Reject it for policies that only rely on the kubelet to restart containers.
 	if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil &&
-		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart {
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart &&
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupAfterStart {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("leaderWorkerTemplate", "maxGroupRestarts"),
 			*lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts,
-			"maxGroupRestarts is only supported when restartPolicy is RecreateGroupOnPodRestart",
+			"maxGroupRestarts is only supported when restartPolicy recreates the group",
 		))
 	}
 
@@ -236,6 +236,9 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 	}
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
+	}
+	if spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "maxGroupRestarts is not supported with groupIdentity Hash"))
 	}
 	return allErrs
 }

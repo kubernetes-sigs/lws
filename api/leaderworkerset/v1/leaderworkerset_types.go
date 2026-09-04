@@ -104,17 +104,17 @@ const (
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
 
-	// GroupRestartCountsAnnotationKey stores a JSON map of restart budget consumed by
-	// controller-initiated group recreation. Keys use "<revision>/<groupIndex>" and
-	// values are non-negative integers.
+	// GroupRestartCountsAnnotationKey is set on a LeaderWorkerSet and stores a JSON
+	// map of restart budget consumed by controller-initiated group recreation. Keys
+	// use "<revision>/<groupIndex>" and values are non-negative integers.
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 
-	// GroupRestartBudgetExhaustedAnnotationKey marks a leader pod that the LWS controller
-	// has retained after its group exhausted maxGroupRestarts.
+	// GroupRestartBudgetExhaustedAnnotationKey is set on a retained leader Pod after
+	// its group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
 
-	// GroupRestartBudgetCleanupFinalizer ensures the restart count is reset before
-	// a retained leader pod is deleted for manual recovery.
+	// GroupRestartBudgetCleanupFinalizer is set on a retained leader Pod and ensures
+	// its restart count is reset before deletion completes for manual recovery.
 	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
 
 	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
@@ -233,13 +233,12 @@ type LeaderWorkerTemplate struct {
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// maxGroupRestarts bounds how many times the controller can recreate a group
-	// via the RecreateGroupOnPodRestart path. Once exhausted, the controller keeps
-	// the failed group for debugging and stops recreating it. Deleting the retained
-	// leader pod resets that revision/group's budget and allows recovery. It is
-	// opt-in: when unset (nil), the existing unbounded recreation behavior is
-	// preserved. This field is only valid when
-	// spec.leaderWorkerTemplate.restartPolicy is RecreateGroupOnPodRestart; the
-	// validating webhook rejects any other combination.
+	// under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
+	// the controller keeps the failed group for debugging and stops recreating it.
+	// Deleting the retained leader pod resets that revision/group's budget and
+	// allows recovery. Changing this value does not resume an already retained
+	// group. It is opt-in: when unset (nil), group recreation is unlimited. This
+	// field is not supported with groupIdentity=Hash.
 	//
 	// +optional
 	// +kubebuilder:validation:Minimum=0
