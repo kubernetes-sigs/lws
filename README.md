@@ -43,7 +43,24 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
   <img src="site/static/images/ds-concept.svg" width="700" alt="DisaggregatedSet Concept">
 </p>
 
+## Production Readiness status
+
+- ✔️ API version: v1alpha2, respecting [Kubernetes Deprecation Policy](https://kubernetes.io/docs/reference/using-api/deprecation-policy/)
+- ✔️ Maintains support for latest 3 Kubernetes minor versions.
+- ✔️ Up-to-date [documentation](https://lws.sigs.k8s.io/docs).
+- ✔️ Test Coverage:
+  - ✔️ Unit Test [testgrid](https://testgrid.k8s.io/sig-apps#pull-lws-test-unit-main)
+  - ✔️ Integration Test [testgrid](https://testgrid.k8s.io/sig-apps#pull-lws-test-integration-main)
+  - ✔️ E2E Tests for Kubernetes
+    [1.33](https://testgrid.k8s.io/sig-apps#pull-lws-test-e2e-main-1-33)
+    [1.34](https://testgrid.k8s.io/sig-apps#pull-lws-test-e2e-main-1-34)
+    [1.35](https://testgrid.k8s.io/sig-apps#pull-lws-test-e2e-main-1-35)
+    [1.36](https://testgrid.k8s.io/sig-apps#pull-lws-test-e2e-main-1-36)
+    on Kind.
+
 ## Installation
+
+**Requires a Kubernetes cluster running one of the last 3 Kubernetes minor versions (currently 1.33-1.36).**
 
 Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
 
