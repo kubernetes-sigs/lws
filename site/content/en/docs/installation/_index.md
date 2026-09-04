@@ -26,8 +26,7 @@ description: >
 
 Make sure the following conditions are met:
 
-- A Kubernetes cluster with version >= 1.26 is **Required**, or it will behave unexpected. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
-    - For any cluster with version 1.26, you need to enable the [feature gate][feature_gate] for [Start Ordinal][start_ordinal] manually. For version greater than 1.26, it's enabled by default.
+- A Kubernetes cluster with version >= 1.33 is **Required** (lws supports the latest 3 Kubernetes minor versions, currently 1.33-1.36). Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
     - Rolling update with max unavailable Pods, you must enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate, which is still in alpha since Kubernetes v1.24, see discussion [here][max_unavailable_enhancement]. Or lws will roll out the pods one by one.
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
