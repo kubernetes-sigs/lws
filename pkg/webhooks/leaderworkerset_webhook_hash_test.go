@@ -64,6 +64,12 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 		t.Error("expected non-zero partition to be rejected with groupIdentity Hash")
 	}
 
+	boundedRecovery := hashLws("bounded-recovery")
+	boundedRecovery.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](1)
+	if _, err := webhook.ValidateCreate(context.TODO(), boundedRecovery); err == nil {
+		t.Error("expected maxGroupRestarts to be rejected with groupIdentity Hash")
+	}
+
 	uniqueSubdomain := hashLws("subdomain")
 	policy := v1.SubdomainUniquePerReplica
 	uniqueSubdomain.Spec.NetworkConfig = &v1.NetworkConfig{SubdomainPolicy: &policy}

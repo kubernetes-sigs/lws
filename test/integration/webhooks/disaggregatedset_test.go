@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -193,5 +194,14 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		err := k8sClient.Create(ctx, disagg)
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("volumeClaimTemplates are not supported with groupIdentity Hash"))
+	})
+
+	ginkgo.It("rejects a Hash role with maxGroupRestarts at admission", func() {
+		disagg := buildDisaggregatedSet("gi-hash-restart-budget").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To(int32(1))
+		err := k8sClient.Create(ctx, disagg)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("maxGroupRestarts is not supported with groupIdentity Hash"))
 	})
 })

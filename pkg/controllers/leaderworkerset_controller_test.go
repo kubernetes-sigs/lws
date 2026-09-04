@@ -38,6 +38,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
@@ -1257,5 +1258,141 @@ func TestEnqueueLWSRequests(t *testing.T) {
 				t.Errorf("unexpected reconcile requests (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestMakeConditionDegraded(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	condition := makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws)
+	if condition.Type != string(leaderworkerset.LeaderWorkerSetDegraded) || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("unexpected condition: %#v", condition)
+	}
+	if condition.Reason != "ReplicaRestartBudgetExceeded" {
+		t.Fatalf("reason = %q, want ReplicaRestartBudgetExceeded", condition.Reason)
+	}
+}
+
+func TestHasDegradedGroup(t *testing.T) {
+	pods := &corev1.PodList{Items: []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{}}}}}
+	if hasDegradedGroup(pods) {
+		t.Fatal("group without exhausted marker must not be degraded")
+	}
+	pods.Items[0].Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	if !hasDegradedGroup(pods) {
+		t.Fatal("group with exhausted marker must be degraded")
+	}
+}
+
+func TestUpdateConditionsKeepsProgressingForAnotherReplica(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(1).Obj()
+	degraded := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	degraded.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	degraded.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	degraded.Status.Phase = corev1.PodPending
+	progressing := wrappers.MakePodWithLabels(lws.Name, "1", "0", lws.Namespace, 1)
+	progressing.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	progressing.Status.Phase = corev1.PodPending
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, degraded, progressing).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, _, err := r.updateConditions(context.Background(), lws, "revision-a"); err != nil {
+		t.Fatal(err)
+	}
+	var progressingCondition, degradedCondition *metav1.Condition
+	for i := range lws.Status.Conditions {
+		condition := &lws.Status.Conditions[i]
+		switch condition.Type {
+		case string(leaderworkerset.LeaderWorkerSetProgressing):
+			progressingCondition = condition
+		case string(leaderworkerset.LeaderWorkerSetDegraded):
+			degradedCondition = condition
+		}
+	}
+	if progressingCondition == nil || progressingCondition.Status != metav1.ConditionTrue {
+		t.Fatalf("Progressing condition = %#v, want True", progressingCondition)
+	}
+	if degradedCondition == nil || degradedCondition.Status != metav1.ConditionTrue {
+		t.Fatalf("Degraded condition = %#v, want True", degradedCondition)
+	}
+}
+
+func TestCleanupObsoleteGroupRestartCounts(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"old-revision/0":1,"revision-a/0":2,"revision-a/1":3}`,
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient}
+	if err := r.cleanupObsoleteGroupRestartCounts(context.Background(), lws, "revision-a"); err != nil {
+		t.Fatal(err)
+	}
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 2 || counts["revision-a/0"] != 2 || counts["revision-a/1"] != 3 {
+		t.Fatalf("unexpected counts after revision cleanup: %#v", counts)
+	}
+}
+
+func TestSetConditionsAppliesEveryCondition(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Generation(1).Obj()
+	conditions := []metav1.Condition{
+		makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery stopped"),
+		makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws),
+	}
+	if !setConditions(lws, conditions) {
+		t.Fatal("setConditions() should report an update")
+	}
+	if len(lws.Status.Conditions) != 2 {
+		t.Fatalf("condition count = %d, want 2", len(lws.Status.Conditions))
+	}
+	if lws.Status.Conditions[0].Status != metav1.ConditionFalse || lws.Status.Conditions[1].Status != metav1.ConditionTrue {
+		t.Fatalf("unexpected conditions: %#v", lws.Status.Conditions)
+	}
+}
+
+func TestPruneScaledDownGroupRestartCounts(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1,"revision-a/1":2}`,
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient}
+	if err := r.pruneScaledDownGroupRestartCounts(context.Background(), lws); err != nil {
+		t.Fatal(err)
+	}
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["revision-a/0"] != 1 {
+		t.Fatalf("unexpected counts after scale-down: %#v", counts)
+	}
+	if _, found := counts["revision-a/1"]; found {
+		t.Fatalf("scaled-down replica count was not removed: %#v", counts)
 	}
 }

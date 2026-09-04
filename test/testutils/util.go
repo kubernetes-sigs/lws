@@ -642,6 +642,35 @@ func UpdateSubdomainPolicy(ctx context.Context, k8sClient client.Client, lws *le
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+// UpdateMaxGroupRestarts sets leaderWorkerTemplate.maxGroupRestarts on the LWS spec.
+func UpdateMaxGroupRestarts(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, n int32) {
+	gomega.Eventually(func() error {
+		var newLws leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &newLws); err != nil {
+			return err
+		}
+		newLws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To(n)
+		return k8sClient.Update(ctx, &newLws)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// ExpectDegradedCondition polls until Degraded=True with the expected reason.
+func ExpectDegradedCondition(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, reason string) {
+	gomega.Eventually(func() (bool, error) {
+		var cur leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &cur); err != nil {
+			return false, err
+		}
+		for _, c := range cur.Status.Conditions {
+			if c.Type == string(leaderworkerset.LeaderWorkerSetDegraded) && c.Status == metav1.ConditionTrue && (reason == "" || c.Reason == reason) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, Timeout, Interval).Should(gomega.Equal(true),
+		"expected Degraded=%s condition on LWS %s/%s", reason, lws.Namespace, lws.Name)
+}
+
 func UpdateLeaderTemplate(ctx context.Context, k8sClient client.Client, leaderWorkerSet *leaderworkerset.LeaderWorkerSet) {
 	gomega.Eventually(func() error {
 		var lws leaderworkerset.LeaderWorkerSet

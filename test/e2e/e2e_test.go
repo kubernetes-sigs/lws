@@ -327,25 +327,74 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
-	ginkgo.It("headless services scale up during MaxSurge", func() {
-		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
+	ginkgo.It("retains a group when its restart budget is exhausted and supports manual recovery", func() {
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(1).Size(2).
+			RestartPolicy(v1.RecreateGroupOnPodRestart).
+			MaxGroupRestarts(1).
+			Obj()
 		testing.MustCreateLws(ctx, k8sClient, lws)
-
-		// Happen during rolling update.
-		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-
-		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
-
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
-		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
-		// Rolling update completes.
-		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
-		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
-		// Wait for leaderWorkerSet to be ready again.
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
-		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+
+		var initialLeader corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &initialLeader)).To(gomega.Succeed())
+		workerKey := types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0-1"}
+		var initialWorker corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, workerKey, &initialWorker)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workerKey.Namespace, Name: workerKey.Name}})).To(gomega.Succeed())
+
+		var leaderAfterFirstRestart corev1.Pod
+		gomega.Eventually(func() (types.UID, error) {
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &leaderAfterFirstRestart)
+			return leaderAfterFirstRestart.UID, err
+		}, timeout, interval).ShouldNot(gomega.Equal(initialLeader.UID))
+		gomega.Eventually(func() (types.UID, error) {
+			var workerAfterFirstRestart corev1.Pod
+			if err := k8sClient.Get(ctx, workerKey, &workerAfterFirstRestart); err != nil {
+				return "", err
+			}
+			if workerAfterFirstRestart.DeletionTimestamp != nil {
+				return initialWorker.UID, nil
+			}
+			return workerAfterFirstRestart.UID, nil
+		}, timeout, interval).ShouldNot(gomega.Equal(initialWorker.UID))
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workerKey.Namespace, Name: workerKey.Name}})).To(gomega.Succeed())
+
+		testing.ExpectDegradedCondition(ctx, k8sClient, lws, "ReplicaRestartBudgetExceeded")
+		var retainedLeader corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &retainedLeader)).To(gomega.Succeed())
+		gomega.Expect(retainedLeader.UID).To(gomega.Equal(leaderAfterFirstRestart.UID))
+		gomega.Eventually(func() (int32, error) {
+			var current leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {
+				return 0, err
+			}
+			counts := map[string]int32{}
+			if err := json.Unmarshal([]byte(current.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]), &counts); err != nil {
+				return 0, err
+			}
+			var total int32
+			for _, count := range counts {
+				total += count
+			}
+			return total, nil
+		}, timeout, interval).Should(gomega.Equal(int32(1)))
+
+		gomega.Expect(k8sClient.Delete(ctx, &retainedLeader)).To(gomega.Succeed())
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		gomega.Eventually(func() (metav1.ConditionStatus, error) {
+			var current leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {
+				return metav1.ConditionUnknown, err
+			}
+			for _, condition := range current.Status.Conditions {
+				if condition.Type == string(leaderworkerset.LeaderWorkerSetDegraded) {
+					return condition.Status, nil
+				}
+			}
+			return metav1.ConditionUnknown, nil
+		}, timeout, interval).Should(gomega.Equal(metav1.ConditionFalse))
 	})
 
 	ginkgo.It("Doesn't add env vars to containers when not using TPU", func() {

@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,12 +35,14 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -118,8 +122,27 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// get the leaderWorkerSet object
 	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderWorkerSet); err != nil {
+		if apierrors.IsNotFound(err) && controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
+		}
 		// If lws not found, it's mostly because deleted, ignore the error as Pods will be GCed finally.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	// LWS deletion is workload teardown, not manual recovery of a retained group.
+	// Do not mutate restart accounting or trigger group recreation while the owner
+	// is terminating. A retained leader's finalizer must not delay LWS deletion.
+	if leaderWorkerSet.DeletionTimestamp != nil {
+		if controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
+		}
+		return ctrl.Result{}, nil
+	}
+	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil &&
+		controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		if err := r.clearGroupRestartCount(ctx, &leaderWorkerSet, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
 	}
 	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, leaderWorkerSet)
 	if err != nil {
@@ -362,6 +385,37 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
+	// Once a group is retained, spec edits do not implicitly restart it. External
+	// deletion of the retained leader is the explicit recovery action handled by
+	// reconcilePod, which also resets this group's counter.
+	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+		return false, nil
+	}
+	// If a restart budget is configured, enforce it: any recreate-triggering
+	// failure contributes to the same counter. nil keeps the unbounded legacy
+	// behavior.
+	if leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+		groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+		count, err := r.getPersistedGroupRestartCount(&leaderWorkerSet, &leader)
+		if err != nil {
+			return false, fmt.Errorf("reading persisted group restart count for %s: %w", leader.Name, err)
+		}
+		limit := *leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+		if count >= limit {
+			marked, err := r.markGroupRestartBudgetExhausted(ctx, &leader)
+			if err != nil {
+				return false, fmt.Errorf("marking exhausted restart budget for %s: %w", leader.Name, err)
+			}
+			if marked {
+				r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded",
+					"StopRecreatingGroup", "Stopped recreating group %s after %d controller-initiated restarts", groupIndex, count)
+			}
+			return false, nil
+		}
+		if err := r.persistGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
+			return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+		}
+	}
 	deletionOpt := metav1.DeletePropagationForeground
 	if err := r.Delete(ctx, &leader, &client.DeleteOptions{
 		PropagationPolicy: &deletionOpt,
@@ -370,6 +424,121 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, nil
+}
+
+func parseGroupRestartCounts(raw string) (map[string]int32, error) {
+	if raw == "" {
+		return map[string]int32{}, nil
+	}
+	counts := map[string]int32{}
+	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
+		return nil, err
+	}
+	for groupIndex, count := range counts {
+		if count < 0 {
+			return nil, fmt.Errorf("invalid group restart count for group %q: must be non-negative", groupIndex)
+		}
+	}
+	return counts, nil
+}
+
+func groupRestartCountKey(leader *corev1.Pod) string {
+	return fmt.Sprintf("%s/%s", revisionutils.GetRevisionKey(leader), leader.Labels[leaderworkerset.GroupIndexLabelKey])
+}
+
+func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) (int32, error) {
+	if lws.Annotations == nil {
+		return 0, nil
+	}
+	counts, err := parseGroupRestartCounts(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		return 0, err
+	}
+	return counts[groupRestartCountKey(leader)], nil
+}
+
+func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
+	key := client.ObjectKeyFromObject(lws)
+	countKey := groupRestartCountKey(leader)
+	return mutateGroupRestartCounts(ctx, r.Client, key, func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		// A retry may observe a newer count written by another reconcile. Never
+		// overwrite it with a value computed from a stale LWS object.
+		if counts[countKey] >= next {
+			return false, nil
+		}
+		counts[countKey] = next
+		return true, nil
+	})
+}
+
+func (r *PodReconciler) markGroupRestartBudgetExhausted(ctx context.Context, leader *corev1.Pod) (bool, error) {
+	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+		return false, nil
+	}
+	patch := client.MergeFrom(leader.DeepCopy())
+	if leader.Annotations == nil {
+		leader.Annotations = map[string]string{}
+	}
+	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	controllerutil.AddFinalizer(leader, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+	return true, r.Patch(ctx, leader, patch)
+}
+
+func (r *PodReconciler) removeGroupRestartBudgetFinalizer(ctx context.Context, pod *corev1.Pod) error {
+	patch := client.MergeFrom(pod.DeepCopy())
+	controllerutil.RemoveFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+	return r.Patch(ctx, pod, patch)
+}
+
+func (r *PodReconciler) clearGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) error {
+	countKey := groupRestartCountKey(leader)
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		if _, found := counts[countKey]; !found {
+			return false, nil
+		}
+		delete(counts, countKey)
+		return true, nil
+	})
+}
+
+// mutateGroupRestartCounts performs a conflict-safe read-modify-write of the
+// LWS restart-count annotation. The callback must only mutate counts when it
+// returns changed=true. Fetching the LWS on every retry prevents concurrent
+// group updates from losing each other's keys.
+func mutateGroupRestartCounts(ctx context.Context, c client.Client, key client.ObjectKey, mutate func(*leaderworkerset.LeaderWorkerSet, map[string]int32) (changed bool, err error)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &leaderworkerset.LeaderWorkerSet{}
+		if err := c.Get(ctx, key, latest); err != nil {
+			return err
+		}
+
+		var raw string
+		if latest.Annotations != nil {
+			raw = latest.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]
+		}
+		counts, err := parseGroupRestartCounts(raw)
+		if err != nil {
+			return err
+		}
+		changed, err := mutate(latest, counts)
+		if err != nil || !changed {
+			return err
+		}
+
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		if len(counts) == 0 {
+			delete(latest.Annotations, leaderworkerset.GroupRestartCountsAnnotationKey)
+		} else {
+			raw, err := json.Marshal(counts)
+			if err != nil {
+				return err
+			}
+			latest.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(raw)
+		}
+		return c.Update(ctx, latest)
+	})
 }
 
 func (r *PodReconciler) workerPodBelongsToLeader(ctx context.Context, pod corev1.Pod, leader corev1.Pod) (bool, error) {

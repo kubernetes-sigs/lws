@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,8 +39,11 @@ import (
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -176,6 +180,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
+	if err := r.pruneScaledDownGroupRestartCounts(ctx, lws); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
@@ -201,7 +208,6 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
 	}
 
-	// Create headless service if it does not exist.
 	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
 		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
@@ -220,9 +226,53 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, revisionutils.GetRevisionKey(revision)); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Leader Reconcile completed.")
 	return ctrl.Result{}, nil
+}
+
+func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
+		return nil
+	}
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		changed := false
+		for key := range counts {
+			separator := strings.LastIndexByte(key, '/')
+			if separator < 0 {
+				return false, fmt.Errorf("invalid group restart count key %q", key)
+			}
+			groupIndex, err := strconv.ParseInt(key[separator+1:], 10, 32)
+			if err != nil {
+				return false, fmt.Errorf("invalid group restart count key %q: %w", key, err)
+			}
+			if groupIndex >= int64(*latest.Spec.Replicas) {
+				delete(counts, key)
+				changed = true
+			}
+		}
+		return changed, nil
+	})
+}
+
+func (r *LeaderWorkerSetReconciler) cleanupObsoleteGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		changed := false
+		for key := range counts {
+			separator := strings.LastIndexByte(key, '/')
+			if separator < 0 {
+				return false, fmt.Errorf("invalid group restart count key %q", key)
+			}
+			if key[:separator] != revisionKey {
+				delete(counts, key)
+				changed = true
+			}
+		}
+		return changed, nil
+	})
 }
 
 func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
@@ -230,7 +280,6 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, lws, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name}, lws); err != nil {
 			return err
 		}
-		return nil
 	}
 	return nil
 }
@@ -242,6 +291,34 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+				labels := a.GetLabels()
+				if labels == nil {
+					return nil
+				}
+				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
+					return nil
+				}
+				name := labels[leaderworkerset.SetNameLabelKey]
+				if name == "" {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Name:      name,
+					Namespace: a.GetNamespace(),
+				}}}
+			}),
+			// Reconcile status when a retained group appears or is removed. Ignore
+			// unrelated kubelet status updates on healthy leader pods.
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(e event.CreateEvent) bool { return true },
+				DeleteFunc: func(e event.DeleteEvent) bool { return true },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
+						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
+				},
+			})).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
 		Complete(r)
@@ -446,6 +523,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
+	readyNonDegradedCount, degradedGroupCount := 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -487,8 +565,15 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		if index < int(*lws.Spec.Replicas) {
+			degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+			if degraded {
+				degradedGroupCount++
+			}
 			if ready {
 				readyNonBurstWorkerCount++
+				if !degraded {
+					readyNonDegradedCount++
+				}
 			}
 			if index >= int(lwsPartition) && ready && updated {
 				partitionedUpdatedAndReadyCount++
@@ -507,15 +592,36 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	var conditions []metav1.Condition
-	if partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount {
+	degraded := degradedGroupCount > 0
+	rolloutInProgress := partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount
+	allReplicasReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
+	// A degraded group is terminal only when all other desired groups are ready.
+	// A missing or unready non-degraded group can still make progress, even
+	// though Degraded remains true for the retained group.
+	progressing := rolloutInProgress || readyNonDegradedCount+degradedGroupCount < int(*lws.Spec.Replicas)
+	if rolloutInProgress {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
-	} else if readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount {
+	} else if allReplicasReady {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
+	} else if degraded {
+		conditions = append(conditions,
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetAvailable, lws, "ReplicaRestartBudgetExceeded", "Not all replicas are ready"),
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery is stopped for one or more replicas"),
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws, "ReplicaRestartBudgetExceeded", "No rolling update is in progress"),
+		)
+		if progressing {
+			conditions[len(conditions)-2] = makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+	}
+	if degraded {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws))
+	} else {
+		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetDegraded, lws, "AsExpected", "No replica has exhausted its restart budget"))
 	}
 
 	// updateDone is true when all replicas are updated and ready
@@ -524,7 +630,11 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
 	if updateCondition {
-		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, conditions[0].Reason, Update, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
+		eventCondition := conditions[0]
+		if degraded {
+			eventCondition = conditions[len(conditions)-1]
+		}
+		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, eventCondition.Reason, Update, eventCondition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, updateDone, nil
 }
@@ -921,6 +1031,10 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 		condtype = string(leaderworkerset.LeaderWorkerSetUpdateInProgress)
 		reason = GroupsUpdating
 		message = "Rolling Upgrade is in progress"
+	case leaderworkerset.LeaderWorkerSetDegraded:
+		condtype = string(leaderworkerset.LeaderWorkerSetDegraded)
+		reason = "ReplicaRestartBudgetExceeded"
+		message = "Automatic recovery is stopped for one or more replicas"
 	default:
 		condtype = string(leaderworkerset.LeaderWorkerSetProgressing)
 		reason = GroupsProgressing
@@ -938,10 +1052,30 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 	return condition
 }
 
+func makeFalseCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet, reason, message string) metav1.Condition {
+	condition := makeCondition(conditionType, lws)
+	condition.Status = metav1.ConditionFalse
+	condition.Reason = reason
+	condition.Message = message
+	return condition
+}
+
+func hasDegradedGroup(leaderPodList *corev1.PodList) bool {
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		if pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+			return true
+		}
+	}
+	return false
+}
+
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
 	shouldUpdate := false
 	for _, condition := range conditions {
-		shouldUpdate = shouldUpdate || setCondition(lws, condition)
+		if setCondition(lws, condition) {
+			shouldUpdate = true
+		}
 	}
 
 	for i := range lws.Status.Conditions {
@@ -983,8 +1117,7 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 			}
 		}
 	}
-	// condition doesn't exist, update only if the status is true
-	if newCondition.Status == metav1.ConditionTrue && !found {
+	if !found {
 		lws.Status.Conditions = append(lws.Status.Conditions, newCondition)
 		shouldUpdate = true
 	}

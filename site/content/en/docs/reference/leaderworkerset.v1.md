@@ -263,6 +263,19 @@ The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
 </tr>
+<tr><td><code>maxGroupRestarts</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>maxGroupRestarts bounds how many times the controller can recreate a group
+under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
+the controller keeps the failed group for debugging and stops recreating it.
+Deleting the retained leader pod resets that revision/group's budget and
+allows recovery. Changing this value does not resume an already retained
+group. It is opt-in: when unset (nil), group recreation is unlimited. This
+field is not supported with groupIdentity=Hash.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
