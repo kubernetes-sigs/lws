@@ -179,7 +179,7 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	if p.SchedulerProvider != nil {
+	if p.SchedulerProvider != nil && shouldInjectPodGroup(pod) {
 		err = p.SchedulerProvider.InjectPodGroupMetadata(pod)
 		if err != nil {
 			return err
@@ -307,4 +307,14 @@ func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)
 	}
 	return fmt.Sprint(workerIndex / subGroupSize)
+}
+
+func shouldInjectPodGroup(pod *corev1.Pod) bool {
+	if val, ok := pod.Annotations[leaderworkerset.EnableGangSchedulingAnnotationKey]; ok {
+		enabled, err := strconv.ParseBool(val)
+		if err == nil {
+			return enabled
+		}
+	}
+	return true
 }
