@@ -21,7 +21,7 @@ LeaderWorkerSet supports two primary parameters within `.spec.rolloutStrategy.ro
 
 ## Example Configuration
 
-Here is a LeaderWorkerSet configured with a rolling update strategy (see sample [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/sample/lws-rollout-strategy.yaml)):
+Here is a LeaderWorkerSet configured with a rolling update strategy (see a full runtime example [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/leaderworkerset/basic/vllm.yaml)):
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1

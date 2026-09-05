@@ -1,0 +1,112 @@
+# DisaggregatedSet + per-role autoscaling (External scaler + HPA): SGLang.
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: sglang-disagg
+spec:
+  # External role autoscaling (below) requires a single slice.
+  slices: 1
+  roles:
+    - name: prefill
+      scaling:
+        mode: External
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: sglang
+                  image: lmsysorg/sglang:v0.5.18 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - meta-llama/Meta-Llama-3.1-8B-Instruct
+                    - --disaggregation-mode
+                    - prefill
+                    - --host
+                    - "0.0.0.0"
+                    - --port
+                    - "40000"
+                    - --trust-remote-code
+                  resources:
+                    requests:
+                      cpu: 4 # required for HPA CPU averageUtilization
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 40000
+                  readinessProbe:
+                    tcpSocket:
+                      port: 40000
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+    - name: decode
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: sglang
+                  image: lmsysorg/sglang:v0.5.18 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - meta-llama/Meta-Llama-3.1-8B-Instruct
+                    - --disaggregation-mode
+                    - decode
+                    - --host
+                    - "0.0.0.0"
+                    - --port
+                    - "40000"
+                    - --trust-remote-code
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 40000
+                  readinessProbe:
+                    tcpSocket:
+                      port: 40000
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+---
+# Autoscaling: the prefill role uses scaling.mode: External, so the controller
+# creates a DisaggregatedSetRoleScaler named <ds>-prefill with a /scale
+# subresource. HPA targets that scaler (stable across rollouts) and reads leader
+# pod metrics. Requires metrics-server.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sglang-disagg-prefill
+spec:
+  scaleTargetRef:
+    apiVersion: disaggregatedset.x-k8s.io/v1
+    kind: DisaggregatedSetRoleScaler
+    name: sglang-disagg-prefill # auto-created: <disaggregatedset-name>-<role-name>
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
