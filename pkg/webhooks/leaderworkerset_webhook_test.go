@@ -194,10 +194,11 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 	webhook := &LeaderWorkerSetWebhook{}
 	ctx := context.Background()
 
-	t.Run("nil replicas should not panic", func(t *testing.T) {
+	t.Run("nil replicas should be defaulted", func(t *testing.T) {
 		lws := &v1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-lws",
+				Name:      "test-lws",
+				Namespace: "default",
 			},
 			Spec: v1.LeaderWorkerSetSpec{
 				Replicas: nil, // nil replicas
@@ -214,7 +215,15 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				},
 			},
 		}
-		_, _ = webhook.ValidateCreate(ctx, lws)
+		if err := webhook.Default(ctx, lws); err != nil {
+			t.Fatalf("defaulting LeaderWorkerSet: %v", err)
+		}
+		if diff := cmp.Diff(ptr.To[int32](1), lws.Spec.Replicas); diff != "" {
+			t.Errorf("unexpected replicas (-want +got):\n%s", diff)
+		}
+		if _, err := webhook.ValidateCreate(ctx, lws); err != nil {
+			t.Errorf("validating defaulted LeaderWorkerSet: %v", err)
+		}
 	})
 
 	t.Run("nil rolling update configuration should not panic", func(t *testing.T) {
@@ -242,6 +251,7 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				Name: "test-lws",
 			},
 			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
 				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
 					Size:           ptr.To[int32](2),
 					SubGroupPolicy: &v1.SubGroupPolicy{},
@@ -261,6 +271,7 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				Name: "test-lws",
 			},
 			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
 				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
 					Size: ptr.To[int32](2),
 					SubGroupPolicy: &v1.SubGroupPolicy{
