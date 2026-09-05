@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -82,7 +83,7 @@ func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggrega
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 
-	return wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role), disaggregatedSet.Namespace).
+	lws := wrappers.BuildBasicLeaderWorkerSet(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role), disaggregatedSet.Namespace).
 		Labels(labels).
 		Replica(2).
 		Size(1).
@@ -97,6 +98,8 @@ func createLegacyLeaderWorkerSet(disaggregatedSet *disaggregatedsetv1.Disaggrega
 		}).
 		WorkerTemplateSpec(corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:1.0"}}}).
 		Obj()
+	lws.UID = types.UID(lws.Name + "-uid")
+	return lws
 }
 
 func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
@@ -361,13 +364,9 @@ func TestLegacyMigratesToSliceAwareOnRollout(t *testing.T) {
 	assert.NotNil(t, legacy, "legacy prefill LWS should still exist while draining")
 }
 
-// TestSlicesIncreaseBlocksUntilLegacyMigrated: increasing slices above 1 over a legacy
-// slice-0 deployment starts a same-revision migration of slice 0 and does not create the
-// sibling slice until that migration completes.
 // TestSlicesIncreaseRecreatesLegacySlice0: increasing slices above 1 over a pre-slices
-// (label-less) slice-0 deletes the legacy LWS and its slice-agnostic service, and the
-// slice loop then recreates slice 0 in slice-aware form alongside the new sibling, with no
-// blocking.
+// (label-less) slice-0 transfers its Service to the legacy LWS, deletes that LWS, and
+// waits for Kubernetes GC before creating slice-aware LWS objects.
 func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
@@ -382,21 +381,30 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 	// The legacy slice-agnostic service that would otherwise select the new sibling's pods.
 	legacyPrefillSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill) + "-prv",
+			Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
 			Namespace: disaggregatedSet.Namespace,
 			Labels: map[string]string{
 				disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
 				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
 				disaggregatedsetv1.RevisionLabelKey: revision,
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
 	}
 
+	legacyPrefillLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision)
+	legacyDecodeLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision),
-		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision),
+		legacyPrefillLWS,
+		legacyDecodeLWS,
 		legacyPrefillSvc,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
@@ -407,8 +415,9 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 		Record:         events.NewFakeRecorder(100),
 	}
 
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
+	assert.Positive(t, result.RequeueAfter, "Reconcile should wait for asynchronous Service GC")
 
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
@@ -418,15 +427,173 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 	legacyD, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRoleDecode))
 	assert.Nil(t, legacyD, "legacy slice-0 decode LWS should be deleted")
 
-	// Legacy slice-agnostic service deleted (before any sibling could be selected).
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSvc.Name, Namespace: disaggregatedSet.Namespace}, &corev1.Service{})
-	assert.Error(t, err, "legacy slice-agnostic service should be deleted")
-
-	// Slice 0 recreated slice-aware, and sibling slice 1 created in the same pass.
+	// The fake client does not run GC, so the Service remains but is now owned by
+	// the deleted legacy LWS. No slice-aware sibling may be created yet.
+	remainingService := &corev1.Service{}
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSvc.Name, Namespace: disaggregatedSet.Namespace}, remainingService))
+	assert.True(t, metav1.IsControlledBy(remainingService, legacyPrefillLWS))
 	s0, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	require.NotNil(t, s0, "slice-aware slice-0 prefill should be recreated")
+	assert.Nil(t, s0, "slice-aware slice 0 must wait for the legacy Service to disappear")
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	require.NotNil(t, s1, "sibling slice 1 prefill should be created (no blocking)")
+	assert.Nil(t, s1, "sibling slice 1 must wait for the legacy Service to disappear")
+
+	// Simulate asynchronous Kubernetes GC, then reconcile again.
+	require.NoError(t, fakeClient.Delete(ctx, remainingService))
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "Reconcile after GC should succeed")
+	assert.Zero(t, result.RequeueAfter)
+
+	s0, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NotNil(t, s0, "slice-aware slice 0 should be recreated after GC")
+	s1, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	require.NotNil(t, s1, "sibling slice 1 should be created after GC")
+}
+
+// TestSlicesIncreaseWaitsForOrphanedLegacyService: if the legacy LWS is already gone but
+// its Service is still owned by the DisaggregatedSet directly (ownership was never
+// transferred, e.g. the LWS was deleted out-of-band), deleteLegacySlice0 must wait for
+// the Service to reach NotFound before creating slice-aware siblings.
+func TestSlicesIncreaseWaitsForOrphanedLegacyService(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-orphan", "default").
+		Slices(2).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+
+	orphanService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
+			Namespace:  disaggregatedSet.Namespace,
+			Finalizers: []string{"test.lws.x-k8s.io/hold-deletion"},
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
+				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
+				disaggregatedsetv1.RevisionLabelKey: revision,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
+				Controller: ptr.To(true),
+			}},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		orphanService,
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+	assert.Positive(t, result.RequeueAfter, "Reconcile should wait while the legacy Service is terminating")
+
+	remainingService := &corev1.Service{}
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: orphanService.Name, Namespace: orphanService.Namespace}, remainingService))
+	require.NotNil(t, remainingService.DeletionTimestamp)
+
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+	s0, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	assert.Nil(t, s0, "slice-aware slice 0 must wait for the legacy Service to disappear")
+	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	assert.Nil(t, s1, "sibling slice 1 must wait for the legacy Service to disappear")
+
+	remainingService.Finalizers = nil
+	require.NoError(t, fakeClient.Update(ctx, remainingService))
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	s0, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
+	require.NotNil(t, s0, "slice-aware slice 0 should be created after the legacy Service disappears")
+	s1, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	require.NotNil(t, s1, "sibling slice 1 should be created after the legacy Service disappears")
+}
+
+func TestUpgradeDeletesOldRevisionOrphanService(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("upgrade-orphan", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:2.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:2.0").
+		Obj()
+
+	orphanService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, "old12345", testControllerRolePrefill)),
+		Namespace: disaggregatedSet.Namespace,
+		Labels: map[string]string{
+			disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
+			disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
+			disaggregatedsetv1.RevisionLabelKey: "old12345",
+		},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: disaggregatedsetv1.GroupVersion.String(),
+			Kind:       "DisaggregatedSet",
+			Name:       disaggregatedSet.Name,
+			UID:        disaggregatedSet.UID,
+			Controller: ptr.To(true),
+		}},
+	}}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, orphanService).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+	getErr := fakeClient.Get(ctx, types.NamespacedName{Name: orphanService.Name, Namespace: orphanService.Namespace}, &corev1.Service{})
+	require.True(t, apierrors.IsNotFound(getErr), "old-revision orphan Service should be deleted during upgrade migration")
+}
+
+func TestSlicesIncreaseRejectsUncontrolledLegacyService(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-collision", "default").
+		Slices(2).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
+		Namespace: disaggregatedSet.Namespace,
+	}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, service).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := &controller.DisaggregatedSetReconciler{
+		Client:         fakeClient,
+		Scheme:         scheme,
+		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+		Record:         events.NewFakeRecorder(100),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.ErrorContains(t, err, "not controlled by the expected LeaderWorkerSet")
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, &corev1.Service{}))
+
+	lws, _ := controller.NewLeaderWorkerSetManager(fakeClient).Get(ctx, disaggregatedSet,
+		disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
+	assert.Nil(t, lws, "a sibling slice must not be created while the legacy Service name is occupied")
 }
 
 // TestSlicesIncreaseWithRolloutNotBlocked: when slices increases at the same time as a
@@ -851,7 +1018,7 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 }
 
 // TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0 is a regression test for
-// #981: recreateLegacySlice0 must not delete/migrate a legacy-named LWS that
+// #981: deleteLegacySlice0 must not delete/migrate a legacy-named LWS that
 // exists but is owned by a different DisaggregatedSet (e.g. left over from a
 // same-named DisaggregatedSet that was deleted and recreated before GC ran).
 // The foreign object is left untouched, and the normal create path still
@@ -922,4 +1089,65 @@ func TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0(t *testing.T) {
 	assert.NotNil(t, s0, "slice-aware slice-0 prefill should still be created")
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
 	assert.NotNil(t, s1, "sibling slice 1 prefill should still be created")
+}
+
+func TestSlicesIncreaseRejectsForeignLegacyService(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		foreignLWS    bool
+		expectedError string
+	}{
+		{name: "foreign LWS owns the service", foreignLWS: true, expectedError: "controlled by foreign LeaderWorkerSet"},
+		{name: "owned LWS collides with a foreign service", expectedError: "is not controlled by DisaggregatedSet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := wrappers.DisaggregatedSetTestScheme()
+			disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-foreign-service", "default").
+				Slices(2).
+				WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+				WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+				Obj()
+			revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+			legacyName := disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)
+			legacyLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision)
+
+			serviceOwnerName := "foreign-lws"
+			serviceOwnerUID := types.UID("foreign-lws-uid")
+			if tc.foreignLWS {
+				legacyLWS.OwnerReferences[0].Name = "foreign-ds"
+				legacyLWS.OwnerReferences[0].UID = "foreign-ds-uid"
+				legacyLWS.UID = "foreign-lws-uid"
+				serviceOwnerName = legacyLWS.Name
+				serviceOwnerUID = legacyLWS.UID
+			}
+
+			service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+				Name:      disaggregatedsetutils.PrivateServiceName(legacyName),
+				Namespace: disaggregatedSet.Namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: leaderworkersetv1.GroupVersion.String(),
+					Kind:       "LeaderWorkerSet",
+					Name:       serviceOwnerName,
+					UID:        serviceOwnerUID,
+					Controller: ptr.To(true),
+				}},
+			}}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, legacyLWS, service).
+				WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+			reconciler := &controller.DisaggregatedSetReconciler{
+				Client:         fakeClient,
+				Scheme:         scheme,
+				LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
+				ServiceManager: controller.NewServiceManager(fakeClient, scheme),
+				Record:         events.NewFakeRecorder(100),
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+			require.ErrorContains(t, err, tc.expectedError)
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: legacyLWS.Name, Namespace: legacyLWS.Namespace}, &leaderworkersetv1.LeaderWorkerSet{}))
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, &corev1.Service{}))
+		})
+	}
 }

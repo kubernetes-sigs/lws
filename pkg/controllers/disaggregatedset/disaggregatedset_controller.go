@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +48,11 @@ type DisaggregatedSetReconciler struct {
 	ScalerManager  *ScalerManager
 }
 
+// legacyServiceGCRequeue paces the retries while a legacy Service is being garbage
+// collected. A finalizer on that Service blocks slice creation for as long as it is
+// held, so this must not turn into a per-second busy loop.
+const legacyServiceGCRequeue = 5 * time.Second
+
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets/finalizers,verbs=update
@@ -54,6 +60,8 @@ type DisaggregatedSetReconciler struct {
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsetrolescalers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get
+// Needed to set blockOwnerDeletion on the Services this controller hands to a LeaderWorkerSet.
+// +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -81,9 +89,23 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
 
-	// Step 2: Delete LWS/services for slices beyond the desired count (slice
-	// scale-down). Per-revision drained cleanup runs per slice in reconcileSlice.
-	if err := r.cleanupRemovedSlices(ctx, disaggregatedSet, sliceCount); err != nil {
+	// One listing feeds both steps below; the migration only patches Services, so
+	// the slice scale-down still sees an accurate view of the LWS objects.
+	allLWS, err := r.LWSManager.List(ctx, disaggregatedSet, -1, "")
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Migrate Services created by older controllers before any LWS deletion, so
+	// foreground deletion garbage-collects them instead of leaving DS-owned orphans.
+	if err := r.ServiceManager.migrateLegacyServices(ctx, disaggregatedSet, allLWS); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 2: Delete LWS for slices beyond the desired count (slice scale-down).
+	// Their Services are garbage-collected through the LWS owner reference.
+	// Per-revision drained cleanup runs per slice in reconcileSlice.
+	if err := r.cleanupRemovedSlices(ctx, disaggregatedSet, allLWS, sliceCount); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -114,13 +136,21 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// and recreate an existing deployment. When slices > 1, the pre-slices (label-less)
 	// slice-0 still at the target revision must become slice-aware before any sibling
 	// slice is created, otherwise its slice-agnostic service would also select the
-	// siblings' same-revision pods. Delete the legacy slice-0 objects here (service
-	// first); the slice loop below then recreates slice 0 in slice-aware form. Running
-	// before the loop, and returning on error, keeps the legacy service from ever
-	// coexisting with sibling slices.
+	// siblings' same-revision pods. Delete the legacy slice-0 LWS objects here and
+	// wait for their Services to be garbage-collected before the slice loop recreates
+	// slice 0 and adds siblings.
 	if sliceCount > 1 {
-		if err := r.recreateLegacySlice0(ctx, disaggregatedSet, revision, roleNames); err != nil {
+		pendingServices, err := r.deleteLegacySlice0(ctx, disaggregatedSet, revision, roleNames)
+		if err != nil {
 			return ctrl.Result{}, err
+		}
+		if len(pendingServices) > 0 {
+			// A finalizer on one of these Services stalls slice creation indefinitely,
+			// so name them instead of only reporting that we are waiting.
+			log.Info("Waiting for legacy Service garbage collection before recreating slice 0", "services", pendingServices)
+			r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonWaitingForServiceGC,
+				"Migrate", "Waiting for legacy Services %v to be garbage-collected before creating slice-aware LeaderWorkerSets", pendingServices)
+			return ctrl.Result{RequeueAfter: legacyServiceGCRequeue}, nil
 		}
 	}
 
@@ -422,7 +452,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	}
 	revisionRoles := disaggregatedsetutils.GroupByRevision(allLWS)
 
-	if err := r.ServiceManager.ReconcileServices(ctx, disaggregatedSet, slice, revisionRoles, revision); err != nil {
+	if err := r.ServiceManager.ReconcileServices(ctx, disaggregatedSet, revisionRoles, revision); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile services: %w", err)
 	}
 
@@ -437,30 +467,37 @@ func earliestRequeue(a, b ctrl.Result) ctrl.Result {
 	return a
 }
 
-// cleanupRemovedSlices deletes LWS and services for slice indices at or above the
-// desired slice count. Removal is a direct delete; pods terminate via the normal
-// pod grace period.
-func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, desiredSlices int) error {
+// deleteLWS validates or transfers the private Service owner before deleting its LWS.
+func (r *DisaggregatedSetReconciler) deleteLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, lws *leaderworkersetv1.LeaderWorkerSet) (bool, error) {
+	serviceExists, controlled, err := r.ServiceManager.transferServiceOwnership(ctx, disaggregatedSet, lws)
+	if err != nil {
+		return false, fmt.Errorf("failed to transfer Service ownership for LWS %s: %w", lws.Name, err)
+	}
+	if serviceExists && !controlled {
+		return false, fmt.Errorf("service %s is not controlled by DisaggregatedSet %s or LeaderWorkerSet %s", disaggregatedsetutils.PrivateServiceName(lws.Name), disaggregatedSet.Name, lws.Name)
+	}
+	return serviceExists, r.LWSManager.deleteInForeground(ctx, lws)
+}
+
+// cleanupRemovedSlices deletes LWS for slice indices at or above the desired
+// slice count. Their Services are garbage-collected with them.
+func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, lwsList []*leaderworkersetv1.LeaderWorkerSet, desiredSlices int) error {
 	log := logf.FromContext(ctx)
 
-	lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, "")
-	if err != nil {
-		return fmt.Errorf("failed to list LWS for slice cleanup: %w", err)
-	}
 	for _, lws := range lwsList {
 		sliceIdx, parseErr := strconv.Atoi(lws.Labels[disaggregatedsetv1.SliceLabelKey])
 		if parseErr != nil || sliceIdx < desiredSlices {
 			continue
 		}
 		log.Info("Deleting LWS for removed slice", "name", lws.Name, "slice", sliceIdx)
-		if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
+		if _, err := r.deleteLWS(ctx, disaggregatedSet, lws); err != nil {
 			return fmt.Errorf("failed to delete LWS %s: %w", lws.Name, err)
 		}
 		r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonLWSDeleted,
 			"Delete", "Deleted LWS %s for removed slice %d", lws.Name, sliceIdx)
 	}
 
-	return r.ServiceManager.CleanupRemovedSlices(ctx, disaggregatedSet, desiredSlices)
+	return nil
 }
 
 func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
@@ -577,7 +614,7 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 
 		for _, lws := range roles {
 			log.Info("Deleting drained LWS", "name", lws.Name)
-			if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
+			if _, err := r.deleteLWS(ctx, disaggregatedSet, lws); err != nil {
 				return fmt.Errorf("failed to delete LWS %s: %w", lws.Name, err)
 			}
 			r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonLWSDeleted,
@@ -589,50 +626,84 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 }
 
 // TODO(0.11.0): remove legacy slice-0 handling once pre-slices DisaggregatedSets are no
-// longer supported. The related legacy-compat code to remove with it: GenerateLegacyName,
-// GetForRole's legacy-name fallback, DeleteLegacyService, and the label-less branch in
-// SliceLabelMatches.
+// longer supported: GenerateLegacyName, GetForRole's legacy-name fallback, the label-less
+// branch in SliceLabelMatches, transferServiceOwnership and migrateLegacyServices (both
+// only needed for legacy DS-owned Services).
 //
-// recreateLegacySlice0 converts a pre-slices (label-less) slice-0 deployment to the
+// deleteLegacySlice0 removes a pre-slices (label-less) slice-0 deployment before the
 // slice-aware form when slices is increased above 1. The legacy slice-0 uses legacy names
 // and a slice-agnostic service (selector {name, role, revision}) that would also select
-// the new siblings' same-revision pods. For each role it deletes the legacy service first
-// (so a partial failure leaves the LWS present and this retries, and the service never
-// lingers alongside siblings), then the legacy LWS. The caller runs this before the slice
-// loop, which then recreates slice 0 in slice-aware form. This restarts slice 0 once,
-// which we accept in place of an in-place migration. A legacy slice-0 at an older revision
-// is left alone: the normal rolling update migrates it without a restart.
-func (r *DisaggregatedSetReconciler) recreateLegacySlice0(
+// the new siblings' same-revision pods. For each role it deletes the legacy LWS and waits
+// for its Service to be garbage-collected before the caller enters the slice loop. This
+// restarts slice 0 once, which we accept in place of an in-place migration. A legacy
+// slice-0 at an older revision is left alone: the normal rolling update migrates it
+// without a restart. The returned names are the legacy Services that must disappear
+// before the caller may create any slice-aware LWS.
+func (r *DisaggregatedSetReconciler) deleteLegacySlice0(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	revision string,
 	roleNames []string,
-) error {
+) ([]string, error) {
 	log := logf.FromContext(ctx)
+	var pendingServices []string
 
 	for _, role := range roleNames {
-		// Get is ownership-filtered: a foreign object occupying the legacy
-		// name must not be adopted/deleted here.
-		lws, err := r.LWSManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
-		if err != nil {
-			return err
+		legacyName := disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role)
+		legacyServiceName := disaggregatedsetutils.PrivateServiceName(legacyName)
+
+		// Read directly rather than through LWSManager.Get, which folds a foreign
+		// object occupying the legacy name into nil: below we need to tell a live
+		// foreign owner apart from a deleted one whose Service is still being collected.
+		lws := &leaderworkersetv1.LeaderWorkerSet{}
+		lwsFound := true
+		if err := r.Get(ctx, client.ObjectKey{Name: legacyName, Namespace: disaggregatedSet.Namespace}, lws); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("failed to get legacy LWS %s: %w", legacyName, err)
+			}
+			lwsFound = false
 		}
-		if lws == nil || disaggregatedsetutils.HasSliceLabel(lws.Labels) {
+
+		if !lwsFound || !metav1.IsControlledBy(lws, disaggregatedSet) {
+			service := &corev1.Service{}
+			if err := r.Get(ctx, client.ObjectKey{Name: legacyServiceName, Namespace: disaggregatedSet.Namespace}, service); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return nil, fmt.Errorf("failed to get legacy service %s: %w", legacyServiceName, err)
+			}
+			owner := metav1.GetControllerOf(service)
+			// Still ours means migrateLegacyServices already deleted it and we are
+			// only waiting for GC; otherwise the legacy LWS must be the owner.
+			if !metav1.IsControlledBy(service, disaggregatedSet) {
+				if owner == nil || owner.APIVersion != leaderworkersetv1.GroupVersion.String() || owner.Kind != "LeaderWorkerSet" || owner.Name != legacyName {
+					return nil, fmt.Errorf("legacy service %s is not controlled by the expected LeaderWorkerSet %s", service.Name, legacyName)
+				}
+				if lwsFound && lws.UID == owner.UID {
+					// The owner is alive and not ours, so this Service will never be collected.
+					return nil, fmt.Errorf("legacy service %s is controlled by foreign LeaderWorkerSet %s", service.Name, legacyName)
+				}
+			}
+			pendingServices = append(pendingServices, legacyServiceName)
+			continue
+		}
+		if disaggregatedsetutils.HasSliceLabel(lws.Labels) {
 			continue
 		}
 
 		log.Info("Recreating legacy slice-0 in slice-aware form", "role", role, "name", lws.Name)
-		if err := r.ServiceManager.DeleteLegacyService(ctx, disaggregatedSet, revision, role); err != nil {
-			return err
+		serviceExists, err := r.deleteLWS(ctx, disaggregatedSet, lws)
+		if err != nil {
+			return nil, fmt.Errorf("failed to delete legacy LWS %s: %w", lws.Name, err)
 		}
-		if err := r.LWSManager.Delete(ctx, disaggregatedSet.Namespace, lws.Name); err != nil {
-			return fmt.Errorf("failed to delete legacy LWS %s: %w", lws.Name, err)
+		if serviceExists {
+			pendingServices = append(pendingServices, legacyServiceName)
 		}
 		r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonLWSDeleted,
 			"Migrate", "Deleted legacy slice-0 LWS %s to recreate it in slice-aware form", lws.Name)
 	}
 
-	return nil
+	return pendingServices, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

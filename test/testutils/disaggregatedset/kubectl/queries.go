@@ -205,4 +205,5 @@ func CleanupDeployment(deploymentName string) {
 	_, _ = Delete("lws").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
 	_, _ = Delete("pods").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().GracePeriod(0).Force().RunQuiet()
 	_, _ = Delete("svc").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
+	_, _ = Delete("dsrs").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
 }

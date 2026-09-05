@@ -159,7 +159,7 @@ Services remain per `(slice, revision, role)`, named `<ds>-<slice>-<revision>-<r
 
 ### Scale-Down
 
-Decreasing `slices` from M to N directly deletes the LWS and Services whose slice index is `>= N`. Their pods terminate via the normal pod grace period; no controller-orchestrated drain is performed.
+Decreasing `slices` from M to N directly deletes the LWS whose slice index is `>= N`. Their Services are owned by those LWS objects and are garbage collected with them. Their pods terminate via the normal pod grace period; no controller-orchestrated drain is performed.
 
 This is intentional and differs from revision teardown. The existing multi-phase drain exists to preserve the cross-role, same-version invariant *within* a slice during a rollout. Slice removal has no cross-slice invariant to protect (slices are independent), so it is a plain scale operation, mirroring how reducing a role's `replicas` removes the highest-ordinal groups directly.
 
@@ -169,9 +169,9 @@ DisaggregatedSet shipped before this feature, so clusters already run Disaggrega
 
 **Adoption.** Per-slice listing buckets any LWS with no slice label into slice 0, so a legacy LWS is reconciled as slice 0 under its existing name and its existing Service keeps serving it. Every LWS created from now on uses the slice-aware name, including the `-0-` segment for slice 0. A plain upgrade with no spec change recreates nothing.
 
-**Migration on the next rollout.** A template change creates the new revision's slice-0 LWS in slice-aware form while the legacy LWS drains through the normal rolling update. The two are at different revisions and Services are revision-scoped, so they never select each other's pods, and the legacy Service is deleted when the old revision drains.
+**Migration on the next rollout.** A template change creates the new revision's slice-0 LWS in slice-aware form while the legacy LWS drains through the normal rolling update. The two are at different revisions and Services are revision-scoped, so they never select each other's pods, and the legacy Service is garbage collected when the old LWS is deleted after draining.
 
-**Migration when `slices` increases above 1.** Here no new revision is created, and the legacy slice-0 Service is revision-scoped but slice-agnostic, so it would also select the new sibling slices' pods. For example, with legacy slice 0 at revision `r`, a `slice 1` created at the same `r` is matched by the legacy `{set, role, revision: r}` selector because the new `{set, slice: 1, role, revision: r}` pod is a superset of it. To prevent this, before creating any sibling the controller deletes the legacy slice-0 objects (its slice-agnostic Service first, then its LWS), and the normal reconcile recreates slice 0 in slice-aware form alongside the siblings. This restarts slice 0 once, which is accepted in place of an in-place migration. Because the Service is deleted before the LWS and before any sibling exists, the slice-agnostic Service never coexists with sibling pods, so no blocking is needed.
+**Migration when `slices` increases above 1.** Here no new revision is created, and the legacy slice-0 Service is revision-scoped but slice-agnostic, so it would also select the new sibling slices' pods. For example, with legacy slice 0 at revision `r`, a `slice 1` created at the same `r` is matched by the legacy `{set, role, revision: r}` selector because the new `{set, slice: 1, role, revision: r}` pod is a superset of it. To prevent this, before creating any sibling the controller transfers the legacy Service ownership to its LWS, deletes that LWS, and waits for Kubernetes GC to remove the Service. The normal reconcile then recreates slice 0 in slice-aware form alongside the siblings. This restarts slice 0 once, which is accepted in place of an in-place migration. The wait ensures that the slice-agnostic Service never coexists with sibling pods.
 
 ### Object Cardinality
 
@@ -190,8 +190,8 @@ During a rollout, a slice that is mid-transition holds two revisions at once (ol
 #### Unit tests
 
 - Name/label helpers: slice segment in names, slice label emitted.
-- Controller: fan-out creates `slices x roles` LWS with correct slice labels; slice scale-down deletes only the removed slices' LWS and Services and leaves lower slices intact.
-- Service manager: per-slice Service naming, labels, and selector; per-slice drained cleanup.
+- Controller: fan-out creates `slices x roles` LWS with correct slice labels; slice scale-down deletes only the removed slices' LWS and leaves lower slices intact; legacy slice-0 migration waits for Service GC before creating siblings.
+- Service manager: per-slice Service naming, labels, selector, and LeaderWorkerSet ownership.
 - Executor: slice is threaded through rolling-update calls; the planner is exercised per slice (existing planner tests are unchanged).
 
 #### Integration tests

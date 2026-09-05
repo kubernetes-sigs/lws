@@ -303,7 +303,7 @@ Headless Services are automatically created for each role per revision. This all
 
 - **Naming**: `{disaggregatedset-name}-{revision}-{role}-prv` (e.g., `my-llm-abc12345-prefill-prv`)
 - **Selector**: Selects pods from the specific revision's LeaderWorkerSet for that role
-- **Cleanup**: Managed via owner references and garbage collected with the DisaggregatedSet
+- **Cleanup**: Owned by the corresponding LeaderWorkerSet and garbage collected with it
 
 ### Controller Architecture
 
