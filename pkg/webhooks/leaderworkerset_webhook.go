@@ -196,6 +196,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
 
+	// exclusive-topology and share-topology cannot be set at the same time
+	if lws.Annotations[v1.ExclusiveKeyAnnotationKey] != "" && lws.Annotations[v1.ShareTopologyAnnotationKey] != "" {
+		allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.ShareTopologyAnnotationKey), lws.Annotations[v1.ShareTopologyAnnotationKey], fmt.Sprintf("cannot be set together with the %q annotation", v1.ExclusiveKeyAnnotationKey)))
+	}
+
 	return allErrs
 }
 

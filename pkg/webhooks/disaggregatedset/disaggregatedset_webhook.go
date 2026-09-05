@@ -206,11 +206,13 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj *disaggv1.DisaggregatedS
 }
 
 // exclusiveTopologyAnnotationKeys are the LWS annotations that make the LWS pod
-// webhook inject its own exclusive-placement affinity, at the group and subgroup
-// level respectively. Either one conflicts with a DisaggregatedSet placement policy.
+// webhook inject its own placement affinity: exclusive at the group and subgroup
+// level, and share at the group level. Any one conflicts with a DisaggregatedSet
+// placement policy.
 var exclusiveTopologyAnnotationKeys = []string{
 	leaderworkerset.ExclusiveKeyAnnotationKey,
 	leaderworkerset.SubGroupExclusiveKeyAnnotationKey,
+	leaderworkerset.ShareTopologyAnnotationKey,
 }
 
 // roleExclusiveTopologyAnnotation returns the first LWS exclusive-topology annotation
