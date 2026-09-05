@@ -50,6 +50,10 @@ var _ admission.Defaulter[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 
 // Default implements admission.Defaulter[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWorkerSet) error {
+	if lws.Spec.Replicas == nil {
+		lws.Spec.Replicas = ptr.To[int32](1)
+	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == "" {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.RecreateGroupOnPodRestart
 	}
@@ -128,15 +132,12 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
-	replicas := int32(1)
-	if lws.Spec.Replicas != nil {
-		replicas = *lws.Spec.Replicas
-		if replicas < 0 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
-		}
-		if replicas > 1000000 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
-		}
+	replicas := *lws.Spec.Replicas
+	if replicas < 0 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+	}
+	if replicas > 1000000 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
 	}
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
