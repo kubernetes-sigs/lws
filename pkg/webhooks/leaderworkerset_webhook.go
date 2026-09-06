@@ -142,18 +142,30 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	// Since the lws name is used as the name for headless service, it must be DNS-1035 compliant
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
-	// Ensure replicas and groups number are valid
-	replicas := *lws.Spec.Replicas
-	if replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+	// Ensure replicas and groups number are valid.
+	// replicas and size are backfilled to 1 by the CRD's OpenAPI schema default
+	// and by Default(), but this function can also run against an object that
+	// never picked either up (a CRD installed from an older revision, or a
+	// caller invoking the webhook logic directly), so neither is dereferenced
+	// unconditionally.
+	replicas := int32(1)
+	if lws.Spec.Replicas != nil {
+		replicas = *lws.Spec.Replicas
+		if replicas < 0 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
+		}
+		if replicas > 1000000 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
+		}
 	}
-	if replicas > 1000000 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
+	size := int32(1)
+	if lws.Spec.LeaderWorkerTemplate.Size != nil {
+		size = *lws.Spec.LeaderWorkerTemplate.Size
 	}
-	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
+	if size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
 	}
-	if int64(replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
+	if int64(replicas)*int64(size) > math.MaxInt32 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
 
@@ -284,13 +296,16 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 
 func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	allErrs := field.ErrorList{}
-	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize == nil {
 		return append(allErrs, field.Required(subGroupSizePath, "subGroupSize is required"))
 	}
 
 	subGroupSize := *lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize
+	size := int32(1)
+	if lws.Spec.LeaderWorkerTemplate.Size != nil {
+		size = *lws.Spec.LeaderWorkerTemplate.Size
+	}
 	if subGroupSize < 1 {
 		return append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "subGroupSize must be equal or greater than 1"))
 	}
