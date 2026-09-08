@@ -52,7 +52,7 @@ Users author two objects: the `DisaggregatedSet` and their HPA/KEDA target. The 
 
 `DisaggregatedSet` orchestrates multiple LeaderWorkerSets (LWS) for disaggregated inference workloads. Under a rolling update, the controller creates a new LWS per role with a revision-hashed name (e.g., `myds-0-6ad7c921-prefill` — `<ds>-<slice>-<revision>-<role>` per [KEP-846](/keps/846-disaggregatedset-slices)) and progressively drains the old-revision LWS.
 
-Autoscaling a role today is only possible by pointing an HPA at the underlying LWS (see the [LWS HPA example](https://lws.sigs.k8s.io/docs/examples/hpa/)). This breaks for `DisaggregatedSet` because:
+Autoscaling a role today is only possible by pointing an HPA at the underlying LWS (see the [LWS autoscaling example](https://lws.sigs.k8s.io/docs/examples/leaderworkerset/autoscaling/)). This breaks for `DisaggregatedSet` because:
 
 1. **LWS names change on every rollout.** The revision hash is part of the name, so an HPA created for `myds-0-6ad7c921-prefill` becomes an orphan the moment a rolling update produces `myds-0-7bf3d1a2-prefill`. Users would have to recreate the HPA on every deploy.
 2. **DisaggregatedSet has no stable per-role scale target.** The parent CR aggregates multiple roles, so a single `/scale` subresource on `DisaggregatedSet` cannot express "scale prefill from 5 to 8 without touching decode".
