@@ -1,0 +1,123 @@
+# LeaderWorkerSet + topology-aware placement (exclusive-topology): vLLM.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+  annotations:
+    # Topology-aware placement: keep each replica group within one topology
+    # domain and exclude other groups from it. Set to your cluster's topology key.
+    leaderworkerset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-nodepool
+spec:
+  replicas: 2
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 1
+      maxSurge: 1
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        containers:
+          - name: vllm-leader
+            image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+            env:
+              - name: HF_TOKEN
+                value: $HF_TOKEN
+            command:
+              - vllm
+              - serve
+              - meta-llama/Llama-3.1-405B-Instruct
+              - --port
+              - "8080"
+              - --tensor-parallel-size
+              - "8"
+              - --pipeline-parallel-size
+              - "2"
+              - --nnodes
+              - $(LWS_GROUP_SIZE)
+              - --node-rank
+              - $(LWS_WORKER_INDEX)
+              - --master-addr
+              - $(LWS_LEADER_ADDRESS)
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 800Gi
+              requests:
+                ephemeral-storage: 800Gi
+                cpu: 125
+            ports:
+              - containerPort: 8080
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 15Gi
+    workerTemplate:
+      spec:
+        containers:
+          - name: vllm-worker
+            image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+            command:
+              - vllm
+              - serve
+              - meta-llama/Llama-3.1-405B-Instruct
+              - --tensor-parallel-size
+              - "8"
+              - --pipeline-parallel-size
+              - "2"
+              - --nnodes
+              - $(LWS_GROUP_SIZE)
+              - --node-rank
+              - $(LWS_WORKER_INDEX)
+              - --master-addr
+              - $(LWS_LEADER_ADDRESS)
+              - --headless
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+                memory: 1124Gi
+                ephemeral-storage: 800Gi
+              requests:
+                ephemeral-storage: 800Gi
+                cpu: 125
+            env:
+              - name: HF_TOKEN
+                value: $HF_TOKEN
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 15Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-leader
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    leaderworkerset.sigs.k8s.io/name: vllm
+    role: leader
+  type: ClusterIP

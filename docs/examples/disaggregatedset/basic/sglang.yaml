@@ -1,0 +1,86 @@
+# DisaggregatedSet basic prefill/decode inference with SGLang.
+# SGLang runs PD disaggregation via --disaggregation-mode. A router/load
+# balancer (sglang-router in mini-lb mode) wires prefill and decode; that
+# wiring is deployment-specific and omitted here for brevity.
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: sglang-disagg
+spec:
+  roles:
+    - name: prefill
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: sglang
+                  image: lmsysorg/sglang:v0.5.18 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - meta-llama/Meta-Llama-3.1-8B-Instruct
+                    - --disaggregation-mode
+                    - prefill
+                    - --host
+                    - "0.0.0.0"
+                    - --port
+                    - "40000"
+                    - --trust-remote-code
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 40000
+                  readinessProbe:
+                    tcpSocket:
+                      port: 40000
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+    - name: decode
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: sglang
+                  image: lmsysorg/sglang:v0.5.18 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - meta-llama/Meta-Llama-3.1-8B-Instruct
+                    - --disaggregation-mode
+                    - decode
+                    - --host
+                    - "0.0.0.0"
+                    - --port
+                    - "40000"
+                    - --trust-remote-code
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 40000
+                  readinessProbe:
+                    tcpSocket:
+                      port: 40000
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
