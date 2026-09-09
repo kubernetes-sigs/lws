@@ -83,8 +83,6 @@ topology by adding parent roles.
 6. Preserve coordinated rollout safety while tracking sub-role availability.
 7. Make the label usable by Kubernetes-aware routers such as llm-d.
 8. Permit one parent role and one sub-role so the topology can be extended incrementally.
-9. Always expose parent-role and sub-role revision (`-prv`) Services during their
-   deprecation period.
 
 ### Non-Goals
 
