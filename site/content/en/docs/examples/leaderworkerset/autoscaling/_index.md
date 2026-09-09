@@ -10,8 +10,8 @@ aliases:
 
 This guide is the [basic](../basic/) deployment plus a HorizontalPodAutoscaler.
 The HPA scales the *number of replica groups* through the LWS `scale`
-subresource (it monitors leader pods only), between `minReplicas: 2` and
-`maxReplicas: 5` at 50% CPU utilization. It needs
+subresource (it monitors leader pods only), targeting 50% CPU utilization
+between the `minReplicas` and `maxReplicas` each manifest sets. It needs
 [metrics-server](https://github.com/kubernetes-sigs/metrics-server).
 
 ## Deploy
@@ -52,8 +52,9 @@ See [basic](../basic/) for how to reach the service once pods are running.
 
 The HPA computes utilization as a percentage of a pod's resource *requests*.
 If a container has no request for the metric being targeted, the HPA reports
-`<unknown>` for it and will not scale. Every container in these examples sets
-both requests and limits for that reason.
+`<unknown>` for it and will not scale. That is why every container in the
+manifests above requests the metric its HPA targets: CPU in all three, plus
+memory in the nginx one, which is the deployment the variants below use.
 
 ## Scaling on other metrics
 
@@ -122,7 +123,9 @@ before it starts.
 
 ## Cleanup
 
+Delete whichever HPA you ended up with, then the LeaderWorkerSet:
+
 ```shell
-kubectl delete hpa lws-hpa
+kubectl delete hpa lws-hpa lws-memory-hpa lws-multi-metric-hpa --ignore-not-found
 kubectl delete leaderworkerset leaderworkerset-sample
 ```
