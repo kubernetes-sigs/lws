@@ -45,7 +45,26 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
 
 ## Installation
 
+**Requires a Kubernetes cluster running version 1.33 through 1.36.** These are the versions
+exercised by the required end-to-end presubmit jobs; see the [support policy](#kubernetes-version-support-policy).
+
 Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
+
+### Kubernetes version support policy
+
+LWS is tested against the following Kubernetes versions on every pull request, via the
+required `pull-lws-test-e2e-main-1-<minor>` presubmit jobs:
+
+| Kubernetes | Kind node image used in CI |
+| --- | --- |
+| 1.33 | `kindest/node:v1.33.12` |
+| 1.34 | `kindest/node:v1.34.8` |
+| 1.35 | `kindest/node:v1.35.5` |
+| 1.36 | `kindest/node:v1.36.1` |
+
+Results for these jobs are published on
+[TestGrid](https://testgrid.k8s.io/sig-apps#Summary&include-filter-by-regex=lws).
+Versions outside this range are not covered by CI and are used at your own risk.
 
 ## Examples
 
