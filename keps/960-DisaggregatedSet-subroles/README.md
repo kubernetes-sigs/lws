@@ -20,7 +20,7 @@ groups into independently scalable, dynamically labelled sub-roles.
   - [Controller and Assignment](#controller-and-assignment)
   - [Rolling Updates](#rolling-updates)
   - [Scaler Semantics](#scaler-semantics)
-  - [Routing and Deprecated PRV Services](#routing-and-deprecated-prv-services)
+  - [Routing and Service Compatibility](#routing-and-service-compatibility)
   - [Status, Slices, and Compatibility](#status-slices-and-compatibility)
   - [Test Plan](#test-plan)
     - [Unit tests](#unit-tests)
@@ -97,6 +97,9 @@ topology by adding parent roles.
    whenever `subRoles` is present.
 5. **Multi-slice External scaling.** This follows the initial KEP-849 restriction until
    aggregate versus per-slice scaler semantics are defined.
+6. **Hash group identity.** The initial implementation supports only ordinal group
+   identity because scale-down assignment relies on knowing which StatefulSet ordinals
+   will be removed. A role cannot combine `subRoles` with `groupIdentity: Hash`.
 
 ## Proposal
 
@@ -161,6 +164,10 @@ routing.
 scaling down, the allocator swaps labels between interchangeable groups so the groups
 that will be removed represent the planned sub-role drain.
 
+**Hash identity has no predictable scale-down ordinal.** Admission rejects a role that
+combines `subRoles` with `groupIdentity: Hash`. Supporting Deployment-selected victims
+requires a separate assignment protocol and is deferred to a follow-up PR.
+
 **Parent and child targets could conflict.** Parent scaling is rejected when sub-roles
 are present and parent `spec.replicas` is ignored. The webhook warns when an explicit
 parent replica value greater than one is observed; the inherited LWS default prevents a
@@ -174,9 +181,9 @@ aggregated.
 disagree on membership, but both destinations have identical runtime configuration.
 This affects only temporary request distribution.
 
-**Service-only clients may observe an incomplete revision.** The deprecated parent-role
-and sub-role `-prv` Services are no longer a cross-role readiness signal. Native llm-d
-routing watches Ready Pods and applies revision gating itself.
+**Service-only clients cannot select a sub-role.** This proposal does not add
+sub-role-specific Services. Routers use the controller-managed Pod label; the existing
+parent-role `-prv` Services remain unchanged while they are deprecated.
 
 ## Design Details
 
@@ -244,7 +251,11 @@ of 10 parent roles remains, and each parent may define at most 32 sub-roles.
 
 External sub-roles cannot set `replicas`. Parent `scaling` is forbidden and parent
 `spec.replicas` has no effect when `subRoles` is present. The system sub-role label is
-reserved and cannot appear in user Pod templates.
+reserved and cannot appear in user Pod templates. A role with `subRoles` must use the
+default `Ordinal` group identity; admission rejects `groupIdentity: Hash`.
+
+TODO: Add `groupIdentity: Hash` support for sub-roles in a follow-up PR once assignment
+and scale-down semantics for Deployment-selected victims are defined.
 
 ### Labels, Identity, and Scaler Names
 
@@ -265,8 +276,9 @@ leaderworkerset.sigs.k8s.io/group-index: "4"
 ```
 
 The assignment identity is `(LWS UID, group-index)` because old and new revisions can
-both contain group index zero. The leader's assignment is authoritative and is mirrored
-to the other Pods in its group.
+both contain group index zero. In the initial implementation, `group-index` is an
+ordinal. The leader's assignment is authoritative and is mirrored to the other Pods in
+its group.
 
 External sub-role scalers are named `<ds>-<role>-<subrole>` and carry both role labels.
 Admission rejects names exceeding the Kubernetes limit and collisions between generated
@@ -357,7 +369,7 @@ enabling sub-roles preserves total capacity. For a fresh role, each External sca
 seeded at one replica for vanilla-HPA bootstrap; scale-to-zero-aware autoscalers may
 subsequently write zero.
 
-### Routing and Deprecated PRV Services
+### Routing and Service Compatibility
 
 llm-d's Kubernetes discovery watches selected Pods and refreshes endpoint metadata on
 label updates. A broad decode InferencePool can continue selecting:
@@ -380,25 +392,13 @@ the broad decode pool or restarting llm-d. Existing requests may finish while ne
 requests observe the new label; no protocol-specific drain is required because the
 runtime configuration is identical.
 
-During the deprecation period, the controller always exposes:
-
-- the existing parent `-prv` Service for every live `(DisaggregatedSet, slice, revision,
-  parent role)`, selecting all groups in the parent; and
-- one `-prv` Service for every sub-role, adding the sub-role label to its selector.
-
-The parent Service remains `<lws-name>-prv`; sub-role Services are named
-`<lws-name>-<subrole>-prv`. The controller creates them as soon as the role revision
-exists; no peer role needs to be present or ready. It deletes them when that revision is
-drained. Admission rejects generated names that exceed the Kubernetes Service name limit
-or collide with another generated Service name.
-
-The `-prv` Services are deprecated and retained temporarily for compatibility with naive
-Service-based load balancers. Native llm-d routing watches Ready Pods and performs
-revision gating directly, as introduced by
+This proposal does not create sub-role-specific Services or change Service lifecycle.
+The existing parent-role `-prv` Service continues to select all groups in its parent
+role while that Service API is deprecated. Native llm-d routing watches Ready Pods and
+performs revision gating directly, as introduced by
 [llm-d-router PR 2141](https://github.com/llm-d/llm-d-router/pull/2141), so it does not
-depend on them. A `-prv` Service's existence must therefore not be interpreted as
-meaning that the complete revision is ready. The controller will keep exposing these
-Services unconditionally until their eventual removal completes the deprecation.
+depend on the `-prv` Service. Consumers that need sub-role routing must use Pod discovery
+and the sub-role label.
 
 ### Status, Slices, and Compatibility
 
@@ -411,9 +411,8 @@ Static sub-role replicas retain the existing per-slice meaning. Alpha rejects
 already includes the slice, allowing a later KEP to add aggregate or per-slice scaling.
 
 Omitting `subRoles` preserves existing names, labels, scaling, and status. Existing
-parent `-prv` Services keep their names and selectors. Adding sub-roles adds their
-selector-specific Services without changing the broad parent Service. All are created
-unconditionally for every live role revision during deprecation.
+parent `-prv` Services keep their names, selectors, and lifecycle. Adding sub-roles does
+not create any additional Services or change the broad parent Service.
 Enabling it labels existing groups in place and does not change the revision hash.
 Disabling it removes the dynamic labels and returns replica ownership to the parent.
 Changing the minimum parent-role count from two to one is a backward-compatible schema
@@ -427,6 +426,7 @@ existing tests to make this code solid enough prior to implementation.
 #### Unit tests
 
 - API validation, replica resolution, and generated scaler names.
+- Rejection of `groupIdentity: Hash` when a role defines sub-roles.
 - Stable assignment, deficit filling, Pod recreation, and high-ordinal scale-down.
 - Expanded planner state, parent budget aggregation, and initial snapshot parsing.
 - Scaler creation, seeding, status, selector, and cleanup.
@@ -439,8 +439,8 @@ existing tests to make this code solid enough prior to implementation.
 - Pod recreation restores assignment; scale-down preserves the requested distribution.
 - Template rollout preserves sub-role availability and parent capacity limits.
 - llm-d observes label changes and filters subsequent endpoint candidates.
-- Parent and sub-role `-prv` Services have the expected selectors, are created before
-  cross-role readiness, and are not used by native routing.
+- Existing parent `-prv` Services remain unchanged and no sub-role-specific Services are
+  created.
 - Static multi-slice behavior works; External multi-slice objects are rejected in alpha.
 
 ### Graduation Criteria
@@ -468,7 +468,8 @@ existing tests to make this code solid enough prior to implementation.
 
 ## Drawbacks
 
-1. The controller becomes a Pod-label writer in addition to managing LWS and Services.
+1. The controller becomes a Pod-label writer in addition to managing its existing
+   resources.
 2. Desired state spans the parent API, optional scalers, aggregate LWS replicas, and Pod
    labels.
 3. Membership is eventually consistent across router caches.
