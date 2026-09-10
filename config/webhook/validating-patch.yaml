@@ -1,5 +1,5 @@
 - op: replace
-  path: /webhooks/1
+  path: /webhooks/2
   value:
     admissionReviewVersions:
     - v1
