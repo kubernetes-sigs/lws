@@ -1034,7 +1034,7 @@ func TestRollingUpdateParametersScaleUpWithTemplateUpdateDoesNotCreateExtraSurge
 	}
 }
 
-func TestRollingUpdateParametersRolloutFirstHoldsReplicasDuringTemplateUpdate(t *testing.T) {
+func TestLegacyRollingParametersDoNotHoldGrowth(t *testing.T) {
 	reconciler := &LeaderWorkerSetReconciler{Record: fakeEventRecorder{}}
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 		Replica(3).
@@ -1042,7 +1042,6 @@ func TestRollingUpdateParametersRolloutFirstHoldsReplicasDuringTemplateUpdate(t 
 		RolloutStrategy(leaderworkerset.RolloutStrategy{
 			Type: leaderworkerset.RollingUpdateStrategyType,
 			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-				UpdateOrder:    leaderworkerset.RolloutFirstUpdateOrder,
 				Partition:      ptr.To[int32](0),
 				MaxUnavailable: intstr.FromInt32(1),
 				MaxSurge:       intstr.FromInt32(0),
@@ -1069,15 +1068,15 @@ func TestRollingUpdateParametersRolloutFirstHoldsReplicasDuringTemplateUpdate(t 
 	if err != nil {
 		t.Fatalf("rollingUpdateParameters() unexpected error: %v", err)
 	}
-	if partition != 1 {
-		t.Fatalf("rollingUpdateParameters() partition=%d, want 1", partition)
+	if partition != 2 {
+		t.Fatalf("rollingUpdateParameters() partition=%d, want 2", partition)
 	}
-	if replicas != 2 {
-		t.Fatalf("rollingUpdateParameters() replicas=%d, want 2", replicas)
+	if replicas != 3 {
+		t.Fatalf("rollingUpdateParameters() replicas=%d, want 3", replicas)
 	}
 }
 
-func TestRollingUpdateParametersRolloutFirstProgression(t *testing.T) {
+func TestLegacyRollingParametersGrowthWithoutActiveState(t *testing.T) {
 	const (
 		oldRevision = "rev-old"
 		newRevision = "rev-new"
@@ -1091,31 +1090,31 @@ func TestRollingUpdateParametersRolloutFirstProgression(t *testing.T) {
 		wantReplicas  int32
 	}{
 		{
-			name:      "holds replicas while the first replacement is unready",
+			name:      "legacy growth while replacement is unready",
 			partition: 1,
 			pods: []corev1.Pod{
-				makeRolloutFirstTestPod("test-sample-0", "0", oldRevision, true),
-				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, false),
+				makeGrowthTestPod("test-sample-0", "0", oldRevision, true),
+				makeGrowthTestPod("test-sample-1", "1", newRevision, false),
 			},
 			wantPartition: 1,
-			wantReplicas:  2,
+			wantReplicas:  3,
 		},
 		{
-			name:      "updates the next existing replica before scaling",
+			name:      "legacy growth does not select a lower replica",
 			partition: 1,
 			pods: []corev1.Pod{
-				makeRolloutFirstTestPod("test-sample-0", "0", oldRevision, true),
-				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, true),
+				makeGrowthTestPod("test-sample-0", "0", oldRevision, true),
+				makeGrowthTestPod("test-sample-1", "1", newRevision, true),
 			},
-			wantPartition: 0,
-			wantReplicas:  2,
+			wantPartition: 1,
+			wantReplicas:  3,
 		},
 		{
 			name:      "scales after all existing replicas are updated and ready",
 			partition: 0,
 			pods: []corev1.Pod{
-				makeRolloutFirstTestPod("test-sample-0", "0", newRevision, true),
-				makeRolloutFirstTestPod("test-sample-1", "1", newRevision, true),
+				makeGrowthTestPod("test-sample-0", "0", newRevision, true),
+				makeGrowthTestPod("test-sample-1", "1", newRevision, true),
 			},
 			wantPartition: 0,
 			wantReplicas:  3,
@@ -1138,7 +1137,6 @@ func TestRollingUpdateParametersRolloutFirstProgression(t *testing.T) {
 				RolloutStrategy(leaderworkerset.RolloutStrategy{
 					Type: leaderworkerset.RollingUpdateStrategyType,
 					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-						UpdateOrder:    leaderworkerset.RolloutFirstUpdateOrder,
 						Partition:      ptr.To[int32](0),
 						MaxUnavailable: intstr.FromInt32(1),
 						MaxSurge:       intstr.FromInt32(0),
@@ -1175,7 +1173,7 @@ func TestRollingUpdateParametersRolloutFirstProgression(t *testing.T) {
 	}
 }
 
-func makeRolloutFirstTestPod(name, groupIndex, revision string, ready bool) corev1.Pod {
+func makeGrowthTestPod(name, groupIndex, revision string, ready bool) corev1.Pod {
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,

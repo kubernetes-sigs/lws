@@ -321,18 +321,6 @@ const (
 
 // RollingUpdateConfiguration defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdateConfiguration struct {
-	// updateOrder controls whether existing replicas are updated before scaling up
-	// when the pod template and replica count increase in the same update.
-	// ScaleFirst preserves the existing behavior of creating the additional replicas
-	// before updating existing replicas. RolloutFirst updates existing replicas before
-	// creating the additional replicas, allowing their old resources to be released.
-	// The default value is ScaleFirst.
-	//
-	// +optional
-	// +kubebuilder:default=ScaleFirst
-	// +kubebuilder:validation:Enum={ScaleFirst,RolloutFirst}
-	UpdateOrder UpdateOrderType `json:"updateOrder,omitempty"`
-
 	// partition indicates the ordinal at which the lws should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
@@ -348,7 +336,7 @@ type RollingUpdateConfiguration struct {
 	Partition *int32 `json:"partition,omitempty"`
 
 	// maxUnavailable is the maximum number of replicas that can be unavailable during the update.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+	// Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
 	// This can not be 0 if MaxSurge is 0.
 	// By default, a fixed value of 1 is used.
@@ -357,6 +345,11 @@ type RollingUpdateConfiguration struct {
 	// can be scaled down further, followed by scaling up the new replicas, ensuring
 	// that at least 70% of original number of replicas are available at all times
 	// during the update.
+	// During combined template updates and scale-up, controller-authorized disruption
+	// uses a floor of max(0, min(initial non-surge replicas, desired replicas)-maxUnavailable).
+	// Whole Ready additional groups provide credit; Pending additions do not block
+	// affordable old-group replacement. This is not a guarantee against independent
+	// failures or a strict ordering policy. An unaffordable old suffix can block progress.
 	//
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=1
@@ -365,7 +358,7 @@ type RollingUpdateConfiguration struct {
 	// maxSurge is the maximum number of replicas that can be scheduled above the original number of
 	// replicas.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
-	// the start of the update (ex: 10%).
+	// desired spec.replicas (ex: 10%).
 	// Absolute number is calculated from percentage by rounding up.
 	// By default, a value of 0 is used.
 	// Example: when this is set to 30%, the new replicas can be scaled up by 30%
@@ -378,16 +371,6 @@ type RollingUpdateConfiguration struct {
 	// +kubebuilder:default=0
 	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
-
-type UpdateOrderType string
-
-const (
-	// ScaleFirst increases the replica count before updating existing replicas.
-	ScaleFirstUpdateOrder UpdateOrderType = "ScaleFirst"
-
-	// RolloutFirst updates existing replicas before increasing the replica count.
-	RolloutFirstUpdateOrder UpdateOrderType = "RolloutFirst"
-)
 
 type RolloutStrategyType string
 

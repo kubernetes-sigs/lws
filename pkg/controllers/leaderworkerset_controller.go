@@ -53,8 +53,11 @@ import (
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
 type LeaderWorkerSetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Record events.EventRecorder
+	// APIReader fences combined-rollout decisions against uncached identities.
+	// SetupWithManager supplies it without changing existing constructors.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Record    events.EventRecorder
 
 	revisionEqualityCache *lru.Cache
 }
@@ -116,6 +119,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, lws); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Typed direct clients may omit TypeMeta; revision owner references require
+	// the known GVK independently of whether this read came from a cache.
+	lws.SetGroupVersionKind(leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
 
 	if lws.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
@@ -163,12 +169,19 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	lwsUpdated := updatedRevision != nil
 	if lwsUpdated {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+		// Freeze deliberately leaves the StatefulSet's old label in place.
+		// Reuse an equivalent target (also on rollback/restart), rather than
+		// allocating a new numbered revision on every acknowledgement wait.
+		revision, err = r.reuseOrCreateRevision(ctx, lws, updatedRevision)
 		if err != nil {
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
 		}
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
+	}
+
+	if handled, result, err := r.reconcileCombinedRollout(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated); handled {
+		return result, err
 	}
 
 	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated)
@@ -237,11 +250,13 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
 		Complete(r)
@@ -348,10 +363,6 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 		// Processing scaling up/down first prior to rolling update.
 		partition := min(lwsReplicas, stsReplicas)
 		if stsReplicas < lwsReplicas {
-			if lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder == leaderworkerset.RolloutFirstUpdateOrder && stsReplicas > 0 {
-				partition = max(*lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition, stsReplicas-int32(maxUnavailable))
-				return partition, stsReplicas, nil
-			}
 			return partition, lwsReplicas, nil
 		}
 		return partition, wantReplicas(lwsReplicas), nil
@@ -364,28 +375,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if rollingUpdateCompleted {
 		return 0, lwsReplicas, nil
 	}
-	if stsReplicas < lwsReplicas && lws.Spec.RolloutStrategy.RollingUpdateConfiguration.UpdateOrder != leaderworkerset.RolloutFirstUpdateOrder {
+	if stsReplicas < lwsReplicas {
 		return partition, lwsReplicas, nil
 	}
 	states, err := r.getReplicaStates(ctx, lws, stsReplicas, revisionKey)
 	if err != nil {
 		return 0, 0, err
-	}
-	if stsReplicas < lwsReplicas {
-		rolloutPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-		rolloutComplete := true
-		for idx := rolloutPartition; idx < stsReplicas; idx++ {
-			if !states[idx].ready || !states[idx].updated {
-				rolloutComplete = false
-				break
-			}
-		}
-		if rolloutComplete {
-			return partition, lwsReplicas, nil
-		}
-
-		partition = rollingUpdatePartition(states, stsReplicas, int32(maxUnavailable), partition)
-		return partition, stsReplicas, nil
 	}
 
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
@@ -806,6 +801,22 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws 
 	}
 
 	return nil, nil
+}
+
+func (r *LeaderWorkerSetReconciler) reuseOrCreateRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, proposed *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	var revisions appsv1.ControllerRevisionList
+	// A cached list can lag our last create across repeated reconciles.
+	if err := r.combinedReader().List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+		return nil, err
+	}
+	for i := range revisions.Items {
+		existing := &revisions.Items[i]
+		if combinedModelOwnedBy(existing, "LeaderWorkerSet", lws.UID) &&
+			(revisionutils.EqualRevision(proposed, existing) || revisionutils.SetMatchesRevision(lws, proposed, existing, r.revisionEqualityCache)) {
+			return existing, nil
+		}
+	}
+	return revisionutils.CreateRevision(ctx, r.Client, proposed)
 }
 
 // buildLeaderPodTemplateApplyConfiguration constructs the leader pod template
