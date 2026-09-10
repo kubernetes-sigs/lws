@@ -50,7 +50,7 @@ Under `LeaderExcluded` the leader belongs to no subgroup, so `size - 1` must be 
 size-1 must be divisible by subGroupSize when using LeaderExcluded
 ```
 
-Either way the rejection is reported against `spec.leaderWorkerTemplate.SubGroupPolicy.subGroupSize`, naming a field you did not change. To move to a size that does not fit, recreate the LeaderWorkerSet with both `size` and `subGroupSize` set together.
+Either way the rejection is reported against `spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize`, naming a field you did not change. To move to a size that does not fit, recreate the LeaderWorkerSet with both `size` and `subGroupSize` set together.
 
 ## Crossing size: 1
 
