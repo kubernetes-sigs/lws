@@ -89,7 +89,7 @@ func EndpointSlice(deploymentName string) *Builder {
 	return Get("endpointslice").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
-// EndpointSliceByRole returns a builder for querying endpoint slices by role.
+// EndpointSliceByRole returns a builder for querying endpoint slices by deployment and role.
 func EndpointSliceByRole(deploymentName, role string) *Builder {
 	return EndpointSlice(deploymentName).Label(labelRole, role)
 }
@@ -100,7 +100,7 @@ func EndpointSliceByRole(deploymentName, role string) *Builder {
 func CountPods(deploymentName string) int {
 	output, err := Pods(deploymentName).
 		Output("name").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -112,7 +112,7 @@ func CountPods(deploymentName string) int {
 func CountRunningPods(deploymentName string) int {
 	output, err := RunningPods(deploymentName).
 		NoHeaders().
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -124,7 +124,7 @@ func CountRunningPods(deploymentName string) int {
 func CountLWS(deploymentName string) int {
 	output, err := LWS(deploymentName).
 		Output("name").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -136,7 +136,7 @@ func CountLWS(deploymentName string) int {
 func CountLWSByRole(deploymentName, role string) int {
 	output, err := LWSByRole(deploymentName, role).
 		Output("name").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -148,7 +148,7 @@ func CountLWSByRole(deploymentName, role string) int {
 func CountService(deploymentName string) int {
 	output, err := Service(deploymentName).
 		Output("name").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -162,7 +162,7 @@ func CountService(deploymentName string) int {
 func GetTotalReplicas(deploymentName, revision string) int {
 	output, err := LWSByRevision(deploymentName, revision).
 		JSONPath("{range .items[*]}{.spec.replicas} {end}").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -174,7 +174,7 @@ func GetTotalReplicas(deploymentName, revision string) int {
 func GetTotalReplicasNotRevision(deploymentName, revision string) int {
 	output, err := LWSNotRevision(deploymentName, revision).
 		JSONPath("{range .items[*]}{.spec.replicas} {end}").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return 0
@@ -186,7 +186,7 @@ func GetTotalReplicasNotRevision(deploymentName, revision string) int {
 func GetRevision(deploymentName string) string {
 	output, err := LWS(deploymentName).
 		JSONPath("{.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}").
-		Timeout("30s").
+		RequestTimeout("30s").
 		RunQuiet()
 	if err != nil {
 		return ""
@@ -255,5 +255,6 @@ func CleanupDeployment(deploymentName string) {
 		Label(labelName, deploymentName).
 		Namespace(defaultNS).
 		IgnoreNotFound().
+		Timeout("30s").
 		RunQuiet()
 }
