@@ -124,6 +124,13 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, duringUpdate b
 			Annotations:     map[string]string{leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))},
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: sts.Name, UID: sts.UID, Controller: ptr.To(true)}}},
 			Spec: *sts.Spec.Template.Spec.DeepCopy()}
+		// envtest runs neither the native StatefulSet controller nor Pod
+		// admission. Supply the DNS identity they assign before workers start.
+		pod.Spec.Hostname = pod.Name
+		pod.Spec.Subdomain = sts.Spec.ServiceName
+		if lws.Spec.NetworkConfig != nil && ptr.Deref(lws.Spec.NetworkConfig.SubdomainPolicy, leaderworkerset.SubdomainShared) == leaderworkerset.SubdomainUniquePerReplica {
+			pod.Spec.Subdomain = pod.Name
+		}
 		gomega.Expect(k8sClient.Create(ctx, pod)).To(gomega.Succeed())
 	}
 	remove := func(i int32) {
