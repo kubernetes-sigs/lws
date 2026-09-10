@@ -44,7 +44,7 @@ func LWSByRevision(deploymentName, revision string) *Builder {
 func LWSNotRevision(deploymentName, revision string) *Builder {
 	return Get("lws").
 		Label(labelName, deploymentName).
-		Label(labelRevision+"!=", revision).
+		LabelNot(labelRevision, revision).
 		Namespace(defaultNS)
 }
 
@@ -98,7 +98,10 @@ func EndpointSliceByRole(deploymentName, role string) *Builder {
 
 // CountPods returns the number of pods for a deployment.
 func CountPods(deploymentName string) int {
-	output, err := Pods(deploymentName).Output("name").RunQuiet()
+	output, err := Pods(deploymentName).
+		Output("name").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -107,7 +110,10 @@ func CountPods(deploymentName string) int {
 
 // CountRunningPods returns the number of running pods for a deployment.
 func CountRunningPods(deploymentName string) int {
-	output, err := RunningPods(deploymentName).NoHeaders().RunQuiet()
+	output, err := RunningPods(deploymentName).
+		NoHeaders().
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -116,7 +122,10 @@ func CountRunningPods(deploymentName string) int {
 
 // CountLWS returns the number of LWS resources for a deployment.
 func CountLWS(deploymentName string) int {
-	output, err := LWS(deploymentName).Output("name").RunQuiet()
+	output, err := LWS(deploymentName).
+		Output("name").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -125,7 +134,10 @@ func CountLWS(deploymentName string) int {
 
 // CountLWSByRole returns the number of LWS for a deployment and role.
 func CountLWSByRole(deploymentName, role string) int {
-	output, err := LWSByRole(deploymentName, role).Output("name").RunQuiet()
+	output, err := LWSByRole(deploymentName, role).
+		Output("name").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -134,7 +146,10 @@ func CountLWSByRole(deploymentName, role string) int {
 
 // CountService returns the number of services for a deployment.
 func CountService(deploymentName string) int {
-	output, err := Service(deploymentName).Output("name").RunQuiet()
+	output, err := Service(deploymentName).
+		Output("name").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -146,7 +161,9 @@ func CountService(deploymentName string) int {
 // GetTotalReplicas returns total replicas across all LWS for a revision.
 func GetTotalReplicas(deploymentName, revision string) int {
 	output, err := LWSByRevision(deploymentName, revision).
-		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
+		JSONPath("{range .items[*]}{.spec.replicas} {end}").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -156,7 +173,9 @@ func GetTotalReplicas(deploymentName, revision string) int {
 // GetTotalReplicasNotRevision returns total replicas for LWS NOT matching revision.
 func GetTotalReplicasNotRevision(deploymentName, revision string) int {
 	output, err := LWSNotRevision(deploymentName, revision).
-		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
+		JSONPath("{range .items[*]}{.spec.replicas} {end}").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return 0
 	}
@@ -166,7 +185,9 @@ func GetTotalReplicasNotRevision(deploymentName, revision string) int {
 // GetRevision returns the revision label of the first LWS for a deployment.
 func GetRevision(deploymentName string) string {
 	output, err := LWS(deploymentName).
-		JSONPath("{.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}").RunQuiet()
+		JSONPath("{.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}").
+		Timeout("30s").
+		RunQuiet()
 	if err != nil {
 		return ""
 	}
@@ -201,9 +222,38 @@ func sumInts(output string) int {
 
 // CleanupDeployment removes a DisaggregatedSet and all related resources.
 func CleanupDeployment(deploymentName string) {
-	_, _ = Delete("disaggregatedset", deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
-	_, _ = Delete("lws").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
-	_, _ = Delete("pods").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().GracePeriod(0).Force().RunQuiet()
-	_, _ = Delete("svc").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
-	_, _ = Delete("dsrs").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
+	_, _ = Delete("disaggregatedset", deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("lws").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("pods").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		GracePeriod(0).
+		Force().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("svc").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("dsrs").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		RunQuiet()
 }
