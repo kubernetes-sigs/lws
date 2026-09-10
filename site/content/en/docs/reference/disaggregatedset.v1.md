@@ -1,5 +1,7 @@
 ---
 title: DisaggregatedSet API
+linkTitle: DisaggregatedSet API
+weight: 20
 content_type: tool-reference
 package: disaggregatedset.x-k8s.io/v1
 auto_generated: true
@@ -292,12 +294,20 @@ created, so changing it takes effect on the next rollout.</p>
 <tbody>
     
   
+<tr><td><code>observedGeneration</code><br/>
+<code>int64</code>
+</td>
+<td>
+   <p>observedGeneration is the most recent generation observed for this DisaggregatedSet.</p>
+</td>
+</tr>
 <tr><td><code>roleStatuses</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>
 <td>
-   <p>RoleStatuses contains the status for each role.
-The order matches spec.roles.</p>
+   <p>RoleStatuses contains the status for each role currently in spec.roles.
+The order matches spec.roles. A role removed from spec.roles has no entry
+here, even if LeaderWorkerSets for that role still exist while draining.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
@@ -310,7 +320,6 @@ Each condition has a unique type and reflects the status of a specific aspect of
 <ul>
 <li>&quot;Available&quot;: the resource is fully functional</li>
 <li>&quot;Progressing&quot;: the resource is being created or updated</li>
-<li>&quot;Degraded&quot;: the resource failed to reach or maintain its desired state</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
 </td>

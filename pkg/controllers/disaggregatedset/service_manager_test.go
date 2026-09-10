@@ -23,472 +23,343 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
-// Test-local role names
 const (
 	testServiceRolePrefill = "prefill"
 	testServiceRoleDecode  = "decode"
 )
 
-// readyLWS builds a slice-0 LWS fixture with the standard name and labels and a
-// given ready replica count. Services are derived from the LWS, so fixtures must
-// carry realistic names and labels.
 func readyLWS(dsName, revision, role string, ready int32) *leaderworkersetv1.LeaderWorkerSet {
+	name := disaggregatedsetutils.GenerateName(dsName, 0, revision, role)
 	lws := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   disaggregatedsetutils.GenerateName(dsName, 0, revision, role),
-			Labels: disaggregatedsetutils.GenerateLabels(dsName, 0, revision, role),
+			Name:      name,
+			Namespace: "default",
+			UID:       types.UID(name + "-uid"),
+			Labels:    disaggregatedsetutils.GenerateLabels(dsName, 0, revision, role),
 		},
 	}
 	lws.Status.ReadyReplicas = ready
 	return lws
 }
 
-// serviceName mirrors the production service name (<lws-name>-prv, where the LWS
-// name is GenerateName) for slice 0, for building expected names in assertions.
 func serviceName(base, revision, role string) string {
-	return disaggregatedsetutils.GenerateName(base, 0, revision, role) + "-prv"
+	return disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateName(base, 0, revision, role))
+}
+
+func revisionRoles(dsName, revision string, decodeReady int32) disaggregatedsetutils.RevisionRolesList {
+	return disaggregatedsetutils.RevisionRolesList{{
+		Revision: revision,
+		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testServiceRolePrefill: readyLWS(dsName, revision, testServiceRolePrefill, 1),
+			testServiceRoleDecode:  readyLWS(dsName, revision, testServiceRoleDecode, decodeReady),
+		},
+	}}
 }
 
 func TestServiceManager(t *testing.T) {
 	ctx := context.Background()
 	scheme := testSchemeForUnit()
 
-	t.Run("no service created when only one role is ready", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
+	t.Run("does not create services until every role is ready", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// Only prefill is ready
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 0), // not ready
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
+		err := serviceManager.ReconcileServices(ctx, deployment, revisionRoles(deployment.Name, "abc12345", 0), "abc12345")
 		require.NoError(t, err)
 
-		// Verify no services created
-		serviceList := &corev1.ServiceList{}
-		err = fakeClient.List(ctx, serviceList)
-		require.NoError(t, err)
-		assert.Empty(t, serviceList.Items, "no services should be created when only one role is ready")
+		services := &corev1.ServiceList{}
+		require.NoError(t, fakeClient.List(ctx, services))
+		assert.Empty(t, services.Items)
 	})
 
-	t.Run("services created when both roles have >= 1 ready replica", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
+	t.Run("creates an LWS-owned headless service for each role", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+		roles := revisionRoles(deployment.Name, "abc12345", 1)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// Both roles ready
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
-				},
-			},
+		require.NoError(t, serviceManager.ReconcileServices(ctx, deployment, roles, "abc12345"))
+
+		for _, role := range []string{testServiceRolePrefill, testServiceRoleDecode} {
+			service := &corev1.Service{}
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+				Name: serviceName(deployment.Name, "abc12345", role), Namespace: deployment.Namespace,
+			}, service))
+			assert.True(t, metav1.IsControlledBy(service, roles[0].Roles[role]))
+			assert.False(t, metav1.IsControlledBy(service, deployment))
+			assert.Equal(t, corev1.ClusterIPNone, service.Spec.ClusterIP)
+			assert.Empty(t, service.Spec.Ports)
+			assert.Equal(t, deployment.Name, service.Labels[disaggregatedsetv1.SetNameLabelKey])
+			assert.Equal(t, "0", service.Labels[disaggregatedsetv1.SliceLabelKey])
+			assert.Equal(t, role, service.Spec.Selector[disaggregatedsetv1.RoleLabelKey])
+			assert.Equal(t, "abc12345", service.Spec.Selector[disaggregatedsetv1.RevisionLabelKey])
 		}
+	})
 
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
-		require.NoError(t, err)
-
-		// Verify services created for both roles
-		prefillService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRolePrefill),
+	t.Run("transfers an existing service from the DisaggregatedSet to its LWS", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+		roles := revisionRoles(deployment.Name, "abc12345", 1)
+		decodeLWS := roles[0].Roles[testServiceRoleDecode]
+		existing := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+			Name:      disaggregatedsetutils.PrivateServiceName(decodeLWS.Name),
 			Namespace: deployment.Namespace,
-		}, prefillService)
-		require.NoError(t, err, "prefill service should exist")
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, decodeService)
-		require.NoError(t, err, "decode service should exist")
-	})
-
-	t.Run("service is headless with clusterIP None", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: disaggregatedsetv1.GroupVersion.String(),
+				Kind:       "DisaggregatedSet",
+				Name:       deployment.Name,
+				UID:        deployment.UID,
+				Controller: ptr.To(true),
+			}},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, existing).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
+		require.NoError(t, serviceManager.ReconcileServices(ctx, deployment, roles, "abc12345"))
+
+		got := &corev1.Service{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: existing.Name, Namespace: existing.Namespace}, got))
+		assert.True(t, metav1.IsControlledBy(got, decodeLWS))
+		assert.False(t, metav1.IsControlledBy(got, deployment))
+	})
+
+	t.Run("does not adopt a colliding uncontrolled service", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+
+		for _, tc := range []struct {
+			name  string
+			owner []metav1.OwnerReference
+		}{
 			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
-				},
+				name: "foreign owner",
+				owner: []metav1.OwnerReference{{
+					APIVersion: disaggregatedsetv1.GroupVersion.String(),
+					Kind:       "DisaggregatedSet",
+					Name:       "other",
+					UID:        "other-uid",
+					Controller: ptr.To(true),
+				}},
 			},
+			{name: "no owner"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				roles := revisionRoles(deployment.Name, "abc12345", 1)
+				decodeLWS := roles[0].Roles[testServiceRoleDecode]
+				colliding := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+					Name:            disaggregatedsetutils.PrivateServiceName(decodeLWS.Name),
+					Namespace:       deployment.Namespace,
+					OwnerReferences: tc.owner,
+				}}
+				fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, colliding).Build()
+				serviceManager := NewServiceManager(fakeClient, scheme)
+
+				require.Error(t, serviceManager.ReconcileServices(ctx, deployment, roles, "abc12345"))
+
+				got := &corev1.Service{}
+				require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: colliding.Name, Namespace: colliding.Namespace}, got))
+				assert.Equal(t, tc.owner, got.OwnerReferences)
+			})
 		}
+	})
 
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
-		require.NoError(t, err)
-
-		prefillService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRolePrefill),
+	t.Run("creates target services without deleting an older revision", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+		oldService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
 			Namespace: deployment.Namespace,
-		}, prefillService)
-		require.NoError(t, err)
-
-		// Verify headless service
-		assert.Equal(t, corev1.ClusterIPNone, prefillService.Spec.ClusterIP, "service should be headless (clusterIP: None)")
-	})
-
-	t.Run("service is portless with no ports defined", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
-		require.NoError(t, err)
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, decodeService)
-		require.NoError(t, err)
-
-		// Verify portless service
-		assert.Empty(t, decodeService.Spec.Ports, "service should be portless (no ports)")
-	})
-
-	t.Run("service name uses prv prefix", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("my-app", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "ef53f2d7",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("my-app", "ef53f2d7", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("my-app", "ef53f2d7", testServiceRoleDecode, 1),
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "ef53f2d7")
-		require.NoError(t, err)
-
-		// Check expected service names with prv suffix
-		expectedPrefillName := "my-app-0-ef53f2d7-prefill-prv"
-		expectedDecodeName := "my-app-0-ef53f2d7-decode-prv"
-
-		prefillService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedPrefillName, Namespace: "default"}, prefillService)
-		require.NoError(t, err, "service should have correct name: %s", expectedPrefillName)
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedDecodeName, Namespace: "default"}, decodeService)
-		require.NoError(t, err, "service should have correct name: %s", expectedDecodeName)
-	})
-
-	t.Run("standard labels are applied", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
-		require.NoError(t, err)
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, decodeService)
-		require.NoError(t, err)
-
-		// Verify standard labels are present
-		assert.Equal(t, "test-deploy", decodeService.Labels[disaggregatedsetv1.SetNameLabelKey], "name label should be set")
-		assert.Equal(t, "abc12345", decodeService.Labels[disaggregatedsetv1.RevisionLabelKey], "revision label should be set")
-		assert.Equal(t, testServiceRoleDecode, decodeService.Labels[disaggregatedsetv1.RoleLabelKey], "role label should be set")
-		assert.Equal(t, "0", decodeService.Labels[disaggregatedsetv1.SliceLabelKey], "slice label should be set")
-	})
-
-	t.Run("selector matches pod labels for role and revision", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
-
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "abc12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "abc12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "abc12345", testServiceRoleDecode, 1),
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "abc12345")
-		require.NoError(t, err)
-
-		decodeService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "abc12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, decodeService)
-		require.NoError(t, err)
-
-		// Verify selector matches expected pod labels
-		assert.Equal(t, "test-deploy", decodeService.Spec.Selector[disaggregatedsetv1.SetNameLabelKey])
-		assert.Equal(t, "abc12345", decodeService.Spec.Selector[disaggregatedsetv1.RevisionLabelKey])
-		assert.Equal(t, testServiceRoleDecode, decodeService.Spec.Selector[disaggregatedsetv1.RoleLabelKey])
-		assert.Equal(t, "0", decodeService.Spec.Selector[disaggregatedsetv1.SliceLabelKey])
-	})
-
-	t.Run("old services deleted when revision is drained", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		// Create an old service
-		oldService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
-				Namespace: deployment.Namespace,
-				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-					disaggregatedsetv1.SliceLabelKey:    "0",
-					disaggregatedsetv1.RoleLabelKey:     testServiceRoleDecode,
-					disaggregatedsetv1.RevisionLabelKey: "old12345",
-				},
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: corev1.ClusterIPNone,
-			},
-		}
-
+		}}
+		roles := append(
+			revisionRoles(deployment.Name, "old12345", 1),
+			revisionRoles(deployment.Name, "new12345", 1)...,
+		)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, oldService).Build()
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// New revision is ready, old is drained
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "new12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
-				},
-			},
-		}
-
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "new12345")
-		require.NoError(t, err)
-
-		// Verify old service is deleted
-		oldServiceCheck := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, oldServiceCheck)
-		assert.Error(t, err, "old service should be deleted")
-
-		// Verify new service exists
-		newService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "new12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, newService)
-		require.NoError(t, err, "new service should exist")
+		require.NoError(t, serviceManager.ReconcileServices(ctx, deployment, roles, "new12345"))
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: oldService.Name, Namespace: oldService.Namespace}, &corev1.Service{}))
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+			Name: serviceName(deployment.Name, "new12345", testServiceRolePrefill), Namespace: deployment.Namespace,
+		}, &corev1.Service{}))
 	})
 
-	t.Run("legacy slice-agnostic service is adopted and cleaned up on drain", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		// A legacy (pre-slices) service: legacy name, no slice label.
-		legacyPrefill := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      disaggregatedsetutils.GenerateLegacyName(deployment.Name, "old12345", testServiceRolePrefill) + "-prv",
-				Namespace: deployment.Namespace,
-				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-					disaggregatedsetv1.RoleLabelKey:     testServiceRolePrefill,
-					disaggregatedsetv1.RevisionLabelKey: "old12345",
-				},
+	t.Run("recovers when the service is deleted between Create's AlreadyExists and the ownership check", func(t *testing.T) {
+		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+		roles := revisionRoles(deployment.Name, "abc12345", 1)
+		baseClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment).Build()
+		// Simulate a Service that is deleted (e.g. by GC) in the window between
+		// Create's AlreadyExists and the follow-up ownership check: Create always
+		// reports AlreadyExists, but the Service was never actually persisted.
+		fakeClient := interceptor.NewClient(baseClient, interceptor.Funcs{
+			Create: func(ctx context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
+				return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "services"}, obj.GetName())
 			},
-			Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
-		}
-
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, legacyPrefill).Build()
+		})
 		serviceManager := NewServiceManager(fakeClient, scheme)
 
-		// New slice-aware revision is ready; the legacy revision is drained.
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "new12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
-				},
-			},
-		}
+		err := serviceManager.ReconcileServices(ctx, deployment, roles, "abc12345")
+		require.NoError(t, err, "a service deleted before the ownership check should be left for the next reconcile to recreate")
+	})
+}
 
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, "new12345")
-		require.NoError(t, err)
+// dsOwnedService builds a Service as an older controller created it: named after
+// the LWS, labelled with name/role/revision, and controlled by the DisaggregatedSet.
+func dsOwnedService(name string, ds *disaggregatedsetv1.DisaggregatedSet, role, revision string) *corev1.Service {
+	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name:      name,
+		Namespace: ds.Namespace,
+		UID:       types.UID(name + "-uid"),
+		Labels: map[string]string{
+			disaggregatedsetv1.SetNameLabelKey:  ds.Name,
+			disaggregatedsetv1.RoleLabelKey:     role,
+			disaggregatedsetv1.RevisionLabelKey: revision,
+		},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: disaggregatedsetv1.GroupVersion.String(),
+			Kind:       "DisaggregatedSet",
+			Name:       ds.Name,
+			UID:        ds.UID,
+			Controller: ptr.To(true),
+		}},
+	}}
+}
 
-		// The legacy slice-agnostic service belongs to slice 0 and its revision is
-		// drained, so it should be deleted.
-		err = fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefill.Name, Namespace: deployment.Namespace}, &corev1.Service{})
-		assert.Error(t, err, "legacy service should be deleted once its revision drains")
+func TestMigrateLegacyServices(t *testing.T) {
+	ctx := context.Background()
+	scheme := testSchemeForUnit()
+	const revision = "abc12345"
+
+	newDeployment := func() *disaggregatedsetv1.DisaggregatedSet {
+		return wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").
+			WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").
+			WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
+	}
+
+	t.Run("hands a DisaggregatedSet-owned service to its LWS in place", func(t *testing.T) {
+		deployment := newDeployment()
+		lws := readyLWS(deployment.Name, revision, testServiceRolePrefill, 1)
+		service := dsOwnedService(disaggregatedsetutils.PrivateServiceName(lws.Name), deployment, testServiceRolePrefill, revision)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, lws, service).Build()
+
+		require.NoError(t, NewServiceManager(fakeClient, scheme).
+			migrateLegacyServices(ctx, deployment, []*leaderworkersetv1.LeaderWorkerSet{lws}))
+
+		got := &corev1.Service{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, got))
+		assert.True(t, metav1.IsControlledBy(got, lws))
+		assert.False(t, metav1.IsControlledBy(got, deployment))
+		assert.Equal(t, service.UID, got.UID, "the service must be migrated in place, never recreated")
 	})
 
-	t.Run("no flip-flop when multiple revisions are ready during rolling update", func(t *testing.T) {
-		deployment := wrappers.BuildDisaggregatedSet("test-deploy", "default").UID("test-uid").WithRoleNoReplicas(testServiceRolePrefill, "nginx:1.0").WithRoleNoReplicas(testServiceRoleDecode, "nginx:1.0").Obj()
-
-		// Create services for old revision (simulating existing state)
-		oldPrefillService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
-				Namespace: deployment.Namespace,
-				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-					disaggregatedsetv1.SliceLabelKey:    "0",
-					disaggregatedsetv1.RoleLabelKey:     testServiceRolePrefill,
-					disaggregatedsetv1.RevisionLabelKey: "old12345",
+	t.Run("tolerates a service deleted between list and ownership transfer", func(t *testing.T) {
+		deployment := newDeployment()
+		lws := readyLWS(deployment.Name, revision, testServiceRolePrefill, 1)
+		service := dsOwnedService(disaggregatedsetutils.PrivateServiceName(lws.Name), deployment, testServiceRolePrefill, revision)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, lws, service).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if key.Name == service.Name {
+						return apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, key.Name)
+					}
+					return c.Get(ctx, key, obj, opts...)
 				},
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: corev1.ClusterIPNone,
-			},
-		}
-		oldDecodeService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
-				Namespace: deployment.Namespace,
-				Labels: map[string]string{
-					disaggregatedsetv1.SetNameLabelKey:  deployment.Name,
-					disaggregatedsetv1.SliceLabelKey:    "0",
-					disaggregatedsetv1.RoleLabelKey:     testServiceRoleDecode,
-					disaggregatedsetv1.RevisionLabelKey: "old12345",
-				},
-			},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: corev1.ClusterIPNone,
-			},
-		}
+			}).Build()
 
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, oldPrefillService, oldDecodeService).Build()
-		serviceManager := NewServiceManager(fakeClient, scheme)
+		require.NoError(t, NewServiceManager(fakeClient, scheme).
+			migrateLegacyServices(ctx, deployment, []*leaderworkersetv1.LeaderWorkerSet{lws}))
+	})
 
-		// Both old and new revisions are ready (rolling update in progress)
-		revisionRoles := disaggregatedsetutils.RevisionRolesList{
+	// An old controller that stopped after deleting a drained LWS but before
+	// deleting its Service leaves this behind; nothing else would ever remove it.
+	t.Run("deletes a DisaggregatedSet-owned service whose LWS is already gone", func(t *testing.T) {
+		deployment := newDeployment()
+		orphan := dsOwnedService(serviceName(deployment.Name, "old12345", testServiceRolePrefill), deployment, testServiceRolePrefill, "old12345")
+		live := readyLWS(deployment.Name, revision, testServiceRolePrefill, 1)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, live, orphan).Build()
+
+		require.NoError(t, NewServiceManager(fakeClient, scheme).
+			migrateLegacyServices(ctx, deployment, []*leaderworkersetv1.LeaderWorkerSet{live}))
+
+		err := fakeClient.Get(ctx, types.NamespacedName{Name: orphan.Name, Namespace: orphan.Namespace}, &corev1.Service{})
+		assert.True(t, apierrors.IsNotFound(err), "orphaned legacy service should be deleted")
+	})
+
+	t.Run("never touches a service this DisaggregatedSet does not control", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			owner []metav1.OwnerReference
+		}{
 			{
-				Revision: "old12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "old12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", "old12345", testServiceRoleDecode, 2),
-				},
+				name: "foreign owner",
+				owner: []metav1.OwnerReference{{
+					APIVersion: disaggregatedsetv1.GroupVersion.String(),
+					Kind:       "DisaggregatedSet",
+					Name:       "other",
+					UID:        "other-uid",
+					Controller: ptr.To(true),
+				}},
 			},
-			{
-				Revision: "new12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 1),
-					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 1),
-				},
-			},
+			{name: "no owner"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				deployment := newDeployment()
+				lws := readyLWS(deployment.Name, revision, testServiceRolePrefill, 1)
+				// Carries this DisaggregatedSet's labels, so it is listed but must be skipped.
+				service := dsOwnedService(disaggregatedsetutils.PrivateServiceName(lws.Name), deployment, testServiceRolePrefill, revision)
+				service.OwnerReferences = tc.owner
+				fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, lws, service).Build()
+
+				require.NoError(t, NewServiceManager(fakeClient, scheme).
+					migrateLegacyServices(ctx, deployment, []*leaderworkersetv1.LeaderWorkerSet{lws}))
+
+				got := &corev1.Service{}
+				require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, got))
+				assert.Equal(t, tc.owner, got.OwnerReferences)
+			})
 		}
+	})
 
-		// Target revision is the new one
-		targetRevision := "new12345"
+	t.Run("never touches a DisaggregatedSet-owned service that is not a private role service", func(t *testing.T) {
+		deployment := newDeployment()
+		lws := readyLWS(deployment.Name, revision, testServiceRolePrefill, 1)
+		unsuffixed := dsOwnedService(deployment.Name+"-user-facing", deployment, testServiceRolePrefill, revision)
+		unlabelled := dsOwnedService(disaggregatedsetutils.PrivateServiceName(lws.Name), deployment, "", "")
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, lws, unsuffixed, unlabelled).Build()
 
-		// First reconcile - new services created, old services kept (both still ready)
-		err := serviceManager.ReconcileServices(ctx, deployment, 0, revisionRoles, targetRevision)
-		require.NoError(t, err)
+		require.NoError(t, NewServiceManager(fakeClient, scheme).
+			migrateLegacyServices(ctx, deployment, []*leaderworkersetv1.LeaderWorkerSet{lws}))
 
-		// Verify new services are created
-		newPrefillService := &corev1.Service{}
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "new12345", testServiceRolePrefill),
-			Namespace: deployment.Namespace,
-		}, newPrefillService)
-		require.NoError(t, err, "new prefill service should exist")
-
-		// Old services should STILL exist (both revisions are ready during rolling update)
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
-			Namespace: deployment.Namespace,
-		}, &corev1.Service{})
-		require.NoError(t, err, "old prefill service should still exist during rolling update")
-
-		// Now simulate old revision being fully drained
-		drainedWorkloads := disaggregatedsetutils.RevisionRolesList{
-			{
-				Revision: "old12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "old12345", testServiceRolePrefill, 0),
-					testServiceRoleDecode:  readyLWS("test-deploy", "old12345", testServiceRoleDecode, 0),
-				},
-			},
-			{
-				Revision: "new12345",
-				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-					testServiceRolePrefill: readyLWS("test-deploy", "new12345", testServiceRolePrefill, 2),
-					testServiceRoleDecode:  readyLWS("test-deploy", "new12345", testServiceRoleDecode, 2),
-				},
-			},
+		for _, service := range []*corev1.Service{unsuffixed, unlabelled} {
+			got := &corev1.Service{}
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, got),
+				"service %s should be left alone", service.Name)
+			assert.True(t, metav1.IsControlledBy(got, deployment), "service %s ownership should be unchanged", service.Name)
 		}
-
-		// Reconcile after drain - old services should be deleted
-		err = serviceManager.ReconcileServices(ctx, deployment, 0, drainedWorkloads, targetRevision)
-		require.NoError(t, err)
-
-		// Old services should now be deleted
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "old12345", testServiceRolePrefill),
-			Namespace: deployment.Namespace,
-		}, &corev1.Service{})
-		assert.Error(t, err, "old prefill service should be deleted after drain")
-
-		err = fakeClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName(deployment.Name, "old12345", testServiceRoleDecode),
-			Namespace: deployment.Namespace,
-		}, &corev1.Service{})
-		assert.Error(t, err, "old decode service should be deleted after drain")
 	})
 }

@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -27,6 +28,7 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
@@ -72,6 +74,9 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
+		// Reject hash-mode feature combinations the LWS webhook would reject, so
+		// they fail at DisaggregatedSet admission instead of at LWS creation time.
+		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
 			continue
@@ -101,7 +106,72 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 			"spec.slices > 1 is not supported while any role has scaling.mode: External (alpha restriction)"))
 	}
 
+	allErrs = append(allErrs, w.validateGeneratedNames(obj)...)
+
 	return warnings, allErrs
+}
+
+// validateGeneratedNames rejects the DisaggregatedSet if any role would produce
+// a generated LWS name or derived Service name (<lws>-prv) exceeding the
+// DNS-1035 63-character limit. The generated name format is:
+//
+//	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
+//
+// and the service appends "-prv".
+func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
+	slices := int32(1)
+	if obj.Spec.Slices != nil {
+		slices = *obj.Spec.Slices
+	}
+	maxSliceIndex := slices - 1
+	sliceDigits := len(strconv.Itoa(int(maxSliceIndex)))
+
+	const (
+		dns1035MaxLen                     = 63
+		revisionLen                       = 8 // hex characters in the revision hash
+		serviceSuffixLen                  = len(disaggregatedsetutils.PrivateServiceSuffix)
+		separators                        = 3  // three "-" between dsName, slice, revision, roleName
+		statefulSetRevisionLabelSuffixLen = 11 // len("-<10-char-hash>")
+	)
+
+	rolesPath := field.NewPath("spec", "roles")
+	for i, role := range obj.Spec.Roles {
+		lwsNameLen := len(obj.Name) + separators + sliceDigits + revisionLen + len(role.Name)
+
+		groupIndexDigits := 1
+		if role.Spec.Replicas != nil && *role.Spec.Replicas > 0 {
+			groupIndexDigits = len(strconv.Itoa(int(*role.Spec.Replicas - 1)))
+		}
+
+		// The worker StatefulSet pods get a label "controller-revision-hash" with value:
+		// <lwsName>-<groupIndex>-<hash>
+		// Which translates to: lwsNameLen + 1 (dash) + groupIndexDigits + statefulSetRevisionLabelSuffixLen
+		workerRevisionLabelSuffixLen := 1 + groupIndexDigits + statefulSetRevisionLabelSuffixLen
+
+		maxSuffixLen := serviceSuffixLen
+		if workerRevisionLabelSuffixLen > maxSuffixLen {
+			maxSuffixLen = workerRevisionLabelSuffixLen
+		}
+
+		maxNameLen := lwsNameLen + maxSuffixLen
+
+		if maxNameLen > dns1035MaxLen {
+			combinedLimit := dns1035MaxLen - separators - sliceDigits - revisionLen - maxSuffixLen
+			allErrs = append(allErrs, field.Invalid(
+				rolesPath.Index(i).Child("name"),
+				role.Name,
+				fmt.Sprintf(
+					"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for service name and StatefulSet revision hash labels); "+
+						"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
+					maxNameLen, dns1035MaxLen, combinedLimit,
+				),
+			))
+		}
+	}
+	return allErrs
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy

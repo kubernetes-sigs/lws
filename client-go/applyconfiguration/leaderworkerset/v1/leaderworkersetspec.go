@@ -52,6 +52,14 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
+	// groupIdentity determines how group identities are assigned.
+	// Ordinal (default) manages leaders through a StatefulSet: groups are named
+	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
+	// Hash manages leaders through a Deployment: group names are hash-suffixed,
+	// scale down prefers unscheduled and not-ready groups over healthy ones, and
+	// rollouts are paced by a group readiness gate on the leader pods.
+	// This field is immutable.
+	GroupIdentity *leaderworkersetv1.GroupIdentityType `json:"groupIdentity,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -97,5 +105,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderwo
 // If called multiple times, the NetworkConfig field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *NetworkConfigApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.NetworkConfig = value
+	return b
+}
+
+// WithGroupIdentity sets the GroupIdentity field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GroupIdentity field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupIdentity(value leaderworkersetv1.GroupIdentityType) *LeaderWorkerSetSpecApplyConfiguration {
+	b.GroupIdentity = &value
 	return b
 }

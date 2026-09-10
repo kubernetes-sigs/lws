@@ -128,21 +128,12 @@ func addEnvVarsIfNotExists(c *corev1.Container, firstEnv corev1.EnvVar, e ...cor
 	c.Env = newEnvVars
 }
 
-// AddLWSVariables adds environment variable to every container.
-func AddLWSVariables(pod *corev1.Pod) error {
-	lwsName, found := pod.Labels[leaderworkerset.SetNameLabelKey]
-	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no name label found for pod %v", klog.KObj(pod))
-	}
-
-	groupIndex, found := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-	if !found {
-		return fmt.Errorf("Failure constructing environment variables, no group index label found for pod %v", klog.KObj(pod))
-	}
-
+// AddLWSVariables adds environment variable to every container. leaderAddress
+// is the DNS address of the group's leader pod.
+func AddLWSVariables(pod *corev1.Pod, leaderAddress string) error {
 	leaderAddressEnvVar := corev1.EnvVar{
 		Name:  leaderworkerset.LwsLeaderAddress,
-		Value: fmt.Sprintf("%s-%s.%s.%s", lwsName, groupIndex, pod.Spec.Subdomain, pod.ObjectMeta.Namespace),
+		Value: leaderAddress,
 	}
 
 	size, found := pod.Annotations[leaderworkerset.SizeAnnotationKey]
@@ -181,6 +172,13 @@ func AddLWSVariables(pod *corev1.Pod) error {
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *corev1.Pod) bool {
 	return IsPodReadyConditionTrue(pod.Status)
+}
+
+// ContainersReady returns true if all of the pod's containers are ready,
+// regardless of readiness gates.
+func ContainersReady(pod *corev1.Pod) bool {
+	_, condition := GetPodCondition(&pod.Status, corev1.ContainersReady)
+	return condition != nil && condition.Status == corev1.ConditionTrue
 }
 
 // IsPodReadyConditionTrue returns true if a pod is ready; false otherwise.

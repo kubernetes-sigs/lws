@@ -17,11 +17,16 @@ limitations under the License.
 package webhooks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -183,4 +188,180 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeaderWorkerSetValidation(t *testing.T) {
+	webhook := &LeaderWorkerSetWebhook{}
+	ctx := context.Background()
+
+	t.Run("nil replicas should be defaulted", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: nil, // nil replicas
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+				RolloutStrategy: v1.RolloutStrategy{
+					Type: v1.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+						Partition:      ptr.To[int32](0),
+					},
+				},
+			},
+		}
+		if err := webhook.Default(ctx, lws); err != nil {
+			t.Fatalf("defaulting LeaderWorkerSet: %v", err)
+		}
+		if diff := cmp.Diff(ptr.To[int32](1), lws.Spec.Replicas); diff != "" {
+			t.Errorf("unexpected replicas (-want +got):\n%s", diff)
+		}
+		if _, err := webhook.ValidateCreate(ctx, lws); err != nil {
+			t.Errorf("validating defaulted LeaderWorkerSet: %v", err)
+		}
+	})
+
+	t.Run("nil rolling update configuration should not panic", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](2),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+				RolloutStrategy: v1.RolloutStrategy{
+					Type:                       v1.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: nil, // nil configuration
+				},
+			},
+		}
+		if err := webhook.Default(ctx, lws); err != nil {
+			t.Fatalf("defaulting LeaderWorkerSet: %v", err)
+		}
+		if lws.Spec.RolloutStrategy.RollingUpdateConfiguration == nil {
+			t.Fatal("expected rollingUpdateConfiguration to be defaulted")
+		}
+		if _, err := webhook.ValidateCreate(ctx, lws); err != nil {
+			t.Errorf("validating defaulted LeaderWorkerSet: %v", err)
+		}
+	})
+
+	t.Run("missing subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size:           ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{},
+				},
+			},
+		}
+
+		allErrs := webhook.generalValidate(lws)
+		if len(allErrs) != 1 {
+			t.Fatalf("expected one validation error for missing subGroupSize, got %v", allErrs)
+		}
+		if allErrs[0].Type != field.ErrorTypeRequired {
+			t.Errorf("expected required error, got %q", allErrs[0].Type)
+		}
+	})
+
+	t.Run("zero subgroup size should return a validation error", func(t *testing.T) {
+		lws := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws",
+				Namespace: "default",
+			},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{
+						SubGroupSize: ptr.To[int32](0),
+					},
+				},
+			},
+		}
+
+		allErrs := webhook.generalValidate(lws)
+		if len(allErrs) != 1 {
+			t.Fatalf("expected one validation error for zero subGroupSize, got %v", allErrs)
+		}
+		if allErrs[0].Type != field.ErrorTypeInvalid {
+			t.Errorf("expected invalid error, got %q", allErrs[0].Type)
+		}
+	})
+
+	t.Run("nil subgroup size on update should not panic", func(t *testing.T) {
+		oldLWS := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{
+						SubGroupSize: nil,
+					},
+				},
+			},
+		}
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize = ptr.To[int32](1)
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err != nil {
+			t.Errorf("expected update from a legacy nil subGroupSize to succeed, got: %v", err)
+		}
+	})
+
+	t.Run("nil new subgroup size on update should return a validation error", func(t *testing.T) {
+		oldLWS := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					SubGroupPolicy: &v1.SubGroupPolicy{
+						SubGroupSize: ptr.To[int32](1),
+					},
+				},
+			},
+		}
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize = nil
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Fatal("expected validation error for a nil subGroupSize")
+		}
+	})
+
+	t.Run("nil old network config on update should not panic", func(t *testing.T) {
+		oldLWS := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas: ptr.To[int32](1),
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](1),
+				},
+				NetworkConfig: nil,
+			},
+		}
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.NetworkConfig = &v1.NetworkConfig{}
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Fatal("expected validation error for a nil subdomainPolicy")
+		}
+	})
 }

@@ -1,6 +1,7 @@
 ---
 title: "Labels, Annotations and Environment Variables"
 linkTitle: "Labels, Annotations and Environment Variables"
+weight: 30
 date: 2025-03-14
 description:  A reference for all labels, annotations, and environment variables in LWS.
 ---

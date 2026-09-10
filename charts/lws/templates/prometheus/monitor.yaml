@@ -6,6 +6,11 @@ metadata:
     app.kubernetes.io/instance: controller-manager-metrics-monitor
     control-plane: controller-manager
     {{- include "lws.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor }}
+    {{- with .extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
   name: {{ include "lws.fullname" . }}-controller-manager-metrics-monitor
   namespace: {{ .Release.Namespace }}
 spec:
@@ -22,13 +27,6 @@ spec:
           secret:
             name: lws-metrics-server-cert
             key: ca.crt
-        cert:
-          secret:
-            name: lws-metrics-server-cert
-            key: tls.crt
-        keySecret:
-          name: lws-metrics-server-cert
-          key: tls.key
         {{- else }}
           insecureSkipVerify: true
         {{- end }}

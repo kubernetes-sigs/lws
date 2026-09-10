@@ -181,8 +181,13 @@ type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// RoleStatuses contains the status for each role.
-	// The order matches spec.roles.
+	// observedGeneration is the most recent generation observed for this DisaggregatedSet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// RoleStatuses contains the status for each role currently in spec.roles.
+	// The order matches spec.roles. A role removed from spec.roles has no entry
+	// here, even if LeaderWorkerSets for that role still exist while draining.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
@@ -194,7 +199,6 @@ type DisaggregatedSetStatus struct {
 	// Standard condition types include:
 	// - "Available": the resource is fully functional
 	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
@@ -202,6 +206,23 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// DisaggregatedSetConditionType is a valid value for DisaggregatedSetStatus.Conditions[].Type.
+type DisaggregatedSetConditionType string
+
+// These are built-in conditions of a DisaggregatedSet.
+const (
+	// DisaggregatedSetAvailable means every role has reached its desired replica
+	// count (across all slices), with all of those replicas ready and updated to
+	// the current revision. A role with a desired replica count of 0 (the
+	// all-roles-paused state) is satisfied once it has fully drained to 0.
+	DisaggregatedSetAvailable DisaggregatedSetConditionType = "Available"
+
+	// DisaggregatedSetProgressing means at least one role has not yet reached its
+	// desired replica count, or has replicas that are not ready or not updated to
+	// the current revision.
+	DisaggregatedSetProgressing DisaggregatedSetConditionType = "Progressing"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

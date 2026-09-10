@@ -96,6 +96,20 @@ func getContainerRequestingTPUs(spec *corev1.PodSpec) *corev1.Container {
 	return nil
 }
 
+// leaderDNSHostname returns the DNS host name of the group's leader pod. Leader
+// pods carry it in their spec, worker pods carry the full leader address in an
+// annotation. Pods with neither use leaderPodName, their leader's host name
+// matches its pod name.
+func leaderDNSHostname(pod *corev1.Pod, leaderPodName string) string {
+	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" && pod.Spec.Hostname != "" {
+		return pod.Spec.Hostname
+	}
+	if address := pod.Annotations[leaderworkerset.LeaderAddressAnnotationKey]; address != "" {
+		return strings.Split(address, ".")[0]
+	}
+	return leaderPodName
+}
+
 func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	container := getContainerRequestingTPUs(&pod.Spec)
 	if container == nil {
@@ -143,8 +157,9 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		// The leader requests TPU resources, so it should be included in hostnames.
-		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
+		leaderHostname := leaderDNSHostname(pod, leaderName)
+		hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderHostname, pod.Spec.Subdomain))
+		hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderHostname, pod.Spec.Subdomain, tpuProcessPort))
 		end -= 1
 	} else {
 		leaderName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
@@ -155,8 +170,9 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 			// SubGroup 0 contains the leader, and the leader is requesting TPU resources, so
 			// the hostname list should shift to the left by one
 			end -= 1
-			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderName, pod.Spec.Subdomain))
-			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderName, pod.Spec.Subdomain, tpuProcessPort))
+			leaderHostname := leaderDNSHostname(pod, leaderName)
+			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderHostname, pod.Spec.Subdomain))
+			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderHostname, pod.Spec.Subdomain, tpuProcessPort))
 		} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
 			// Since the first subGroup has been shifted to the left by one, all other subsequent
 			// subGroups should be shifted as well
@@ -250,7 +266,7 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	var hostnames []string
 	var hostnamesAddresses []string
 	if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" || pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
-		leaderPodHostname := fmt.Sprintf("%s.%s", leaderPodName, pod.Spec.Subdomain)
+		leaderPodHostname := fmt.Sprintf("%s.%s", leaderDNSHostname(pod, leaderPodName), pod.Spec.Subdomain)
 		// For now we assume that the leader has the same number of containers
 		// as the current pod, although this may not always be the case.
 		for i := range numContainers {

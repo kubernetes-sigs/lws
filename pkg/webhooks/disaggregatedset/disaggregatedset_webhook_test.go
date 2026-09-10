@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -536,6 +537,109 @@ func TestValidateCreate(t *testing.T) {
 			},
 			expectError: false,
 		},
+		// --- Generated name length validation tests ---
+		{
+			// With slices=1 (default), overhead = 3 separators + 1 slice digit + 8 revision + 13 max suffix (1 dash + 1 group index digit + 11 hash) = 25.
+			// dsName(31) + roleName(7) + 25 = 63 → exactly at limit.
+			name: "generated names at exact 63-char limit is accepted",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 31), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 7),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			// dsName(31) + roleName(8) + 25 = 64 → 1 char over.
+			name: "generated names 1 char over limit is rejected",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 31), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 8),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
+		},
+		{
+			// Long DS name (40 chars) with a short role (3 chars): 40+3+25=68 → rejected.
+			name: "long DS name with short role name exceeds limit",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("x", 40), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: "abc",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "de",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
+		},
+		{
+			// slices=100 → max index 99 → 2 digits. Overhead = 3+2+8+13 = 26.
+			// dsName(31) + roleName(7) + 26 = 64 → rejected (would be accepted with slices=1).
+			name: "multi-slice worst case pushes name over limit",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 31), Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					Slices: ptr.To(int32(100)),
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{
+							Name: strings.Repeat("b", 7),
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+						{
+							Name: "b",
+							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+								Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "would exceed the DNS-1035 limit",
+		},
 	}
 
 	for _, tt := range tests {
@@ -713,4 +817,89 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "253 characters")
 	})
+}
+
+func TestValidateCreateGroupIdentity(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+
+	buildDisaggregatedSet := func(spec leaderworkerset.LeaderWorkerSetSpec) *disaggv1.DisaggregatedSet {
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Roles: []disaggv1.DisaggregatedRoleSpec{
+					{
+						Name:                        "prefill",
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: spec},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		obj         *disaggv1.DisaggregatedSet
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "hash role is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with subGroupPolicy is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
+						SubGroupSize: ptr.To(int32(2)),
+					},
+				},
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with volumeClaimTemplates is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{}},
+				},
+			}),
+			expectError: true,
+			errorMsg:    "volumeClaimTemplates are not supported with groupIdentity Hash",
+		},
+		{
+			name: "ordinal role with subGroupPolicy is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityOrdinal,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
+						SubGroupSize: ptr.To(int32(2)),
+					},
+				},
+			}),
+			expectError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := webhook.ValidateCreate(ctx, tc.obj)
+			if tc.expectError {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

@@ -39,6 +39,7 @@ const (
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonLWSDeleted             = "LWSDeleted"
+	EventReasonWaitingForServiceGC    = "WaitingForServiceGarbageCollection"
 )
 
 type RollingUpdateExecutor struct {
@@ -64,7 +65,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
-	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet.Namespace, disaggregatedSet.Name, slice, revision)
+	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -359,7 +360,7 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 		}
 		lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, newRevision.Revision, name)
 		log.Info("Scaling up", "lws", lwsName, "from", current[i], "to", target[i])
-		if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, target[i]); err != nil {
+		if err := executor.LWSManager.Scale(ctx, ds, lwsName, target[i]); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
@@ -425,7 +426,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			// Address by the LWS's actual name so a legacy slice-0 object drains too.
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
-			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
+			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas[name]); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
@@ -459,7 +460,7 @@ func (executor *RollingUpdateExecutor) ensureNewLWSExists(
 	initialReplicas int,
 ) (bool, error) {
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
-	existing, err := executor.LWSManager.Get(ctx, ds.Namespace, lwsName)
+	existing, err := executor.LWSManager.Get(ctx, ds, lwsName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LWS %s: %w", lwsName, err)
 	}

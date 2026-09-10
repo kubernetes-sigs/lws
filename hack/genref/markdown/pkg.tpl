@@ -5,6 +5,8 @@
   {{- if .IsMain -}}
 ---
 title: {{ .Title }}
+linkTitle: {{ .Title }}
+weight: {{ if eq .GroupName "leaderworkerset.x-k8s.io" }}10{{ else }}20{{ end }}
 content_type: tool-reference
 package: {{ .DisplayName }}
 auto_generated: true

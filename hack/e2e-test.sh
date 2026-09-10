@@ -20,6 +20,13 @@ set -o pipefail
 
 SCHEDULER_PROVIDER=${SCHEDULER_PROVIDER:-""}
 LWS_UPGRADE_FROM_VERSION=${LWS_UPGRADE_FROM_VERSION:-""}
+# LWS_UPGRADE_METHOD selects how the old release is installed and upgraded:
+# "manifests" (default, kustomize) or "helm".
+LWS_UPGRADE_METHOD=${LWS_UPGRADE_METHOD:-"manifests"}
+HELM=${HELM:-"./bin/helm"}
+HELM_CHART_REPO=${HELM_CHART_REPO:-"registry.k8s.io/lws/charts"}
+HELM_RELEASE_NAME=${HELM_RELEASE_NAME:-"lws"}
+LWS_NAMESPACE=${LWS_NAMESPACE:-"lws-system"}
 export CWD=$(pwd)
 
 KUBECONFIG_PATH=""
@@ -35,7 +42,7 @@ fi
 
 function save_controller_logs {
     local output="$1"
-    $KUBECTL logs -n lws-system deployment/lws-controller-manager \
+    $KUBECTL logs -n "$LWS_NAMESPACE" deployment/lws-controller-manager \
         --all-pods=true --prefix=true > "$output" 2>&1 || true
 }
 
@@ -45,8 +52,8 @@ function cleanup {
         if [ ! -d "$ARTIFACTS" ]; then
             mkdir -p "$ARTIFACTS"
         fi
-        $KUBECTL logs -n lws-system deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
-        $KUBECTL describe pods -n lws-system > "$ARTIFACTS"/lws-system-pods.log || true
+        $KUBECTL logs -n "$LWS_NAMESPACE" deployment/lws-controller-manager > "$ARTIFACTS"/lws-controller-manager.log || true
+        $KUBECTL describe pods -n "$LWS_NAMESPACE" > "$ARTIFACTS"/"${LWS_NAMESPACE}"-pods.log || true
         
         if [ "$SCHEDULER_PROVIDER" == "volcano" ]; then
             $KUBECTL logs -n volcano-system deployment/volcano-scheduler > "$ARTIFACTS"/volcano-scheduler.log || true
@@ -118,18 +125,18 @@ function deploy_gang_scheduler() {
 
 # Avoid kind's --all-platforms import path for multi-arch release images.
 function kind_load_image {
-    local image="$1"
-    local archive
-    archive="$(mktemp)"
-    trap 'rm -f "$archive"' RETURN
-    docker save "$image" -o "$archive"
+    (
+        local image="$1"
+        local archive
+        archive="$(mktemp)"
+        trap 'rm -f "$archive"' EXIT
+        docker save "$image" -o "$archive"
 
-    while IFS= read -r node; do
-        docker exec -i "$node" ctr --namespace=k8s.io images import \
-            --digests --snapshotter=overlayfs - < "$archive"
-    done < <($KIND get nodes --name "$KIND_CLUSTER_NAME")
-
-    rm -f "$archive"
+        while IFS= read -r node; do
+            docker exec -i "$node" ctr --namespace=k8s.io images import \
+                --digests --snapshotter=overlayfs - < "$archive"
+        done < <($KIND get nodes --name "$KIND_CLUSTER_NAME")
+    )
 }
 
 function kind_load {
@@ -148,9 +155,48 @@ function install_old_release {
         --retry 5 --retry-delay 2 \
         --output "$OLD_MANIFEST" "$OLD_MANIFEST_URL"
 
+    if [ "$LWS_NAMESPACE" != "lws-system" ]; then
+        sed -i "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" "$OLD_MANIFEST"
+        $KUBECTL create namespace "$LWS_NAMESPACE" --dry-run=client -o yaml | $KUBECTL apply -f -
+    fi
+
     $KUBECTL apply --server-side -f "$OLD_MANIFEST"
     $KUBECTL rollout status deployment/lws-controller-manager \
-        -n lws-system --timeout=5m
+        -n "$LWS_NAMESPACE" --timeout=5m
+}
+
+function install_old_release_helm {
+    # Install the previous released chart from the OCI registry. The old chart
+    # pins its controller image to the release tag with pullPolicy IfNotPresent,
+    # and that image is already loaded into kind by kind_load, so nothing is
+    # pulled from inside the cluster.
+    $HELM install "$HELM_RELEASE_NAME" "oci://${HELM_CHART_REPO}/lws" \
+        --version "$LWS_UPGRADE_FROM_VERSION" \
+        --namespace "$LWS_NAMESPACE" --create-namespace \
+        --set enableDisaggregatedSet=true \
+        --wait --timeout 5m
+    $KUBECTL rollout status deployment/lws-controller-manager \
+        -n "$LWS_NAMESPACE" --timeout=5m
+}
+
+function upgrade_to_current_helm {
+    # Follow the documented Helm upgrade procedure: reconcile CRDs explicitly
+    # (helm upgrade never touches crds/), then upgrade the release in place with
+    # the locally built, kind-loaded controller image.
+    $KUBECTL apply --server-side --force-conflicts -f "$CWD/charts/lws/crds"
+
+    local image_repo="${IMAGE_TAG%:*}"
+    local image_tag="${IMAGE_TAG##*:}"
+
+    $HELM upgrade "$HELM_RELEASE_NAME" "$CWD/charts/lws" \
+        --namespace "$LWS_NAMESPACE" \
+        --set image.manager.repository="$image_repo" \
+        --set image.manager.tag="$image_tag" \
+        --set image.manager.pullPolicy=IfNotPresent \
+        --set enableDisaggregatedSet=true \
+        --wait --timeout 5m
+    $KUBECTL rollout status deployment/lws-controller-manager \
+        -n "$LWS_NAMESPACE" --timeout=5m
 }
 
 function run_upgrade_phase {
@@ -158,6 +204,7 @@ function run_upgrade_phase {
     LWS_UPGRADE_PHASE="$phase" \
     LWS_UPGRADE_SNAPSHOT_PATH="$SNAPSHOT_PATH" \
     IMAGE_TAG="$IMAGE_TAG" \
+    LWS_NAMESPACE="$LWS_NAMESPACE" \
         $GINKGO \
         --junit-report="junit-upgrade-${phase}.xml" \
         --output-dir="$ARTIFACTS" \
@@ -178,19 +225,27 @@ function upgrade_to_current {
             $KUSTOMIZE edit set image controller="$IMAGE_TAG"
         )
         $KUSTOMIZE build "$CWD/test/e2e/config" \
+            | sed "s|namespace: lws-system|namespace: $LWS_NAMESPACE|g" \
             | $KUBECTL apply --server-side --force-conflicts -f -
     )
 
     $KUBECTL rollout status deployment/lws-controller-manager \
-        -n lws-system --timeout=5m
+        -n "$LWS_NAMESPACE" --timeout=5m
 }
 
 function upgrade_test_flow {
-    echo "Upgrade test: $LWS_UPGRADE_FROM_VERSION -> current"
-    install_old_release
-    run_upgrade_phase before
-    save_controller_logs "$ARTIFACTS/old-controller.log"
-    upgrade_to_current
+    echo "Upgrade test ($LWS_UPGRADE_METHOD): $LWS_UPGRADE_FROM_VERSION -> current"
+    if [ "$LWS_UPGRADE_METHOD" == "helm" ]; then
+        install_old_release_helm
+        run_upgrade_phase before
+        save_controller_logs "$ARTIFACTS/old-controller.log"
+        upgrade_to_current_helm
+    else
+        install_old_release
+        run_upgrade_phase before
+        save_controller_logs "$ARTIFACTS/old-controller.log"
+        upgrade_to_current
+    fi
 }
 
 function lws_deploy {

@@ -198,6 +198,14 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 		},
 		Spec: podTemplateSpec.Spec,
 	}
+	// The statefulset controller assigns the DNS identity of its pods and the
+	// pod webhook overrides the subdomain per replica. This suite runs neither,
+	// so mimic both here.
+	pod.Spec.Hostname = pod.Name
+	pod.Spec.Subdomain = leaderSts.Spec.ServiceName
+	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+		pod.Spec.Subdomain = pod.Name
+	}
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}

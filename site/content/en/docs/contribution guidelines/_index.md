@@ -1,7 +1,7 @@
 ---
 title: "Contribution Guidelines"
 linkTitle: "Contribution Guidelines"
-weight: 9
+weight: 100
 description: >
   How to contribute to LWS
 ---

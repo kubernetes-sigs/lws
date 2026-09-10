@@ -1,0 +1,109 @@
+globalOptions:
+  boilerplatePath: ./hack/boilerplate.go.txt
+files:
+  - path: ./config/rbac/*.yaml
+    outputDir: ./charts/lws/templates/rbac/
+    removeComments: true
+    excludes:
+      - auth_proxy_*.yaml
+      - configuration_*.yaml
+      - kustomization.yaml
+      - leaderworkerset_*.yaml
+    continueOnError: true
+    operations:
+      - type: DELETE
+        key: .metadata.labels
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-role"'
+        onFileCondition: '.metadata.name == "manager-role"'
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-rolebinding"'
+        onFileCondition: '.metadata.name == "manager-rolebinding"'
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+        onFileCondition: '.metadata.name == "controller-manager"'
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-role"'
+        onFileCondition: '.metadata.name == "leader-election-role"'
+      - type: UPDATE
+        key: .metadata.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-rolebinding"'
+        onFileCondition: '.metadata.name == "leader-election-rolebinding"'
+      - type: UPDATE
+        key: .metadata.namespace
+        value: '"{{ .Release.Namespace }}"'
+        onFileCondition: '.kind == "ServiceAccount"'
+      - type: UPDATE
+        key: .roleRef.name
+        value: '"{{ include \"lws.fullname\" . }}-manager-role"'
+        onFileCondition: '.roleRef.name == "manager-role"'
+      - type: UPDATE
+        key: .roleRef.name
+        value: '"{{ include \"lws.fullname\" . }}-leader-election-role"'
+        onFileCondition: '.roleRef.name == "leader-election-role"'
+      - type: UPDATE
+        key: .subjects.[].name
+        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+        onFileCondition: '.kind == "ClusterRoleBinding" or .kind == "RoleBinding"'
+      - type: UPDATE
+        key: .subjects.[].namespace
+        value: '"{{ .Release.Namespace }}"'
+        onFileCondition: '.kind == "ClusterRoleBinding" or .kind == "RoleBinding"'
+    postOperations:
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            app.kubernetes.io/instance: manager-rolebinding
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+        onFileCondition: '.kind == "ClusterRoleBinding"'
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            app.kubernetes.io/instance: controller-manager-sa
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+        onFileCondition: '.kind == "ServiceAccount"'
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            app.kubernetes.io/instance: leader-election-role
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+        onFileCondition: '.kind == "Role"'
+      - type: INSERT_TEXT
+        key: .metadata
+        value: |
+          labels:
+            app.kubernetes.io/instance: leader-election-rolebinding
+            {{- include "lws.labels" . | nindent 4 }}
+        indentation: 2
+        onFileCondition: '.kind == "RoleBinding"'
+      - type: INSERT_TEXT
+        key: .metadata.name
+        value: |
+          namespace: {{ .Release.Namespace }}
+        onFileCondition: '.kind == "Role" or .kind == "RoleBinding"'
+      - type: INSERT_TEXT
+        key: .rules
+        value: |
+          {{- if and .Values.gangSchedulingManagement (hasKey .Values.gangSchedulingManagement "schedulerProvider") (eq .Values.gangSchedulingManagement.schedulerProvider "volcano") }}
+          - apiGroups:
+              - scheduling.volcano.sh
+            resources:
+              - podgroups
+            verbs:
+              - create
+              - get
+              - list
+              - watch
+          {{- end }}
+        indentation: 2
+        onFileCondition: '.kind == "ClusterRole"'

@@ -100,6 +100,16 @@ func GenerateLegacyName(baseName, revision, role string) string {
 	return fmt.Sprintf("%s-%s-%s", baseName, revision, role)
 }
 
+// PrivateServiceSuffix distinguishes the Service this controller creates for an
+// LWS's own pods from the public one the LWS controller creates under the bare
+// LWS name. Changing it renames every existing Service and breaks resolved DNS.
+const PrivateServiceSuffix = "-prv"
+
+// PrivateServiceName returns the private headless Service name for an LWS.
+func PrivateServiceName(lwsName string) string {
+	return lwsName + PrivateServiceSuffix
+}
+
 func GenerateLabels(baseName string, slice int, revision, role string) map[string]string {
 	return map[string]string{
 		"app":                               fmt.Sprintf("%s-%d-%s", baseName, slice, role),
@@ -143,15 +153,24 @@ const revisionLength = 8
 
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
-		Name     string                                 `json:"name"`
-		Template leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
+		Name string `json:"name"`
+		// GroupIdentity is normalized so "" and the CRD default Ordinal hash
+		// identically: objects persisted before the field existed must keep
+		// their revision once the API server starts defaulting it on reads.
+		GroupIdentity leaderworkersetv1.GroupIdentityType    `json:"groupIdentity,omitempty"`
+		Template      leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
 	}
 
 	templates := make([]roleTemplate, 0, len(roles))
 	for _, role := range roles {
+		groupIdentity := role.Spec.GroupIdentity
+		if groupIdentity == leaderworkersetv1.GroupIdentityOrdinal {
+			groupIdentity = ""
+		}
 		templates = append(templates, roleTemplate{
-			Name:     role.Name,
-			Template: role.Spec.LeaderWorkerTemplate,
+			Name:          role.Name,
+			GroupIdentity: groupIdentity,
+			Template:      role.Spec.LeaderWorkerTemplate,
 		})
 	}
 
