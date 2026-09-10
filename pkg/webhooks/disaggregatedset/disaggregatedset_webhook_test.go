@@ -903,3 +903,55 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSubRoles(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+	build := func() *disaggv1.DisaggregatedSet {
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{
+				Name: "decode",
+				SubRoles: []disaggv1.DisaggregatedSubRoleSpec{
+					{Name: "short", Replicas: ptr.To(int32(1))},
+					{Name: "long", Replicas: ptr.To(int32(2))},
+				},
+			}}},
+		}
+	}
+
+	t.Run("accepts ordinal sub-roles", func(t *testing.T) {
+		_, err := webhook.ValidateCreate(ctx, build())
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects Hash until its assignment protocol is implemented", func(t *testing.T) {
+		obj := build()
+		obj.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.ErrorContains(t, err, "groupIdentity Hash is not supported when subRoles are defined")
+	})
+
+	t.Run("rejects parent scaling", func(t *testing.T) {
+		obj := build()
+		obj.Spec.Roles[0].Scaling = &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.ErrorContains(t, err, "parent scaling must be omitted")
+	})
+
+	t.Run("rejects replicas on an External sub-role", func(t *testing.T) {
+		obj := build()
+		obj.Spec.Roles[0].SubRoles[0].Scaling = &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.ErrorContains(t, err, "replicas must be omitted")
+	})
+
+	t.Run("rejects the reserved Pod label", func(t *testing.T) {
+		obj := build()
+		obj.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{
+			disaggv1.SubRoleLabelKey: "short",
+		}
+		_, err := webhook.ValidateCreate(ctx, obj)
+		require.ErrorContains(t, err, "reserved for controller-managed sub-role assignment")
+	})
+}

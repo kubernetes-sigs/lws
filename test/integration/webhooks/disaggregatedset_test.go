@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -193,5 +194,18 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		err := k8sClient.Create(ctx, disagg)
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("volumeClaimTemplates are not supported with groupIdentity Hash"))
+	})
+
+	ginkgo.It("rejects Hash group identity when sub-roles are defined", func() {
+		disagg := buildDisaggregatedSet("gi-hash-subroles").Obj()
+		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		disagg.Spec.Roles[0].SubRoles = []disaggregatedset.DisaggregatedSubRoleSpec{{
+			Name:     "short-context",
+			Replicas: ptr.To(int32(1)),
+		}}
+
+		err := k8sClient.Create(ctx, disagg)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("groupIdentity Hash is not supported when subRoles are defined"))
 	})
 })
