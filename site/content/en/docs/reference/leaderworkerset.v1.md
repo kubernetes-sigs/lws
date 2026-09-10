@@ -163,7 +163,7 @@ This field is immutable.</p>
     
   
 <tr><td><code>conditions</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
 <td>
    <p>conditions track the condition of the leaderworkerset.</p>
@@ -231,14 +231,14 @@ API whenever possible.</p>
     
   
 <tr><td><code>leaderTemplate</code> <B>[Required]</B><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
 </td>
 <td>
    <p>leaderTemplate defines the pod template for leader pods.</p>
 </td>
 </tr>
 <tr><td><code>workerTemplate</code> <B>[Required]</B><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#podtemplatespec-v1-core"><code>k8s.io/api/core/v1.PodTemplateSpec</code></a>
 </td>
 <td>
    <p>workerTemplate defines the pod template for worker pods.</p>
@@ -272,7 +272,7 @@ in each replica.</p>
 </td>
 </tr>
 <tr><td><code>volumeClaimTemplates</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#persistentvolumeclaim-v1-core"><code>[]k8s.io/api/core/v1.PersistentVolumeClaim</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#persistentvolumeclaim-v1-core"><code>[]k8s.io/api/core/v1.PersistentVolumeClaim</code></a>
 </td>
 <td>
    <p>volumeClaimTemplates is a list of claims that pods are allowed to reference.
@@ -282,7 +282,7 @@ any volumes in the template, with the same name.</p>
 </td>
 </tr>
 <tr><td><code>persistentVolumeClaimRetentionPolicy</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#statefulsetpersistentvolumeclaimretentionpolicy-v1-apps"><code>k8s.io/api/apps/v1.StatefulSetPersistentVolumeClaimRetentionPolicy</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#statefulsetpersistentvolumeclaimretentionpolicy-v1-apps"><code>k8s.io/api/apps/v1.StatefulSetPersistentVolumeClaimRetentionPolicy</code></a>
 </td>
 <td>
    <p>persistentVolumeClaimRetentionPolicy describes the policy used for PVCs created from

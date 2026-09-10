@@ -199,8 +199,7 @@ webhook:
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger"),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Controller", "Logger"),
-		// client.Options.Log (added in controller-runtime v0.25) is populated with a
-		// real logr.Logger by NewManager, whose unexported sink cmp cannot introspect.
+		// client.Options.Log holds a real logr.Logger with an unexported sink.
 		cmpopts.IgnoreFields(ctrlclient.Options{}, "Log"),
 	}
 

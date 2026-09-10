@@ -55,6 +55,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
+  failurePolicy: Fail
+  name: vdisaggregatedset.kb.io
+  rules:
+  - apiGroups:
+    - disaggregatedset.x-k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - disaggregatedsets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-leaderworkerset-x-k8s-io-v1-leaderworkerset
   failurePolicy: Fail
   name: vleaderworkerset.kb.io
@@ -88,24 +108,4 @@ webhooks:
     - UPDATE
     resources:
     - pods
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
-  failurePolicy: Fail
-  name: vdisaggregatedset.kb.io
-  rules:
-  - apiGroups:
-    - disaggregatedset.x-k8s.io
-    apiVersions:
-    - v1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - disaggregatedsets
   sideEffects: None

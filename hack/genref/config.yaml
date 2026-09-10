@@ -14,7 +14,7 @@ apis:
 
 externalPackages:
   - match: ^k8s\.io/(api|apimachinery/pkg/apis)/
-    target: https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#{{- lower .TypeIdentifier -}}-{{- arrIndex .PackageSegments -1 -}}-{{- arrIndex .PackageSegments -2 -}}
+    target: https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#{{- lower .TypeIdentifier -}}-{{- arrIndex .PackageSegments -1 -}}-{{- arrIndex .PackageSegments -2 -}}
   - match: ^k8s\.io/apimachinery/pkg/api/resource\.Quantity$
     target: https://pkg.go.dev/k8s.io/apimachinery/pkg/api/resource#Quantity
   - match: ^k8s\.io/apimachinery/pkg/util/intstr\.IntOrString$

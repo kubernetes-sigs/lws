@@ -69,7 +69,7 @@ ARTIFACTS ?= $(PROJECT_DIR)/bin
 
 INTEGRATION_TARGET ?= ./test/integration/...
 
-E2E_KIND_VERSION ?= kindest/node:v1.36.1
+E2E_KIND_VERSION ?= kindest/node:v1.37.0
 CERT_MANAGER_VERSION ?= v1.17.0
 USE_EXISTING_CLUSTER ?= false
 # Newest released tag to upgrade from; falls back to v0.9.0 on shallow clones
@@ -326,7 +326,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.2.1
-CONTROLLER_TOOLS_VERSION ?= v0.17.2
+CONTROLLER_TOOLS_VERSION ?= v0.22.0
 HELM_VERSION ?= v3.19.0
 # Use go.mod go version as a single source of truth of Ginkgo version.
 GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
