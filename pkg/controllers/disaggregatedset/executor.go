@@ -42,10 +42,9 @@ const (
 )
 
 type RollingUpdateExecutor struct {
-	Client            client.Client
-	Record            events.EventRecorder
-	LWSManager        *LeaderWorkerSetManager
-	AssignmentManager *AssignmentManager
+	Client     client.Client
+	Record     events.EventRecorder
+	LWSManager *LeaderWorkerSetManager
 }
 
 // ReconcileRollingUpdateNew is the entry point for rolling update reconciliation.
@@ -59,7 +58,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
-	scalers scalerMap,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
@@ -138,7 +137,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	scalers scalerMap,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
@@ -153,6 +152,7 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 		log.V(1).Info("Waiting for new revision to stabilize")
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
+
 	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision, scalers)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, scalers)
 
@@ -169,12 +169,8 @@ func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
 	if err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
 		return ctrl.Result{}, err
 	}
-	prepared, err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past, scalers)
-	if err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
 		return ctrl.Result{}, err
-	}
-	if prepared {
-		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -212,7 +208,7 @@ func buildPlannerState(
 	specRoleSet map[string]bool,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	scalers scalerMap,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
 	n := len(allRoleNames)
 	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
@@ -225,13 +221,11 @@ func buildPlannerState(
 			if lws := newRevision.Roles[roleName]; lws != nil {
 				currentNew[i] = int(getLWSReplicas(lws))
 			}
-			targetNew[i] = getParentTargetReplicas(ds, roleName, scalers, map[disaggregatedsetutils.RoleKey]int{
-				{Role: roleName}: currentNew[i],
-			})
+			targetNew[i] = getTargetReplicas(ds, roleName, scalers, currentNew[i])
 			// No-shrink guard: an External role mid-rollout must not shrink the
 			// new-revision fleet if HPA writes a smaller value while the old
 			// revision is still draining. Releases once the rollout completes.
-			if isParentExternal(ds, roleName) && len(oldRevisions) > 0 && targetNew[i] < currentNew[i] {
+			if isExternal(ds, roleName) && len(oldRevisions) > 0 && targetNew[i] < currentNew[i] {
 				targetNew[i] = currentNew[i]
 			}
 		}
@@ -239,10 +233,42 @@ func buildPlannerState(
 	return
 }
 
+// getTargetReplicas resolves the desired replica count. External roles read
+// spec.replicas from the scaler (always materialised since the CRD defaults it
+// to 0 and the controller seeds it at creation to avoid draining a running
+// Static→External flip).
+func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, currentNew int) int {
+	for _, p := range ds.Spec.Roles {
+		if p.Name != roleName {
+			continue
+		}
+		if p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+			if s := scalers[roleName]; s != nil {
+				return int(s.Spec.Replicas)
+			}
+			return currentNew
+		}
+		if p.Spec.Replicas == nil {
+			return 1
+		}
+		return int(*p.Spec.Replicas)
+	}
+	return 1
+}
+
+func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
+	for _, p := range ds.Spec.Roles {
+		if p.Name == roleName {
+			return p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal
+		}
+	}
+	return false
+}
+
 func extractRollingUpdateConfig(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
-	scalers scalerMap,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) []RollingUpdateConfig {
 	config := DefaultRollingUpdateConfig(len(allRoleNames))
 
@@ -257,7 +283,7 @@ func extractRollingUpdateConfig(
 			// For External roles this returns the scaler value (or currentNew=0
 			// if none is available); percentages against 0 collapse to 0, which
 			// matches how a paused rollout should behave.
-			replicas := getParentTargetReplicas(ds, role.Name, scalers, nil)
+			replicas := getTargetReplicas(ds, role.Name, scalers, 0)
 			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
 			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
@@ -348,8 +374,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
 	current, target RoleReplicaState,
-	scalers scalerMap,
-) (bool, error) {
+) error {
 	budget := make([]int, len(roleNames))
 	for i := range roleNames {
 		budget[i] = current[i] - target[i]
@@ -388,51 +413,6 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 
-		// LWS/StatefulSet scale-down removes the highest group ordinals. Before
-		// changing replicas, arrange sub-role labels so those groups are exactly
-		// the surplus assignments. The existing parent-role planner remains the
-		// sole rollout planner; this is only victim preparation for virtual roles.
-		for _, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists || int(getLWSReplicas(lws)) <= newReplicas[name] {
-				continue
-			}
-			role := disaggregatedsetutils.GetRoleSpec(ds, name)
-			if role == nil || len(role.SubRoles) == 0 {
-				continue
-			}
-			if executor.AssignmentManager == nil {
-				executor.AssignmentManager = NewAssignmentManager(executor.Client)
-			}
-			order, valid := subRoleOrderAndSet(role)
-			observed, err := executor.AssignmentManager.Observe(ctx, ds.Namespace, lws.Name, valid)
-			if err != nil {
-				return false, err
-			}
-			currentByKey := make(map[disaggregatedsetutils.RoleKey]int, len(order))
-			for _, subRole := range order {
-				currentByKey[disaggregatedsetutils.RoleKey{Role: name, SubRole: subRole}] = observed.Replicas[subRole]
-			}
-			final := desiredSubRoleReplicas(ds, name, scalers, currentByKey)
-			physicalReplicas := int(getLWSReplicas(lws))
-			changed, summary, err := executor.AssignmentManager.Reconcile(ctx, ds.Namespace, lws.Name, order,
-				fitSubRoleTargets(order, final, physicalReplicas))
-			if err != nil {
-				return false, err
-			}
-			if changed || summary.Unassigned != 0 || !hasExpectedGroupOrdinals(summary, physicalReplicas) {
-				return true, nil
-			}
-			changed, err = executor.AssignmentManager.PrepareScaleDown(ctx, ds.Namespace, lws.Name, order,
-				fitSubRoleTargets(order, final, newReplicas[name]))
-			if err != nil {
-				return false, err
-			}
-			if changed {
-				return true, nil
-			}
-		}
-
 		for i, name := range roleNames {
 			lws, exists := wl.Roles[name]
 			if !exists {
@@ -446,7 +426,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
 			if err := executor.LWSManager.Scale(ctx, ds.Namespace, lwsName, newReplicas[name]); err != nil {
-				return false, fmt.Errorf("failed to scale %s: %w", lwsName, err)
+				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
 				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
@@ -456,7 +436,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			}
 		}
 	}
-	return false, nil
+	return nil
 }
 
 func allZero(s []int) bool {

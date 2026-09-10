@@ -85,17 +85,3 @@ func TestYAMLWithRoleAndWorkerTemplateMetadata(t *testing.T) {
 	require.Contains(t, yaml, "          metadata:\n            labels:\n              app: prefill")
 	require.Contains(t, yaml, "            annotations:\n              pod-note: \"test\"")
 }
-
-func TestYAMLWithSubRoles(t *testing.T) {
-	config := Config{Name: "model", Roles: []Role{{
-		Name: "decode",
-		SubRoles: []SubRole{
-			{Name: "short", Replicas: Ptr(2)},
-			{Name: "long", External: true},
-		},
-	}}}
-	yaml := config.YAML()
-
-	require.Contains(t, yaml, "    subRoles:\n    - name: short\n      replicas: 2")
-	require.Contains(t, yaml, "    - name: long\n      scaling:\n        mode: External")
-}
