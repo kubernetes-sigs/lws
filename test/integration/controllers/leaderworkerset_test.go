@@ -2344,6 +2344,15 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// Wait for the resized template before simulating leader Pod updates;
 						// otherwise the readiness helper can copy the previous revision.
 						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						// The readiness helper copies the revision from the leader
+						// StatefulSet. Wait for publication, not just the LWS write,
+						// or it can mark old-revision groups Ready and stall the test.
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							g.Expect(sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]).To(gomega.Equal("4"))
+							g.Expect(sts.Spec.Template.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(sts.Labels[leaderworkerset.RevisionKey]))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
