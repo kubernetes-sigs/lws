@@ -242,8 +242,17 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 
-	// Once size = 1, no need to create worker statefulSets.
-	if *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size == 1 {
+	// A protected old leader may have a different size from the live LWS.
+	// Use its stamped revision size, not the latest template's size-one shortcut.
+	groupSize := *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size
+	if stamped, ok := pod.Annotations[leaderworkerset.SizeAnnotationKey]; ok {
+		size, err := strconv.ParseInt(stamped, 10, 32)
+		if err != nil || size < 1 {
+			return ctrl.Result{}, fmt.Errorf("invalid leader group size %q", stamped)
+		}
+		groupSize = int32(size)
+	}
+	if groupSize == 1 {
 		return ctrl.Result{}, nil
 	}
 
@@ -386,18 +395,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size))
-	if err != nil {
-		return false, err
-	}
-
-	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
-
-	if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
-		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-		return false, nil
-	}
-
 	var leader corev1.Pod
 	if !podutils.LeaderPod(pod) {
 		// Prefer the annotation over name parsing: with hash identity the leader
@@ -458,15 +455,39 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		return true, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
+	if freshLWS.UID != leaderWorkerSet.UID || freshLWS.DeletionTimestamp != nil {
+		if podutils.LeaderPod(pod) {
+			return true, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &leader)
+		}
+		return true, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
+	}
 	leaderWorkerSet = freshLWS
-	// if the leader pod is being deleted, we don't need to send deletion requests
+	// Terminating or already exhausted groups must not be retained by a
+	// pending-Pod guard intended only to defer a new group restart.
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
-	// An exhausted group is terminated once and then held by Pod finalizers until
-	// explicit recovery or workload teardown.
 	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		return r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+	}
+	// A protected old group may have a different size from the live template.
+	// Resolve its leader first, also when the restarting Pod is a worker.
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+	if stamped, ok := leader.Annotations[leaderworkerset.SizeAnnotationKey]; ok {
+		size, err := strconv.ParseInt(stamped, 10, 32)
+		if err != nil || size < 1 {
+			return false, fmt.Errorf("invalid leader group size %q", stamped)
+		}
+		groupSize = int(size)
+	}
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
+	if err != nil {
+		return false, err
+	}
+	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+	if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
+		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+		return false, nil
 	}
 	// If a restart budget is configured, enforce it: any recreate-triggering
 	// failure contributes to the same counter. nil keeps the unbounded legacy
