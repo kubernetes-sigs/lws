@@ -1,0 +1,22 @@
+title: DisaggregatedSet External Scaling for Multi-Slice Sets
+kep-number: 948
+authors:
+  - "BenjaminBraunDev"
+status: provisional
+creation-date: 2026-07-29
+reviewers:
+  - ahg-g
+  - Edwinhr716
+  - hasB4K
+  - yankay
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+  - "/keps/849-DisaggregatedSet-HPA"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
