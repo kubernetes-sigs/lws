@@ -16,7 +16,10 @@ workload primitive.
 - [Design Details](#design-details)
   - [DisaggregatedSet API](#disaggregatedset-api)
   - [N-Dimensional Rolling Update Algorithm](#n-dimensional-rolling-update-algorithm)
-  - [Example 1: Two-Role Rollout](#example-1-two-role-rollout)
+    - [Issued work and available capacity](#issued-work-and-available-capacity)
+    - [Capacity and pending-work bounds](#capacity-and-pending-work-bounds)
+    - [Reconcile ordering and completion](#reconcile-ordering-and-completion)
+  - [Example: Pipelining an 8P/4D Rollout](#example-pipelining-an-8p4d-rollout)
   - [Service Orchestration](#service-orchestration)
   - [Controller Architecture](#controller-architecture)
   - [Test Plan](#test-plan)
@@ -159,143 +162,152 @@ type LeaderWorkerSetTemplateSpec struct {
 
 ### N-Dimensional Rolling Update Algorithm
 
-The rolling update algorithm coordinates all roles using a linear interpolation approach:
+The rolling update algorithm treats each set of role replica counts as an
+N-dimensional side. The old side drains from its initial counts to zero while
+the new side grows from zero to its target counts. Each side has its own
+fraction scale:
 
 ```
-newAtStep(i) = ceil(i * target / totalSteps)    // scale up: 0 → target
-oldAtStep(i) = initialOld - floor(i * initialOld / totalSteps)  // scale down: initialOld → 0
+sideSteps                = max(roleSizes)
+smallestReplicaFraction  = 1 / max(roleSizes)
+largestReplicaFraction   = 1 / min(positiveRoleSizes)
 ```
 
-Where, per role:
+`smallestReplicaFraction` is the finest shared progress tick: one pod in the
+largest role. `largestReplicaFraction` is the largest fraction represented by
+one pod in any role and therefore bounds the temporary progress skew caused by
+integer rounding. For example, an `8P/4D` side has a
+`smallestReplicaFraction` of `1/8` and a `largestReplicaFraction` of `1/4`.
+
+For side step `k`, replica targets use ceiling division:
 
 ```
-batchSize  = maxSurge   if maxSurge > 0, else max(1, maxUnavailable)
-roleSteps  = ceil(max(initialOld, target) / batchSize)
+newAtStep(k) = ceil(target * k / newSideSteps)
+oldAtStep(k) = ceil(initialOld * (oldSideSteps - k) / oldSideSteps)
 ```
 
-And across all roles:
+The controller computes each side's progress from the least-advanced role and
+maps every role back onto that common fraction. Ceiling division keeps a
+positive role alive until the old side's final coordinated tick and prevents a
+small role from running ahead by more than one of its replicas. A conservative,
+availability-safe replacement drain may temporarily relax this aliveness
+preference when strict coordination would otherwise deadlock a zero-surge
+rollout.
+
+#### Issued work and available capacity
+
+The controller deliberately distinguishes the desired replica count in the
+LWS Spec from its Ready status:
 
 ```
-totalSteps = max(roleSteps over all roles)
+Spec  = work already issued to the cluster, including pods still starting
+Ready = work that has completed startup and is available to serve
 ```
 
-Note: `totalSteps` counts *ideal scale-up batches* — how many batches the
-slowest role would need to go from 0 to target at its `batchSize` granularity.
-It is **not** the number of reconcile iterations. Because each iteration
-changes either old or new replicas (Property 1), and surge-blocked scale-ups
-may require intermediate drain iterations, the reconcile count is typically
-higher than `totalSteps` (see Example 1: `totalSteps = 3` but 7 reconcile
-iterations).
+Spec drives the planner's progress calculation. Re-planning from Ready would
+reissue the same fractional step on every reconcile while a pod is starting.
+Ready instead controls how much additional work may be in flight, whether an
+old replica can be removed safely, and whether the rollout is complete.
 
-**Key Properties**:
-
-1. **Decoupled Steps**: Each step changes EITHER old OR new replicas, not both. This simplifies reasoning about state transitions.
-
-2. **N-Dimensional Coordination**:
-   - Scale-up uses `min(role[i].step for all i)` to keep roles in sync
-   - Scale-down uses `max(role[i].step for all i)` to ensure all roles drain together
-
-3. **Coordinated Drain**: If any role reaches 0 replicas, all roles are forced to 0. This prevents orphaned single-role workloads from interrupted rollouts.
-
-4. **Surge Constraints**: Per-role `maxSurge` and `maxUnavailable` are respected:
-   ```
-   old + new <= target + maxSurge
-   ```
-
-5. **Scale-Up Priority**: New replicas are scaled up before old replicas are scaled down, ensuring capacity is never below the minimum.
-
-6. **Stability Check**: The controller waits for `replicas == readyReplicas` before computing the next step.
-
-### Example 1: Two-Role Rollout
-
-**(5 prefill, 2 decode → 5 prefill, 2 decode, maxSurge=2, maxUnavailable=1)**
-
-This is a template-only change (replica counts unchanged), so every old
-replica must be replaced. We'll walk through three things: the
-discretization (`totalSteps`), the ideal trajectory it implies, and the
-actual reconcile iterations that realize it.
-
-**Compute `totalSteps`** from the per-role configuration:
+Status can temporarily remain higher than Spec after a scale-down. The
+controller therefore counts only committed availability:
 
 ```
-batchSize  = 2                              // maxSurge > 0, so maxSurge wins
-roleSteps(decode)  = ceil(max(2, 2) / 2) = 1
-roleSteps(prefill) = ceil(max(5, 5) / 2) = 3
-totalSteps = max(1, 3) = 3
+committedReady = min(status.readyReplicas, spec.replicas)
 ```
 
-The rollout will take **3 ideal scale-up batches**.
+This prevents a terminating replica from authorizing another drain.
 
-**Derive the ideal trajectory** by evaluating the interpolation formulas at
-each `i` from 1 to `totalSteps`. For example, at `i=2`:
-`newAtStep(2)` for prefill = `ceil(2*5/3) = ceil(3.33) = 4`;
-`oldAtStep(2)` for prefill = `5 - floor(2*5/3) = 5 - 3 = 2`.
+#### Capacity and pending-work bounds
+
+`MaxSurge` and `MaxUnavailable` remain hard, absolute per-role limits. For each
+role the executor enforces:
 
 ```
-    | newP   newD   oldP   oldD
-----|--------------------------
-i=0 |  0      0      5      2
-i=1 |  2      1      4      2
-i=2 |  4      2      2      1
-i=3 |  5      2      0      0
+roleSize          = max(initialOld, target)
+surgeCeiling      = roleSize + MaxSurge
+availabilityFloor = max(0, min(initialOld, target) - MaxUnavailable)
+
+oldSpec + newSpec                    <= surgeCeiling
+oldCommittedReady + newCommittedReady >= availabilityFloor
 ```
 
-Each row is one checkpoint — the full `(newP, newD, oldP, oldD)` tuple the planner aims at for that step. Targets: prefill→5, decode→2.
+The proportional planner can intentionally use less than those raw limits to
+keep differently sized roles moving together. Let `budgetSteps` be the larger
+of the old and new side step counts. A raw per-role budget is projected onto
+the shared fraction scale as:
 
-**Execute the trajectory.** At the start of each iteration the planner
-recomputes two aggregated step indices from the current observed state:
+```
+projected(role, budget) = ceil(roleSize * budget / budgetSteps)
+```
 
-- `minStep` = `min` over per-role `stepIndex(currentNew, target)` — used to
-  pick the scale-up target. It targets `minStep + 1`'s `newAtStep` values.
-- `maxStep` = `max` over per-role `stepIndex(removed, initialOld)` (where
-  `removed = initialOld - currentOld`) — used to pick the drain target. It
-  targets `maxStep + 1`'s `oldAtStep` values.
+The same projection defines the maximum new work allowed to be issued but not
+yet Ready:
 
-Each iteration then runs only one of scale-up, proportional drain, or
-force-drain (Property 1: decoupled). Force-drain bypasses the step-index
-machinery — it just drains the minimum needed to unblock the next scale-up
-when surge has blocked it. The final-drain shortcut (when new has reached
-target) similarly bypasses step-index and zeroes the remaining old replicas.
+```
+pendingAllowance = projected(role, MaxSurge + MaxUnavailable)
+newSpec - newCommittedReady <= pendingAllowance
+```
 
-The `min/maxStep` column shows `minStep/maxStep` computed at the start of
-each iteration (from the previous row's end state); the order lines up with
-the `ATTEMPTED STATE` tuple `(newP, newD, oldP, oldD)` — `minStep` drives
-the new half (`newAtStep(minStep+1)` per role), `maxStep` drives the old
-half (`oldAtStep(maxStep+1)`). Scale-up advances the new half toward its
-target; prop-drain advances the old half; force-drain drains old to a
-surge-bounded off-trajectory value; iter 7's final-drain shortcut targets
-the all-zero old state directly (not derived from min/maxStep).
-**Bold + underline** marks active step indices (in `min/maxStep`),
-the half of the tuple being driven (in `ATTEMPTED STATE`), and changed
-values (in the per-role columns). The `scale/drain/force` column shows the
-planner's three-try sequence (`tryScaleUp` → `tryProportionalDrain` →
-`tryForceDrain`): ✅ = this check fired, ❌ = tried but returned nil, ⬜ =
-never reached (either an earlier check fired, or the `isNewAtTarget`
-shortcut bypassed the sequence — iter 0 and 7):
+This bounded window is what permits pipelining across slow pod starts. It does
+not grant every role the unscaled `MaxSurge + MaxUnavailable` sum.
+If independent pending bounds would separate role progress by more than
+`largestReplicaFraction`, faster roles wait at that coordination boundary.
 
-| ITERATION | TYPE        | min/maxStep        | ATTEMPTED STATE              | scale/drain/force | NEW PREFILL    | NEW DECODE    | OLD PREFILL    | OLD DECODE    | TOTAL | ACTION                        |
-|-----------|-------------|--------------------|------------------------------|-------------------|----------------|---------------|----------------|---------------|-------|-------------------------------|
-| 0         | initial     | -/-                | -                            | ⬜→⬜→⬜           | 0              | 0             | 5              | 2             | 7     | initial                       |
-| 1         | scale up    | <u>**0**</u>/0     | (<u>**2, 1**</u>, 4, 2)      | ✅→⬜→⬜           | <u>**2**</u>   | <u>**1**</u>  | 5              | 2             | 10    | new decode +1, new prefill +2 |
-| 2         | prop drain  | 1/<u>**0**</u>     | (4, 2, <u>**4, 2**</u>)      | ❌→✅→⬜           | 2              | 1             | <u>**4**</u>   | 2             | 9     | old prefill -1                |
-| 3         | force drain | 1/0                | (4, 2, 4, 2)                 | ❌→❌→✅           | 2              | 1             | <u>**3**</u>   | 2             | 8     | old prefill -1                |
-| 4         | scale up    | <u>**1**</u>/1     | (<u>**4, 2**</u>, 2, 1)      | ✅→⬜→⬜           | <u>**4**</u>   | <u>**2**</u>  | 3              | 2             | 11    | new decode +1, new prefill +2 |
-| 5         | prop drain  | 2/<u>**1**</u>     | (5, 2, <u>**2, 1**</u>)      | ❌→✅→⬜           | 4              | 2             | <u>**2**</u>   | <u>**1**</u>  | 9     | old decode -1, old prefill -1 |
-| 6         | scale up    | <u>**2**</u>/1     | (<u>**5, 2**</u>, 2, 1)      | ✅→⬜→⬜           | <u>**5**</u>   | 2             | 2              | 1             | 10    | new prefill +1                |
-| 7         | final drain | -/-                | (5, 2, <u>**0, 0**</u>)      | ⬜→⬜→⬜           | 5              | 2             | <u>**0**</u>   | <u>**0**</u>  | 7     | old decode -1, old prefill -2 |
+#### Reconcile ordering and completion
 
-Notes:
-- `minStep` advances faster than `maxStep` because the inverse `stepIndex`
-  formula rounds down: `stepIndex(currentNew, target)` reports step 1 as
-  soon as new reaches step 1's level, but `stepIndex(removed, initialOld)`
-  doesn't roll over to 1 until `removed > initialOld / totalSteps`.
-- Iterations 2, 5, and 7 land the system exactly on a trajectory
-  checkpoint (`i = 1, 2, 3` respectively).
+One plan may contain both an old-side drain and new-side growth. The executor
+applies the floor-safe old drain first and then grows the new revision, so the
+two API updates cannot create a transient surge violation. If readiness or
+capacity prevents either mutation, the controller requeues rather than
+mistaking the no-op for completion.
 
-Key observations:
-- Prefill progresses through more ideal steps due to higher replica count
-- Decode only changes when proportionally appropriate
-- Total capacity is maintained throughout: `old + new` stays within surge limits per role
+Interrupted rollouts drain old revisions newest first. A revision is retired
+as soon as all of its role Specs are zero; stale status from its terminating
+pods neither blocks the next older revision nor contributes availability.
+Where possible, the executor retires all roles in one revision together. That
+coordination preference never overrides a role's availability floor.
+
+A rollout is complete only when every old role Spec is zero, every new role
+Spec has reached its target, and every new role has at least its target number
+of committed Ready replicas.
+
+### Example: Pipelining an 8P/4D Rollout
+
+Consider a template-only update with `MaxSurge=2` and
+`MaxUnavailable=2`. Both sides have eight steps:
+
+```
+smallestReplicaFraction = 1/8
+largestReplicaFraction  = 1/4
+pendingAllowance(P)     = ceil(8 * 4 / 8) = 4
+pendingAllowance(D)     = ceil(4 * 4 / 8) = 2
+availabilityFloor(P/D)  = 6/2
+surgeCeiling(P/D)       = 10/6
+```
+
+If every issued replica becomes Ready before the next observation, the Spec
+trajectory can be:
+
+| Observation | Old P | Old D | New P | New D |
+|-------------|------:|------:|------:|------:|
+| Initial     | 8 | 4 | 0 | 0 |
+| 1           | 6 | 3 | 2 | 1 |
+| 2           | 4 | 2 | 4 | 2 |
+| 3           | 2 | 1 | 6 | 3 |
+| 4           | 0 | 0 | 8 | 4 |
+
+The observations are planner checkpoints, not a promise that every cluster
+will expose exactly this sequence. Readiness, API observations, and
+interrupted updates may introduce additional reconciles.
+
+The pending window changes the slow-start case materially. After observation
+1, suppose the new `2P/1D` is still unready. The next reconcile may still
+issue up to `4P/2D` because that is the proportional pending allowance. It
+may drain only availability that is actually committed; it cannot count those
+unready replicas, or stale Ready status above an already-reduced Spec, toward
+the floor. Once Ready advances, pending capacity opens and the pipeline
+continues.
 
 ### Service Orchestration
 
@@ -318,7 +330,8 @@ to implement this enhancement.
 #### Unit tests
 
 - Rolling update planner: step computation, edge cases, constraint violations
-- Executor: scale-up/scale-down coordination, stability checks
+- Executor: Spec/Ready separation, pending bounds, availability-safe drains,
+  and newest-first retirement
 - Service manager: creation conditions, cleanup logic
 - API validation: role count, unique names, replica constraints
 
