@@ -113,8 +113,10 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	newSubGroupPolicy := newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
 	oldSubGroupPolicy := oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
 
-	if newSubGroupPolicy != nil && oldSubGroupPolicy != nil && newSubGroupPolicy.SubGroupSize != nil && oldSubGroupPolicy.SubGroupSize != nil {
-		allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newSubGroupPolicy.SubGroupSize, *oldSubGroupPolicy.SubGroupSize, subGroupSizePath)...)
+	if newSubGroupPolicy != nil && oldSubGroupPolicy != nil {
+		if newSubGroupPolicy.SubGroupSize != nil && oldSubGroupPolicy.SubGroupSize != nil {
+			allErrs = append(allErrs, apivalidation.ValidateImmutableField(*newSubGroupPolicy.SubGroupSize, *oldSubGroupPolicy.SubGroupSize, subGroupSizePath)...)
+		}
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(
 			newSubGroupPolicy.SubGroupPlacement,
 			oldSubGroupPolicy.SubGroupPlacement,
