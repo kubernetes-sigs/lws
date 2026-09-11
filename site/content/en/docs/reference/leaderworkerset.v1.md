@@ -365,7 +365,7 @@ The default value is 0.</p>
 </td>
 <td>
    <p>maxUnavailable is the maximum number of replicas that can be unavailable during the update.
-Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
 Absolute number is calculated from percentage by rounding down.
 This can not be 0 if MaxSurge is 0.
 By default, a fixed value of 1 is used.
@@ -373,7 +373,12 @@ Example: when this is set to 30%, the old replicas can be scaled down by 30%
 immediately when the rolling update starts. Once new replicas are ready, old replicas
 can be scaled down further, followed by scaling up the new replicas, ensuring
 that at least 70% of original number of replicas are available at all times
-during the update.</p>
+during the update.
+During combined template updates and scale-up, controller-authorized disruption
+uses a floor of max(0, min(initial non-surge replicas, desired replicas)-maxUnavailable).
+Whole Ready additional groups provide credit; Pending additions do not block
+affordable old-group replacement. This is not a guarantee against independent
+failures or a strict ordering policy. An unaffordable old suffix can block progress.</p>
 </td>
 </tr>
 <tr><td><code>maxSurge</code> <B>[Required]</B><br/>
@@ -383,7 +388,7 @@ during the update.</p>
    <p>maxSurge is the maximum number of replicas that can be scheduled above the original number of
 replicas.
 Value can be an absolute number (ex: 5) or a percentage of total replicas at
-the start of the update (ex: 10%).
+desired spec.replicas (ex: 10%).
 Absolute number is calculated from percentage by rounding up.
 By default, a value of 0 is used.
 Example: when this is set to 30%, the new replicas can be scaled up by 30%
