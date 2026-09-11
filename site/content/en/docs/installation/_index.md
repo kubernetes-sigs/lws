@@ -241,16 +241,23 @@ kubectl get validatingwebhookconfiguration lws-validating-webhook-configuration 
 
 ### Upgrade from an older version
 
-Helm does not automatically install newly added CRDs during `helm upgrade`. If you are upgrading
-from a version older than v0.9.0, manually apply the CRD first:
+`helm upgrade` does not install newly added CRDs. DisaggregatedSet ships two:
+`disaggregatedsets` since v0.9.0 and `disaggregatedsetrolescalers` since v0.10.0. Apply only
+`disaggregatedsets` and the controller cannot create the `DisaggregatedSetRoleScaler` a role with
+`scaling.mode: External` depends on, so External scaling never takes effect.
+
+Use the [Upgrade by Helm](#upgrade-by-helm) steps, which apply every CRD in the chart, with the
+DisaggregatedSet flag added:
 
 ```shell
-kubectl apply --server-side \
-  -f https://raw.githubusercontent.com/kubernetes-sigs/lws/main/charts/lws/crds/disaggregatedset.x-k8s.io_disaggregatedsets.yaml
-
+CHART_VERSION=0.10.0
+helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
+kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
+  --version=$CHART_VERSION \
   --namespace lws-system \
-  --set enableDisaggregatedSet=true
+  --set enableDisaggregatedSet=true \
+  --wait --timeout 300s
 ```
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
