@@ -1,5 +1,12 @@
+# This index is positional, not name-based: JSON6902 patches can only target
+# array elements by index. It must match vpod.kb.io's position in the
+# controller-gen-generated config/webhook/manifests.yaml, which is currently
+# [vdisaggregatedset, vleaderworkerset, vpod] (index 2). A controller-gen
+# version bump can reorder that output and silently break this patch again
+# (it will overwrite whichever webhook it now points at, rather than error) —
+# re-verify this index against manifests.yaml after any such bump.
 - op: replace
-  path: /webhooks/1
+  path: /webhooks/2
   value:
     admissionReviewVersions:
     - v1

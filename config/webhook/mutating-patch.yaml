@@ -1,3 +1,6 @@
+# Positional index, not name-based — see the comment in validating-patch.yaml.
+# Currently correct: manifests.yaml only has [mleaderworkerset, mpod] here, so
+# mpod.kb.io really is index 1. Re-verify after any controller-gen bump.
 - op: replace
   path: /webhooks/1
   value:

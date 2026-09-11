@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
@@ -64,6 +65,8 @@ internalCertManagement:
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger", "Metrics", "WebhookServer", "LeaderElectionNamespace"),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Controller", "Logger"),
+		// client.Options.Log holds a real logr.Logger with an unexported sink.
+		cmpopts.IgnoreFields(ctrlclient.Options{}, "Log"),
 	}
 
 	testCases := []struct {
