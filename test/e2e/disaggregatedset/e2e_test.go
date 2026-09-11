@@ -157,13 +157,20 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("verifying LWS resources are created for both roles")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.CountLWSByRole(deploymentName, "prefill")).To(Equal(1))
-				g.Expect(kubectl.CountLWSByRole(deploymentName, "decode")).To(Equal(1))
+				count, err := kubectl.CountLWSByRole(deploymentName, "prefill")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(count).To(Equal(1))
+
+				count, err = kubectl.CountLWSByRole(deploymentName, "decode")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(count).To(Equal(1))
 			}, 60*time.Second, time.Second).Should(Succeed())
 
 			By("verifying pods become ready")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.CountRunningPods(deploymentName)).To(Equal(2))
+				count, err := kubectl.CountRunningPods(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(count).To(Equal(2))
 			}, 90*time.Second, time.Second).Should(Succeed())
 		})
 	})
@@ -187,7 +194,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for initial deployment to stabilize")
 			kubectl.ForRunningPodCount(deploymentName, 4)
 
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("triggering rolling update by changing image")
@@ -202,7 +210,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("verifying Services from old revisions are garbage collected via their owning LWS")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.CountService(deploymentName)).To(Equal(2))
+				count, err := kubectl.CountService(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(count).To(Equal(2))
 			}, kubectl.DefaultTimeout, kubectl.DefaultInterval).Should(Succeed())
 
 			By("verifying no orphaned single-role workloads exist")
@@ -252,7 +262,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for initial deployment to stabilize")
 			kubectl.ForRunningPodCount(deploymentName, 8)
 
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("triggering rolling update by changing image")
@@ -532,8 +543,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			// recreating force-deleted pods, and terminating ExclusiveTopology
 			// pods still repel other sets' pods. Wait until the pods are fully
 			// gone so later specs can schedule on a single-node cluster.
-			Eventually(func() int {
-				return kubectl.CountPods(deploymentName)
+			Eventually(func(g Gomega) int {
+				count, err := kubectl.CountPods(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				return count
 			}, 90*time.Second, time.Second).Should(Equal(0))
 		})
 
@@ -574,9 +587,17 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("waiting for resources to be created")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.CountLWS(deploymentName)).To(Equal(2))
-				g.Expect(kubectl.CountRunningPods(deploymentName)).To(Equal(2))
-				g.Expect(kubectl.CountService(deploymentName)).To(Equal(2))
+				lwsCount, err := kubectl.CountLWS(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(lwsCount).To(Equal(2))
+
+				runningPodCount, err := kubectl.CountRunningPods(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(runningPodCount).To(Equal(2))
+
+				serviceCount, err := kubectl.CountService(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(serviceCount).To(Equal(2))
 			}, 90*time.Second, time.Second).Should(Succeed())
 
 			By("deleting the DisaggregatedSet")
@@ -588,7 +609,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("verifying all Services are garbage collected")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.CountService(deploymentName)).To(Equal(0))
+				count, err := kubectl.CountService(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(count).To(Equal(0))
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying all pods are removed")
@@ -668,7 +691,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				kubectl.ForRunningPodCountWithTimeout(deploymentName, expectedInitialPods, 3*time.Minute)
 
 				// Get the initial revision
-				oldRevision := kubectl.GetRevision(deploymentName)
+				oldRevision, err := kubectl.GetRevision(deploymentName)
+				Expect(err).NotTo(HaveOccurred())
 				Expect(oldRevision).NotTo(BeEmpty())
 				_, _ = fmt.Fprintf(GinkgoWriter, "Initial revision: %s\n", oldRevision)
 
@@ -774,7 +798,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("verifying 3 LWS resources exist (one per role)")
 			kubectl.ForLWSCount(deploymentName, 3)
 
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("triggering rolling update by changing image")
@@ -819,7 +844,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 6, 3*time.Minute)
 
 			// Get the initial revision
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("applying update that renames 'encode' to 'decode-long-context'")
@@ -842,7 +868,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			Eventually(func(g Gomega) {
 				// Verify encode role from old revision is scaled to 0
-				g.Expect(kubectl.GetTotalReplicas(deploymentName, oldRevision)).To(Equal(0))
+				replicas, err := kubectl.GetTotalReplicas(deploymentName, oldRevision)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(replicas).To(Equal(0))
 			}, 60*time.Second, time.Second).Should(Succeed())
 
 			By("verifying total running pods is correct")
@@ -872,7 +900,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 5, 3*time.Minute)
 
 			By("recording initial revision")
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("adding new role 'gamma'")
@@ -920,7 +949,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 10, 3*time.Minute)
 
 			By("recording initial revision")
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("adding new role 'encode' - this should trigger progressive rollout")
@@ -935,7 +965,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(updatedYaml)).To(Succeed())
 
 			By("tracking rollout to verify progressive scaling (not brutal drain)")
-			result := kubectl.TrackProgressiveRollout(deploymentName, oldRevision, 10, 12)
+			result, err := kubectl.TrackProgressiveRollout(deploymentName, oldRevision, 10, 12)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying progressive rollout occurred (not brutal drain)")
 			Expect(result.SawIntermediateOld || result.SawIntermediateNew).To(BeTrue(),
@@ -975,7 +1006,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 12, 3*time.Minute)
 
 			By("recording initial revision")
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("removing 'encode' role - this should trigger progressive rollout")
@@ -989,7 +1021,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(updatedYaml)).To(Succeed())
 
 			By("tracking rollout to verify progressive scaling")
-			result := kubectl.TrackProgressiveRollout(deploymentName, oldRevision, 12, 10)
+			result, err := kubectl.TrackProgressiveRollout(deploymentName, oldRevision, 12, 10)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying progressive rollout occurred")
 			Expect(result.SawIntermediateOld || result.SawIntermediateNew).To(BeTrue(),
@@ -1000,7 +1033,9 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("verifying encode role no longer exists or has 0 replicas")
 			Eventually(func(g Gomega) {
-				g.Expect(kubectl.GetTotalReplicas(deploymentName, oldRevision)).To(Equal(0))
+				replicas, err := kubectl.GetTotalReplicas(deploymentName, oldRevision)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(replicas).To(Equal(0))
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying total running pods (no encode role)")
@@ -1023,7 +1058,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			).YAML()
 			Expect(applyYAML(yamlA)).To(Succeed())
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 12, 3*time.Minute)
-			revisionA := kubectl.GetRevision(deploymentName)
+			revisionA, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(revisionA).NotTo(BeEmpty())
 			_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Revision A (stable original): %s ===\n", revisionA)
 
@@ -1035,8 +1071,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			Expect(applyYAML(yamlB)).To(Succeed())
 
 			By("waiting for B rollout to start (new LWS created)")
-			Eventually(func() int {
-				return kubectl.CountLWS(deploymentName)
+			Eventually(func(g Gomega) int {
+				count, err := kubectl.CountLWS(deploymentName)
+				g.Expect(err).NotTo(HaveOccurred())
+				return count
 			}, 30*time.Second, time.Second).Should(BeNumerically(">", 2))
 
 			// Find revision B
@@ -1098,9 +1136,12 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			aDrainedBeforeB := false
 
 			Eventually(func(g Gomega) bool {
-				aTotal := kubectl.GetTotalReplicas(deploymentName, revisionA)
-				bTotal := kubectl.GetTotalReplicas(deploymentName, revisionB)
-				cTotal := kubectl.GetTotalReplicas(deploymentName, revisionC)
+				aTotal, err := kubectl.GetTotalReplicas(deploymentName, revisionA)
+				g.Expect(err).NotTo(HaveOccurred())
+				bTotal, err := kubectl.GetTotalReplicas(deploymentName, revisionB)
+				g.Expect(err).NotTo(HaveOccurred())
+				cTotal, err := kubectl.GetTotalReplicas(deploymentName, revisionC)
+				g.Expect(err).NotTo(HaveOccurred())
 
 				_, _ = fmt.Fprintf(GinkgoWriter, "A(%s)=%d  B(%s)=%d  C(%s)=%d\n",
 					revisionA[:8], aTotal, revisionB[:8], bTotal, revisionC[:8], cTotal)
@@ -1147,7 +1188,8 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.ForRunningPodCountWithTimeout(deploymentName, 10, 3*time.Minute)
 
 			By("recording initial revision")
-			oldRevision := kubectl.GetRevision(deploymentName)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(oldRevision).NotTo(BeEmpty())
 
 			By("renaming 'zeta' to 'gamma' (remove zeta, add gamma)")

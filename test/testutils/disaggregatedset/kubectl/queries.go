@@ -44,7 +44,7 @@ func LWSByRevision(deploymentName, revision string) *Builder {
 func LWSNotRevision(deploymentName, revision string) *Builder {
 	return Get("lws").
 		Label(labelName, deploymentName).
-		Label(labelRevision+"!=", revision).
+		LabelNot(labelRevision, revision).
 		Namespace(defaultNS)
 }
 
@@ -89,7 +89,7 @@ func EndpointSlice(deploymentName string) *Builder {
 	return Get("endpointslice").Label(labelName, deploymentName).Namespace(defaultNS)
 }
 
-// EndpointSliceByRole returns a builder for querying endpoint slices by role.
+// EndpointSliceByRole returns a builder for querying endpoint slices by deployment and role.
 func EndpointSliceByRole(deploymentName, role string) *Builder {
 	return EndpointSlice(deploymentName).Label(labelRole, role)
 }
@@ -97,80 +97,101 @@ func EndpointSliceByRole(deploymentName, role string) *Builder {
 // --- Counting Helpers ---
 
 // CountPods returns the number of pods for a deployment.
-func CountPods(deploymentName string) int {
-	output, err := Pods(deploymentName).Output("name").RunQuiet()
+func CountPods(deploymentName string) (int, error) {
+	output, err := Pods(deploymentName).
+		Output("name").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(GetNonEmptyLines(output))
+	return len(GetNonEmptyLines(output)), nil
 }
 
 // CountRunningPods returns the number of running pods for a deployment.
-func CountRunningPods(deploymentName string) int {
-	output, err := RunningPods(deploymentName).NoHeaders().RunQuiet()
+func CountRunningPods(deploymentName string) (int, error) {
+	output, err := RunningPods(deploymentName).
+		NoHeaders().
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(GetNonEmptyLines(output))
+	return len(GetNonEmptyLines(output)), nil
 }
 
 // CountLWS returns the number of LWS resources for a deployment.
-func CountLWS(deploymentName string) int {
-	output, err := LWS(deploymentName).Output("name").RunQuiet()
+func CountLWS(deploymentName string) (int, error) {
+	output, err := LWS(deploymentName).
+		Output("name").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(GetNonEmptyLines(output))
+	return len(GetNonEmptyLines(output)), nil
 }
 
 // CountLWSByRole returns the number of LWS for a deployment and role.
-func CountLWSByRole(deploymentName, role string) int {
-	output, err := LWSByRole(deploymentName, role).Output("name").RunQuiet()
+func CountLWSByRole(deploymentName, role string) (int, error) {
+	output, err := LWSByRole(deploymentName, role).
+		Output("name").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(GetNonEmptyLines(output))
+	return len(GetNonEmptyLines(output)), nil
 }
 
 // CountService returns the number of services for a deployment.
-func CountService(deploymentName string) int {
-	output, err := Service(deploymentName).Output("name").RunQuiet()
+func CountService(deploymentName string) (int, error) {
+	output, err := Service(deploymentName).
+		Output("name").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(GetNonEmptyLines(output))
+	return len(GetNonEmptyLines(output)), nil
 }
 
 // --- Replica Helpers ---
 
 // GetTotalReplicas returns total replicas across all LWS for a revision.
-func GetTotalReplicas(deploymentName, revision string) int {
+func GetTotalReplicas(deploymentName, revision string) (int, error) {
 	output, err := LWSByRevision(deploymentName, revision).
-		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
+		JSONPath("{range .items[*]}{.spec.replicas} {end}").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return sumInts(output)
+	return sumInts(output), nil
 }
 
 // GetTotalReplicasNotRevision returns total replicas for LWS NOT matching revision.
-func GetTotalReplicasNotRevision(deploymentName, revision string) int {
+func GetTotalReplicasNotRevision(deploymentName, revision string) (int, error) {
 	output, err := LWSNotRevision(deploymentName, revision).
-		JSONPath("{range .items[*]}{.spec.replicas} {end}").RunQuiet()
+		JSONPath("{range .items[*]}{.spec.replicas} {end}").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return sumInts(output)
+	return sumInts(output), nil
 }
 
 // GetRevision returns the revision label of the first LWS for a deployment.
-func GetRevision(deploymentName string) string {
+func GetRevision(deploymentName string) (string, error) {
 	output, err := LWS(deploymentName).
-		JSONPath("{.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}").RunQuiet()
+		JSONPath("{.items[0].metadata.labels.disaggregatedset\\.x-k8s\\.io/revision}").
+		RequestTimeout("30s").
+		RunQuiet()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(output)
+	return strings.TrimSpace(output), nil
 }
 
 // --- Utility Functions ---
@@ -201,9 +222,39 @@ func sumInts(output string) int {
 
 // CleanupDeployment removes a DisaggregatedSet and all related resources.
 func CleanupDeployment(deploymentName string) {
-	_, _ = Delete("disaggregatedset", deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
-	_, _ = Delete("lws").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().Timeout("30s").RunQuiet()
-	_, _ = Delete("pods").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().GracePeriod(0).Force().RunQuiet()
-	_, _ = Delete("svc").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
-	_, _ = Delete("dsrs").Label(labelName, deploymentName).Namespace(defaultNS).IgnoreNotFound().RunQuiet()
+	_, _ = Delete("disaggregatedset", deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("lws").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("pods").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		GracePeriod(0).
+		Force().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("svc").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
+
+	_, _ = Delete("dsrs").
+		Label(labelName, deploymentName).
+		Namespace(defaultNS).
+		IgnoreNotFound().
+		Timeout("30s").
+		RunQuiet()
 }
