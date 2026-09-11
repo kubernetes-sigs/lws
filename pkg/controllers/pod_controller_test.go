@@ -922,3 +922,52 @@ func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T)
 		t.Errorf("expected the worker StatefulSet to use the group key derived service name, got %q", got)
 	}
 }
+
+func TestShouldCreatePodGroup(t *testing.T) {
+	tests := []struct {
+		name     string
+		lws      *leaderworkerset.LeaderWorkerSet
+		expected bool
+	}{
+		{
+			name: "No gang scheduling spec defaults to true",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: true,
+		},
+		{
+			name: "Gang scheduling enable true",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					GangScheduling: &leaderworkerset.GangSchedulingConfig{
+						Enable: ptr.To(true),
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Gang scheduling enable false",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					GangScheduling: &leaderworkerset.GangSchedulingConfig{
+						Enable: ptr.To(false),
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldCreatePodGroup(tc.lws)
+			if result != tc.expected {
+				t.Errorf("Expected %t, got %t", tc.expected, result)
+			}
+		})
+	}
+}

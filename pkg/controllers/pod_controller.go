@@ -162,7 +162,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 
-	if r.SchedulerProvider != nil {
+	if r.SchedulerProvider != nil && shouldCreatePodGroup(&leaderWorkerSet) {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -532,6 +532,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
 	}
+	if lws.Spec.GangScheduling != nil && lws.Spec.GangScheduling.Enable != nil {
+		podAnnotations[leaderworkerset.EnableGangSchedulingAnnotationKey] = strconv.FormatBool(*lws.Spec.GangScheduling.Enable)
+	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
 			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
@@ -634,4 +637,11 @@ func statefulSetEventHandler() handler.TypedEventHandler[client.Object, podRecon
 			UID:            owner.UID,
 		}}
 	})
+}
+
+func shouldCreatePodGroup(lws *leaderworkerset.LeaderWorkerSet) bool {
+	if lws.Spec.GangScheduling != nil && lws.Spec.GangScheduling.Enable != nil {
+		return *lws.Spec.GangScheduling.Enable
+	}
+	return true
 }

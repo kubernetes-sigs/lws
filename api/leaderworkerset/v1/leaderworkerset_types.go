@@ -113,6 +113,10 @@ const (
 	// in both group identity modes, so that pod admission can inject
 	// LWS_LEADER_ADDRESS without recomputing it.
 	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
+
+	// Internal annotation used by the controller to tell the pod webhook if gang scheduling is enabled
+	// for the given pod.
+	EnableGangSchedulingAnnotationKey string = "leaderworkerset.sigs.k8s.io/enable-gang-scheduling"
 )
 
 // GroupReadyConditionType is the pod readiness gate condition set on leader pods when
@@ -175,6 +179,18 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={Ordinal,Hash}
 	// +optional
 	GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
+
+	// gangScheduling defines the gang scheduling configuration of the group
+	// +optional
+	GangScheduling *GangSchedulingConfig `json:"gangScheduling,omitempty"`
+}
+
+// GangSchedulingConfig defines the gang scheduling configuration of the group
+type GangSchedulingConfig struct {
+	// enable specifies whether to create PodGroups and inject gang scheduling metadata.
+	// Defaults to true when this struct is present, or if left unset in the presence of a global scheduler provider.
+	// +optional
+	Enable *bool `json:"enable,omitempty"`
 }
 
 // GroupIdentityType defines how group identities are assigned.
