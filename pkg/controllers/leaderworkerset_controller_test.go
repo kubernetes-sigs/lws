@@ -1259,3 +1259,169 @@ func TestEnqueueLWSRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateContinuousReadyReplicas(t *testing.T) {
+	tests := []struct {
+		name   string
+		states []replicaState
+		want   int32
+	}{
+		{
+			name:   "no replicas",
+			states: nil,
+			want:   0,
+		},
+		{
+			name: "all replicas ready and updated",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+			},
+			want: 3,
+		},
+		{
+			name: "counting stops at the first replica that is not updated",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: false},
+				{ready: true, updated: true},
+			},
+			want: 1,
+		},
+		{
+			name: "an updated but not ready tail replica counts as zero",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: false, updated: true},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := calculateContinuousReadyReplicas(tc.states)
+			if got != tc.want {
+				t.Fatalf("calculateContinuousReadyReplicas()=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCalculateLWSUnreadyReplicas(t *testing.T) {
+	tests := []struct {
+		name        string
+		states      []replicaState
+		lwsReplicas int32
+		want        int32
+	}{
+		{
+			name:        "all desired replicas ready and updated",
+			states:      []replicaState{{ready: true, updated: true}, {ready: true, updated: true}},
+			lwsReplicas: 2,
+			want:        0,
+		},
+		{
+			name:        "ready but not updated replicas count as unready",
+			states:      []replicaState{{ready: true, updated: true}, {ready: true, updated: false}},
+			lwsReplicas: 2,
+			want:        1,
+		},
+		{
+			name:        "replicas without a state yet count as unready",
+			states:      []replicaState{{ready: true, updated: true}, {ready: true, updated: false}},
+			lwsReplicas: 4,
+			want:        3,
+		},
+		{
+			name:        "surge replicas beyond the desired count are ignored",
+			states:      []replicaState{{ready: true, updated: true}, {ready: false, updated: false}, {ready: false, updated: false}},
+			lwsReplicas: 1,
+			want:        0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := calculateLWSUnreadyReplicas(tc.states, tc.lwsReplicas)
+			if got != tc.want {
+				t.Fatalf("calculateLWSUnreadyReplicas()=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRollingUpdatePartition(t *testing.T) {
+	ru := replicaState{ready: true, updated: true}
+	rn := replicaState{ready: true, updated: false}
+	nn := replicaState{ready: false, updated: false}
+
+	tests := []struct {
+		name             string
+		states           []replicaState
+		rollingStep      int32
+		currentPartition int32
+		want             int32
+	}{
+		{
+			name:             "all replicas ready and updated drops the partition to zero",
+			states:           []replicaState{ru, ru, ru, ru},
+			rollingStep:      2,
+			currentPartition: 4,
+			want:             0,
+		},
+		{
+			name:             "rollout start updates rollingStep replicas from the tail",
+			states:           []replicaState{rn, rn, rn, rn},
+			rollingStep:      1,
+			currentPartition: 4,
+			want:             3,
+		},
+		{
+			name:             "partition advances by rollingStep once the tail replica is ready and updated",
+			states:           []replicaState{rn, rn, rn, ru},
+			rollingStep:      1,
+			currentPartition: 3,
+			want:             2,
+		},
+		{
+			name:             "a not ready replica below the update window holds the partition",
+			states:           []replicaState{nn, rn, rn, ru},
+			rollingStep:      1,
+			currentPartition: 3,
+			want:             3,
+		},
+		{
+			name:             "a not ready replica at the window edge is still updated so the rollout cannot get stuck",
+			states:           []replicaState{nn, rn, nn, ru},
+			rollingStep:      1,
+			currentPartition: 3,
+			want:             2,
+		},
+		{
+			name:             "partition never moves back up",
+			states:           []replicaState{rn, rn, rn, rn},
+			rollingStep:      1,
+			currentPartition: 1,
+			want:             1,
+		},
+		{
+			name:             "rollingStep larger than the replica count updates everything at once",
+			states:           []replicaState{rn, rn, rn},
+			rollingStep:      5,
+			currentPartition: 3,
+			want:             0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rollingUpdatePartition(tc.states, int32(len(tc.states)), tc.rollingStep, tc.currentPartition)
+			if got != tc.want {
+				t.Fatalf("rollingUpdatePartition()=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
