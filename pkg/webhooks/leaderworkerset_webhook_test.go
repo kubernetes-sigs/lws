@@ -557,6 +557,23 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("subgroup placement is immutable", func(t *testing.T) {
+		oldLWS := wrappers.BuildLeaderWorkerSet("default").
+			Size(4).
+			SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+			SubGroupPlacement(
+				v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"zone": "remote"}},
+				v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"zone": "local"}},
+			).
+			Obj()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement[0].MatchLabels["zone"] = "local"
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Fatal("expected validation error when changing subGroupPlacement")
+		}
+	})
+
 	t.Run("nil old network config on update should not panic", func(t *testing.T) {
 		oldLWS := &v1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
@@ -681,10 +698,10 @@ func TestValidateSubGroupPolicy(t *testing.T) {
 			name: "subgroup placement rejects invalid label key",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				Size(4).
-				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
 				SubGroupPlacement(
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"bad/key/": "schedule-zone"}},
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"bad/key/": "schedule-zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
 				).
 				Obj(),
 			wantErr: "must be a valid label key",
@@ -693,10 +710,10 @@ func TestValidateSubGroupPolicy(t *testing.T) {
 			name: "subgroup placement rejects invalid label value",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				Size(4).
-				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
 				SubGroupPlacement(
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "bad value"}},
-					leaderworkerset.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "bad value"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
 				).
 				Obj(),
 			wantErr: "must be a valid label value",
