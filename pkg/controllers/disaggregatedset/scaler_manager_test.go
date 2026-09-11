@@ -58,8 +58,8 @@ func TestScalerManagerReconcileCreatesMissing(t *testing.T) {
 
 	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
-	require.Contains(t, scalers, "prefill")
-	require.NotContains(t, scalers, "decode")
+	require.Contains(t, scalers, RoleKey{Role: "prefill"})
+	require.NotContains(t, scalers, RoleKey{Role: "decode"})
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
@@ -105,7 +105,7 @@ func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {
 
 	scalers, err := m.Reconcile(context.TODO(), ds, nil)
 	require.NoError(t, err)
-	assert.NotContains(t, scalers, "prefill")
+	assert.NotContains(t, scalers, RoleKey{Role: "prefill"})
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
@@ -137,9 +137,9 @@ func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newDSWithRoles("d", tc.role)
-			scalers := map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+			scalers := ScalerMap{}
 			if tc.scalerHas {
-				scalers["r"] = &disaggregatedsetv1.DisaggregatedSetRoleScaler{
+				scalers[RoleKey{Role: "r"}] = &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 					Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: tc.scalerVal},
 				}
 			}
@@ -167,7 +167,7 @@ func TestScalerManagerWriteStatus(t *testing.T) {
 		Build()
 	m := NewScalerManager(cl, events.NewFakeRecorder(10))
 
-	require.NoError(t, m.WriteStatus(context.TODO(), ds, map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{"prefill": scaler}, map[string]int32{"prefill": 4}))
+	require.NoError(t, m.WriteStatus(context.TODO(), ds, ScalerMap{{Role: "prefill"}: scaler}, map[RoleKey]int32{{Role: "prefill"}: 4}))
 
 	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 	require.NoError(t, cl.Get(context.TODO(), types.NamespacedName{Name: "myds-prefill", Namespace: "default"}, got))
