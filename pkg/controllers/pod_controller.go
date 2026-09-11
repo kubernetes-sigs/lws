@@ -221,8 +221,12 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	}
 	statefulSet.Spec.Template.WithAnnotations(templateAnnotations)
 
-	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
-	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
+	// if exclusive or share placement is enabled but leader pod is not scheduled, don't create the worker sts
+	topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	if !found {
+		topologyKey, found = leaderWorkerSet.Annotations[leaderworkerset.ShareTopologyAnnotationKey]
+	}
+	if found {
 		// check if the leader pod is scheduled.
 		if pod.Spec.NodeName == "" {
 			log.V(2).Info(fmt.Sprintf("Pod %q is not scheduled yet", pod.Name))
@@ -531,6 +535,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	}
+	if lws.Annotations[leaderworkerset.ShareTopologyAnnotationKey] != "" {
+		podAnnotations[leaderworkerset.ShareTopologyAnnotationKey] = lws.Annotations[leaderworkerset.ShareTopologyAnnotationKey]
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
