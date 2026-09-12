@@ -16,9 +16,13 @@ There are two ways to do this. Pick based on how your cluster admits workloads:
 - **Native placement policies** — `spec.placementPolicy` built into
   DisaggregatedSet. No extra components. Use this when LWS schedules directly
   against the cluster.
-- **Kueue** — hand admission and placement to
-  [Kueue topology-aware scheduling (TAS)](https://kueue.sigs.k8s.io/docs/concepts/topology_aware_scheduling/).
-  Use this when Kueue already manages quota and admission for your cluster.
+- **Kueue** — Unlike the LeaderWorkerSet API, the DisaggregatedSet API doesn't
+  currently integrate directly with Kueue. You can still use
+  [Kueue topology-aware scheduling (TAS)](https://kueue.sigs.k8s.io/docs/concepts/topology_aware_scheduling/)
+  to manage the underlying LWS pod groups: colocate a pod group into one
+  topology domain, and allow more than one group to coexist in the same
+  topology domain. Use this when Kueue already manages quota and admission for
+  your cluster.
 
 ## Option 1: Native placement policies
 
@@ -49,7 +53,8 @@ for the full set of placement types.
 
 ## Option 2: Kueue topology-aware scheduling
 
-Kueue admits the DisaggregatedSet and asks the scheduler to pack each role
+The DisaggregatedSet API doesn't integrate directly with Kueue. Instead, Kueue
+admits the underlying LWS pod groups and asks the scheduler to pack each role
 (prefill and decode) into one topology domain. Use this when Kueue already
 manages quota and admission for your cluster.
 
