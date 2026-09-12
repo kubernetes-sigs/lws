@@ -1,0 +1,107 @@
+# LeaderWorkerSet + Kueue topology-aware placement: vLLM.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+  labels:
+    # Kueue admits this workload through the "default" LocalQueue.
+    kueue.x-k8s.io/queue-name: default
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    # RecreateGroupAfterStart recreates the whole group on a pod restart, but
+    # only after the group has reached initial deployment stability.
+    restartPolicy: RecreateGroupAfterStart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+        annotations:
+          # Groups the leader and workers of this replica into one Kueue
+          # scheduling unit so they are admitted and placed together.
+          kueue.x-k8s.io/podset-group-name: "vllm-multi-host"
+          # Require the whole group inside one topology domain (all-or-nothing:
+          # Kueue only admits the group if it fits entirely within one block).
+          kueue.x-k8s.io/podset-required-topology: "cloud.google.com/gce-topology-block"
+      spec:
+        containers:
+          - name: vllm-leader
+            image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+            env:
+              - name: HF_TOKEN
+                value: $HF_TOKEN
+            command:
+              - vllm
+              - serve
+              - zai-org/GLM-4.6
+              - --port
+              - "8080"
+              - --tensor-parallel-size
+              - "8"
+              - --pipeline-parallel-size
+              - "2"
+              - --nnodes
+              - $(LWS_GROUP_SIZE)
+              - --node-rank
+              - $(LWS_WORKER_INDEX)
+              - --master-addr
+              - $(LWS_LEADER_ADDRESS)
+              - --trust-remote-code
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+            ports:
+              - containerPort: 8080
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 15Gi
+    workerTemplate:
+      metadata:
+        annotations:
+          kueue.x-k8s.io/podset-group-name: "vllm-multi-host"
+          kueue.x-k8s.io/podset-required-topology: "cloud.google.com/gce-topology-block"
+      spec:
+        containers:
+          - name: vllm-worker
+            image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+            command:
+              - vllm
+              - serve
+              - zai-org/GLM-4.6
+              - --tensor-parallel-size
+              - "8"
+              - --pipeline-parallel-size
+              - "2"
+              - --nnodes
+              - $(LWS_GROUP_SIZE)
+              - --node-rank
+              - $(LWS_WORKER_INDEX)
+              - --master-addr
+              - $(LWS_LEADER_ADDRESS)
+              - --headless
+              - --trust-remote-code
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+            env:
+              - name: HF_TOKEN
+                value: $HF_TOKEN
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 15Gi
