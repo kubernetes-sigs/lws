@@ -14,41 +14,7 @@ You can declare a list of `volumeClaimTemplates` inside `.spec.leaderWorkerTempl
 
 Containers in `leaderTemplate` and `workerTemplate` can then reference the claim templates by name in their `volumeMounts`:
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: lws-storage-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 4
-    volumeClaimTemplates:
-      - metadata:
-          name: model-cache
-        spec:
-          storageClassName: standard-rwo
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 100Gi
-    leaderTemplate:
-      spec:
-        containers:
-          - name: leader
-            image: leader-image:latest
-            volumeMounts:
-              - mountPath: /mnt/models
-                name: model-cache
-    workerTemplate:
-      spec:
-        containers:
-          - name: worker
-            image: worker-image:latest
-            volumeMounts:
-              - mountPath: /mnt/models
-                name: model-cache
-```
+{{< include file="examples/leaderworkerset/volume-claim-templates/volume-claim-templates.yaml" lang="yaml" >}}
 
 ## How It Works
 

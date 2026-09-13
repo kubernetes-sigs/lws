@@ -20,22 +20,7 @@ When any pod in a group fails or restarts, the entire replica group (leader + al
 - **Node Failures:** When a node hosting any pod in the replica fails or becomes unreachable, the entire replica group is deleted and recreated on healthy nodes, respecting topology placement constraints.
 - **Primary Use Case:** Tightly coupled multi-host distributed inference and training (e.g., tensor-parallel or pipeline-parallel models) where a single pod or node failure breaks collective communication.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    restartPolicy: RecreateGroupOnPodRestart
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/failure-handling/recreate-group-on-pod-restart.yaml" lang="yaml" >}}
 
 ### None
 
@@ -45,22 +30,7 @@ Only the failed pod is restarted or rescheduled. Other pods in the group continu
 - **Node Failures:** When a node fails, only the pods residing on that failed node are rescheduled. Other pods in the replica remain running on their existing nodes.
 - **Primary Use Case:** Loosely coupled workers or workloads with application-level fault tolerance where individual pods can reconnect or recover independently.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    restartPolicy: None
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/failure-handling/none.yaml" lang="yaml" >}}
 
 ### RecreateGroupAfterStart
 
@@ -74,19 +44,4 @@ When any pod in a group fails, the entire group is recreated **if and only if th
 The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
 {{% /alert %}}
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    restartPolicy: RecreateGroupAfterStart
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/failure-handling/recreate-group-after-start.yaml" lang="yaml" >}}

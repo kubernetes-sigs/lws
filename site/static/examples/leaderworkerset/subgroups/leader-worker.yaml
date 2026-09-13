@@ -1,0 +1,16 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 16
+    subGroupPolicy:
+      subGroupPolicyType: LeaderWorker
+      subGroupSize: 8
+    workerTemplate:
+      spec:
+        containers:
+        - name: worker
+          image: worker-image:latest

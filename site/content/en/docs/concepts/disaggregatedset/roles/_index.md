@@ -46,40 +46,7 @@ A `DisaggregatedSet` spec defines a `roles` list where each entry represents a r
 
 Here is an example `DisaggregatedSet` defining independent `prefill` and `decode` roles with different pod group sizes and hardware accelerator configurations:
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: disaggregatedset-sample
-spec:
-  roles:
-  - name: prefill
-    spec:
-      replicas: 2
-      leaderWorkerTemplate:
-        size: 4
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-prefill
-              image: vllm/vllm-openai:latest
-              resources:
-                limits:
-                  nvidia.com/gpu: "8"
-  - name: decode
-    spec:
-      replicas: 4
-      leaderWorkerTemplate:
-        size: 2
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-decode
-              image: vllm/vllm-openai:latest
-              resources:
-                limits:
-                  nvidia.com/gpu: "4"
-```
+{{< include file="examples/disaggregatedset/roles/prefill-decode.yaml" lang="yaml" >}}
 
 ---
 
