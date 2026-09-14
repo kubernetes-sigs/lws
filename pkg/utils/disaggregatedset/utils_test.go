@@ -433,3 +433,101 @@ func TestSliceLabelMatches(t *testing.T) {
 		})
 	}
 }
+
+func revisionRoleLWS(revision, role string, replicas *int32, initialReplicas string) *leaderworkersetv1.LeaderWorkerSet {
+	lws := &leaderworkersetv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: revision + "-" + role,
+			Labels: map[string]string{
+				disaggregatedsetv1.RevisionLabelKey: revision,
+				disaggregatedsetv1.RoleLabelKey:     role,
+			},
+		},
+		Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: replicas},
+	}
+	if initialReplicas != "" {
+		lws.Annotations = map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: initialReplicas}
+	}
+	return lws
+}
+
+func TestGroupByRevision(t *testing.T) {
+	t.Run("groups roles under their revision", func(t *testing.T) {
+		prefillA := revisionRoleLWS("rev-a", testUtilsRolePrefill, ptr.To[int32](2), "")
+		decodeA := revisionRoleLWS("rev-a", testUtilsRoleDecode, ptr.To[int32](3), "")
+		prefillB := revisionRoleLWS("rev-b", testUtilsRolePrefill, ptr.To[int32](1), "")
+
+		grouped := GroupByRevision([]*leaderworkersetv1.LeaderWorkerSet{prefillA, decodeA, prefillB})
+
+		require.Len(t, grouped, 2)
+		byRevision := map[string]RevisionRoles{}
+		for _, g := range grouped {
+			byRevision[g.Revision] = g
+		}
+		require.Contains(t, byRevision, "rev-a")
+		require.Contains(t, byRevision, "rev-b")
+		assert.Same(t, prefillA, byRevision["rev-a"].Roles[testUtilsRolePrefill])
+		assert.Same(t, decodeA, byRevision["rev-a"].Roles[testUtilsRoleDecode])
+		assert.Len(t, byRevision["rev-b"].Roles, 1)
+		assert.Same(t, prefillB, byRevision["rev-b"].Roles[testUtilsRolePrefill])
+	})
+
+	t.Run("empty input yields no revisions", func(t *testing.T) {
+		assert.Empty(t, GroupByRevision(nil))
+	})
+
+	t.Run("a later object with the same revision and role replaces the earlier one", func(t *testing.T) {
+		first := revisionRoleLWS("rev-a", testUtilsRolePrefill, ptr.To[int32](1), "")
+		second := revisionRoleLWS("rev-a", testUtilsRolePrefill, ptr.To[int32](2), "")
+
+		grouped := GroupByRevision([]*leaderworkersetv1.LeaderWorkerSet{first, second})
+
+		require.Len(t, grouped, 1)
+		assert.Same(t, second, grouped[0].Roles[testUtilsRolePrefill])
+	})
+}
+
+func TestRevisionRolesListTotals(t *testing.T) {
+	revisions := GroupByRevision([]*leaderworkersetv1.LeaderWorkerSet{
+		revisionRoleLWS("rev-a", testUtilsRolePrefill, ptr.To[int32](2), "5"),
+		revisionRoleLWS("rev-a", testUtilsRoleDecode, ptr.To[int32](3), ""),
+		revisionRoleLWS("rev-b", testUtilsRolePrefill, nil, ""),
+		revisionRoleLWS("rev-c", testUtilsRolePrefill, ptr.To[int32](4), "not-a-number"),
+	})
+
+	t.Run("sums replicas per role across revisions and defaults nil replicas to one", func(t *testing.T) {
+		// rev-a prefill 2 + rev-b prefill nil→1 + rev-c prefill 4
+		assert.Equal(t, 7, revisions.GetTotalReplicasPerRole(testUtilsRolePrefill))
+		assert.Equal(t, 3, revisions.GetTotalReplicasPerRole(testUtilsRoleDecode))
+	})
+
+	t.Run("a role missing from every revision totals zero", func(t *testing.T) {
+		assert.Equal(t, 0, revisions.GetTotalReplicasPerRole("unknown"))
+	})
+
+	t.Run("initial replicas prefer the annotation and fall back to spec replicas", func(t *testing.T) {
+		// rev-a prefill annotation 5 + rev-b prefill nil→1 + rev-c prefill invalid annotation → spec 4
+		assert.Equal(t, 10, revisions.GetTotalInitialReplicasPerRole(testUtilsRolePrefill))
+		// decode has no annotation anywhere → spec replicas
+		assert.Equal(t, 3, revisions.GetTotalInitialReplicasPerRole(testUtilsRoleDecode))
+	})
+}
+
+func TestGetSlices(t *testing.T) {
+	t.Run("defaults to one slice when unset", func(t *testing.T) {
+		assert.Equal(t, int32(1), GetSlices(&disaggregatedsetv1.DisaggregatedSet{}))
+	})
+
+	t.Run("returns the configured slice count", func(t *testing.T) {
+		ds := &disaggregatedsetv1.DisaggregatedSet{}
+		ds.Spec.Slices = ptr.To[int32](3)
+		assert.Equal(t, int32(3), GetSlices(ds))
+	})
+}
+
+func TestHasSliceLabel(t *testing.T) {
+	assert.False(t, HasSliceLabel(nil), "nil labels")
+	assert.False(t, HasSliceLabel(map[string]string{}), "no slice label")
+	assert.False(t, HasSliceLabel(map[string]string{disaggregatedsetv1.SliceLabelKey: ""}), "empty slice label is a legacy object")
+	assert.True(t, HasSliceLabel(map[string]string{disaggregatedsetv1.SliceLabelKey: "0"}), "slice 0 still counts as labelled")
+}
