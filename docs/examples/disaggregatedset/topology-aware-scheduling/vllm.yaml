@@ -1,0 +1,74 @@
+# DisaggregatedSet + topology-aware placement (placementPolicy): vLLM.
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: vllm-disagg
+spec:
+  # Co-locate a slice's roles in one topology domain and spread slices across
+  # domains. Requires nodes labeled with the topology key.
+  placementPolicy:
+    type: ExclusiveSlice # None | ExclusiveSlice | ExclusiveTopology
+    topology: cloud.google.com/gke-nodepool
+  roles:
+    - name: prefill
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_producer\"}'"
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+    - name: decode
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_consumer\"}'"
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10

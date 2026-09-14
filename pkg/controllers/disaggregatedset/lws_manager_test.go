@@ -25,9 +25,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -173,16 +175,29 @@ func TestManagerDelete(t *testing.T) {
 
 	t.Run("successfully deletes existing LWS", func(t *testing.T) {
 		existingLWS := buildManagerTestLWS(nil)
+		existingLWS.UID = types.UID("test-lws-uid")
 
+		var deleteOptions client.DeleteOptions
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithRuntimeObjects(existingLWS).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deleteOptions.ApplyOptions(opts)
+					return c.Delete(ctx, obj, opts...)
+				},
+			}).
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Delete(context.Background(), "default", "test-lws")
+		err := manager.deleteInForeground(context.Background(), existingLWS)
 
 		require.NoError(t, err)
+		require.NotNil(t, deleteOptions.PropagationPolicy)
+		assert.Equal(t, metav1.DeletePropagationForeground, *deleteOptions.PropagationPolicy)
+		require.NotNil(t, deleteOptions.Preconditions)
+		require.NotNil(t, deleteOptions.Preconditions.UID)
+		assert.Equal(t, existingLWS.UID, *deleteOptions.Preconditions.UID)
 	})
 
 	t.Run("returns nil when LWS not found (idempotent)", func(t *testing.T) {
@@ -191,7 +206,9 @@ func TestManagerDelete(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Delete(context.Background(), "default", "nonexistent")
+		err := manager.deleteInForeground(context.Background(), &leaderworkersetv1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "nonexistent", Namespace: "default"},
+		})
 
 		require.NoError(t, err) // Should not error, deletion is idempotent
 	})

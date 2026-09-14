@@ -1,0 +1,26 @@
+# Memory-based autoscaling for the nginx example in this directory.
+#
+# This REPLACES the CPU HorizontalPodAutoscaler shipped in nginx.yaml. Two HPAs
+# targeting one LeaderWorkerSet will fight over its replica count, so delete
+# the CPU one first:
+#
+#   kubectl delete hpa lws-hpa
+#   kubectl apply -f nginx-memory-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: lws-memory-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: leaderworkerset.x-k8s.io/v1
+    kind: LeaderWorkerSet
+    name: leaderworkerset-sample
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70

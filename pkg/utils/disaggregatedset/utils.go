@@ -100,6 +100,16 @@ func GenerateLegacyName(baseName, revision, role string) string {
 	return fmt.Sprintf("%s-%s-%s", baseName, revision, role)
 }
 
+// PrivateServiceSuffix distinguishes the Service this controller creates for an
+// LWS's own pods from the public one the LWS controller creates under the bare
+// LWS name. Changing it renames every existing Service and breaks resolved DNS.
+const PrivateServiceSuffix = "-prv"
+
+// PrivateServiceName returns the private headless Service name for an LWS.
+func PrivateServiceName(lwsName string) string {
+	return lwsName + PrivateServiceSuffix
+}
+
 func GenerateLabels(baseName string, slice int, revision, role string) map[string]string {
 	return map[string]string{
 		"app":                               fmt.Sprintf("%s-%d-%s", baseName, slice, role),

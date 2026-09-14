@@ -26,6 +26,8 @@ Sizing constraints:
 - `subGroupSize` must not be greater than `size`.
 - `size` must be divisible by `subGroupSize` (yielding equal-sized subgroups under `LeaderWorker`), **or** `size - 1` must be divisible by `subGroupSize` (where the leader is an extra pod in the first subgroup under `LeaderWorker`, or excluded under `LeaderExcluded`).
 
+`subGroupSize` cannot be changed after the LeaderWorkerSet is created, while `size` can. Both constraints above are re-checked on every update, so a [resize](../resizing/) that no longer fits `subGroupSize` is rejected.
+
 ## SubGroup Policy Types
 
 The `subGroupPolicyType` field (`.spec.leaderWorkerTemplate.subGroupPolicy.subGroupPolicyType`) defines how leader and worker pods are partitioned into subgroups:

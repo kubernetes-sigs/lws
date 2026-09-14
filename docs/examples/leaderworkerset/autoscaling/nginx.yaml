@@ -1,0 +1,59 @@
+# LeaderWorkerSet + HorizontalPodAutoscaler: nginx (CPU only, no GPU).
+# The vLLM and SGLang examples in this directory need GPUs and a Hugging Face
+# token. This one runs on any cluster with metrics-server, so it is the
+# quickest way to watch an HPA drive LWS replica groups.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 3
+    leaderTemplate:
+      spec:
+        containers:
+          - name: leader
+            image: nginx:1.27 # pinned; bump to the latest release
+            # HPA computes utilization as a percentage of requests, so every
+            # container has to set them or the HPA reports <unknown>.
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+    workerTemplate:
+      spec:
+        containers:
+          - name: worker
+            image: nginx:1.27 # pinned; bump to the latest release
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+---
+# Autoscaling: HPA scales the number of replica groups via the LWS scale
+# subresource (it monitors leader pods only). Requires metrics-server.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: lws-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: leaderworkerset.x-k8s.io/v1
+    kind: LeaderWorkerSet
+    name: leaderworkerset-sample
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50

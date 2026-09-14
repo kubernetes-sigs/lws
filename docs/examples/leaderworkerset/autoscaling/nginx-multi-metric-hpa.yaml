@@ -1,0 +1,53 @@
+# CPU + memory autoscaling, with scaling behavior tuned to damp oscillation,
+# for the nginx example in this directory.
+#
+# The HPA computes a desired replica count per metric and takes the largest, so
+# either metric alone can scale the LeaderWorkerSet up.
+#
+# This REPLACES the CPU HorizontalPodAutoscaler shipped in nginx.yaml. Two HPAs
+# targeting one LeaderWorkerSet will fight over its replica count, so delete
+# the CPU one first:
+#
+#   kubectl delete hpa lws-hpa
+#   kubectl apply -f nginx-multi-metric-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: lws-multi-metric-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: leaderworkerset.x-k8s.io/v1
+    kind: LeaderWorkerSet
+    name: leaderworkerset-sample
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Scale up immediately, at most doubling every 15s. Scale down only after
+    # 5 minutes below target, at most halving every 60s. Bringing up a replica
+    # group means starting a leader and its workers, so a short scale-down
+    # window would thrash the whole group.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60

@@ -218,7 +218,7 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
 <td>
    <p>Conditions expose scaler-level state (Ready).</p>
@@ -311,7 +311,7 @@ here, even if LeaderWorkerSets for that role still exist while draining.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
 <td>
    <p>conditions represent the current state of the DisaggregatedSet resource.

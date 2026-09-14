@@ -1,0 +1,98 @@
+# DisaggregatedSet + per-role autoscaling (External scaler + HPA): vLLM.
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: vllm-disagg
+spec:
+  # External role autoscaling (below) requires a single slice.
+  slices: 1
+  roles:
+    - name: prefill
+      scaling:
+        mode: External
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_producer\"}'"
+                  resources:
+                    requests:
+                      cpu: 4 # required for HPA CPU averageUtilization
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+    - name: decode
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_consumer\"}'"
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+---
+# Autoscaling: the prefill role uses scaling.mode: External, so the controller
+# creates a DisaggregatedSetRoleScaler named <ds>-prefill with a /scale
+# subresource. HPA targets that scaler (stable across rollouts) and reads leader
+# pod metrics. Requires metrics-server.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm-disagg-prefill
+spec:
+  scaleTargetRef:
+    apiVersion: disaggregatedset.x-k8s.io/v1
+    kind: DisaggregatedSetRoleScaler
+    name: vllm-disagg-prefill # auto-created: <disaggregatedset-name>-<role-name>
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

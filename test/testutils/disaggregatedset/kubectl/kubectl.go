@@ -115,6 +115,12 @@ func (b *Builder) Timeout(duration string) *Builder {
 	return b
 }
 
+// RequestTimeout adds --request-timeout flag.
+func (b *Builder) RequestTimeout(duration string) *Builder {
+	b.flags = append(b.flags, "--request-timeout="+duration)
+	return b
+}
+
 // NoHeaders adds --no-headers flag.
 func (b *Builder) NoHeaders() *Builder {
 	b.flags = append(b.flags, "--no-headers")

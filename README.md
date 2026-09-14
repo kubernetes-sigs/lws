@@ -49,7 +49,7 @@ Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to lea
 
 ## Examples
 
-Read the [examples](/docs/examples/sample/README.md) to learn more.
+Read the [examples](https://lws.sigs.k8s.io/docs/examples/) to learn more.
 
 Also discover adopters, integrations, and talks [here](https://lws.sigs.k8s.io/docs/adoption/#talks-and-presentations).
 

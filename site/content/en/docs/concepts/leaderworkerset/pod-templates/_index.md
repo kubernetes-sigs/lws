@@ -10,7 +10,7 @@ LeaderWorkerSet supports defining distinct specifications for leader and worker 
 
 ## Leader and Worker Templates
 
-An LWS replica consists of one leader pod and *N - 1* worker pods (where *N* is defined by `.spec.leaderWorkerTemplate.size`).
+An LWS replica consists of one leader pod and *N - 1* worker pods (where *N* is defined by `.spec.leaderWorkerTemplate.size`). `size` can be changed on a running LeaderWorkerSet, which recreates every pod in every group. See [Resizing](../resizing/).
 
 You can configure pod specifications using two template fields:
 
