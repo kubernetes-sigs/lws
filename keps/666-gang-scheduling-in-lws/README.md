@@ -48,18 +48,13 @@ replica with `gang.minCount` equal to replica size. The same API can later
 compile `CompositePodGroup` trees without changing or deprecating the LWS
 field.
 
-LWS uses `k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder`.
-The LWS-owned structural hierarchy directly embeds the Kubernetes 1.37
-`scheduling.k8s.io/v1alpha3` reusable controller building blocks for policy,
-constraints, disruption, and resource claims. This keeps the scheduling
-vocabulary aligned with Job, JobSet, and other workload controllers while LWS
-retains ownership of how its LWS, replica, leader, and worker levels are
-selected. kube-scheduler consumes the resulting `v1beta1` Workload and PodGroup
-objects. The feature is guarded by the LWS `WorkloadAwareScheduling` gate,
-delivered through the LWS Configuration API, and selected via the existing
-`gangSchedulingManagement.schedulerProvider` setting. The upstream
-`kubernetes` provider also requires Kubernetes `GenericWorkload` on
-kube-apiserver, kube-controller-manager, and kube-scheduler.
+LWS embeds the 1.37 `scheduling.k8s.io/v1alpha3` controller building blocks
+and uses `workloadbuilder` to create `v1beta1` Workload and PodGroup objects.
+The LWS-owned hierarchy only chooses which LWS, replica, or leader/worker
+level is active. The feature is gated by LWS `WorkloadAwareScheduling` and
+selected with `gangSchedulingManagement.schedulerProvider`. The `kubernetes`
+provider also requires `GenericWorkload` on kube-apiserver,
+kube-controller-manager, and kube-scheduler.
 
 ## Motivation
 
@@ -104,12 +99,8 @@ is LWS-specific.
 ### Future Goals
 
 - Materialize a CompositePodGroup hierarchy (`LWS root CPG -> per-replica
-  CPGs -> leader/worker PodGroups`) in the controller.
-
-This is a future goal because CompositePodGroup is alpha in Kubernetes 1.37.
-Alpha APIs are difficult to support for many users, so nested CPG creation
-stays behind a separate LWS gate. The user-facing field already reserves the
-hierarchy; Phase 1 only creates Workload and flat PodGroups.
+  CPGs -> leader/worker PodGroups`) behind a separate LWS gate. CompositePodGroup
+  is alpha in 1.37; Phase 1 only creates Workload and flat PodGroups.
 
 ### Non-Goals
 
@@ -156,26 +147,16 @@ This KEP targets the Kubernetes 1.37 APIs, not the earlier `v1alpha2` design:
 | `TopologyAwareWorkloadScheduling` ([KEP-5732][kep5732]) | Alpha, default `false` in `release-1.37` | Topology constraints require a separate cluster prerequisite. The KEP targets Beta, but the 1.37 release-branch gate did not graduate. |
 | `DRAWorkloadResourceClaims` ([KEP-5729][kep5729]) | Beta, default `false` | Shared claims require both DRA and WAS claim gates. |
 | `PodGroupPreemptionPolicy` | Alpha, default `false` | Propagating a PriorityClass preemption policy to a PodGroup requires a separate cluster prerequisite. |
-| `CompositePodGroup` runtime API | `scheduling.k8s.io/v1alpha3`; Alpha, default `false` | Runtime CPG creation is deferred, but the LWS hierarchy embeds the composite building blocks from the first release. |
-| Job integration ([KEP-5547][kep5547]) | `WorkloadWithJob` Alpha, default `false` | Provides the precedent for composing the reusable building blocks directly into a stable workload API behind a feature gate. |
+| `CompositePodGroup` runtime API | `scheduling.k8s.io/v1alpha3`; Alpha, default `false` | Runtime CPG creation is deferred; the LWS hierarchy still embeds the composite building blocks. |
 
-Where enhancement metadata and release code disagree, this KEP uses the
-`release-1.37` types and feature-gate registry. Topology-aware workload
-scheduling is not treated as Beta for LWS 1.37 compatibility.
+Compatibility follows the `release-1.37` types and feature-gate registry, not
+enhancement-proposal maturity claims. Do not use `v1alpha2` or
+`podGroupTemplateRef.workload`. A `v1beta1` PodGroup links to its template
+with `workloadRef.{workloadName,templateName}`.
 
-Do not use `scheduling.k8s.io/v1alpha2` or `podGroupTemplateRef.workload`. In
-`v1beta1`, a PodGroup links to its template through:
-
-```yaml
-workloadRef:
-  workloadName: example
-  templateName: replica
-```
-
-The upstream sources of truth are [KEP-4671][kep4671],
-[KEP-6089][kep6089], the [`v1beta1` runtime types][runtime-types], the
-[`v1alpha3` building blocks][building-blocks], and
-[`workloadbuilder`][workloadbuilder].
+Sources of truth: [KEP-4671][kep4671], [KEP-6089][kep6089],
+[`v1beta1` types][runtime-types], [`v1alpha3` building blocks][building-blocks],
+[`workloadbuilder`][workloadbuilder]. Job composition precedent is [KEP-5547][kep5547].
 
 [kep4671]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-scheduling/4671-gang-scheduling
 [kep6089]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-scheduling/6089-was-controller-apis
@@ -250,29 +231,23 @@ structural Basic ancestors or missing leaves:
    this decision and therefore cannot change it.
 
 `Composite` is admitted only when both Phase-2 gates are enabled. Updates
-cannot change an object from `Flat` to `Composite` or back. Consequently a
-restart, upgrade, or later Phase-2 enablement recompiles every existing
-Phase-1 object to the same flat Workload templates without storing an
-additional mode field.
+cannot change an object from `Flat` to `Composite` or back. A later Phase-2
+enablement therefore recompiles existing single-level objects to the same
+flat templates; there is no extra mode field.
 
-For a Phase-2 multi-level configuration, LWS fills omitted levels with Basic
-nodes or leaves. LWS and replica blocks always compile to composite nodes;
-leader and worker blocks always compile to leaf PodGroups.
-
-This follows the phased API approach in [JobSet KEP-969][jobset-kep969]: ship
-flat PodGroups first while reserving the natural hierarchy for CPG
-materialization. Users set policy on existing LWS structure; the controller
-derives template names, instances, membership, and parent links.
+For a Phase-2 multi-level configuration, omitted levels become Basic nodes or
+leaves. LWS and replica blocks compile to composite nodes; leader and worker
+blocks compile to leaf PodGroups. Users set policy on existing LWS structure;
+the controller derives template names, instances, membership, and parent
+links. This matches the JobSet phased approach of shipping flat PodGroups
+before CPG materialization ([JobSet KEP-969][jobset-kep969]).
 
 [jobset-kep969]: https://github.com/kubernetes-sigs/jobset/pull/1253
 
 ### Generated WAS Object Shapes
 
-The following diagrams show runtime scheduling relationships and membership;
-the labels state Kubernetes controller ownership explicitly. Names are
-abbreviated and Workload templates are omitted. Every runtime group is owned by
-LWS and references its corresponding Workload template through `workloadRef`
-unless a different owner is shown.
+Runtime groups are owned by LWS and reference their Workload template through
+`workloadRef` unless a parent controller owns the Workload.
 
 In Phase 1 whole-LWS mode, all pods share one PodGroup:
 
@@ -328,13 +303,10 @@ LWS
 
 ### User-Facing API
 
-LWS adds an alpha `spec.scheduling` field. LWS owns the structs that map
-scheduling intent onto its LWS, replica, leader, and worker levels, but directly
-uses the Kubernetes 1.37 reusable controller building blocks inside those
-structs. LWS and replica levels use the composite variants; leader and worker
-leaves use the pod-group variants. This follows the direct-composition pattern
-used by Job and JobSet and avoids a second set of policy, constraint,
-disruption, and claim types with subtly different semantics.
+LWS adds alpha `spec.scheduling`. LWS owns the structural wrapper; policy,
+constraints, disruption, and claims are the upstream 1.37 building blocks.
+LWS and replica levels use the composite variants; leader and worker use the
+pod-group variants.
 
 ```go
 // api/leaderworkerset/v1/leaderworkerset_types.go
@@ -367,11 +339,8 @@ type LeaderWorkerSetScheduling struct {
     // +optional
     DisruptionMode *schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
 
-    // ResourceClaims lists dynamic resource claims that pods across the LWS
-    // may share. This is supported only while level 1 is selected as a flat
-    // PodGroup. It is mutually exclusive with Replica because a root CPG
-    // cannot own a pod-level resource claim; nested configurations put claims
-    // on replica or role leaves.
+    // ResourceClaims are valid only when this level is a flat PodGroup
+    // (no Replica). A CPG cannot own pod-level claims.
     // Immutable after creation.
     // +optional
     // +kubebuilder:validation:MaxItems=4
@@ -402,10 +371,8 @@ type LeaderWorkerSetReplicaScheduling struct {
     // +optional
     DisruptionMode *schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
 
-    // ResourceClaims lists dynamic resource claims shared by replica members.
-    // A flat representation supports this while replica is the selected leaf. It is
-    // mutually exclusive with leader and worker because a CPG cannot own a
-    // pod-level resource claim; nested configurations put claims on the leaves.
+    // ResourceClaims are valid only when replica is the selected flat leaf
+    // (no leader/worker). A CPG cannot own pod-level claims.
     // Immutable after creation.
     // +optional
     // +kubebuilder:validation:MaxItems=4
@@ -473,28 +440,24 @@ type LeaderWorkerSetWorkerScheduling struct {
 }
 ```
 
-The nested fields select existing LWS structure. Users do not repeat replica
-counts, pod templates, or runtime group instances inside `spec.scheduling`.
-Leader and worker use separate Go structs even though their initial fields are
-identical, so a future role-specific field can be added without changing the
-other role's API.
+The nested fields select existing LWS structure. Replica counts and pod
+templates are not repeated. Leader and worker use distinct structs so a
+future role-specific field does not change the sibling API.
 
-The embedded policy and disruption union members are intentionally empty
-today. Their presence selects behavior; they are not no-ops:
+Empty policy and disruption union members select behavior:
 
 | Materialized level | `basic: {}` | `gang: {}` | `single: {}` | `all: {}` |
 | --- | --- | --- | --- | --- |
 | PodGroup leaf | Schedule member pods independently; no gang admission. Other configured WAS behavior still applies. | Admit at least `minCount` member pods together. | Member pods may be disrupted independently. | Member pods are disrupted as a unit. |
 | CompositePodGroup | Schedule child groups independently. Each child retains its own policy. | Admit at least `minGroupCount` child groups together. | Child groups may be disrupted independently. | Child groups are disrupted as a unit. |
 
-`minGroupCount` always counts immediate child groups, not pods. At the LWS root
-each child is one replica CPG. At a replica CPG the two children are the leader
-and worker PodGroups, so the only meaningful explicit values are `1` and `2`,
-and the default is `2`. A value of `1` does not select a role; users that need a
-Basic leader and a Gang of workers configure those leaf policies directly.
-Phase 2 validation rejects a replica-level value greater than `2`.
+`minGroupCount` counts immediate child groups. At the LWS root each child is
+one replica CPG; default is `replicas`. At a replica CPG the children are the
+leader and worker PodGroups, so the only valid explicit values are `1` and
+`2` (default `2`). `1` does not select a role; a Basic leader plus worker Gang
+is configured on the leaves. Phase 2 rejects replica `minGroupCount > 2`.
 
-Direct composition does not remove LWS-specific lowering:
+Lowering a composite-level block to a Phase-1 PodGroup:
 
 | Embedded input | Flat target | Composite target |
 | --- | --- | --- |
@@ -503,13 +466,10 @@ Direct composition does not remove LWS-specific lowering:
 | Composite constraints and disruption | Lower to the equivalent pod-group variant | Pass directly to the materialized composite node |
 | Pod-group resource claim | Attach to the selected flat or leaf PodGroup | Attach only to a leaf; composite placement is rejected |
 
-The feature gate does not waive compatibility for JSON already stored in the
-LWS `v1` CRD. LWS pins a tested Kubernetes dependency and checks the generated
-CRD schema in golden tests. A dependency update may use newer reusable
-building-block types only when their persisted JSON schema is backward
-compatible. An incompatible upstream alpha change requires an additive LWS API
-evolution or an explicit migration; it must not silently redefine the existing
-field.
+Persisted JSON in the LWS `v1` CRD must stay compatible across Kubernetes
+dependency updates. Pin the dependency, golden-test the generated CRD schema,
+and treat an incompatible upstream alpha change as an additive LWS API
+evolution or an explicit migration.
 
 ### Defaulting and Validation
 
@@ -617,28 +577,16 @@ The validating webhook enforces:
     overwritten, because it cannot express Workload ownership, creation
     order, or revision-specific group names.
 
-The LWS CRD schema includes the embedded upstream building-block schemas and
-the structural constraints owned by LWS, including topology and claim list
-limits. Golden tests pin the complete generated schema. The LWS validating
-webhook enforces unions, immutability, active-level shape, level-specific
-minima, and the cross-field rules above; it does not assume that importing an
-alpha Go type automatically enforces every declarative validation rule in an
-LWS CRD.
+The CRD schema includes the embedded upstream types plus LWS structural
+limits. The webhook enforces the rules above; importing an alpha Go type does
+not replace that. After LWS validation, fields go to `PodGroupData` or
+`CompositePodGroupData`. Only a composite-level block selected for a flat
+Phase-1 shape is lowered (reject explicit `minGroupCount`, derive pod
+`minCount`). Call `Builder.Validate` with declarative validation enabled; that
+is a second deny-by-default check, not a substitute for LWS admission.
 
-After LWS validation, matching upstream fields are passed directly to
-Kubernetes 1.37 `PodGroupData` or `CompositePodGroupData`. Only a
-composite-level block selected for a flat Phase-1 representation needs an
-LWS-specific lowering step to the equivalent `PodGroupData`; that step rejects
-an explicit `minGroupCount` and derives pod `minCount` from LWS membership. LWS
-leaves `workloadbuilder.BuildOptions.DisableDeclarativeValidation` set to
-`false` and calls `Builder.Validate(ctx, ValidationInput)` on create and update.
-Builder validation and the policy/disruption allow-lists are a second
-deny-by-default boundary; they do not replace LWS API validation.
-
-`SubGroupPolicy` does not add a fourth scheduling level in this KEP. Worker
-subgroups remain members of the replica PodGroup in replica mode or of the
-worker PodGroup in role mode. Per-subgroup WAS policies require a separate
-hierarchy extension.
+`SubGroupPolicy` is not a fourth WAS level. Subgroups stay in the replica or
+worker PodGroup. Per-subgroup WAS policies need a separate extension.
 
 ### Scheduler Providers
 
@@ -669,21 +617,12 @@ plan.
 
 ### API Discovery and Cluster Prerequisites
 
-For the `kubernetes` provider, the webhook and controller reject new opt-ins
-unless `scheduling.k8s.io/v1beta1` Workload and PodGroup are discoverable,
-naming the missing GVR in the error.
-
-Discovery is necessary but not sufficient: it does not prove kube-scheduler
-or kube-controller-manager have the same gates as kube-apiserver. Operators
-must enable `GenericWorkload` on all three. kube-scheduler consumes Workload
-and PodGroup objects; kube-controller-manager runs the PodGroup protection
-controller that removes the deletion-protection finalizer. Also enable the
-optional gates in the 1.37 baseline table for topology, shared claims,
-PodGroup preemption policy, and CompositePodGroup.
-
-`GenericWorkload` is Beta but disabled by default in 1.37. An API rejection
-or unsupported scheduler state is surfaced on the LWS; pod creation stays
-blocked rather than falling back to pod-by-pod scheduling.
+For the `kubernetes` provider, reject new opt-ins unless `v1beta1` Workload
+and PodGroup are discoverable. Discovery does not prove kube-scheduler and
+kube-controller-manager share kube-apiserver's gates. Enable `GenericWorkload`
+on all three; kube-controller-manager runs PodGroup protection. Enable the
+optional 1.37 gates for topology, shared claims, preemption policy, and CPG as
+needed. API or scheduler failure is surfaced on the LWS; pods stay blocked.
 
 ## Design Details
 
@@ -753,17 +692,12 @@ templates. Enabling Phase 2 never changes the flat compilation path for a
 single-level object.
 
 The Workload is owned by the LWS and sets `spec.controllerRef` to the LWS.
-Its name is `<name-prefix>-<uid-hash>`, where the hash is derived from the LWS
-UID, matching the Job pattern in [KEP-5547][kep5547]. Discovery does not use
-this name: LWS finds the object through the controller ownerReference and
-`spec.controllerRef`. That avoids colliding with another namespaced controller
-that also creates a Workload named after its CR (for example a Job also named
-`inference`), and LWS must not adopt a pre-existing object at the computed
-name whose owner or `controllerRef` points elsewhere.
+Its name is `<name-prefix>-<uid-hash>` of `lws.UID`. Discover it by owner
+and `controllerRef`, never by assuming the Workload is named after the LWS.
+Do not adopt a same-name object owned elsewhere.
 
-A flat Workload includes only the stable template set for its selected level;
-a composite Workload includes the root composite template and nested
-replica/role templates. One template is instantiated many times, so scaling
+A flat Workload has only the stable templates for its selected level; a
+composite Workload has the root plus nested replica/role templates. Scaling
 does not add Workload entries.
 
 ### Workload and PodGroup Lifecycle
@@ -790,21 +724,16 @@ Runtime names identify the selected level:
 | Replica PodGroup or CPG | `<name-prefix>-<uid-hash>-<group-index>-<template-revision-hash>` |
 | Leader/worker PodGroup | `<name-prefix>-<uid-hash>-<group-index>-<role>-<template-revision-hash>` |
 
-`uid-hash` is the same deterministic DNS-safe short hash of `lws.UID` used in
-the Workload name. `name-prefix` truncates `lws.Name` as needed so the complete
-name satisfies the target API's length limit. Reconciliation always verifies
-the controller ownerReference and expected labels before reusing a computed
-name; a hash collision is surfaced rather than adopted.
+`uid-hash` is a DNS-safe short hash of `lws.UID`. Truncate `name-prefix` so
+the full name fits the target API. Reuse a computed name only after verifying
+owner and expected labels; surface a collision instead of adopting it.
 
-The UID component prevents a newly created, same-name LWS from colliding with
-deletion-protected groups that belong to the previous UID. Revision-aware
-suffixes avoid collisions while old and new replicas of one LWS coexist during
-a rolling update. A leader restart within the same UID and revision reuses the
-same replica and role groups as objects, but must not overlap old and new
-member generations in that group; see Leader recreation below. The whole-LWS
-group is stable for the lifetime of the LWS; its gang guarantee covers initial
-admission, while later rolling replacement follows normal LWS availability
-semantics.
+UID-qualified names avoid colliding with deletion-protected groups from a
+previous same-name LWS. Revision suffixes isolate old and new replicas during
+a rolling update. Same-UID, same-revision leader restart reuses replica and
+role groups as objects but must not overlap member generations (see Leader
+recreation). The whole-LWS group is stable for the LWS lifetime; its gang
+covers initial admission, later rolling replacement follows LWS availability.
 
 Every PodGroup has:
 
@@ -816,14 +745,12 @@ Every PodGroup has:
 - an inline copy of the resolved template fields.
 
 The Workload is referenced through `spec.workloadRef`, not a second
-ownerReference, matching `workloadbuilder.NewPodGroup`. A leader Pod cannot
-own an object that must exist before the leader, and must not be the owner
-across a same-name restart.
+ownerReference. A leader Pod cannot own an object that must exist before the
+leader.
 
-On scale-down or rollout cleanup, LWS deletes member pods first, then the
-PodGroup, and waits for the protection finalizer. Deleting the LWS relies on
-owner-based garbage collection, with reconciliation providing ordered
-best-effort cleanup.
+On scale-down or rollout cleanup, delete member pods first, then the PodGroup,
+and wait for the protection finalizer. Deleting the LWS uses owner GC, with
+reconciliation as best-effort ordered cleanup.
 
 ### Replica, Size, and Rollout Updates
 
@@ -853,8 +780,8 @@ protocol:
 
 Old terminating pods and new Pending pods must not coexist in the same
 PodGroup. The scheduler still counts terminating members as scheduled until
-they are fully deleted, so overlapping generations can break gang placement.
-Rolling update is already isolated by revision-specific PodGroups.
+they are fully deleted. Rolling update is isolated by revision-specific
+PodGroups.
 
 Scaling to `replicas: 0` removes scheduling instances without deleting the
 Workload:
@@ -869,13 +796,10 @@ Workload:
 4. On scale-up from zero, patch the Workload to the positive computed minimum
    before recreating the required group chain and allowing pods.
 
-This differs from JobSet suspension: LWS has no `spec.suspend`, and scaling to
-zero does not open an immutability window or require rebuilding its scheduling
-definition.
+LWS has no `spec.suspend`; scale-to-zero is not a JobSet-style suspend.
 
-Kubernetes 1.37 makes `gang.minCount` mutable, so this KEP does not prohibit
-all size changes. A `ResizePolicy: Recreate` size update is handled as a
-revision transition:
+`gang.minCount` is mutable in 1.37. A `ResizePolicy: Recreate` size update is
+a revision transition:
 
 1. Recompile and patch the Workload template with the new desired minimum.
 2. Keep old revision PodGroups at their old minimum while their old-size pods
@@ -884,16 +808,15 @@ revision transition:
    replica pods.
 4. Delete old PodGroups after their pods are gone.
 
-This avoids raising an old PodGroup's minimum beyond its actual member count.
-For any future in-place size policy, LWS must explicitly coordinate PodGroup
-and pod membership updates; it cannot merely patch `minCount`.
+Do not raise an old PodGroup's minimum above its current member count. An
+in-place size policy, if added later, must coordinate membership; it cannot
+only patch `minCount`.
 
-Leader/worker mode applies the same revision transition independently to the
-two leaf groups. Whole-LWS mode patches its computed minimum when replica or
-size cardinality changes; because its PodGroup is already admitted, that
-patch does not promise a second all-at-once admission during rolling updates.
-Phase 2 uses revision-specific replica CPGs and role PodGroups, preserving the
-same per-replica rollout boundary as the default mode.
+Leader/worker mode applies the same revision transition to each leaf.
+Whole-LWS mode patches the computed minimum when cardinality changes; that
+does not promise a second all-at-once admission during rolling updates.
+Phase 2 uses revision-specific replica CPGs and role PodGroups with the same
+per-replica rollout boundary.
 
 ### Parent Controller Integration
 
@@ -917,93 +840,49 @@ group management:
 5. The resulting root LWS group sets `parentCompositePodGroupName` when the
    parent annotation is present; LWS then owns all internal descendant links.
 
-The annotations are controller-to-controller linkage, not user scheduling
-preferences. Validation rejects missing templates, an invalid owner chain, or
-a parent CompositePodGroup that is not present. LWS blocks pod creation until
-the delegated Workload and any required parent instance exist.
+The annotations are controller-to-controller linkage. Reject a missing
+template, invalid owner chain, or missing parent CPG. Block pods until the
+delegated Workload and required parent instance exist.
 
-In Phase 2, `group-template-name` selects the LWS root composite template. LWS
-then materializes that root CPG and its replica and role descendants, so one
-annotation is sufficient for delegated leader/worker mode.
+In Phase 2, `group-template-name` selects the LWS root composite template; LWS
+then materializes that CPG and its replica and role descendants, so delegated
+leader/worker mode needs only one annotation.
 
-The two annotation spellings above follow the Kubernetes 1.37 KEP-6089
-controller-linkage proposal and its implementation-sync update. The latter is
-still under review in [kubernetes/enhancements#6244][kep6089-sync] as of
-2026-08-12, and neither key is exported by Kubernetes code yet. LWS must
-consume upstream exported constants if they are added and revalidate both
-literals before implementation rather than maintaining private spellings.
+Use the Kubernetes 1.37 KEP-6089 linkage names. The implementation-sync
+([kubernetes/enhancements#6244][kep6089-sync]) is still open and the keys are
+not exported yet; consume upstream constants if they land, and revalidate the
+literals before implementation.
 
 [kep6089-sync]: https://github.com/kubernetes/enhancements/pull/6244
 
-Materializing LWS's internal hierarchy as a nested CompositePodGroup tree is
-Phase 2 work under [KEP-6012][kep6012].
-
-[kep6012]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-scheduling/6012-composite-podgroup-api
-
 ### Future DisaggregatedSet Integration
 
-DisaggregatedSet is a parent controller over multiple LWS objects, commonly one
-per inference role such as prefill and decode. This KEP does not add scheduling
-or slice fields to the DisaggregatedSet API, but its delegation contract leaves
-room for that controller to add role and slice levels above an LWS subtree.
-
-A future integration can make DisaggregatedSet the root-most registered
-workload controller. It owns and compiles the Workload and materializes each
-slice CPG. Each child LWS receives the selected Workload template and slice CPG
-through the standard parent-controller linkage, then creates its own LWS root,
-replica, and role descendants:
+DisaggregatedSet can be a parent over multiple LWS objects (for example
+prefill and decode). This KEP does not add DisaggregatedSet scheduling fields.
+A future parent can own the Workload, materialize slice CPGs, and delegate to
+each child LWS through the parent-linkage annotations:
 
 ```text
 DisaggregatedSet
 └── Workload (owned by DisaggregatedSet)
     └── slice CompositePodGroup (owned by DisaggregatedSet)
-        │   gang.minGroupCount: 2
-        │   topology: <slice domain>
-        ├── prefill LWS root CPG (owned by the prefill LWS)
-        │   │   gang.minGroupCount: <minimum prefill replicas>
-        │   └── per-replica CPGs / PodGroups
-        └── decode LWS root CPG (owned by the decode LWS)
-            │   gang.minGroupCount: <minimum decode replicas>
-            └── per-replica CPGs / PodGroups
+        ├── prefill LWS root CPG → per-replica groups
+        └── decode LWS root CPG → per-replica groups
 ```
 
-The slice-level topology constraint places its prefill and decode child groups
-in the same topology domain. The slice Gang requires both role subtrees to be
-admissible, while each LWS root Gang supplies that role's minimum replica
-count. DisaggregatedSet must compute and coordinate those two minima when its
-desired replica ratio changes.
-
-This hierarchy can represent fixed minimum prefill and decode counts, but a
-single flat CPG cannot express a general prefill-to-decode ratio:
-`minGroupCount` is an unweighted count of immediate children and does not
-identify their roles. A dynamic or weighted ratio therefore remains one of:
-
-- controller logic that translates the ratio into coordinated per-role
-  minima in the hierarchy above;
-- a slice model that explicitly groups fixed numbers of prefill and decode
-  replica groups; or
-- a future upstream role-aware or weighted CompositePodGroup policy.
-
-The exact DisaggregatedSet user API, scale transaction, rollout behavior, and
-failure semantics require a follow-up design. They are not prerequisites for
-the LWS-owned Phase-1 path.
+Slice topology and `minGroupCount` can require both role subtrees; each LWS
+root supplies that role's replica minimum. A flat CPG cannot express a
+weighted prefill-to-decode ratio (`minGroupCount` is an unweighted child
+count). Ratio, scale, and rollout semantics belong in a DisaggregatedSet
+follow-up. They are not required for the LWS Phase-1 path.
 
 ### Unsupported Pod-Level Overrides
 
-LWS-managed templates must not pre-set `pod.spec.schedulingGroup`. The
-previous alpha escape hatch allowed an arbitrary external object name and
-disabled LWS lifecycle management, but it could not establish:
-
-- which Workload template defines the policy;
-- which controller owns the Workload;
-- whether the PodGroup exists before pods;
-- how scaling, rollout, and finalizer cleanup are coordinated.
-
-The standardized parent annotations are the supported delegation mechanism.
-Admission rejects a pre-set `schedulingGroup` when
-`spec.scheduling` is managed by LWS. A future bring-your-own-object mode, if
-needed, must define ownership and reconciliation explicitly in a separate
-KEP.
+LWS-managed templates must not pre-set `pod.spec.schedulingGroup`. The old
+alpha escape hatch cannot express Workload ownership, creation order, or
+revision-specific names. Admission rejects a pre-set value when
+`spec.scheduling` is managed by LWS. Parent annotations are the supported
+delegation path. A bring-your-own-object mode needs a separate KEP.
 
 ### Observability
 
@@ -1139,6 +1018,19 @@ no faithful Volcano representation.
 *Mitigation:* validate against an explicit capability set. Do not implement
 lossy translation.
 
+**Size changes can mix old and new replica shapes during rollout.**
+
+*Mitigation:* use revision-specific PodGroups and retain the old inline policy
+until the old replica is removed.
+
+**Flat lowering must not redefine composite counts.** A CPG Gang counts
+child groups, while a PodGroup Gang counts pods.
+
+*Mitigation:* a flat shape accepts an empty composite Gang as intent but
+rejects an explicit `minGroupCount`; LWS computes the flat leaf `minCount` from
+its own structure. A multi-level shape passes the embedded composite policy
+directly into `CompositePodGroupData` without lowering it.
+
 ### Examples
 
 An LWS opts into upstream gang scheduling:
@@ -1175,8 +1067,6 @@ apiVersion: scheduling.k8s.io/v1beta1
 kind: Workload
 metadata:
   name: inference-b7c8d2f1 # <name-prefix>-<uid-hash>
-  labels:
-    leaderworkerset.sigs.k8s.io/name: inference
   ownerReferences:
   - apiVersion: leaderworkerset.x-k8s.io/v1
     kind: LeaderWorkerSet
@@ -1198,8 +1088,7 @@ spec:
     priorityClassName: inference-high
 ```
 
-For LWS UID hash `b7c8d2f1`, group index `0`, and revision `dd6699c7c`, LWS
-instantiates:
+For group index `0` and revision `dd6699c7c`:
 
 ```yaml
 apiVersion: scheduling.k8s.io/v1beta1
@@ -1410,22 +1299,10 @@ to existing tests to make this code solid before implementation.
 
 ## Implementation History
 
-- 2025-10-13: Initial KEP drafted against the early upstream alpha API in
-  [lws#844][lws-pr-844].
-- 2026-07-27: Rewritten for Kubernetes 1.37: `v1beta1` runtime APIs,
-  `v1alpha3` building blocks, `workloadbuilder`, mutable `minCount`, strict
-  lifecycle ordering, and KEP-6089 parent integration.
-- 2026-08-12: Revalidated against `release-1.37` and `v1.37.0-rc.0`; aligned
-  with the final builder validation shape, corrected
-  `DRAWorkloadResourceClaims` to Beta, clarified PodGroup ownership and common
-  priority, retained topology-aware scheduling as Alpha based on the release
-  feature registry, and updated the provisional parent linkage annotation.
-- 2026-08-26: Reworked `spec.scheduling` so LWS, replica, and leader/worker
-  levels exist from the first release, with object shape selecting flat
-  Phase-1 lowering or Phase-2 CompositePodGroup compilation.
-- 2026-09-11: Replaced mirrored scheduling types with upstream controller
-  building blocks while keeping the LWS-owned hierarchy; clarified terminal
-  `PodGroupInitiallyScheduled` semantics and same-revision leader recreation.
+- 2025-10-13: Initial draft against the early upstream alpha API ([lws#844][lws-pr-844]).
+- 2026-07–09: Rewritten for Kubernetes 1.37 WAS: three-level `spec.scheduling`,
+  Phase-1 flat lowering with `workloadbuilder`, LWS-owned PodGroups, parent
+  delegation, and same-revision leader-recreation isolation.
 
 [lws-pr-844]: https://github.com/kubernetes-sigs/lws/pull/844
 
@@ -1444,50 +1321,27 @@ to existing tests to make this code solid before implementation.
 
 ## Alternatives
 
-**Continue using only third-party schedulers.** This avoids an upstream
-dependency but leaves LWS outside the standard Workload contract and requires
-users to install another scheduler.
-
-**Keep `spec.gangScheduling: {}` as an LWS-specific empty marker.** This is
-smaller initially but cannot express standard policy, topology, disruption,
-or shared-claim intent and diverges from KEP-6089 and Job integration.
-
 **Create PodGroups from leader-pod reconciliation and make the leader their
-owner.** This matches the existing Volcano shortcut but violates the required
-Workload -> PodGroup -> Pod order and conflicts with PodGroup deletion
-protection. It is rejected for the upstream provider.
+owner.** This matches the Volcano shortcut but violates Workload → PodGroup →
+Pod order and PodGroup deletion protection. Rejected for the `kubernetes`
+provider.
 
-**Make one PodGroup for the entire LWS the only representation.** Whole-LWS
-mode is useful when explicitly requested, but making it the default would
-require all replicas to fit simultaneously, couple independent serving
-replicas, and hide replica and role boundaries from future CPG and topology
-scheduling.
+**Make one PodGroup for the entire LWS the only representation.** Useful when
+requested, but as the default it would require all replicas to fit at once and
+hide replica/role boundaries from later CPG and topology scheduling.
 
-**Create one Workload per replica.** This duplicates identical policy, creates
-more objects, and loses the Workload-level representation of the LWS.
-
-**Expose only a flat replica scheduling block and add hierarchy later.** Adding
-LWS and leader/worker levels later would change the field's meaning or require
-a second API.
+**Expose only a flat replica block and add hierarchy later.** Adding LWS and
+leader/worker levels later would change the field or require a second API.
 
 **Materialize hierarchical LWS scheduling immediately.** CompositePodGroup is
-still alpha in 1.37 and would expand the first implementation. The hierarchical
-API with Phase-1 lowering is a smaller, testable first step.
+still alpha in 1.37. Hierarchical API plus Phase-1 lowering is the smaller
+first step.
 
-**Mirror the upstream `v1alpha3` controller building blocks in LWS-owned
-types.** This isolates the persisted CRD schema from dependency updates, but it
-creates a parallel scheduling vocabulary and field-by-field conversion code.
-It also risks semantic drift between pod-group and composite-group variants.
-Direct composition is selected instead, with dependency pinning and generated
-schema compatibility tests.
+**Mirror the upstream `v1alpha3` building blocks in LWS-owned types.** Isolates
+the CRD from dependency updates, but duplicates the scheduling vocabulary and
+risks drift. Direct composition is selected, with pinning and schema tests.
 
-**Drive WAS from LWS labels instead of a typed `spec.scheduling` field.**
-Well-known labels on the LWS (and optionally on
-leader/worker templates) could opt into replica gang, topology, or disruption
-behavior so the controller still compiles Workload and PodGroup objects
-with an even smaller typed API surface. Labels are not the primary API because
-they cannot represent the
-LWS/replica/leader-worker hierarchy, union-typed policy, topology lists,
-disruption modes, or shared claims without an unbounded stringly-typed
-vocabulary, and validation and immutability become ad hoc. A later switch from
-labels to a typed field would still be a user-facing migration.
+**Drive WAS from LWS labels instead of `spec.scheduling`.** Labels cannot
+represent the hierarchy, unions, topology lists, disruption, or claims without
+an ad hoc string vocabulary. A later switch to a typed field would still be a
+user-facing migration.
