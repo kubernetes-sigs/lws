@@ -140,8 +140,8 @@ This KEP targets the Kubernetes 1.37 APIs, not the earlier `v1alpha2` design:
 | Reusable controller API blocks | `scheduling.k8s.io/v1alpha3` | The LWS-owned hierarchy directly uses `WorkloadPodGroup*` and `WorkloadCompositePodGroup*` types. LWS-specific validation chooses the structural level and preserves flat/composite representation. |
 | `workloadbuilder` | Shipped in `k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder` | LWS uses the release implementation for validation, Workload compilation, and PodGroup materialization. |
 | `GenericWorkload` | Beta, default `false` | Operators must explicitly enable it in kube-apiserver, kube-controller-manager, and kube-scheduler. kube-controller-manager runs the PodGroup protection controller. |
-| Gang minima (`minCount`, `minGroupCount`) | Mutable, but both must remain positive | LWS can support elastic size and replica changes; zero replicas use an unused template placeholder of `1`. |
-| Workload templates | Existing entries are updateable where their fields allow it; entries cannot be added or removed | A single-level shape always uses stable leaf templates for the selected level. A multi-level shape, admitted only in Phase 2, compiles into nested composite and leaf templates. |
+| Gang minima (`minCount`, `minGroupCount`) | minCount is Mutable, but minGroupCount is Immutable, both must remain positive | Elastic size and replica changes are supported. At `replicas: 0`, LWS keeps the Workload but creates no groups; a controller-computed minimum that would be `0` is stored as `1` on the unused template because the API forbids zero. |
+| Workload templates | Existing entries are updateable for minCount in PodGroupTemplate; entries cannot be added or removed | A single-level shape always uses stable leaf templates for the selected level. A multi-level shape, admitted only in Phase 2, compiles into nested composite and leaf templates. |
 | PodGroup protection | PodGroups have deletion protection | LWS owns PodGroups independently of leader Pods and follows ordered cleanup. |
 | Workload-aware preemption ([KEP-5710][kep5710]) | Beta behavior under `GenericWorkload`; no separate feature gate | The PodGroup priority is authoritative and every member Pod must have the same effective priority. |
 | `TopologyAwareWorkloadScheduling` ([KEP-5732][kep5732]) | Alpha, default `false` in `release-1.37` | Topology constraints require a separate cluster prerequisite. The KEP targets Beta, but the 1.37 release-branch gate did not graduate. |
@@ -205,7 +205,7 @@ Delivery is split into two phases:
 - **Phase 1:** LWS creates only Workload and PodGroup objects. Admission
   permits exactly one active level: whole LWS, replica, or leader/worker
   leaves. This single-level shape is always lowered to flat PodGroup
-  templates. An empty `spec.scheduling` selects replica mode and Gang
+  templates. An empty `spec.scheduling: {}` selects replica mode and Gang
   scheduling. Leader and worker leaves are admitted independently in this
   phase; coordinating them as a gang of groups requires Phase 2.
 - **Phase 2:** behind a separate LWS gate and Kubernetes'
@@ -247,15 +247,16 @@ before CPG materialization ([JobSet KEP-969][jobset-kep969]).
 
 ### Generated WAS Object Shapes
 
-Runtime groups are owned by LWS and reference their Workload template through
-`workloadRef` unless a parent controller owns the Workload.
+Runtime groups are owned by LWS (`controller: true`) and reference their
+Workload template through `spec.workloadRef`. When LWS also owns that
+Workload, each group carries a second, non-controller ownerReference to it.
 
 In Phase 1 whole-LWS mode, all pods share one PodGroup:
 
 ```text
 LWS
 ├── Workload (owned by LWS)
-└── PodGroup "lws" (owned by LWS; workloadRef -> Workload)
+└── PodGroup "lws" (controller owner: LWS; workloadRef + non-controller ownerRef -> Workload)
     ├── replica 0: leader + workers
     ├── replica 1: leader + workers
     └── ...
@@ -292,7 +293,7 @@ CPG instead; LWS still owns its internal descendants.
 ```text
 LWS
 ├── Workload (owned by LWS when LWS is the root controller)
-└── LWS root CompositePodGroup (workloadRef -> Workload)
+└── LWS root CompositePodGroup (controller owner: LWS; workloadRef + non-controller ownerRef -> Workload when LWS owns it)
     ├── replica 0 CompositePodGroup
     │   ├── leader PodGroup ── leader 0
     │   └── worker PodGroup ── workers 0
@@ -721,18 +722,32 @@ role groups as objects but must not overlap member generations (see Leader
 recreation). The whole-LWS group is stable for the LWS lifetime; its gang
 covers initial admission, later rolling replacement follows LWS availability.
 
-Every PodGroup has:
+Every PodGroup (and, in Phase 2, every LWS-owned CPG) has:
 
-- a controller ownerReference to the LWS, never to the leader Pod;
+- a controller ownerReference to the LWS (`controller: true`), never to the
+  leader Pod;
+- when LWS owns the Workload, a second ownerReference to that Workload with
+  `controller: false`, matching the Job pattern in
+  [KEP-5547][kep5547];
 - labels for LWS name, active level, optional group index, role, and template
   revision;
 - `spec.workloadRef.workloadName` and the selected `templateName` (`lws`,
   `replica`, `leader`, or `worker`);
 - an inline copy of the resolved template fields.
 
-The Workload is referenced through `spec.workloadRef`, not a second
-ownerReference. A leader Pod cannot own an object that must exist before the
-leader.
+`spec.workloadRef` is the scheduling link that selects the template.
+`controller: false` on the Workload ownerReference is for garbage collection.
+It is not a second controller and does not replace `workloadRef`. A leader Pod
+cannot own an object that must exist before the leader.
+
+A parent-owned Workload does not get an ownerReference from LWS-created
+groups; those groups still controller-own to the LWS and keep `workloadRef`
+to the parent Workload. That matches Job's delegated case.
+
+The extra Workload ownerReference avoids leaking groups in a race where a
+rollout or scale-up creates a PodGroup or CPG immediately before the LWS is
+deleted. GC then collects the leftover group when the Workload is collected,
+even if the LWS controller ownerRef is already gone or never observed.
 
 On scale-down or rollout cleanup, delete member pods first, then the PodGroup,
 and wait for the protection finalizer. Deleting the LWS uses owner GC, with
@@ -835,9 +850,7 @@ then materializes that CPG and its replica and role descendants, so delegated
 leader/worker mode needs only one annotation.
 
 Use the Kubernetes 1.37 KEP-6089 linkage names. The implementation-sync
-([kubernetes/enhancements#6244][kep6089-sync]) is still open and the keys are
-not exported yet; consume upstream constants if they land, and revalidate the
-literals before implementation.
+([kubernetes/enhancements#6244][kep6089-sync]) is merged in 1.38 and the keys are now exported.
 
 [kep6089-sync]: https://github.com/kubernetes/enhancements/pull/6244
 
@@ -1053,6 +1066,7 @@ apiVersion: scheduling.k8s.io/v1beta1
 kind: Workload
 metadata:
   name: inference-b7c8d2f1 # <name-prefix>-<uid-hash>
+  uid: 7a1e9c2b-4d3f-41b0-9c8e-2f6a0b1d5e77
   ownerReferences:
   - apiVersion: leaderworkerset.x-k8s.io/v1
     kind: LeaderWorkerSet
@@ -1091,6 +1105,11 @@ metadata:
     name: inference
     uid: 5c66068f-90af-46ad-9208-b447df8e1843
     controller: true
+  - apiVersion: scheduling.k8s.io/v1beta1
+    kind: Workload
+    name: inference-b7c8d2f1
+    uid: 7a1e9c2b-4d3f-41b0-9c8e-2f6a0b1d5e77
+    controller: false
 spec:
   workloadRef:
     workloadName: inference-b7c8d2f1
@@ -1173,10 +1192,11 @@ to existing tests to make this code solid before implementation.
 - `workloadbuilder.Validate` with create/update `ValidationInput`, declarative
   validation enabled, and explicit policy/disruption allow-lists.
 - Correct `v1beta1` Workload, selected leaf templates, PodGroups,
-  `controllerRef`, `workloadRef`, controller ownerReferences, labels,
-  common Workload-wide priority class, and bounded UID-hashed Workload,
-  PodGroup, and CPG names with level-aware revision suffixes. Rejection of a
-  computed name owned by another controller.
+  `controllerRef`, `workloadRef`, a controller ownerReference to the LWS, and
+  a non-controller ownerReference to an LWS-owned Workload (omitted when the
+  Workload is parent-owned). Labels, common Workload-wide priority class, and
+  bounded UID-hashed Workload, PodGroup, and CPG names with level-aware
+  revision suffixes. Rejection of a computed name owned by another controller.
 - Phase-2 `WorkloadItem` tree generation maps LWS and replica fields through
   direct `CompositePodGroupData` and role leaves through direct `PodGroupData`;
   replica `minGroupCount` accepts only `1` or `2`.
