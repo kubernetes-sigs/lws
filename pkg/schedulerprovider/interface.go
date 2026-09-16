@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	SupportedSchedulerProviders = sets.New("volcano")
+	SupportedSchedulerProviders = sets.New("volcano", "kubernetes")
 
 	// ErrUnexpectedPodGroupOwner indicates that an existing PodGroup has a missing
 	// or conflicting controller owner and cannot be safely reused.
@@ -37,12 +37,54 @@ var (
 )
 
 const (
-	PodGroupNameFmt = "%s-%s-%s"
+	PodGroupNameFmt     = "%s-%s-%s"
+	RolePodGroupNameFmt = "%s-%s-%s-%s"
+	LWSGroupNameFmt     = "%s-lws"
+
+	// These linkage annotations are defined by Kubernetes KEP-6089. They are
+	// not exported by k8s.io/api yet.
+	GroupTemplateNameAnnotation       = "scheduling.k8s.io/group-template-name"
+	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
+
+	ReasonAPINotAvailable                = "APINotAvailable"
+	ReasonUnsupportedProviderCapability  = "UnsupportedProviderCapability"
+	ReasonInvalidSchedulingConfiguration = "InvalidSchedulingConfiguration"
+	ReasonWorkloadCreateFailed           = "WorkloadCreateFailed"
+	ReasonPodGroupCreateFailed           = "PodGroupCreateFailed"
+	ReasonParentWorkloadNotReady         = "ParentWorkloadNotReady"
+	ReasonPodGroupCleanupBlocked         = "PodGroupCleanupBlocked"
 )
+
+// ReconcileError carries a stable LWS condition reason without hiding the
+// underlying API error used for retries and diagnostics.
+type ReconcileError struct {
+	Reason string
+	Err    error
+}
+
+func (e *ReconcileError) Error() string { return e.Err.Error() }
+func (e *ReconcileError) Unwrap() error { return e.Err }
+
+func NewReconcileError(reason string, err error) error {
+	return &ReconcileError{Reason: reason, Err: err}
+}
+
+func ReconcileErrorReason(err error) string {
+	var reconcileErr *ReconcileError
+	if errors.As(err, &reconcileErr) {
+		return reconcileErr.Reason
+	}
+	return ReasonInvalidSchedulingConfiguration
+}
 
 // SchedulerProvider defines the interface for managing pod group resources
 type SchedulerProvider interface {
-	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller.
+	// ReconcileScheduling creates controller-owned scheduling prerequisites
+	// before the leader StatefulSet is allowed to create Pods. Providers that
+	// use the legacy pod-driven lifecycle may implement this as a no-op.
+	ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error
+
+	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller
 	// It returns an error wrapping ErrUnexpectedPodGroupOwner if an existing
 	// PodGroup has a missing or conflicting controller owner.
 	CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error
@@ -57,6 +99,16 @@ func GetPodGroupName(lwsName, groupIndex, revision string) string {
 	return fmt.Sprintf(PodGroupNameFmt, lwsName, groupIndex, revision)
 }
 
+// GetRolePodGroupName returns a revision-aware leader or worker PodGroup name.
+func GetRolePodGroupName(lwsName, groupIndex, role, revision string) string {
+	return fmt.Sprintf(RolePodGroupNameFmt, lwsName, groupIndex, role, revision)
+}
+
+// GetLWSGroupName returns the stable whole-LWS PodGroup name.
+func GetLWSGroupName(lwsName string) string {
+	return fmt.Sprintf(LWSGroupNameFmt, lwsName)
+}
+
 // ProviderType defines the type of scheduler provider
 type ProviderType string
 
@@ -65,6 +117,8 @@ func NewSchedulerProvider(providerType ProviderType, client client.Client) (Sche
 	switch providerType {
 	case Volcano:
 		return NewVolcanoProvider(client), nil
+	case Kubernetes:
+		return NewKubernetesProvider(client), nil
 	default:
 		return nil, fmt.Errorf("unsupported scheduler provider type %s, the supported provider list is %v", providerType, SupportedSchedulerProviders.UnsortedList())
 	}
