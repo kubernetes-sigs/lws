@@ -24,6 +24,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 )
 
@@ -36,7 +37,15 @@ func validate(c *configapi.Configuration) field.ErrorList {
 	var allErrs field.ErrorList
 	allErrs = append(allErrs, validateSchedulerProvider(c)...)
 	allErrs = append(allErrs, validateInternalCertManagement(c)...)
+	allErrs = append(allErrs, validateFeatureGates(c)...)
 	return allErrs
+}
+
+func validateFeatureGates(c *configapi.Configuration) field.ErrorList {
+	if _, err := features.New(c.FeatureGates); err != nil {
+		return field.ErrorList{field.NotSupported(field.NewPath("featureGates"), c.FeatureGates, features.Known())}
+	}
+	return nil
 }
 
 func validateSchedulerProvider(c *configapi.Configuration) field.ErrorList {

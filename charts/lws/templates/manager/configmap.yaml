@@ -14,6 +14,10 @@ data:
       leaderElect: true
     internalCertManagement:
       enable: {{ not .Values.enableCertManager }}
+    {{- if .Values.featureGates }}
+    featureGates:
+{{ toYaml .Values.featureGates | indent 6 }}
+    {{- end }}
     {{- if .Values.gangSchedulingManagement }}
     gangSchedulingManagement:
 {{ toYaml .Values.gangSchedulingManagement | indent 6 }}
