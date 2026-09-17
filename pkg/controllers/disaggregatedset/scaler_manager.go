@@ -56,6 +56,48 @@ func NewScalerManager(c client.Client, r events.EventRecorder) *ScalerManager {
 // ScalerName is the deterministic name for a role's auto-created scaler.
 func ScalerName(dsName, role string) string { return dsName + "-" + role }
 
+// resolveDesiredReplicasByRole resolves one replica target for every role whose
+// target is known. Static roles use the LWS template; External roles use their
+// scaler. An External role with no owned scaler is omitted so the controller
+// can pause workload reconciliation instead of guessing a target.
+func resolveDesiredReplicasByRole(
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+) map[string]int {
+	desiredReplicasByRole := make(map[string]int, len(ds.Spec.Roles))
+	for _, role := range ds.Spec.Roles {
+		if role.Scaling != nil && role.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+			if scaler := scalers[role.Name]; scaler != nil {
+				desiredReplicasByRole[role.Name] = int(scaler.Spec.Replicas)
+			}
+			continue
+		}
+
+		replicas := 1
+		if role.Spec.Replicas != nil {
+			replicas = int(*role.Spec.Replicas)
+		}
+		desiredReplicasByRole[role.Name] = replicas
+	}
+	return desiredReplicasByRole
+}
+
+// Every desired role should normally have a resolved target after
+// ScalerManager.Reconcile. Currently, a target can remain unresolved only when
+// an External role's generated scaler name is occupied by an object this
+// DisaggregatedSet does not own, so the scaler can be neither created nor
+// adopted. This check is a safety mechanism: callers must pause instead of
+// guessing a target.
+func unresolvedReplicaTargetRoles(roleNames []string, desiredReplicasByRole map[string]int) []string {
+	var unresolved []string
+	for _, roleName := range roleNames {
+		if _, ok := desiredReplicasByRole[roleName]; !ok {
+			unresolved = append(unresolved, roleName)
+		}
+	}
+	return unresolved
+}
+
 // Reconcile ensures a scaler exists for every External role and deletes scalers
 // owned by this DS whose role is no longer External. seedFor is called with a
 // role name to compute the initial spec.replicas for a new scaler — typically

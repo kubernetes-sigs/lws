@@ -56,47 +56,57 @@ func copyAnnotations(annotations map[string]string) map[string]string {
 	return maps.Clone(annotations)
 }
 
-func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disaggregatedsetutils.CreateParams) error {
-	lwsName := disaggregatedsetutils.GenerateName(params.DisaggregatedSet.Name, params.Slice, params.Revision, params.Role)
-	replicas := int32(params.Replicas)
-	config := params.Config
+func (manager *LeaderWorkerSetManager) Create(
+	ctx context.Context,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	role *disaggregatedsetv1.DisaggregatedRoleSpec,
+	slice int,
+	startingReplicas, initialReplicas int,
+) error {
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role.Name)
+	labels := disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, slice, revision, role.Name)
+	replicas := int32(startingReplicas)
 
 	// Copy the spec and override replicas.
-	lwsSpec := config.Spec
+	lwsSpec := role.Spec
 	lwsSpec.Replicas = &replicas
 
 	// Inject system labels (role, name, revision) into pod templates.
 	// These don't come from the user's spec — services select pods by them.
-	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
+	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(role.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, labels)
 	// Defensive copy: struct copy is shallow, so maps are shared with the original config.
-	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(role.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
 	// Inject placement affinity (no-op when no policy is set). The helper deep-copies
 	// any existing affinity, so the shared worker template is not mutated.
-	disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Spec, params.DisaggregatedSet.Name, params.Slice, params.DisaggregatedSet.Spec.PlacementPolicy)
+	disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Spec, disaggregatedSet.Name, slice, disaggregatedSet.Spec.PlacementPolicy)
 
 	if lwsSpec.LeaderWorkerTemplate.LeaderTemplate != nil {
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate = lwsSpec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
-		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, params.Labels)
-		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
-		disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Spec, params.DisaggregatedSet.Name, params.Slice, params.DisaggregatedSet.Spec.PlacementPolicy)
+		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Labels = mergeLabels(role.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, labels)
+		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(role.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
+		disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Spec, disaggregatedSet.Name, slice, disaggregatedSet.Spec.PlacementPolicy)
 	}
 
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        lwsName,
-			Namespace:   params.DisaggregatedSet.Namespace,
-			Labels:      mergeLabels(config.ObjectMeta.Labels, params.Labels),
-			Annotations: copyAnnotations(config.ObjectMeta.Annotations),
+			Namespace:   disaggregatedSet.Namespace,
+			Labels:      mergeLabels(role.ObjectMeta.Labels, labels),
+			Annotations: copyAnnotations(role.ObjectMeta.Annotations),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: disaggregatedsetv1.GroupVersion.String(),
 				Kind:       "DisaggregatedSet",
-				Name:       params.DisaggregatedSet.Name,
-				UID:        params.DisaggregatedSet.UID,
+				Name:       disaggregatedSet.Name,
+				UID:        disaggregatedSet.UID,
 				Controller: ptr.To(true),
 			}},
 		},
 		Spec: lwsSpec,
 	}
+	// startingReplicas is the initial Spec value. initialReplicas is the revision's
+	// intended size, which may be larger when a rollout starts the LWS at zero.
+	setInitialReplicasAnnotation(leaderWorkerSet, initialReplicas)
 
 	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -110,17 +120,17 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 		// some unrelated trigger causes another reconcile. Returning an error
 		// requeues instead.
 		existing := &leaderworkersetv1.LeaderWorkerSet{}
-		if getErr := manager.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: params.DisaggregatedSet.Namespace}, existing); getErr != nil {
+		if getErr := manager.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: disaggregatedSet.Namespace}, existing); getErr != nil {
 			return fmt.Errorf("failed to get existing LeaderWorkerSet %s after create conflict: %w", lwsName, getErr)
 		}
-		if !metav1.IsControlledBy(existing, params.DisaggregatedSet) {
-			return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to adopt it", lwsName, params.DisaggregatedSet.Name)
+		if !metav1.IsControlledBy(existing, disaggregatedSet) {
+			return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to adopt it", lwsName, disaggregatedSet.Name)
 		}
 		return nil
 	}
 
 	log := logf.FromContext(ctx)
-	log.Info("Created LWS", "name", lwsName, "role", params.Role, "revision", params.Revision, "replicas", params.Replicas)
+	log.Info("Created LWS", "name", lwsName, "role", role.Name, "revision", revision, "replicas", startingReplicas)
 	return nil
 }
 
@@ -283,61 +293,47 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 }
 
 func parseInitialReplicasAnnotation(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) *int {
-	if leaderWorkerSet.Annotations == nil {
-		return nil
-	}
-	valueStr, ok := leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
+	value, ok := disaggregatedsetutils.GetInitialReplicas(leaderWorkerSet)
 	if !ok {
 		return nil
 	}
-	parsed, err := strconv.Atoi(valueStr)
-	if err != nil {
-		return nil
-	}
+	parsed := int(value)
 	return &parsed
 }
 
-func (manager *LeaderWorkerSetManager) patchInitialReplicasAnnotation(
-	ctx context.Context,
-	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
-	value int,
-) error {
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+func setInitialReplicasAnnotation(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, replicas int) {
 	if leaderWorkerSet.Annotations == nil {
 		leaderWorkerSet.Annotations = make(map[string]string)
 	}
-	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.Itoa(value)
-	return manager.client.Patch(ctx, leaderWorkerSet, patch)
+	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.Itoa(replicas)
 }
 
-func (manager *LeaderWorkerSetManager) SetInitialReplicas(
+// UpdateInitialReplicas persists the initial-replicas annotation and keeps the
+// supplied LWS object synchronized for the remainder of the reconciliation.
+func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 	ctx context.Context,
-	namespace, name string,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
 	replicas int,
-) (*int, error) {
-	log := logf.FromContext(ctx)
-
-	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, leaderWorkerSet); err != nil {
-		return nil, fmt.Errorf("failed to get LeaderWorkerSet %s: %w", name, err)
+) error {
+	current := &leaderworkersetv1.LeaderWorkerSet{}
+	key := types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: ds.Namespace}
+	if err := manager.client.Get(ctx, key, current); err != nil {
+		return fmt.Errorf("failed to get LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
+	}
+	if !metav1.IsControlledBy(current, ds) {
+		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to update initial replicas", current.Name, ds.Name)
 	}
 
-	oldValue := parseInitialReplicasAnnotation(leaderWorkerSet)
-
-	if oldValue != nil && *oldValue != replicas {
-		log.Info("WARNING: Overwriting initial-replicas annotation with different value",
-			"workload", name,
-			"oldValue", *oldValue,
-			"newValue", replicas)
+	currentValue := parseInitialReplicasAnnotation(current)
+	if currentValue == nil || *currentValue != replicas {
+		patch := client.MergeFrom(current.DeepCopy())
+		setInitialReplicasAnnotation(current, replicas)
+		if err := manager.client.Patch(ctx, current, patch); err != nil {
+			return fmt.Errorf("failed to update initial-replicas annotation on %s: %w", current.Name, err)
+		}
 	}
 
-	if oldValue != nil && *oldValue == replicas {
-		return oldValue, nil
-	}
-
-	if err := manager.patchInitialReplicasAnnotation(ctx, leaderWorkerSet, replicas); err != nil {
-		return nil, fmt.Errorf("failed to update initial-replicas annotation on %s: %w", name, err)
-	}
-
-	return oldValue, nil
+	setInitialReplicasAnnotation(leaderWorkerSet, replicas)
+	return nil
 }

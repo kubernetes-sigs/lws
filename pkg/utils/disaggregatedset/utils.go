@@ -21,7 +21,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
+	"time"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -43,13 +45,6 @@ func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int
 		return 0, false
 	}
 	return int32(parsed), true
-}
-
-func SetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, replicas int32) {
-	if leaderWorkerSet.Annotations == nil {
-		leaderWorkerSet.Annotations = make(map[string]string)
-	}
-	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.FormatInt(int64(replicas), 10)
 }
 
 func ComputeInitialReplicaState(lwsList []leaderworkersetv1.LeaderWorkerSet) map[string]int {
@@ -74,20 +69,10 @@ func ComputeInitialReplicaState(lwsList []leaderworkersetv1.LeaderWorkerSet) map
 			}
 		}
 
-		state[role] += replicas
+		state[role] = max(state[role], replicas)
 	}
 
 	return state
-}
-
-type CreateParams struct {
-	DisaggregatedSet *disaggregatedsetv1.DisaggregatedSet
-	Role             string
-	Slice            int
-	Config           *disaggregatedsetv1.DisaggregatedRoleSpec
-	Revision         string
-	Labels           map[string]string
-	Replicas         int
 }
 
 func GenerateName(baseName string, slice int, revision, role string) string {
@@ -213,6 +198,27 @@ type RevisionRoles struct {
 
 type RevisionRolesList []RevisionRoles
 
+// LatestCreationTime returns the newest LWS creation time in the revision.
+func (revision RevisionRoles) LatestCreationTime() time.Time {
+	var latest time.Time
+	for _, lws := range revision.Roles {
+		if lws.CreationTimestamp.Time.After(latest) {
+			latest = lws.CreationTimestamp.Time
+		}
+	}
+	return latest
+}
+
+// SortedByNewestTimestamp returns a copy ordered by the newest LWS creation
+// time in each revision. The receiver's order is unchanged.
+func (revisions RevisionRolesList) SortedByNewestTimestamp() RevisionRolesList {
+	sorted := slices.Clone(revisions)
+	slices.SortFunc(sorted, func(a, b RevisionRoles) int {
+		return b.LatestCreationTime().Compare(a.LatestCreationTime())
+	})
+	return sorted
+}
+
 func getLWSReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
 	if lws.Spec.Replicas == nil {
 		return 1
@@ -230,19 +236,19 @@ func (revisions RevisionRolesList) GetTotalReplicasPerRole(role string) int {
 	return total
 }
 
-func (revisions RevisionRolesList) GetTotalInitialReplicasPerRole(role string) int {
-	total := 0
+func (revisions RevisionRolesList) GetMaxInitialReplicasPerRole(role string) int {
+	initial := 0
 	for _, rev := range revisions {
 		if lws := rev.Roles[role]; lws != nil {
 			initialReplicas, ok := GetInitialReplicas(lws)
 			if ok {
-				total += int(initialReplicas)
+				initial = max(initial, int(initialReplicas))
 			} else {
-				total += getLWSReplicas(lws)
+				initial = max(initial, getLWSReplicas(lws))
 			}
 		}
 	}
-	return total
+	return initial
 }
 
 func GroupByRevision(lwsList []*leaderworkersetv1.LeaderWorkerSet) RevisionRolesList {
