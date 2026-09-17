@@ -111,6 +111,15 @@ type LeaderWorkerSetSpec struct {
     // Immutable post creation.
     // +optional
     GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
+
+    // GroupReplacementPolicy controls when a replacement group may start
+    // scheduling after a group is deleted.
+    // PostTermination (default) admits a replacement only once a previously
+    // deleted group has been fully removed.
+    // Immediate admits replacements as soon as they are created. Only
+    // supported with groupIdentity Hash.
+    // +optional
+    GroupReplacementPolicy GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
 }
 
 type GroupIdentityType string
@@ -119,9 +128,16 @@ const (
     GroupIdentityOrdinal GroupIdentityType = "Ordinal"
     GroupIdentityHash    GroupIdentityType = "Hash"
 )
+
+type GroupReplacementPolicyType string
+
+const (
+    GroupReplacementImmediate       GroupReplacementPolicyType = "Immediate"
+    GroupReplacementPostTermination GroupReplacementPolicyType = "PostTermination"
+)
 ```
 
-The webhook defaults an empty value to `Ordinal` and rejects updates to it.
+The webhook defaults an empty `groupIdentity` to `Ordinal` and rejects updates to it. It defaults an empty `groupReplacementPolicy` to `PostTermination` and rejects `Immediate` with `groupIdentity: Ordinal`, where the StatefulSet always waits for the previous leader pod to be gone. The field is mutable and is not part of the revision, so changing it does not roll the groups.
 
 ### Leader Deployment
 
@@ -142,6 +158,21 @@ Each group's worker StatefulSet is named after its leader pod, as today. The hos
 ### Rollouts
 
 Template changes produce a controller revision in both modes. The Deployment performs the rollout, replacing groups within the `maxSurge` and `maxUnavailable` budgets, and the readiness gate holds each step until the replacement group is fully ready. Startup policies behave as in ordinal mode, including `LeaderReady`, where the worker StatefulSet is not created until the leader's containers are ready.
+
+### Group Replacement
+
+In ordinal mode a replacement group cannot start before the group it replaces is gone: the leader pod is deleted with foreground propagation, so it outlives its worker StatefulSet and worker pods, and the leader StatefulSet cannot recreate a pod of the same name until the old object is removed. The replacement therefore lands on the capacity the old group released. A ReplicaSet has no such constraint. It creates the replacement leader as soon as the old one starts terminating, the pod controller creates its worker StatefulSet, and the new pods go through scheduling while the old group still holds its hardware. On clusters where pending pods trigger preemption, the replacement group evicts other workloads instead of waiting a few seconds for its predecessor's capacity.
+
+`groupReplacementPolicy: PostTermination`, the default, restores the ordinal sequencing in hash mode with a scheduling gate:
+
+1. The pod webhook adds the `leaderworkerset.sigs.k8s.io/group-replacement` scheduling gate to every hash mode leader pod at admission. The scheduler ignores gated pods entirely, so a gated leader triggers no preemption.
+2. While the leader is gated, the pod controller creates nothing for its group: no worker StatefulSet, no per-replica service, no pod group.
+3. The pod controller lifts the gate according to a per LeaderWorkerSet count. With `T` leader pods still terminating and `G` gated leaders ordered by creation time, the oldest `G - T` gated leaders are admitted. One fully removed group admits one replacement, and gated leaders that do not correspond to a terminating group, such as a scale up or a `maxSurge` pod, are admitted immediately.
+4. A leader pod deletion event enqueues the gated leaders of the same LeaderWorkerSet, and gated leaders requeue every 10 seconds as a fallback.
+
+The count uses the existence of the terminating leader pod object rather than its phase. Because the leader is foreground deleted, its object disappears only after the worker StatefulSet and every worker pod object are gone, and a worker pod object is removed only after the kubelet has reclaimed its resources, which is also when the scheduler counts that node capacity as free. Waiting on the leader's terminal phase instead, as the upstream Deployment `podReplacementPolicy: TerminationComplete` proposal (KEP-5882, not merged) would, is not sufficient: in a measured recreate, the leader reached `Succeeded` about one second after deletion while its workers held their capacity for another 29 seconds until their grace period expired.
+
+Hash mode cannot tie a replacement to a specific predecessor, since ReplicaSet pod names are generated and the worker StatefulSet is named after its leader. The count based rule gives the same capacity accounting as ordinal mode without name matching. Two visible differences remain: the waiting replacement exists as a `SchedulingGated` pod instead of not existing, and `status.replicas` counts it as a not ready group. `Immediate` opts out of the wait and reproduces plain ReplicaSet behavior; leaders are still gated at admission and ungated on their first reconcile, so the policy can be switched without rolling the groups.
 
 ### Scale Subresource and HPA
 
@@ -180,10 +211,12 @@ Validation rejects hash mode combined with features whose semantics depend on st
 - Leader address annotation and environment variable injection.
 - Hostname and subdomain assignment on hash mode leaders, and group key derivation for subgroup hashes and per-replica service names.
 - DisaggregatedSet: webhook rejection of hash-mode combinations per role, revision stability between empty and `Ordinal`, revision change on `Hash`, and spec passthrough to created LeaderWorkerSets.
+- Group replacement: gate injection on hash leaders only, `PostTermination` defaulting, `Immediate` rejected with `Ordinal`, and the admission count (no terminating groups, one terminating group holding one gated leader, oldest gated leader admitted first, `Immediate` ignoring terminating groups).
 
 #### Integration tests
 
 - Defaulting and validation through the running webhook.
+- Group replacement: a gated leader stays gated while a terminating leader of the same LeaderWorkerSet exists and no worker StatefulSet is created for it; removing the terminating leader lifts the gate and creates the worker StatefulSet.
 - A hash mode LWS creates a leader Deployment and one worker StatefulSet per group.
 - Readiness gate lifecycle: false while workers are pending, true when the group is ready.
 - Scale up and scale down, including to zero and back.
@@ -195,6 +228,7 @@ Validation rejects hash mode combined with features whose semantics depend on st
 #### e2e tests
 
 - Hash mode lifecycle: create, scale, rolling update, group failure recovery.
+- Group failure recovery under `PostTermination`: the replacement leader stays `SchedulingGated` until the old leader pod is gone, then schedules and gets its worker StatefulSet.
 - Scale down with an unhealthy group present removes the unhealthy group.
 - `LeaderReady` startup policy in hash mode.
 - Exclusive placement in hash mode.
@@ -212,6 +246,7 @@ Beta: feedback, make `Hash` recommended for serving workloads in the documentati
 - 2026-08-17: KEP drafted after a working prototype was built and tested.
 - 2026-08-18: DisaggregatedSet integration added to the prototype.
 - 2026-08-24: Review updates. Leaders get DNS names derived from the group key, and `subGroupPolicy` and `UniquePerReplica` move from rejected to supported through group key derivation.
+- 2026-09-17: `groupReplacementPolicy` added after review feedback that replacement groups preempted running workloads while the old group was still releasing capacity.
 
 ## Drawbacks
 

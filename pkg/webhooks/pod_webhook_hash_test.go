@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 func hashLeaderPod(lwsName string, extraAnnotations map[string]string) *corev1.Pod {
@@ -154,5 +155,45 @@ func TestHashWorkerSubGroupKeyFromGroupKey(t *testing.T) {
 	}
 	if unwanted := genGroupUniqueKey("hash-sub-x2kkp", subGroupIndex); pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] == unwanted {
 		t.Error("worker subgroup hash still derived from the leader pod name")
+	}
+}
+
+func TestGroupReplacementGateInjection(t *testing.T) {
+	webhook := &PodWebhook{}
+
+	hashLeader := hashLeaderPod("hash-gate", nil)
+	if err := webhook.Default(context.TODO(), hashLeader); err != nil {
+		t.Fatalf("defaulting hash leader: %v", err)
+	}
+	if !podutils.HasSchedulingGate(hashLeader, leaderworkerset.GroupReplacementSchedulingGate) {
+		t.Error("expected hash leader to carry the group replacement scheduling gate")
+	}
+	if err := webhook.Default(context.TODO(), hashLeader); err != nil {
+		t.Fatalf("re-defaulting hash leader: %v", err)
+	}
+	if got := len(hashLeader.Spec.SchedulingGates); got != 1 {
+		t.Errorf("expected the gate to be added once, got %d gates", got)
+	}
+
+	ordinalLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ordinal-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "ordinal",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+			},
+			Annotations: map[string]string{leaderworkerset.SizeAnnotationKey: "2"},
+		},
+		Spec: corev1.PodSpec{
+			Subdomain:  "ordinal",
+			Containers: []corev1.Container{{Name: "leader"}},
+		},
+	}
+	if err := webhook.Default(context.TODO(), ordinalLeader); err != nil {
+		t.Fatalf("defaulting ordinal leader: %v", err)
+	}
+	if podutils.HasSchedulingGate(ordinalLeader, leaderworkerset.GroupReplacementSchedulingGate) {
+		t.Error("expected ordinal leader not to be gated")
 	}
 }

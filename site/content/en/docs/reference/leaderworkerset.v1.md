@@ -64,6 +64,20 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 
 
 
+## `GroupReplacementPolicyType`     {#leaderworkerset-x-k8s-io-v1-GroupReplacementPolicyType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GroupReplacementPolicyType defines when a replacement group may start scheduling.</p>
+
+
+
+
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
 
@@ -141,6 +155,25 @@ Hash manages leaders through a Deployment: group names are hash-suffixed,
 scale down prefers unscheduled and not-ready groups over healthy ones, and
 rollouts are paced by a group readiness gate on the leader pods.
 This field is immutable.</p>
+</td>
+</tr>
+<tr><td><code>groupReplacementPolicy</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-GroupReplacementPolicyType"><code>GroupReplacementPolicyType</code></a>
+</td>
+<td>
+   <p>groupReplacementPolicy controls when a replacement group may start
+scheduling after a group is deleted, whether by the restart policy
+recreating a failed group, by a rolling update or by a scale down that
+races a scale up.
+PostTermination (default) admits a replacement only once a previously
+deleted group has been fully removed, so the new group lands on the
+capacity the old one released instead of preempting other workloads.
+This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+leader pod cannot be recreated until its predecessor is gone, and is the
+only supported value in that mode.
+Immediate admits replacement groups as soon as the leader Deployment
+creates them, overlapping with the teardown of the old group. Only
+supported with groupIdentity Hash.</p>
 </td>
 </tr>
 </tbody>

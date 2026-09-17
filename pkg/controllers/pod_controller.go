@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -152,6 +153,19 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if pod.DeletionTimestamp != nil {
 		log.V(2).Info("skip creating worker sts and headless service since the leader pod is being deleted")
 		return ctrl.Result{}, nil
+	}
+
+	// Nothing of the group exists while its leader is gated: no worker
+	// statefulset, no per-replica service, no pod group. The requeue is a
+	// fallback for the leader deletion watch in SetupWithManager.
+	if podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate) {
+		admitted, err := r.reconcileGroupReplacementGate(ctx, &pod, &leaderWorkerSet)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !admitted {
+			return ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, nil
+		}
 	}
 
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
@@ -372,6 +386,93 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	return true, nil
 }
 
+const groupReplacementRequeueDelay = 10 * time.Second
+
+// reconcileGroupReplacementGate decides whether a gated leader pod may start
+// scheduling and lifts the gate if so. Under PostTermination every leader pod
+// that is still terminating holds back one gated leader, oldest first, so a
+// replacement group only competes for capacity once a previous group has been
+// fully removed. Leaders are deleted with foreground propagation, so a
+// terminating leader object outlives its worker statefulset and worker pods,
+// and it disappears at the same moment the scheduler sees that capacity as
+// free. Returns true once the gate is gone.
+func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
+	if lws.Spec.GroupReplacementPolicy != leaderworkerset.GroupReplacementImmediate {
+		var leaders corev1.PodList
+		if err := r.List(ctx, &leaders, client.InNamespace(pod.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		}); err != nil {
+			return false, err
+		}
+		terminating := 0
+		var gated []corev1.Pod
+		for _, leader := range leaders.Items {
+			if leader.DeletionTimestamp != nil {
+				terminating++
+				continue
+			}
+			if podutils.HasSchedulingGate(&leader, leaderworkerset.GroupReplacementSchedulingGate) {
+				gated = append(gated, leader)
+			}
+		}
+		sort.Slice(gated, func(i, j int) bool {
+			if !gated[i].CreationTimestamp.Equal(&gated[j].CreationTimestamp) {
+				return gated[i].CreationTimestamp.Before(&gated[j].CreationTimestamp)
+			}
+			return gated[i].Name < gated[j].Name
+		})
+		rank := -1
+		for i := range gated {
+			if gated[i].Name == pod.Name {
+				rank = i
+				break
+			}
+		}
+		if rank == -1 || rank >= len(gated)-terminating {
+			log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", terminating, "gatedLeaders", len(gated))
+			r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, terminating))
+			return false, nil
+		}
+	}
+	newPod := pod.DeepCopy()
+	newPod.Spec.SchedulingGates = nil
+	for _, gate := range pod.Spec.SchedulingGates {
+		if gate.Name != leaderworkerset.GroupReplacementSchedulingGate {
+			newPod.Spec.SchedulingGates = append(newPod.Spec.SchedulingGates, gate)
+		}
+	}
+	if err := r.Patch(ctx, newPod, client.MergeFrom(pod)); err != nil {
+		return false, err
+	}
+	*pod = *newPod
+	r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementAdmitted, Update, fmt.Sprintf("Leader pod %s admitted for scheduling", pod.Name))
+	return true, nil
+}
+
+// enqueueGatedLeaders queues the gated leader pods of the LeaderWorkerSet that
+// a deleted leader pod belonged to, so that one of them can be admitted.
+func (r *PodReconciler) enqueueGatedLeaders(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+	deleted, ok := obj.(*corev1.Pod)
+	if !ok || !podutils.LeaderPod(*deleted) {
+		return
+	}
+	var leaders corev1.PodList
+	if err := r.List(ctx, &leaders, client.InNamespace(deleted.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:     deleted.Labels[leaderworkerset.SetNameLabelKey],
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	}); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "listing leader pods after leader deletion")
+		return
+	}
+	for i := range leaders.Items {
+		if podutils.HasSchedulingGate(&leaders.Items[i], leaderworkerset.GroupReplacementSchedulingGate) {
+			q.Add(podReconcileRequestForPod(&leaders.Items[i], false))
+		}
+	}
+}
+
 func (r *PodReconciler) workerPodBelongsToLeader(ctx context.Context, pod corev1.Pod, leader corev1.Pod) (bool, error) {
 	owner := metav1.GetControllerOf(&pod)
 	if owner == nil {
@@ -580,6 +681,13 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return builder.TypedControllerManagedBy[podReconcileRequest](mgr).
 		Named("pod").
 		Watches(&corev1.Pod{}, podEventHandler()).
+		// A gated leader is admitted when a terminating leader of the same
+		// LeaderWorkerSet disappears, which is not an event on the gated pod.
+		Watches(&corev1.Pod{}, handler.TypedFuncs[client.Object, podReconcileRequest]{
+			DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[podReconcileRequest]) {
+				r.enqueueGatedLeaders(ctx, e.Object, q)
+			},
+		}).
 		Watches(&appsv1.StatefulSet{}, statefulSetEventHandler()).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			if pod, ok := object.(*corev1.Pod); ok {
