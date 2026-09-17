@@ -24,19 +24,15 @@ import (
 // LeaderWorkerSetSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetScheduling type for use
 // with apply.
 //
-// LeaderWorkerSetScheduling defines level-1 scheduling for the complete LWS.
+// LeaderWorkerSetScheduling defines scheduling for all replicas.
 type LeaderWorkerSetSchedulingApplyConfiguration struct {
-	// schedulingPolicy defines scheduling for all replicas in the LWS. In
-	// phase 1 this level is lowered to one flat PodGroup.
-	// Immutable after creation.
+	// schedulingPolicy defines scheduling for all replicas.
 	SchedulingPolicy *v1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 	// schedulingConstraints defines placement constraints for all replicas.
-	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
-	// disruptionMode controls how replica groups may be disrupted.
-	// Immutable after creation.
+	// disruptionMode defines how replica groups may be disrupted.
 	DisruptionMode *v1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
-	// replica defines level-2 scheduling for each LWS replica.
+	// replica defines scheduling for each replica.
 	Replica *LeaderWorkerSetReplicaSchedulingApplyConfiguration `json:"replica,omitempty"`
 }
 

@@ -49,8 +49,7 @@ func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	}
 }
 
-// ReconcileScheduling pre-creates LWS-owned PodGroups for the typed API. The
-// legacy path remains pod-owned and is handled by CreatePodGroupIfNotExists.
+// ReconcileScheduling pre-creates LWS-owned PodGroups for spec.scheduling.
 func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil

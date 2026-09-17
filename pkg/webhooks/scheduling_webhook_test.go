@@ -43,7 +43,7 @@ func TestValidateScheduling(t *testing.T) {
 		"feature gate disabled": {
 			wantErrs: 1,
 		},
-		"phase one rejects composite minGroupCount": {
+		"rejects composite minGroupCount": {
 			gates: features.Gates{features.WorkloadAwareScheduling: true},
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{

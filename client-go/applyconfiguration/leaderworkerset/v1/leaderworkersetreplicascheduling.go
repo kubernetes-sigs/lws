@@ -24,22 +24,17 @@ import (
 // LeaderWorkerSetReplicaSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetReplicaScheduling type for use
 // with apply.
 //
-// LeaderWorkerSetReplicaScheduling defines scheduling for a leader and its
-// workers. In phase 1 it is either lowered to one flat PodGroup per replica or
-// its leader and worker leaves are materialized independently.
+// LeaderWorkerSetReplicaScheduling defines scheduling for a leader and its workers.
 type LeaderWorkerSetReplicaSchedulingApplyConfiguration struct {
 	// schedulingPolicy defines scheduling for a leader and its workers.
-	// Immutable after creation.
 	SchedulingPolicy *v1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 	// schedulingConstraints defines placement constraints for a replica.
-	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
-	// disruptionMode controls how the leader and worker groups may be disrupted.
-	// Immutable after creation.
+	// disruptionMode defines how the leader and worker groups may be disrupted.
 	DisruptionMode *v1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
-	// leader defines level-3 scheduling for the leader PodGroup.
+	// leader defines scheduling for the leader PodGroup.
 	Leader *LeaderWorkerSetLeaderSchedulingApplyConfiguration `json:"leader,omitempty"`
-	// worker defines level-3 scheduling for the worker PodGroup.
+	// worker defines scheduling for the worker PodGroup.
 	Worker *LeaderWorkerSetWorkerSchedulingApplyConfiguration `json:"worker,omitempty"`
 }
 

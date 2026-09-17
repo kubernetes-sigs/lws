@@ -47,26 +47,15 @@ const (
 	// Kubernetes identifies the upstream scheduling.k8s.io provider.
 	Kubernetes ProviderType = "kubernetes"
 
-	// WorkloadSchedulingAnnotationKey is copied to managed pod templates and
-	// tells the pod webhook to attach the upstream SchedulingGroup reference.
 	WorkloadSchedulingAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-aware-scheduling"
-	// WorkloadNameAnnotationKey carries the UID-qualified Workload prefix to
-	// Pods, whose webhook request does not include the owning LWS object.
-	WorkloadNameAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-name"
+	WorkloadNameAnnotationKey       = "leaderworkerset.sigs.k8s.io/workload-name"
+	SchedulingLevelLabelKey         = "leaderworkerset.sigs.k8s.io/scheduling-level"
+	PodGroupRoleLabelKey            = "leaderworkerset.sigs.k8s.io/role"
 
-	// SchedulingLevelLabelKey and PodGroupRoleLabelKey describe which LWS
-	// hierarchy level a runtime PodGroup represents.
-	SchedulingLevelLabelKey = "leaderworkerset.sigs.k8s.io/scheduling-level"
-	PodGroupRoleLabelKey    = "leaderworkerset.sigs.k8s.io/role"
-
-	// workloadControllerUIDIndex lets LWS reconciliation find owned or delegated
-	// Workloads without scanning every Workload in the namespace.
 	workloadControllerUIDIndex = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
 )
 
-// SetupKubernetesIndexes registers cache indexes used only by the upstream
-// Kubernetes scheduling provider. Callers should not register these indexes
-// when that provider is disabled, because doing so starts a Workload informer.
+// SetupKubernetesIndexes registers cache indexes used by the Kubernetes provider.
 func SetupKubernetesIndexes(indexer client.FieldIndexer) error {
 	return indexer.IndexField(context.Background(), &schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues)
 }
@@ -79,9 +68,7 @@ func workloadControllerUIDIndexValues(raw client.Object) []string {
 	return []string{string(owner.UID)}
 }
 
-// KubernetesWorkloadName returns the Job-style UID-qualified Workload name.
-// UID qualification isolates a newly-created LWS from deletion-protected
-// scheduling objects that belonged to an older object with the same name.
+// KubernetesWorkloadName returns the UID-qualified Workload name.
 func KubernetesWorkloadName(lws *leaderworkerset.LeaderWorkerSet) string {
 	hasher := fnv.New32a()
 	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(lws.UID))
@@ -95,8 +82,6 @@ func KubernetesWorkloadName(lws *leaderworkerset.LeaderWorkerSet) string {
 }
 
 func kubernetesRuntimeName(workloadName string, parts ...string) string {
-	// Keep the trailing UID hash from the Workload name when truncating the
-	// human-readable prefix to make room for runtime-specific suffixes.
 	separator := strings.LastIndexByte(workloadName, '-')
 	prefix := workloadName
 	identity := ""
@@ -186,8 +171,6 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 		}
 		podGroup.Labels = runtimeGroup.labels
 		if !delegated {
-			// When LWS owns the Workload, add a non-controller ownerReference for
-			// GC races. Delegated/parent-owned Workloads do not get this ref.
 			attachWorkloadOwnerReference(podGroup, persisted)
 		}
 		if parentName != "" {
@@ -208,7 +191,6 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 			if !apierrors.IsAlreadyExists(err) {
 				return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("create PodGroup %s/%s: %w", podGroup.Namespace, name, err))
 			}
-			// Resolve a create race, verifying ownership before reuse.
 			if err := p.client.Get(ctx, key, existing); err != nil {
 				return workloadAPIError(ReasonPodGroupCreateFailed, fmt.Errorf("get existing PodGroup %s: %w", key, err))
 			}
@@ -221,10 +203,6 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 		}
 	}
 
-	// During scale-down the StatefulSet owns deletion of member Pods. Do not
-	// delete a PodGroup until those Pods are actually gone; the next reconcile
-	// will complete cleanup after the StatefulSet has observed the lower replica
-	// count.
 	if err := p.cleanupUnusedPodGroups(ctx, lws, desiredGroups); err != nil {
 		return NewReconcileError(ReasonPodGroupCleanupBlocked, err)
 	}
@@ -249,7 +227,6 @@ func phaseOneRuntimeGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32,
 			SchedulingLevelLabelKey:         string(level),
 		}
 	}
-	// Hash the UID once per reconciliation, not once per runtime group.
 	workloadName := KubernetesWorkloadName(lws)
 
 	switch mode {
@@ -305,8 +282,6 @@ func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, 
 	ownerMatches := controllerReferencesEqual(currentOwner, desiredOwner)
 	currentSpec := current.Spec.DeepCopy()
 	desiredSpec := desired.Spec.DeepCopy()
-	// The API server owns resolved priority fields and defaults disruptionMode
-	// to Single. Normalize those values before checking controller-owned drift.
 	desiredSpec.Priority = currentSpec.Priority
 	desiredSpec.PreemptionPolicy = currentSpec.PreemptionPolicy
 	defaultDisruptionMode := func(spec *schedulingv1beta1.PodGroupSpec) {
@@ -349,8 +324,6 @@ func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, 
 	return nil
 }
 
-// attachWorkloadOwnerReference adds a non-controller ownerReference to the
-// LWS-owned Workload for garbage collection. It does not replace workloadRef.
 func attachWorkloadOwnerReference(podGroup *schedulingv1beta1.PodGroup, workload *schedulingv1beta1.Workload) {
 	if workload == nil || workload.UID == "" {
 		return
@@ -365,8 +338,6 @@ func attachWorkloadOwnerReference(podGroup *schedulingv1beta1.PodGroup, workload
 	ensureOwnerReference(&podGroup.ObjectMeta, desired)
 }
 
-// ensureWorkloadOwnerReference copies the desired non-controller Workload
-// ownerReference onto current. Returns true when current was modified.
 func ensureWorkloadOwnerReference(current, desired *schedulingv1beta1.PodGroup) bool {
 	want := workloadOwnerReference(desired)
 	if want == nil {
@@ -436,23 +407,11 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 	}
 
 	if err := p.client.Create(ctx, desiredWorkload); err == nil {
-		// Create returns the admitted object. Reuse it instead of issuing a
-		// cache-backed GET that may briefly observe NotFound.
-		if desiredWorkload.UID != "" {
-			return desiredWorkload, nil
-		}
-		created := &schedulingv1beta1.Workload{}
-		key := types.NamespacedName{Namespace: desiredWorkload.Namespace, Name: desiredWorkload.Name}
-		if err := p.client.Get(ctx, key, created); err != nil {
-			return desiredWorkload, nil
-		}
-		return created, nil
+		return desiredWorkload, nil
 	} else if !apierrors.IsAlreadyExists(err) {
 		return nil, workloadAPIError(ReasonWorkloadCreateFailed, fmt.Errorf("create Workload %s/%s: %w", desiredWorkload.Namespace, desiredWorkload.Name, err))
 	}
 
-	// Resolve an AlreadyExists race without adopting an object owned by a
-	// different LWS UID.
 	persisted = &schedulingv1beta1.Workload{}
 	key := types.NamespacedName{Namespace: desiredWorkload.Namespace, Name: desiredWorkload.Name}
 	if err := p.client.Get(ctx, key, persisted); err != nil {
@@ -553,8 +512,6 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 	return selected, nil
 }
 
-// updateMutableWorkloadFields updates the template's mutable scheduling policy
-// while preserving priority fields populated by admission.
 func updateMutableWorkloadFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.Workload) error {
 	if !controllerReferencesEqual(metav1.GetControllerOf(current), metav1.GetControllerOf(desired)) ||
 		!reflect.DeepEqual(current.Spec.ControllerRef, desired.Spec.ControllerRef) {
@@ -653,28 +610,20 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	return nil
 }
 
-// CreatePodGroupIfNotExists is intentionally a no-op: the LWS reconciler owns
-// Kubernetes PodGroups and creates them before any member Pod.
 func (p *KubernetesProvider) CreatePodGroupIfNotExists(context.Context, *leaderworkerset.LeaderWorkerSet, *corev1.Pod) error {
 	return nil
 }
 
-// InjectPodGroupMetadata associates a managed Pod with its revision-specific
-// upstream PodGroup.
 func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	mode := SchedulingMode(pod.Annotations[WorkloadSchedulingAnnotationKey])
 	if mode == "" {
 		return nil
 	}
-	// "true" was emitted by the initial implementation and remains readable
-	// during an in-place controller upgrade.
 	if mode == "true" {
 		mode = SchedulingModeReplica
 	}
 	workloadName := pod.Annotations[WorkloadNameAnnotationKey]
 	if workloadName == "" {
-		// Keep Pods stamped by an older controller version schedulable during a
-		// rolling controller upgrade.
 		workloadName = pod.Labels[leaderworkerset.SetNameLabelKey]
 	}
 	var name string

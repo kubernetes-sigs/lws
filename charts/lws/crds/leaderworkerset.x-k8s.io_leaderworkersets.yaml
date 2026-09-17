@@ -17562,15 +17562,10 @@ spec:
                 scheduling:
                   description: |-
                     scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
-                    It mirrors the LWS hierarchy: the complete set, each replica, and the
-                    leader and worker groups within a replica. In phase 1 exactly one level
-                    may be selected. This alpha field requires the WorkloadAwareScheduling
-                    LWS feature gate.
+                    This field is immutable.
                   properties:
                     disruptionMode:
-                      description: |-
-                        disruptionMode controls how replica groups may be disrupted.
-                        Immutable after creation.
+                      description: disruptionMode defines how replica groups may be disrupted.
                       properties:
                         all:
                           description: all specifies that all child groups must be disrupted together.
@@ -17582,12 +17577,10 @@ spec:
                           type: object
                       type: object
                     replica:
-                      description: replica defines level-2 scheduling for each LWS replica.
+                      description: replica defines scheduling for each replica.
                       properties:
                         disruptionMode:
-                          description: |-
-                            disruptionMode controls how the leader and worker groups may be disrupted.
-                            Immutable after creation.
+                          description: disruptionMode defines how the leader and worker groups may be disrupted.
                           properties:
                             all:
                               description: all specifies that all child groups must be disrupted together.
@@ -17599,12 +17592,10 @@ spec:
                               type: object
                           type: object
                         leader:
-                          description: leader defines level-3 scheduling for the leader PodGroup.
+                          description: leader defines scheduling for the leader PodGroup.
                           properties:
                             disruptionMode:
-                              description: |-
-                                disruptionMode controls how leader pods may be disrupted.
-                                Immutable after creation.
+                              description: disruptionMode defines how leader pods may be disrupted.
                               properties:
                                 all:
                                   description: all specifies that all pods in the group must be disrupted together.
@@ -17614,9 +17605,7 @@ spec:
                                   type: object
                               type: object
                             resourceClaims:
-                              description: |-
-                                resourceClaims lists dynamic resource claims shared by leader pods.
-                                Immutable after creation. Only valid on leader and worker leaves.
+                              description: resourceClaims lists dynamic resource claims shared by leader pods.
                               items:
                                 description: |
                                   WorkloadPodGroupResourceClaim references a dynamic resource claim
@@ -17650,9 +17639,7 @@ spec:
                                 - name
                               x-kubernetes-list-type: map
                             schedulingConstraints:
-                              description: |-
-                                schedulingConstraints defines placement constraints for the leader PodGroup.
-                                Immutable after creation.
+                              description: schedulingConstraints defines placement constraints for the leader PodGroup.
                               properties:
                                 topology:
                                   description: |-
@@ -17676,9 +17663,7 @@ spec:
                                   x-kubernetes-list-type: atomic
                               type: object
                             schedulingPolicy:
-                              description: |-
-                                schedulingPolicy defines scheduling for the leader PodGroup.
-                                Immutable after creation.
+                              description: schedulingPolicy defines scheduling for the leader PodGroup.
                               properties:
                                 basic:
                                   description: |-
@@ -17702,9 +17687,7 @@ spec:
                               type: object
                           type: object
                         schedulingConstraints:
-                          description: |-
-                            schedulingConstraints defines placement constraints for a replica.
-                            Immutable after creation.
+                          description: schedulingConstraints defines placement constraints for a replica.
                           properties:
                             topology:
                               description: |-
@@ -17728,9 +17711,7 @@ spec:
                               x-kubernetes-list-type: atomic
                           type: object
                         schedulingPolicy:
-                          description: |-
-                            schedulingPolicy defines scheduling for a leader and its workers.
-                            Immutable after creation.
+                          description: schedulingPolicy defines scheduling for a leader and its workers.
                           properties:
                             basic:
                               description: |-
@@ -17756,12 +17737,10 @@ spec:
                               type: object
                           type: object
                         worker:
-                          description: worker defines level-3 scheduling for the worker PodGroup.
+                          description: worker defines scheduling for the worker PodGroup.
                           properties:
                             disruptionMode:
-                              description: |-
-                                disruptionMode controls how worker pods may be disrupted.
-                                Immutable after creation.
+                              description: disruptionMode defines how worker pods may be disrupted.
                               properties:
                                 all:
                                   description: all specifies that all pods in the group must be disrupted together.
@@ -17771,9 +17750,7 @@ spec:
                                   type: object
                               type: object
                             resourceClaims:
-                              description: |-
-                                resourceClaims lists dynamic resource claims shared by worker pods.
-                                Immutable after creation. Only valid on leader and worker leaves.
+                              description: resourceClaims lists dynamic resource claims shared by worker pods.
                               items:
                                 description: |
                                   WorkloadPodGroupResourceClaim references a dynamic resource claim
@@ -17807,9 +17784,7 @@ spec:
                                 - name
                               x-kubernetes-list-type: map
                             schedulingConstraints:
-                              description: |-
-                                schedulingConstraints defines placement constraints for the worker PodGroup.
-                                Immutable after creation.
+                              description: schedulingConstraints defines placement constraints for the worker PodGroup.
                               properties:
                                 topology:
                                   description: |-
@@ -17833,9 +17808,7 @@ spec:
                                   x-kubernetes-list-type: atomic
                               type: object
                             schedulingPolicy:
-                              description: |-
-                                schedulingPolicy defines scheduling for the worker PodGroup.
-                                Immutable after creation.
+                              description: schedulingPolicy defines scheduling for the worker PodGroup.
                               properties:
                                 basic:
                                   description: |-
@@ -17860,9 +17833,7 @@ spec:
                           type: object
                       type: object
                     schedulingConstraints:
-                      description: |-
-                        schedulingConstraints defines placement constraints for all replicas.
-                        Immutable after creation.
+                      description: schedulingConstraints defines placement constraints for all replicas.
                       properties:
                         topology:
                           description: |-
@@ -17886,10 +17857,7 @@ spec:
                           x-kubernetes-list-type: atomic
                       type: object
                     schedulingPolicy:
-                      description: |-
-                        schedulingPolicy defines scheduling for all replicas in the LWS. In
-                        phase 1 this level is lowered to one flat PodGroup.
-                        Immutable after creation.
+                      description: schedulingPolicy defines scheduling for all replicas.
                       properties:
                         basic:
                           description: |-

@@ -24,21 +24,15 @@ import (
 // LeaderWorkerSetLeaderSchedulingApplyConfiguration represents a declarative configuration of the LeaderWorkerSetLeaderScheduling type for use
 // with apply.
 //
-// LeaderWorkerSetLeaderScheduling defines scheduling for the leader leaf
-// PodGroup. It is a distinct type so leader-specific fields can evolve without
-// changing worker scheduling.
+// LeaderWorkerSetLeaderScheduling defines scheduling for the leader PodGroup.
 type LeaderWorkerSetLeaderSchedulingApplyConfiguration struct {
 	// schedulingPolicy defines scheduling for the leader PodGroup.
-	// Immutable after creation.
 	SchedulingPolicy *v1alpha3.WorkloadPodGroupSchedulingPolicyApplyConfiguration `json:"schedulingPolicy,omitempty"`
 	// schedulingConstraints defines placement constraints for the leader PodGroup.
-	// Immutable after creation.
 	SchedulingConstraints *v1alpha3.WorkloadPodGroupSchedulingConstraintsApplyConfiguration `json:"schedulingConstraints,omitempty"`
-	// disruptionMode controls how leader pods may be disrupted.
-	// Immutable after creation.
+	// disruptionMode defines how leader pods may be disrupted.
 	DisruptionMode *v1alpha3.WorkloadPodGroupDisruptionModeApplyConfiguration `json:"disruptionMode,omitempty"`
 	// resourceClaims lists dynamic resource claims shared by leader pods.
-	// Immutable after creation. Only valid on leader and worker leaves.
 	ResourceClaims []v1alpha3.WorkloadPodGroupResourceClaimApplyConfiguration `json:"resourceClaims,omitempty"`
 }
 
