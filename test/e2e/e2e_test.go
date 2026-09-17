@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -327,9 +328,9 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
-	ginkgo.It("retains a group when its restart budget is exhausted and supports manual recovery", func() {
+	ginkgo.It("terminates an exhausted group and supports explicit recovery", func() {
 		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
-			Replica(1).Size(2).
+			Replica(1).Size(3).
 			RestartPolicy(v1.RecreateGroupOnPodRestart).
 			MaxGroupRestarts(1).
 			Obj()
@@ -363,8 +364,25 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 
 		testing.ExpectDegradedCondition(ctx, k8sClient, lws, "ReplicaRestartBudgetExceeded")
 		var retainedLeader corev1.Pod
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &retainedLeader)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &retainedLeader); err != nil {
+				return false
+			}
+			return retainedLeader.DeletionTimestamp != nil &&
+				retainedLeader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" &&
+				slices.Contains(retainedLeader.Finalizers, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+		}, timeout, interval).Should(gomega.BeTrue())
 		gomega.Expect(retainedLeader.UID).To(gomega.Equal(leaderAfterFirstRestart.UID))
+		retainedWorkerKey := types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0-2"}
+		gomega.Eventually(func() bool {
+			var retainedWorker corev1.Pod
+			if err := k8sClient.Get(ctx, retainedWorkerKey, &retainedWorker); err != nil {
+				return false
+			}
+			return retainedWorker.DeletionTimestamp != nil &&
+				slices.Contains(retainedWorker.Finalizers, leaderworkerset.GroupRestartBudgetCleanupFinalizer) &&
+				(retainedWorker.Status.Phase == corev1.PodFailed || retainedWorker.Status.Phase == corev1.PodSucceeded)
+		}, timeout, interval).Should(gomega.BeTrue())
 		gomega.Eventually(func() (int32, error) {
 			var current leaderworkerset.LeaderWorkerSet
 			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {
@@ -381,8 +399,20 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			return total, nil
 		}, timeout, interval).Should(gomega.Equal(int32(1)))
 
-		gomega.Expect(k8sClient.Delete(ctx, &retainedLeader)).To(gomega.Succeed())
+		patch := client.MergeFrom(retainedLeader.DeepCopy())
+		if retainedLeader.Annotations == nil {
+			retainedLeader.Annotations = map[string]string{}
+		}
+		retainedLeader.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+		gomega.Expect(k8sClient.Patch(ctx, &retainedLeader, patch)).To(gomega.Succeed())
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		gomega.Eventually(func() (types.UID, error) {
+			var recoveredLeader corev1.Pod
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-0"}, &recoveredLeader); err != nil {
+				return "", err
+			}
+			return recoveredLeader.UID, nil
+		}, timeout, interval).ShouldNot(gomega.Equal(retainedLeader.UID))
 		gomega.Eventually(func() (metav1.ConditionStatus, error) {
 			var current leaderworkerset.LeaderWorkerSet
 			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {

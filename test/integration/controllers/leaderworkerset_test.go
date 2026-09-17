@@ -461,7 +461,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("maxGroupRestarts zero retains the failed group and marks its budget exhausted", &testCase{
+		ginkgo.Entry("maxGroupRestarts zero terminates the exhausted group and retains its Pods", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Replica(1).Size(4).MaxGroupRestarts(0)
 			},
@@ -482,11 +482,32 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var leaderPod corev1.Pod
 						gomega.Eventually(func() bool {
 							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-							return leaderPod.DeletionTimestamp == nil && leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+							return leaderPod.DeletionTimestamp != nil && leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
 						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 						gomega.Expect(leaderPod.Finalizers).To(gomega.ContainElement(leaderworkerset.GroupRestartBudgetCleanupFinalizer))
+						var workers corev1.PodList
+						gomega.Eventually(func() bool {
+							gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+							if len(workers.Items) == 0 {
+								return false
+							}
+							for i := range workers.Items {
+								found := false
+								for _, finalizer := range workers.Items[i].Finalizers {
+									if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+										found = true
+										break
+									}
+								}
+								if !found {
+									return false
+								}
+							}
+							return true
+						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 						gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), lws)).To(gomega.Succeed())
-						// No restart was executed, so an absent count entry represents zero.
+						// A zero budget suppresses the first recreation without consuming
+						// or synthesizing a restart count.
 						gomega.Expect(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]).To(gomega.BeEmpty())
 						testing.ExpectDegradedCondition(ctx, k8sClient, lws, "ReplicaRestartBudgetExceeded")
 					},
@@ -495,8 +516,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](1)
 						gomega.Expect(k8sClient.Update(ctx, lws)).To(gomega.Succeed())
-						// Trigger another Pod reconcile after the spec edit. The retained
-						// group must stay frozen until its leader is explicitly deleted.
+						// Trigger another Pod reconcile after the spec edit. Changing the
+						// limit must not recover an already terminating group.
 						var leaderPod corev1.Pod
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
 						if leaderPod.Annotations == nil {
@@ -509,20 +530,58 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var leaderPod corev1.Pod
 						gomega.Consistently(func() bool {
 							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-							return leaderPod.DeletionTimestamp == nil && leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+							if leaderPod.DeletionTimestamp == nil || leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" {
+								return false
+							}
+							for _, finalizer := range leaderPod.Finalizers {
+								if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+									return true
+								}
+							}
+							return false
 						}, 2*time.Second, testing.Interval).Should(gomega.BeTrue())
+						gomega.Expect(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]).To(gomega.BeEmpty())
 					},
 				},
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						var leaderPod corev1.Pod
 						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-						gomega.Expect(k8sClient.Delete(ctx, &leaderPod)).To(gomega.Succeed())
+						if leaderPod.Annotations == nil {
+							leaderPod.Annotations = map[string]string{}
+						}
+						leaderPod.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+						gomega.Expect(k8sClient.Update(ctx, &leaderPod)).To(gomega.Succeed())
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// envtest does not run the garbage collector, so the foreground
+						// deletion finalizer may keep the leader object present. Recovery
+						// must still remove the budget finalizers and clear this group.
 						gomega.Eventually(func() bool {
 							var leaderPod corev1.Pod
-							return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod))
+							err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)
+							if apierrors.IsNotFound(err) {
+								return true
+							}
+							gomega.Expect(err).To(gomega.Succeed())
+							for _, finalizer := range leaderPod.Finalizers {
+								if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+									return false
+								}
+							}
+							return true
+						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+						gomega.Eventually(func() bool {
+							var workers corev1.PodList
+							gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+							for i := range workers.Items {
+								for _, finalizer := range workers.Items[i].Finalizers {
+									if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+										return false
+									}
+								}
+							}
+							return true
 						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 						gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), lws)).To(gomega.Succeed())
 						gomega.Expect(lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]).To(gomega.BeEmpty())
@@ -2719,18 +2778,31 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 	) // end of DescribeTable
 
-	ginkgo.It("releases the restart-budget finalizer during LWS deletion without clearing the budget", func() {
+	ginkgo.It("releases restart-budget finalizers during LWS deletion without clearing the budget", func() {
 		ctx := context.Background()
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lws-delete-ns-"}}
 		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(4).
-			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(0).Obj()
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
 		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
 		var leaderSts appsv1.StatefulSet
 		testing.GetLeaderStatefulset(ctx, lws, k8sClient, &leaderSts)
 		gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)).To(gomega.Succeed())
 		var leaderPod corev1.Pod
 		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: ns.Name}, &leaderPod)).To(gomega.Succeed())
+		countKey := fmt.Sprintf("%s/%s", leaderPod.Labels[leaderworkerset.RevisionKey], leaderPod.Labels[leaderworkerset.GroupIndexLabelKey])
+		gomega.Eventually(func() error {
+			var current leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {
+				return err
+			}
+			patch := client.MergeFrom(current.DeepCopy())
+			if current.Annotations == nil {
+				current.Annotations = map[string]string{}
+			}
+			current.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = fmt.Sprintf(`{"%s":1}`, countKey)
+			return k8sClient.Patch(ctx, &current, patch)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 		testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
 		var workers corev1.PodList
 		gomega.Eventually(func() int {
@@ -2742,6 +2814,25 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Name: leaderPod.Name, Namespace: ns.Name}, &leaderPod) == nil &&
 				leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" &&
 				len(leaderPod.Finalizers) > 0
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+		gomega.Eventually(func() bool {
+			gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(ns.Name), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+			if len(workers.Items) == 0 {
+				return false
+			}
+			for i := range workers.Items {
+				found := false
+				for _, finalizer := range workers.Items[i].Finalizers {
+					if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return false
+				}
+			}
+			return true
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), lws)).To(gomega.Succeed())
 		countsBefore := lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]
@@ -2768,6 +2859,18 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			for _, finalizer := range current.Finalizers {
 				if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
 					return false
+				}
+			}
+			return true
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+		gomega.Eventually(func() bool {
+			var currentWorkers corev1.PodList
+			gomega.Expect(k8sClient.List(ctx, &currentWorkers, client.InNamespace(ns.Name), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+			for i := range currentWorkers.Items {
+				for _, finalizer := range currentWorkers.Items[i].Finalizers {
+					if finalizer == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+						return false
+					}
 				}
 			}
 			return true

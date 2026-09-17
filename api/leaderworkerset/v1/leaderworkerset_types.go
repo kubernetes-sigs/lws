@@ -109,12 +109,16 @@ const (
 	// use "<revision>/<groupIndex>" and values are non-negative integers.
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 
-	// GroupRestartBudgetExhaustedAnnotationKey is set on a retained leader Pod after
-	// its group exhausts maxGroupRestarts.
+	// GroupRestartBudgetExhaustedAnnotationKey is set on a leader Pod after its
+	// group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
 
-	// GroupRestartBudgetCleanupFinalizer is set on a retained leader Pod and ensures
-	// its restart count is reset before deletion completes for manual recovery.
+	// GroupRestartBudgetRecoverAnnotationKey is set on an exhausted leader Pod to
+	// explicitly resume that group after its terminating Pod objects are inspected.
+	GroupRestartBudgetRecoverAnnotationKey string = "leaderworkerset.sigs.k8s.io/recover"
+
+	// GroupRestartBudgetCleanupFinalizer retains the terminating Pod API objects
+	// of an exhausted group until explicit recovery or workload teardown.
 	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
 
 	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the

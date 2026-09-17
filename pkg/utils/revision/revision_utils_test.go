@@ -17,7 +17,9 @@ limitations under the License.
 package revision
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -29,6 +31,72 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+func TestNewRevisionIgnoresMaxGroupRestarts(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	withoutBudget := wrappers.BuildLeaderWorkerSet("default").MaxGroupRestarts(1).Obj()
+	withDifferentBudget := withoutBudget.DeepCopy()
+	otherBudget := int32(2)
+	withDifferentBudget.Spec.LeaderWorkerTemplate.MaxGroupRestarts = &otherBudget
+
+	first, err := NewRevision(context.TODO(), client, withoutBudget, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewRevision(context.TODO(), client, withDifferentBudget, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(first.Data.Raw, second.Data.Raw) {
+		t.Fatalf("maxGroupRestarts must not change revision data: first=%s second=%s", first.Data.Raw, second.Data.Raw)
+	}
+	if first.Name != second.Name {
+		t.Fatalf("maxGroupRestarts must not change revision identity: first=%q second=%q", first.Name, second.Name)
+	}
+	if bytes.Contains(first.Data.Raw, []byte("maxGroupRestarts")) {
+		t.Fatalf("revision data unexpectedly contains maxGroupRestarts: %s", first.Data.Raw)
+	}
+}
+
+func TestApplyRevisionPreservesMaxGroupRestarts(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	source := wrappers.BuildLeaderWorkerSet("default").MaxGroupRestarts(1).Obj()
+	revision, err := NewRevision(context.TODO(), client, source, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a revision created before maxGroupRestarts was removed from the
+	// revision patch. ApplyRevision must preserve the live budget even then.
+	var patch map[string]interface{}
+	if err := json.Unmarshal(revision.Data.Raw, &patch); err != nil {
+		t.Fatal(err)
+	}
+	spec := patch["spec"].(map[string]interface{})
+	template := spec["leaderWorkerTemplate"].(map[string]interface{})
+	template["maxGroupRestarts"] = float64(1)
+	revision.Data.Raw, err = json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	live := source.DeepCopy()
+	currentBudget := int32(7)
+	live.Spec.LeaderWorkerTemplate.MaxGroupRestarts = &currentBudget
+	restored, err := ApplyRevision(live, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Spec.LeaderWorkerTemplate.MaxGroupRestarts == nil {
+		t.Fatal("ApplyRevision cleared the live maxGroupRestarts budget")
+	}
+	if got := *restored.Spec.LeaderWorkerTemplate.MaxGroupRestarts; got != currentBudget {
+		t.Fatalf("ApplyRevision restored maxGroupRestarts=%d, want %d", got, currentBudget)
+	}
+}
 
 func TestApplyRevision(t *testing.T) {
 	client := fake.NewClientBuilder().Build()

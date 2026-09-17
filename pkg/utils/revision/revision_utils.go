@@ -180,6 +180,14 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	if err = json.Unmarshal(patched, restoredLws); err != nil {
 		return nil, err
 	}
+	// maxGroupRestarts is a live recovery budget, not part of the workload
+	// template identity. Preserve the value from the current object so neither
+	// newly generated nor historical revisions can overwrite it.
+	restoredLws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = nil
+	if maxGroupRestarts := lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts; maxGroupRestarts != nil {
+		value := *maxGroupRestarts
+		restoredLws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = &value
+	}
 	return restoredLws, nil
 }
 
@@ -292,6 +300,9 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	specCopy["leaderWorkerTemplate"] = template
 	networkConfig["$patch"] = "replace"
 	template["$patch"] = "replace"
+	// maxGroupRestarts is a live recovery budget and must not affect revision
+	// identity or be restored from a historical revision.
+	delete(template, "maxGroupRestarts")
 	objCopy["spec"] = specCopy
 	return json.Marshal(objCopy)
 }
