@@ -60,93 +60,19 @@ External role scaling (`scaling.mode: External`) currently requires `spec.slices
 
 In your `DisaggregatedSet` manifest, set `scaling.mode: External` on the role(s) you wish to autoscale:
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: llm-serving
-spec:
-  roles:
-  - name: prefill
-    scaling:
-      mode: External
-    spec:
-      leaderWorkerTemplate:
-        size: 4
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-prefill
-              image: vllm/vllm-openai:latest
-              resources:
-                requests:
-                  cpu: "16"
-                limits:
-                  nvidia.com/gpu: "8"
-  - name: decode
-    spec:
-      replicas: 4
-      leaderWorkerTemplate:
-        size: 2
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-decode
-              image: vllm/vllm-openai:latest
-              resources:
-                limits:
-                  nvidia.com/gpu: "4"
-```
+{{< include file="examples/disaggregatedset/role-scaler/external-scaling.yaml" lang="yaml" >}}
 
 ### 2. Create an HPA Targeting the Role Scaler
 
 Target the automatically created `DisaggregatedSetRoleScaler` by name (`<ds-name>-<role-name>`):
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: prefill-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: disaggregatedset.x-k8s.io/v1
-    kind: DisaggregatedSetRoleScaler
-    name: llm-serving-prefill
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 80
-```
+{{< include file="examples/disaggregatedset/role-scaler/hpa.yaml" lang="yaml" >}}
 
 ### 3. (Optional) KEDA ScaledObject Example
 
 For event-driven autoscaling based on Prometheus metrics (such as vLLM queue depth or TTFT):
 
-```yaml
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: prefill-keda-scaler
-spec:
-  scaleTargetRef:
-    apiVersion: disaggregatedset.x-k8s.io/v1
-    kind: DisaggregatedSetRoleScaler
-    name: llm-serving-prefill
-  minReplicaCount: 2
-  maxReplicaCount: 20
-  triggers:
-  - type: prometheus
-    metadata:
-      serverAddress: http://prometheus-k8s.monitoring.svc:9090
-      metricName: vllm_num_requests_waiting
-      query: sum(vllm_num_requests_waiting{model="meta-llama/Llama-3-70b"})
-      threshold: "10"
-```
+{{< include file="examples/disaggregatedset/role-scaler/keda-scaledobject.yaml" lang="yaml" >}}
 
 ---
 

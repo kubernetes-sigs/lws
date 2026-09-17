@@ -1,0 +1,13 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 4      # edit this and re-apply
+    workerTemplate:
+      spec:
+        containers:
+        - name: worker
+          image: worker-image:latest

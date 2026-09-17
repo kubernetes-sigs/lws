@@ -29,35 +29,7 @@ DisaggregatedSet "my-inference" (spec.slices = 2)
 ### 1. Scaling Identical Topologies Without YAML Duplication
 Running multiple identical copies of a multi-role serving setup previously required duplicating manifests or creating multiple `DisaggregatedSet` resources. With `spec.slices`, scaling from 1 to *N* identical copies is a single-line configuration change:
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: disaggregatedset-sample
-spec:
-  slices: 3
-  roles:
-  - name: prefill
-    spec:
-      replicas: 2
-      leaderWorkerTemplate:
-        size: 4
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-prefill
-              image: vllm/vllm-openai:latest
-  - name: decode
-    spec:
-      replicas: 4
-      leaderWorkerTemplate:
-        size: 2
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-decode
-              image: vllm/vllm-openai:latest
-```
+{{< include file="examples/disaggregatedset/slices/three-slices.yaml" lang="yaml" >}}
 
 ### 2. Accelerator Domain Confinement & Fault Isolation
 Disaggregated inference architectures (such as vLLM or SGLang with KV-cache transfer) benefit when prefill and decode pods communicating with each other are confined to the same physical domain (e.g., an NVLink rack or high-bandwidth switch).

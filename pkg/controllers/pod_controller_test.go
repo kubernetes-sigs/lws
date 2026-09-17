@@ -610,6 +610,41 @@ func TestReconcilePodDuringLWSDeletionOnlyRemovesBudgetFinalizer(t *testing.T) {
 	}
 }
 
+func TestReconcilePodWithoutLWSRemovesGroupFinalizers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	leader := wrappers.MakePodWithLabels("missing-lws", "0", "0", "default", 2)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker := wrappers.MakePodWithLabels("missing-lws", "0", "1", "default", 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(leader, worker).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+
+	for _, pod := range []*corev1.Pod{leader, worker} {
+		var updated corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &updated); err != nil {
+			t.Fatal(err)
+		}
+		if controllerutil.ContainsFinalizer(&updated, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			t.Fatalf("restart-budget finalizer was not removed from %s", pod.Name)
+		}
+	}
+}
+
 func TestExhaustedGroupFinalizesWorkersAndRecoversExplicitly(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

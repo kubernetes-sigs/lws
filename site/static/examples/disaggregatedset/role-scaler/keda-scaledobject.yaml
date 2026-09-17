@@ -1,0 +1,18 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: prefill-keda-scaler
+spec:
+  scaleTargetRef:
+    apiVersion: disaggregatedset.x-k8s.io/v1
+    kind: DisaggregatedSetRoleScaler
+    name: llm-serving-prefill
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-k8s.monitoring.svc:9090
+      metricName: vllm_num_requests_waiting
+      query: sum(vllm_num_requests_waiting{model="meta-llama/Llama-3-70b"})
+      threshold: "10"

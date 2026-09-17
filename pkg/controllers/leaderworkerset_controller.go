@@ -534,6 +534,12 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if err != nil {
 			return false, false, err
 		}
+		degraded := index < int(*lws.Spec.Replicas) && pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+		if degraded {
+			// Exhaustion is a leader-Pod state and must remain visible even when
+			// the worker StatefulSet was never created or is already gone.
+			degradedGroupCount++
+		}
 
 		var sts appsv1.StatefulSet
 		if !noWorkerSts {
@@ -565,10 +571,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		if index < int(*lws.Spec.Replicas) {
-			degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
-			if degraded {
-				degradedGroupCount++
-			}
 			if ready {
 				readyNonBurstWorkerCount++
 				if !degraded {
@@ -1058,16 +1060,6 @@ func makeFalseCondition(conditionType leaderworkerset.LeaderWorkerSetConditionTy
 	condition.Reason = reason
 	condition.Message = message
 	return condition
-}
-
-func hasDegradedGroup(leaderPodList *corev1.PodList) bool {
-	for i := range leaderPodList.Items {
-		pod := &leaderPodList.Items[i]
-		if pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
-			return true
-		}
-	}
-	return false
 }
 
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {

@@ -1,0 +1,25 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  startupPolicy: LeaderReady
+  replicas: 3
+  leaderWorkerTemplate:
+    size: 4
+    leaderTemplate:
+      spec:
+        containers:
+        - name: coordinator
+          image: coordinator-image:latest
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+    workerTemplate:
+      spec:
+        containers:
+        - name: worker
+          image: worker-image:latest

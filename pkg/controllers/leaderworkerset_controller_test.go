@@ -25,6 +25,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1272,17 +1273,6 @@ func TestMakeConditionDegraded(t *testing.T) {
 	}
 }
 
-func TestHasDegradedGroup(t *testing.T) {
-	pods := &corev1.PodList{Items: []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{}}}}}
-	if hasDegradedGroup(pods) {
-		t.Fatal("group without exhausted marker must not be degraded")
-	}
-	pods.Items[0].Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
-	if !hasDegradedGroup(pods) {
-		t.Fatal("group with exhausted marker must be degraded")
-	}
-}
-
 func TestUpdateConditionsKeepsProgressingForAnotherReplica(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -1320,6 +1310,33 @@ func TestUpdateConditionsKeepsProgressingForAnotherReplica(t *testing.T) {
 	}
 	if degradedCondition == nil || degradedCondition.Status != metav1.ConditionTrue {
 		t.Fatalf("Degraded condition = %#v, want True", degradedCondition)
+	}
+}
+
+func TestUpdateConditionsReportsDegradedWithoutWorkerStatefulSet(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).Obj()
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, _, err := r.updateConditions(context.Background(), lws, "revision-a"); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetDegraded))
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Degraded condition = %#v, want True", condition)
 	}
 }
 

@@ -23,26 +23,7 @@ LeaderWorkerSet supports two primary parameters within `.spec.rolloutStrategy.ro
 
 Here is a LeaderWorkerSet configured with a rolling update strategy (see a full runtime example [here](https://github.com/kubernetes-sigs/lws/blob/main/docs/examples/leaderworkerset/basic/vllm.yaml)):
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  rolloutStrategy:
-    type: RollingUpdate
-    rollingUpdateConfiguration:
-      maxUnavailable: 2
-      maxSurge: 2
-  replicas: 4
-  leaderWorkerTemplate:
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: nginx
-          image: nginxinc/nginx-unprivileged:1.27
-```
+{{< include file="examples/leaderworkerset/rollout-strategy/rolling-update.yaml" lang="yaml" >}}
 
 ## Rolling Update Process
 

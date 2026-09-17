@@ -123,6 +123,9 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderWorkerSet); err != nil {
 		if apierrors.IsNotFound(err) && controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			if podutils.LeaderPod(pod) {
+				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizers(ctx, &pod)
+			}
 			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
 		}
 		// If lws not found, it's mostly because deleted, ignore the error as Pods will be GCed finally.
@@ -958,7 +961,7 @@ func (r *PodReconciler) budgetFinalizedPodRequests(ctx context.Context, object c
 	requests := make([]podReconcileRequest, 0)
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !podutils.LeaderPod(*pod) || !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		if !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 			continue
 		}
 		requests = append(requests, podReconcileRequestForPod(pod, false))

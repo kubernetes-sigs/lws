@@ -43,24 +43,7 @@ The `subGroupPolicyType` field (`.spec.leaderWorkerTemplate.subGroupPolicy.subGr
 - If `size - 1` is divisible by `subGroupSize`, the leader is treated as the extra pod in Subgroup 0 (`0, 1, ... subGroupSize`), and all subsequent subgroups contain `subGroupSize` workers.
 - If `size` is divisible by `subGroupSize`, all subgroups contain exactly `subGroupSize` pods (Subgroup 0 contains the leader and `subGroupSize - 1` workers).
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 16
-    subGroupPolicy:
-      subGroupPolicyType: LeaderWorker
-      subGroupSize: 8
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/subgroups/leader-worker.yaml" lang="yaml" >}}
 
 ### 2. `LeaderExcluded`
 
@@ -68,33 +51,7 @@ spec:
 
 This policy requires `(size - 1)` to be divisible by `subGroupSize`.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 9
-    subGroupPolicy:
-      subGroupPolicyType: LeaderExcluded
-      subGroupSize: 8
-    leaderTemplate:
-      spec:
-        nodeSelector:
-          node.kubernetes.io/instance-type: cpu-standard
-        containers:
-        - name: leader
-          image: leader-image:latest
-    workerTemplate:
-      spec:
-        nodeSelector:
-          node.kubernetes.io/instance-type: gpu-accelerated
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/subgroups/leader-excluded.yaml" lang="yaml" >}}
 
 #### Key Benefits of `LeaderExcluded`
 
@@ -105,24 +62,6 @@ spec:
 
 The annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` defines a **1:1 mapping between an LWS subgroup and a topology domain**:
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-  annotations:
-    leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: topology.kubernetes.io/rack
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 8
-    subGroupPolicy:
-      subGroupSize: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/subgroups/subgroup-exclusive-topology.yaml" lang="yaml" >}}
 
 In this example, each 4-pod subgroup is scheduled onto its own exclusive rack, while the overall 8-pod replica can span across racks within the same zone or cluster.
