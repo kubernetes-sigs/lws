@@ -55,6 +55,9 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// that revision/group's budget and allows recovery. Changing this value does
 	// not resume an exhausted group. It is opt-in: when unset (nil), group
 	// recreation is unlimited. This field is not supported with groupIdentity=Hash.
+	// Budget exhaustion handling requires Kubernetes 1.27 or later because it
+	// relies on deleted Pods reaching a terminal phase while finalizers retain
+	// their API objects.
 	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
