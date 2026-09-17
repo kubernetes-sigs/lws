@@ -1,0 +1,25 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 9
+    subGroupPolicy:
+      subGroupPolicyType: LeaderExcluded
+      subGroupSize: 8
+    leaderTemplate:
+      spec:
+        nodeSelector:
+          node.kubernetes.io/instance-type: cpu-standard
+        containers:
+        - name: leader
+          image: leader-image:latest
+    workerTemplate:
+      spec:
+        nodeSelector:
+          node.kubernetes.io/instance-type: gpu-accelerated
+        containers:
+        - name: worker
+          image: worker-image:latest

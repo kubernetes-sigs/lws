@@ -1,0 +1,25 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  replicas: 3
+  leaderWorkerTemplate:
+    size: 4
+    leaderTemplate:
+      spec:
+        containers:
+        - name: leader
+          image: leader-coordinator:latest
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+    workerTemplate:
+      spec:
+        containers:
+        - name: worker
+          image: worker-engine:latest
+          resources:
+            limits:
+              nvidia.com/gpu: "8"

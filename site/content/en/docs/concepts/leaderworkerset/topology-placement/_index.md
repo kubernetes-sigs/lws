@@ -14,23 +14,7 @@ LeaderWorkerSet provides topology-aware placement features to ensure that all po
 
 The annotation `leaderworkerset.sigs.k8s.io/exclusive-topology` defines a **1:1 mapping between an LWS replica and a topology domain**.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-  annotations:
-    leaderworkerset.sigs.k8s.io/exclusive-topology: topology.kubernetes.io/zone
-spec:
-  replicas: 3
-  leaderWorkerTemplate:
-    size: 4
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/topology-placement/exclusive-topology.yaml" lang="yaml" >}}
 
 Common topology keys include:
 - `topology.kubernetes.io/zone`

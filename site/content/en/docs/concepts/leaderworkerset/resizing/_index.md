@@ -8,21 +8,7 @@ description: >
 
 `.spec.leaderWorkerTemplate.size` can be changed on a running LeaderWorkerSet. This was added in [KEP-552](https://github.com/kubernetes-sigs/lws/tree/main/keps/552-worker-resizing) so that a group can be resized with `kubectl apply` or a GitOps commit, instead of deleting and recreating the object.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 2
-  leaderWorkerTemplate:
-    size: 4      # edit this and re-apply
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-image:latest
-```
+{{< include file="examples/leaderworkerset/resizing/resize-group.yaml" lang="yaml" >}}
 
 ## Resizing Recreates Every Pod
 

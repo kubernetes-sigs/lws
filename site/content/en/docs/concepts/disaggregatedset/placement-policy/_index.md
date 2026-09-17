@@ -62,44 +62,7 @@ Exclusivity is enforced via injected pod anti-affinity targeting DisaggregatedSe
 
 Below is an example DisaggregatedSet configured with `ExclusiveSlice` placement across physical racks:
 
-```yaml
-apiVersion: disaggregatedset.x-k8s.io/v1
-kind: DisaggregatedSet
-metadata:
-  name: disaggregatedset-sample
-spec:
-  slices: 2
-  placementPolicy:
-    type: ExclusiveSlice
-    topology: topology.kubernetes.io/rack
-  roles:
-  - name: prefill
-    spec:
-      replicas: 2
-      leaderWorkerTemplate:
-        size: 4
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-prefill
-              image: vllm/vllm-openai:latest
-              resources:
-                limits:
-                  nvidia.com/gpu: "8"
-  - name: decode
-    spec:
-      replicas: 4
-      leaderWorkerTemplate:
-        size: 2
-        workerTemplate:
-          spec:
-            containers:
-            - name: vllm-decode
-              image: vllm/vllm-openai:latest
-              resources:
-                limits:
-                  nvidia.com/gpu: "4"
-```
+{{< include file="examples/disaggregatedset/placement-policy/exclusive-slice.yaml" lang="yaml" >}}
 
 In this example:
 - **Slice 0** (prefill + decode pods) lands together on **Rack A**.

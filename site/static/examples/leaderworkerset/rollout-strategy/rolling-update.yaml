@@ -1,0 +1,18 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-sample
+spec:
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 2
+      maxSurge: 2
+  replicas: 4
+  leaderWorkerTemplate:
+    size: 4
+    workerTemplate:
+      spec:
+        containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27

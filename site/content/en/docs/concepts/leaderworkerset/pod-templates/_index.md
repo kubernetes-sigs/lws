@@ -17,33 +17,7 @@ You can configure pod specifications using two template fields:
 - `workerTemplate` (**required**): Defines the pod template for worker pods. If `leaderTemplate` is not specified, `workerTemplate` applies to the leader pod as well.
 - `leaderTemplate` (**optional**): Defines a distinct pod template exclusively for the leader pod.
 
-```yaml
-apiVersion: leaderworkerset.x-k8s.io/v1
-kind: LeaderWorkerSet
-metadata:
-  name: leaderworkerset-sample
-spec:
-  replicas: 3
-  leaderWorkerTemplate:
-    size: 4
-    leaderTemplate:
-      spec:
-        containers:
-        - name: leader
-          image: leader-coordinator:latest
-          resources:
-            requests:
-              cpu: "2"
-              memory: 4Gi
-    workerTemplate:
-      spec:
-        containers:
-        - name: worker
-          image: worker-engine:latest
-          resources:
-            limits:
-              nvidia.com/gpu: "8"
-```
+{{< include file="examples/leaderworkerset/pod-templates/leader-and-worker-templates.yaml" lang="yaml" >}}
 
 ## Common Use Cases
 
