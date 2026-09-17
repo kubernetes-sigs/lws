@@ -238,11 +238,12 @@ type LeaderWorkerTemplate struct {
 
 	// maxGroupRestarts bounds how many times the controller can recreate a group
 	// under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
-	// the controller keeps the failed group for debugging and stops recreating it.
-	// Deleting the retained leader pod resets that revision/group's budget and
-	// allows recovery. Changing this value does not resume an already retained
-	// group. It is opt-in: when unset (nil), group recreation is unlimited. This
-	// field is not supported with groupIdentity=Hash.
+	// the controller terminates the group, retains its Pod API objects with
+	// finalizers, and stops automatic group recreation. Setting
+	// leaderworkerset.sigs.k8s.io/recover=true on the retained leader Pod resets
+	// that revision/group's budget and allows recovery. Changing this value does
+	// not resume an exhausted group. It is opt-in: when unset (nil), group
+	// recreation is unlimited. This field is not supported with groupIdentity=Hash.
 	//
 	// +optional
 	// +kubebuilder:validation:Minimum=0
@@ -494,8 +495,9 @@ const (
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
 
-	// LeaderWorkerSetDegraded means one or more groups are retained after exhausting
-	// the restart budget. Other replicas can remain available or continue progressing.
+	// LeaderWorkerSetDegraded means one or more groups exhausted their restart
+	// budget and automatic recovery stopped. Other replicas can remain available
+	// or continue progressing.
 	LeaderWorkerSetDegraded LeaderWorkerSetConditionType = "Degraded"
 )
 
