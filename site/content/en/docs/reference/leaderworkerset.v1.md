@@ -274,7 +274,10 @@ finalizers, and stops automatic group recreation. Setting
 leaderworkerset.sigs.k8s.io/recover=true on the retained leader Pod resets
 that revision/group's budget and allows recovery. Changing this value does
 not resume an exhausted group. It is opt-in: when unset (nil), group
-recreation is unlimited. This field is not supported with groupIdentity=Hash.</p>
+recreation is unlimited. This field is not supported with groupIdentity=Hash.
+Budget exhaustion handling requires Kubernetes 1.27 or later because it
+relies on deleted Pods reaching a terminal phase while finalizers retain
+their API objects.</p>
 </td>
 </tr>
 <tr><td><code>subGroupPolicy</code><br/>
