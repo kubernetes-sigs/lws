@@ -188,6 +188,8 @@ DisaggregatedSet roles embed the full LeaderWorkerSet spec, so a role sets `grou
 
 Because the revision includes the field and DisaggregatedSet rolls template changes by replacing whole LeaderWorkerSets, changing a role from `Ordinal` to `Hash` is a normal rolling update rather than a forbidden in-place mutation. NOTE: the DisaggregatedSet revision covers all roles jointly, so changing one role's identity mode rolls the whole slice, the same as any other role template change.
 
+`groupReplacementPolicy` is handled differently. It is a live knob on the LeaderWorkerSet, not part of its revision, and changing it does not roll pods. The DisaggregatedSet revision therefore excludes it, and the controller instead syncs the role's value onto the existing LeaderWorkerSet in place on every reconcile, the same way it syncs `replicas`. Flipping a role between `PostTermination` and `Immediate` takes effect on the next reconcile without recreating any group.
+
 ### Unsupported Combinations
 
 Validation rejects hash mode combined with features whose semantics depend on stable StatefulSet identity:
