@@ -53,10 +53,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
 	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
-	// It mirrors the LWS hierarchy: the complete set, each replica, and the
-	// leader and worker groups within a replica. In phase 1 exactly one level
-	// may be selected. This alpha field requires the WorkloadAwareScheduling
-	// LWS feature gate.
+	// This field is immutable.
 	Scheduling *LeaderWorkerSetSchedulingApplyConfiguration `json:"scheduling,omitempty"`
 	// groupIdentity determines how group identities are assigned.
 	// Ordinal (default) manages leaders through a StatefulSet: groups are named

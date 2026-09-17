@@ -37,8 +37,6 @@ const (
 	RolePodGroupNameFmt = "%s-%s-%s-%s"
 	LWSGroupNameFmt     = "%s-lws"
 
-	// These linkage annotations are defined by Kubernetes KEP-6089. They are
-	// not exported by k8s.io/api yet.
 	GroupTemplateNameAnnotation       = "scheduling.k8s.io/group-template-name"
 	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
 
@@ -75,9 +73,8 @@ func ReconcileErrorReason(err error) string {
 
 // SchedulerProvider defines the interface for managing pod group resources
 type SchedulerProvider interface {
-	// ReconcileScheduling creates controller-owned scheduling prerequisites
-	// before the leader StatefulSet is allowed to create Pods. Providers that
-	// use the legacy pod-driven lifecycle may implement this as a no-op.
+	// ReconcileScheduling creates controller-owned scheduling objects before pods.
+	// Providers that use the legacy pod-driven lifecycle may implement this as a no-op.
 	ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error
 
 	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller

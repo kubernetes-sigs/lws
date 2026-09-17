@@ -32,8 +32,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
-// SchedulingMode identifies the one LWS hierarchy level materialized as flat
-// PodGroups during phase 1.
+// SchedulingMode is the LWS hierarchy level materialized as PodGroups.
 type SchedulingMode string
 
 const (
@@ -63,7 +62,7 @@ func workloadBuildOptions(lws *leaderworkerset.LeaderWorkerSet) workloadbuilder.
 	}
 }
 
-// SchedulingModeFor selects the active phase-1 level. Empty scheduling and an
+// SchedulingModeFor selects the active scheduling level. Empty scheduling and an
 // explicitly empty replica node both select replica mode.
 func SchedulingModeFor(lws *leaderworkerset.LeaderWorkerSet) (SchedulingMode, error) {
 	if lws.Spec.Scheduling == nil {
@@ -98,13 +97,13 @@ func SchedulingModeFor(lws *leaderworkerset.LeaderWorkerSet) (SchedulingMode, er
 		return SchedulingModeReplica, nil
 	}
 	if len(active) != 1 {
-		return "", fmt.Errorf("phase 1 requires exactly one active scheduling level, got %v", active)
+		return "", fmt.Errorf("exactly one active scheduling level is required, got %v", active)
 	}
 	return active[0], nil
 }
 
-// WorkloadSchedulingValue is stored on managed Pod templates so the Pod
-// webhook can choose the level-aware runtime PodGroup name.
+// WorkloadSchedulingValue is stored on managed pod templates so the pod
+// webhook can choose the runtime PodGroup name.
 func WorkloadSchedulingValue(lws *leaderworkerset.LeaderWorkerSet) string {
 	mode, err := SchedulingModeFor(lws)
 	if err != nil {
@@ -113,10 +112,10 @@ func WorkloadSchedulingValue(lws *leaderworkerset.LeaderWorkerSet) string {
 	return string(mode)
 }
 
-func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder.WorkloadItem, SchedulingMode, error) {
+func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder.WorkloadItem, error) {
 	mode, err := SchedulingModeFor(lws)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
@@ -128,8 +127,6 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 		config := lws.Spec.Scheduling
 		minCount := replicas * size
 		if minCount == 0 {
-			// A Workload template must remain valid while a whole-LWS gang is
-			// scaled to zero. No runtime PodGroup is created until scale-up.
 			minCount = 1
 		}
 		item := newLeafItem(
@@ -143,7 +140,7 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 			priorityClassName,
 			minCount,
 		)
-		return []*workloadbuilder.WorkloadItem{item}, mode, nil
+		return []*workloadbuilder.WorkloadItem{item}, nil
 	case SchedulingModeReplica:
 		config := lws.Spec.Scheduling.Replica
 		if config == nil {
@@ -160,7 +157,7 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 			priorityClassName,
 			size,
 		)
-		return []*workloadbuilder.WorkloadItem{item}, mode, nil
+		return []*workloadbuilder.WorkloadItem{item}, nil
 	case SchedulingModeRole:
 		replica := lws.Spec.Scheduling.Replica
 		leader := replica.Leader
@@ -194,9 +191,9 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 				priorityClassName,
 				size-1,
 			),
-		}, mode, nil
+		}, nil
 	default:
-		return nil, "", fmt.Errorf("unsupported scheduling mode %q", mode)
+		return nil, fmt.Errorf("unsupported scheduling mode %q", mode)
 	}
 }
 
@@ -263,8 +260,6 @@ func lowerCompositePolicy(policy *schedulingv1alpha3.WorkloadCompositePodGroupSc
 		result.Basic = &schedulingv1alpha3.WorkloadPodGroupBasicSchedulingPolicy{}
 	}
 	if policy.Gang != nil {
-		// minGroupCount counts child groups and therefore is never converted to
-		// minCount. LWS derives the flat leaf's complete pod membership instead.
 		result.Gang = &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}
 	}
 	return result
@@ -325,8 +320,6 @@ func compositeValidationItem(lws *leaderworkerset.LeaderWorkerSet, mode Scheduli
 			Constraints:    workloadbuilder.ConstraintsInput{CompositePodGroupData: constraints, PathElements: []string{"schedulingConstraints"}},
 			DisruptionMode: workloadbuilder.DisruptionModeInput{CompositePodGroupData: disruption, PathElements: []string{"disruptionMode"}},
 		},
-		// A child makes workloadbuilder validate this node with the composite
-		// building-block validators. The child is validation-only in phase 1.
 		Children: []*workloadbuilder.WorkloadItem{{
 			Name:          name + "-validation-leaf",
 			Path:          path,
@@ -335,8 +328,7 @@ func compositeValidationItem(lws *leaderworkerset.LeaderWorkerSet, mode Scheduli
 	}
 }
 
-// ValidatePhaseOneWorkload validates the original level-appropriate building
-// blocks and the flat leaf inputs produced by phase-1 lowering.
+// ValidatePhaseOneWorkload validates spec.scheduling.
 func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.LeaderWorkerSet) field.ErrorList {
 	path := field.NewPath("spec", "scheduling")
 	mode, err := SchedulingModeFor(lws)
@@ -367,10 +359,10 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 		allErrs = append(allErrs, workloadbuilder.NewBuilder(item, workloadBuildOptions(lws)).Validate(ctx, input)...)
 	}
 
-	items, _, _ := phaseOneLeafItems(lws)
+	items, _ := phaseOneLeafItems(lws)
 	oldItemsByName := map[string]*workloadbuilder.WorkloadItem{}
 	if oldLWS != nil && oldMode == mode {
-		if oldItems, _, oldErr := phaseOneLeafItems(oldLWS); oldErr == nil {
+		if oldItems, oldErr := phaseOneLeafItems(oldLWS); oldErr == nil {
 			for _, item := range oldItems {
 				oldItemsByName[item.Name] = item
 			}
@@ -403,7 +395,7 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 	if mode == SchedulingModeLWS {
 		policy := lws.Spec.Scheduling.SchedulingPolicy
 		if policy != nil && policy.Gang != nil && policy.Gang.MinGroupCount != nil {
-			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy", "gang", "minGroupCount"), "minGroupCount requires CompositePodGroup support and is not available in phase 1"))
+			allErrs = append(allErrs, field.Forbidden(path.Child("schedulingPolicy", "gang", "minGroupCount"), "minGroupCount is not supported"))
 		}
 	}
 	if mode == SchedulingModeReplica {
@@ -412,7 +404,7 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 			policy = lws.Spec.Scheduling.Replica.SchedulingPolicy
 		}
 		if policy != nil && policy.Gang != nil && policy.Gang.MinGroupCount != nil {
-			allErrs = append(allErrs, field.Forbidden(path.Child("replica", "schedulingPolicy", "gang", "minGroupCount"), "minGroupCount requires CompositePodGroup support and is not available in phase 1"))
+			allErrs = append(allErrs, field.Forbidden(path.Child("replica", "schedulingPolicy", "gang", "minGroupCount"), "minGroupCount is not supported"))
 		}
 	}
 	if mode == SchedulingModeRole {
@@ -543,13 +535,11 @@ func validateClaims(claims []schedulingv1alpha3.WorkloadPodGroupResourceClaim, t
 	return allErrs
 }
 
-// buildFlatWorkload compiles each selected phase-1 leaf independently and
-// merges the stable templates into one Workload.
 func buildFlatWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	if errs := ValidatePhaseOneWorkload(ctx, nil, lws); len(errs) > 0 {
 		return nil, errs.ToAggregate()
 	}
-	items, _, err := phaseOneLeafItems(lws)
+	items, err := phaseOneLeafItems(lws)
 	if err != nil {
 		return nil, err
 	}
