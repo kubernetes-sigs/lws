@@ -309,7 +309,7 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					Namespace: a.GetNamespace(),
 				}}}
 			}),
-			// Reconcile status when a retained group appears or is removed. Ignore
+			// Reconcile status when an exhausted group appears or is removed. Ignore
 			// unrelated kubelet status updates on healthy leader pods.
 			builder.WithPredicates(predicate.Funcs{
 				CreateFunc: func(e event.CreateEvent) bool { return true },
@@ -597,7 +597,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	allReplicasReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
 	// A degraded group is terminal only when all other desired groups are ready.
 	// A missing or unready non-degraded group can still make progress, even
-	// though Degraded remains true for the retained group.
+	// though Degraded remains true for the exhausted group.
 	progressing := rolloutInProgress || readyNonDegradedCount+degradedGroupCount < int(*lws.Spec.Replicas)
 	if rolloutInProgress {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected

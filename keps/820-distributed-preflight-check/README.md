@@ -14,7 +14,7 @@ Pod API objects for inspection and recovery coordination.
 - [Proposal](#proposal)
   - [User Stories](#user-stories)
     - [Story 1: Stop a persistent recovery loop](#story-1-stop-a-persistent-recovery-loop)
-    - [Story 2: Inspect and recover a retained group](#story-2-inspect-and-recover-a-retained-group)
+    - [Story 2: Inspect and recover an exhausted group](#story-2-inspect-and-recover-an-exhausted-group)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
@@ -104,7 +104,7 @@ leader and worker Pods, and stops automatic group recovery. Once the Pods reach
 terminal state, their scheduled resources are released while the API objects
 remain available for inspection. The remaining replicas continue running.
 
-#### Story 2: Inspect and recover a retained group
+#### Story 2: Inspect and recover an exhausted group
 
 After the budget is exhausted, an operator inspects the retained Pod objects and
 external logs. Once the underlying problem is fixed, the operator adds the
@@ -134,7 +134,7 @@ and lets the StatefulSet create a replacement group with a fresh budget.
   will usually appear as `Init:Error` or `Init:CrashLoopBackOff`; LWS does not
   change it to `Completed`.
 - LWS deletion, scale-down, and rollout are teardown/lifecycle operations, not
-  manual recovery. They remove budget cleanup finalizers as appropriate without
+  explicit recovery. They remove budget cleanup finalizers as appropriate without
   clearing counters as a recovery side effect or starting a new group.
 
 ### Risks and Mitigations
@@ -207,7 +207,7 @@ For each failure for which `RecreateGroupOnPodRestart` or
    clear the counter, or create a replacement.
 4. When the LWS is being deleted, or a scale-down/rollout removes the group,
    remove budget cleanup finalizers as part of teardown without treating it as
-   manual recovery.
+   explicit recovery.
 5. When the retained leader has
    `leaderworkerset.sigs.k8s.io/recover=true`, clear the current
    revision/replica count, remove the cleanup finalizers from the group Pods,
@@ -230,7 +230,7 @@ exhaustion/termination event does not increment the count.
 | Decrease `maxGroupRestarts` | Keep the current group unchanged until its next failure | The next failure uses the smaller limit; if the current count already meets it, terminate and retain the group immediately |
 | Delete only terminating workers | Do not treat the deletion as recovery; reconcile the group teardown | The retained leader and count remain unchanged |
 | Add `leaderworkerset.sigs.k8s.io/recover=true` to the retained leader | Clear that revision/replica count and remove group cleanup finalizers | Recreate the whole group with a fresh budget |
-| Delete all Pods in the exhausted group | Continue teardown; do not infer manual recovery from deletion | No replacement is created until explicit recovery or normal lifecycle cleanup |
+| Delete all Pods in the exhausted group | Continue teardown; do not infer recovery from deletion | No replacement is created until explicit recovery or normal lifecycle cleanup |
 | Delete the LWS | Remove budget cleanup finalizers as teardown proceeds | No counter reset or replacement group is triggered by recovery logic |
 | Scale down or complete a rollout that removes the group | Remove budget cleanup finalizers and obsolete lifecycle state | The removed replica/revision is not recovered or recreated; its counter is cleaned up as lifecycle bookkeeping |
 | Update the Pod template | Roll out a new revision | The new revision uses a fresh per-replica budget |
@@ -357,13 +357,13 @@ changes necessary to implement this enhancement.
 - Add the optional API field, webhook validation, restart accounting,
   exhaustion-triggered termination/finalizer behavior, and `Degraded`
   condition.
-- Cover exhaustion and manual recovery with unit, integration, and e2e tests.
+- Cover exhaustion and explicit recovery with unit, integration, and e2e tests.
 - Document status, resource release, API-object retention, and recovery
   commands.
 
 **Beta:**
 
-- Gather production feedback on restart limits and manual recovery.
+- Gather production feedback on restart limits and explicit recovery.
 - Add metrics for suppressed group recreation if operators need alerting beyond
   status conditions and events.
 
