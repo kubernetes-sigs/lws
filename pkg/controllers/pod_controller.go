@@ -536,7 +536,16 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
 			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
 		}
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize != nil {
+			podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		}
+		if len(currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement) > 0 {
+			encodedPlacement, err := leaderworkerset.EncodeSubGroupPlacement(currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement)
+			if err != nil {
+				return nil, err
+			}
+			podAnnotations[leaderworkerset.SubGroupPlacementAnnotationKey] = encodedPlacement
+		}
 		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
 		}
