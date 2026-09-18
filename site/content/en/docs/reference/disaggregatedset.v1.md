@@ -76,6 +76,15 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
    <p>Name is the unique identifier for this role.</p>
 </td>
 </tr>
+<tr><td><code>subRoles</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec"><code>[]DisaggregatedSubRoleSpec</code></a>
+</td>
+<td>
+   <p>SubRoles partitions this role's configuration-identical LWS groups into
+independently scalable routing pools. When present, the physical parent
+replica target is the sum of the sub-role targets.</p>
+</td>
+</tr>
 <tr><td><code>scaling</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleScaling"><code>RoleScaling</code></a>
 </td>
@@ -251,7 +260,7 @@ they are driven via DisaggregatedSetRoleScaler.spec.replicas.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec"><code>[]DisaggregatedRoleSpec</code></a>
 </td>
 <td>
-   <p>Roles defines the list of roles (at least 2 required).
+   <p>Roles defines the list of roles (at least 1 required).
 Each role has a unique name and its own configuration.</p>
 </td>
 </tr>
@@ -327,6 +336,48 @@ Each condition has a unique type and reflects the status of a specific aspect of
 </tbody>
 </table>
 
+## `DisaggregatedSubRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec}
+    
+
+**Appears in:**
+
+- [DisaggregatedRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec)
+
+
+<p>DisaggregatedSubRoleSpec defines an independently scalable routing partition
+within a configuration-identical parent role.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>name</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Name is unique within the parent role.</p>
+</td>
+</tr>
+<tr><td><code>replicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas is the desired number of LWS groups assigned to this sub-role
+when scaling is Static or omitted. The controller defaults it to 1.</p>
+</td>
+</tr>
+<tr><td><code>scaling</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RoleScaling"><code>RoleScaling</code></a>
+</td>
+<td>
+   <p>Scaling configures how replicas are determined for this sub-role.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `PlacementPolicy`     {#disaggregatedset-x-k8s-io-v1-PlacementPolicy}
     
 
@@ -381,6 +432,8 @@ topologyKey. Required when Type is not None.</p>
 **Appears in:**
 
 - [DisaggregatedRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec)
+
+- [DisaggregatedSubRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec)
 
 
 <p>RoleScaling configures how replicas are determined for a role. Sub-struct
@@ -460,6 +513,60 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </td>
 <td>
    <p>UpdatedReplicas is the number of replicas updated to the latest revision.</p>
+</td>
+</tr>
+<tr><td><code>subRoleStatuses</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-SubRoleStatus"><code>[]SubRoleStatus</code></a>
+</td>
+<td>
+   <p>SubRoleStatuses contains observed counts for this role's sub-roles.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `SubRoleStatus`     {#disaggregatedset-x-k8s-io-v1-SubRoleStatus}
+    
+
+**Appears in:**
+
+- [RoleStatus](#disaggregatedset-x-k8s-io-v1-RoleStatus)
+
+
+<p>SubRoleStatus defines the observed state of one sub-role.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>name</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Name is the name of the sub-role.</p>
+</td>
+</tr>
+<tr><td><code>replicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas is the number of assigned LWS groups.</p>
+</td>
+</tr>
+<tr><td><code>readyReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>ReadyReplicas is the number of assigned groups whose leader Pod is Ready.</p>
+</td>
+</tr>
+<tr><td><code>updatedReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>UpdatedReplicas is the number of assigned groups on the current revision.</p>
 </td>
 </tr>
 </tbody>
