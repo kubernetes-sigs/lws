@@ -60,25 +60,26 @@ func fractionalStepCount(replicas RoleReplicaState) int {
 	return maxReplicas
 }
 
-// sideProgress returns the step reached by every non-empty role. Both sides
-// use ceiling targets, so the inverse differs for growth and drain.
-func sideProgress(current, sizes RoleReplicaState, totalSteps int, drained bool) int {
-	if totalSteps == 0 {
+// leastAdvancedStep returns the progress step of the least-advanced non-empty
+// role. Both sides use ceiling targets, so the inverse differs for growth and
+// drain.
+func leastAdvancedStep(current, roleSizes RoleReplicaState, stepCount int, draining bool) int {
+	if stepCount == 0 {
 		return 0
 	}
-	progress := totalSteps
-	for i, size := range sizes {
-		if size == 0 {
+	progress := stepCount
+	for i, roleSize := range roleSizes {
+		if roleSize == 0 {
 			continue
 		}
 		count := current[i]
 		var roleProgress int
-		if drained {
-			count = min(count, size)
-			roleProgress = (totalSteps*(size-count+1) - 1) / size
-			roleProgress = min(max(roleProgress, 0), totalSteps)
+		if draining {
+			count = min(count, roleSize)
+			roleProgress = (stepCount*(roleSize-count+1) - 1) / roleSize
+			roleProgress = min(max(roleProgress, 0), stepCount)
 		} else {
-			roleProgress = count * totalSteps / size
+			roleProgress = count * stepCount / roleSize
 		}
 		progress = min(progress, roleProgress)
 	}
@@ -120,8 +121,8 @@ func ComputeNextStep(
 	// within one replica of the smallest non-empty role. That is the KEP's
 	// largestReplicaFraction. The executor calculates its denominator explicitly
 	// and reapplies the window after readiness clamps roles independently.
-	currentNewStep := sideProgress(currentNew, targetNew, newStepCount, false)
-	currentOldStep := sideProgress(currentOld, initialOld, oldStepCount, true)
+	currentNewStep := leastAdvancedStep(currentNew, targetNew, newStepCount, false)
+	currentOldStep := leastAdvancedStep(currentOld, initialOld, oldStepCount, true)
 
 	// Each side normally advances by one checkpoint. If the old side has
 	// already drained farther, the new side catches up to the equivalent

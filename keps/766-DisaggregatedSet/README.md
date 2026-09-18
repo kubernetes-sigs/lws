@@ -193,7 +193,7 @@ newAtStep(k) = ceil(target * k / newStepCount)
 oldAtStep(k) = ceil(initialOld * (oldStepCount - k) / oldStepCount)
 ```
 
-The controller uses the role that has made the least progress to select the next shared checkpoint. It then calculates the replica count for every role at that checkpoint. Ceiling division keeps each old role above zero until the final checkpoint. It also prevents a smaller role from getting more than one replica's worth of progress ahead. When multiple checkpoints produce the same replica count, the controller uses the latest one.
+The planner uses `leastAdvancedStep` to select the shared checkpoint from the current replica counts. It calculates each role's growth or drain progress and returns the smallest step reached by any non-empty role. The planner then calculates the replica count for every role at that checkpoint. Ceiling division keeps each old role above zero until the final checkpoint. It also prevents a smaller role from getting more than one replica's worth of progress ahead. When multiple checkpoints produce the same replica count, the controller uses the latest one.
 
 The following diagram shows every old-side step from the intended replica counts to zero. Each column is one fractional step. The coordination window is frozen over steps 5 through 7 for illustration. Roles do not need to occupy the same step; they only need to remain within the same window.
 

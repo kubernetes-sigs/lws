@@ -335,13 +335,13 @@ func TestNRoleNewSideReplicaFractionCoordination(t *testing.T) {
 	}
 }
 
-func TestSideProgress(t *testing.T) {
-	sizes := []int{8, 4}
+func TestLeastAdvancedStep(t *testing.T) {
+	roleSizes := []int{8, 4}
 	for _, tc := range []struct {
 		name     string
 		current  []int
-		drained  bool
-		progress int
+		draining bool
+		step     int
 	}{
 		{"new at zero", []int{0, 0}, false, 0},
 		{"new at 25%", []int{2, 1}, false, 1},
@@ -352,7 +352,7 @@ func TestSideProgress(t *testing.T) {
 		{"old fully drained", []int{0, 0}, true, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.progress, sideProgress(tc.current, sizes, 4, tc.drained))
+			assert.Equal(t, tc.step, leastAdvancedStep(tc.current, roleSizes, 4, tc.draining))
 		})
 	}
 }
