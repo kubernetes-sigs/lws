@@ -328,6 +328,27 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 	})
 
+	ginkgo.It("headless services scale up during MaxSurge", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4).MaxSurge(4).SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).Obj()
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		// Happen during rolling update.
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
+		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
+		// Rolling update completes.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+		testing.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+		// Wait for leaderWorkerSet to be ready again.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
+	})
+
 	ginkgo.It("terminates an exhausted group and supports explicit recovery", func() {
 		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
 			Replica(1).Size(3).

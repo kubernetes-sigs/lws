@@ -522,7 +522,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	}
 
 	updateStatus := false
-	readyCount, updatedCount, readyNonBurstWorkerCount := 0, 0, 0
+	readyCount, updatedCount := 0, 0
 	readyNonDegradedCount, degradedGroupCount := 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
@@ -572,7 +572,6 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 		if index < int(*lws.Spec.Replicas) {
 			if ready {
-				readyNonBurstWorkerCount++
 				if !degraded {
 					readyNonDegradedCount++
 				}
