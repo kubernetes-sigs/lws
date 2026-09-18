@@ -1340,6 +1340,39 @@ func TestUpdateConditionsReportsDegradedWithoutWorkerStatefulSet(t *testing.T) {
 	}
 }
 
+func TestUpdateConditionsDoesNotReportDegradedReplicaAvailable(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).Obj()
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	leader.Status.Phase = corev1.PodRunning
+	leader.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, _, err := r.updateConditions(context.Background(), lws, "revision-a"); err != nil {
+		t.Fatal(err)
+	}
+	available := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetAvailable))
+	if available == nil || available.Status != metav1.ConditionFalse {
+		t.Fatalf("Available condition = %#v, want False", available)
+	}
+	degraded := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetDegraded))
+	if degraded == nil || degraded.Status != metav1.ConditionTrue {
+		t.Fatalf("Degraded condition = %#v, want True", degraded)
+	}
+}
+
 func TestCleanupObsoleteGroupRestartCounts(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := leaderworkerset.AddToScheme(scheme); err != nil {

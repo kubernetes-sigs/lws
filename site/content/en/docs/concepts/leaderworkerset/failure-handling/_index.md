@@ -93,5 +93,6 @@ kubectl annotate pod <leader-pod-name> leaderworkerset.sigs.k8s.io/recover=true
 LWS then clears that group's count, removes the cleanup finalizers, and allows
 the StatefulSet to create a replacement group with a fresh budget. Editing or
 unsetting `maxGroupRestarts`, or deleting retained Pods, does not recover an
-exhausted group. LWS deletion, scale-down, and rollout remove retained objects
-as normal lifecycle cleanup rather than starting recovery.
+exhausted group. LWS deletion, scale-down, and selecting the group for
+replacement during a rollout remove retained objects as normal lifecycle
+cleanup rather than starting recovery.

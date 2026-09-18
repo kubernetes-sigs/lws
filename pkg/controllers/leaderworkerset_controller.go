@@ -596,7 +596,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	var conditions []metav1.Condition
 	degraded := degradedGroupCount > 0
 	rolloutInProgress := partitionedUpdatedNonBurstCount < partitionedCurrentNonBurstCount
-	allReplicasReady := readyNonBurstWorkerCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
+	// A replica whose restart budget is exhausted must not make the LWS
+	// Available, even while its Pods are still Ready during termination.
+	allReplicasReady := readyNonDegradedCount == int(*lws.Spec.Replicas) && partitionedUpdatedAndReadyCount == partitionedCurrentNonBurstCount
 	// A degraded group is terminal only when all other desired groups are ready.
 	// A missing or unready non-degraded group can still make progress, even
 	// though Degraded remains true for the exhausted group.
@@ -1085,7 +1087,7 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 	found := false
 	shouldUpdate := false
 
-	// Precondition: newCondition has status true.
+	// Conditions are keyed by type and may be either True or False.
 	for i, curCondition := range lws.Status.Conditions {
 		if newCondition.Type == curCondition.Type {
 			if newCondition.Status != curCondition.Status ||

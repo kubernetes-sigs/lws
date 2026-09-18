@@ -232,7 +232,7 @@ exhaustion/termination event does not increment the count.
 | Add `leaderworkerset.sigs.k8s.io/recover=true` to the retained leader | Clear that revision/replica count and remove group cleanup finalizers | Recreate the whole group with a fresh budget |
 | Delete all Pods in the exhausted group | Continue teardown; do not infer recovery from deletion | No replacement is created until explicit recovery or normal lifecycle cleanup |
 | Delete the LWS | Remove budget cleanup finalizers as teardown proceeds | No counter reset or replacement group is triggered by recovery logic |
-| Scale down or complete a rollout that removes the group | Remove budget cleanup finalizers and obsolete lifecycle state | The removed replica/revision is not recovered or recreated; its counter is cleaned up as lifecycle bookkeeping |
+| Scale down the group or select it for replacement during a rollout | Remove budget cleanup finalizers and obsolete lifecycle state | The removed replica/revision is not recovered or recreated; its counter is cleaned up as lifecycle bookkeeping |
 | Update the Pod template | Roll out a new revision | The new revision uses a fresh per-replica budget |
 
 Editing or unsetting `maxGroupRestarts` does not resume an exhausted group. This
