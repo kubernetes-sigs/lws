@@ -18,6 +18,7 @@
   - [Group Identity Assignment](#group-identity-assignment)
   - [Worker StatefulSets and Leader Address](#worker-statefulsets-and-leader-address)
   - [Rollouts](#rollouts)
+  - [Group Replacement](#group-replacement)
   - [Scale Subresource and HPA](#scale-subresource-and-hpa)
   - [DisaggregatedSet Integration](#disaggregatedset-integration)
   - [Unsupported Combinations](#unsupported-combinations)
