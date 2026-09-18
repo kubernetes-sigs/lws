@@ -50,6 +50,26 @@ type RollingUpdateConfig struct {
 	MaxUnavailable int
 }
 
+// fractionalSteps describes the planner's next position on the old and new
+// fraction scales. Each side has its own step count because its role sizes may
+// differ from the other side.
+type fractionalSteps struct {
+	newStep         int // New-side fractional step proposed for this iteration.
+	newStepCount    int // Total number of fractional steps on the new side.
+	oldStep         int // Old-side fractional step proposed for this iteration.
+	oldStepCount    int // Total number of fractional steps on the old side.
+	budgetStepCount int // Common scale used to project surge and unavailable budgets.
+}
+
+// replicaChanges contains the per-role changes calculated for one planner
+// iteration. All values are replica counts, not fractional steps.
+type replicaChanges struct {
+	growBy         RoleReplicaState // New replicas allowed by the schedule and surge ceiling.
+	scheduledDrain RoleReplicaState // Old replicas the fractional schedule wants to remove.
+	drainHeadroom  RoleReplicaState // Old replicas removable without crossing the Spec floor.
+	drainBy        RoleReplicaState // Scheduled drain capped by the available headroom.
+}
+
 // fractionalStepCount returns max(replicas). One step represents the KEP's
 // smallestReplicaFraction for that side: 1 / fractionalStepCount.
 func fractionalStepCount(replicas RoleReplicaState) int {
@@ -86,17 +106,17 @@ func leastAdvancedStep(current, roleSizes RoleReplicaState, stepCount int, drain
 	return progress
 }
 
-func wantReplicas(roleSize, step, totalSteps int, drained bool) int {
-	if totalSteps == 0 {
-		if drained {
+func wantReplicas(roleSize, step, stepCount int, draining bool) int {
+	if stepCount == 0 {
+		if draining {
 			return roleSize
 		}
 		return 0
 	}
-	if drained {
-		step = totalSteps - step
+	if draining {
+		step = stepCount - step
 	}
-	return (roleSize*step + totalSteps - 1) / totalSteps
+	return (roleSize*step + stepCount - 1) / stepCount
 }
 
 func ComputeNextStep(
@@ -107,26 +127,35 @@ func ComputeNextStep(
 		return nil
 	}
 
-	// Fractions are represented as integer checkpoints, not floating-point
-	// values. These assignments map the code directly to the KEP formulas:
-	//
-	//   newStepCount = max(targetNew);  new smallestReplicaFraction = 1 / newStepCount
-	//   oldStepCount = max(initialOld); old smallestReplicaFraction = 1 / oldStepCount
+	steps := nextFractionalSteps(initialOld, currentOld, currentNew, targetNew, config)
+	changes := calculateReplicaChanges(initialOld, currentOld, currentNew, targetNew, config, steps)
+	postponeDrainWhileGrowthCanUnblock(&changes)
+	if next := applyReplicaChanges(currentOld, currentNew, changes); next != nil {
+		return next
+	}
+	return openReplacementSlot(currentOld, currentNew, targetNew, changes.drainHeadroom)
+}
+
+// nextFractionalSteps advances both sides on their respective fraction scales.
+// MaxSurge lets the new side propose farther growth; MaxUnavailable lets the
+// old side propose farther drain.
+func nextFractionalSteps(
+	initialOld, currentOld, currentNew, targetNew RoleReplicaState,
+	config []RollingUpdateConfig,
+) fractionalSteps {
 	newStepCount := fractionalStepCount(targetNew)
 	oldStepCount := fractionalStepCount(initialOld)
-	budgetSteps := max(newStepCount, oldStepCount)
 
-	// The least-advanced role selects the shared checkpoint. Projecting every
-	// role from that checkpoint with ceiling division keeps the ideal plan
+	// The least-advanced role selects the shared fractional step. Projecting
+	// every role from that step with ceiling division keeps the ideal plan
 	// within one replica of the smallest non-empty role. That is the KEP's
-	// largestReplicaFraction. The executor calculates its denominator explicitly
-	// and reapplies the window after readiness clamps roles independently.
+	// largestReplicaFraction.
 	currentNewStep := leastAdvancedStep(currentNew, targetNew, newStepCount, false)
 	currentOldStep := leastAdvancedStep(currentOld, initialOld, oldStepCount, true)
 
-	// Each side normally advances by one checkpoint. If the old side has
-	// already drained farther, the new side catches up to the equivalent
-	// checkpoint on its own scale.
+	// Each side normally advances by one fractional step. If the old side has
+	// already drained farther, the new side catches up to the equivalent step
+	// on its own scale.
 	nextNewStep := min(max(
 		currentNewStep+1,
 		projectProgressStep(currentOldStep, oldStepCount, newStepCount),
@@ -138,59 +167,92 @@ func ComputeNextStep(
 		maxSurge = max(maxSurge, cfg.MaxSurge)
 		maxUnavailable = max(maxUnavailable, cfg.MaxUnavailable)
 	}
-	newTargetStep := min(nextNewStep+maxSurge, newStepCount)
-	oldTargetStep := min(nextOldStep+maxUnavailable, oldStepCount)
+	return fractionalSteps{
+		newStep:         min(nextNewStep+maxSurge, newStepCount),
+		newStepCount:    newStepCount,
+		oldStep:         min(nextOldStep+maxUnavailable, oldStepCount),
+		oldStepCount:    oldStepCount,
+		budgetStepCount: max(newStepCount, oldStepCount),
+	}
+}
 
-	past := make(RoleReplicaState, len(initialOld))
-	now := make(RoleReplicaState, len(initialOld))
-	addNew := make(RoleReplicaState, len(initialOld))
-	// All three values below are per-role Spec counts. The executor applies the
-	// Ready-based safety limit after the planner returns.
-	fractionalDrain := make(RoleReplicaState, len(initialOld))   // Drain requested by the fractional schedule.
-	specDrainHeadroom := make(RoleReplicaState, len(initialOld)) // Drain allowed above the planner's Spec floor.
-	proposedDrain := make(RoleReplicaState, len(initialOld))     // Requested drain capped by the available headroom.
-
+// calculateReplicaChanges projects the next fractional steps into replica
+// counts, then caps growth by the surge ceiling and drain by the Spec floor.
+// The executor applies the Ready-based safety limits after the planner returns.
+func calculateReplicaChanges(
+	initialOld, currentOld, currentNew, targetNew RoleReplicaState,
+	config []RollingUpdateConfig,
+	steps fractionalSteps,
+) replicaChanges {
+	changes := replicaChanges{
+		growBy:         make(RoleReplicaState, len(initialOld)),
+		scheduledDrain: make(RoleReplicaState, len(initialOld)),
+		drainHeadroom:  make(RoleReplicaState, len(initialOld)),
+		drainBy:        make(RoleReplicaState, len(initialOld)),
+	}
 	for i := range initialOld {
 		roleSize := max(initialOld[i], targetNew[i])
-		ceiling := roleSize + projectBudget(roleSize, config[i].MaxSurge, budgetSteps)
-		floor := max(0, min(initialOld[i], targetNew[i])-projectBudget(roleSize, config[i].MaxUnavailable, budgetSteps))
+		ceiling := roleSize + projectBudget(roleSize, config[i].MaxSurge, steps.budgetStepCount)
+		floor := max(0, min(initialOld[i], targetNew[i])-
+			projectBudget(roleSize, config[i].MaxUnavailable, steps.budgetStepCount))
 		if config[i].MaxSurge == 0 && config[i].MaxUnavailable == 0 {
 			ceiling++
 		}
 
 		total := currentOld[i] + currentNew[i]
-		addNew[i] = min(max(wantReplicas(targetNew[i], newTargetStep, newStepCount, false)-currentNew[i], 0), max(0, ceiling-total))
-		fractionalDrain[i] = max(0, currentOld[i]-wantReplicas(initialOld[i], oldTargetStep, oldStepCount, true))
-		specDrainHeadroom[i] = max(0, total-floor)
-		proposedDrain[i] = min(fractionalDrain[i], specDrainHeadroom[i])
+		wantedNew := wantReplicas(targetNew[i], steps.newStep, steps.newStepCount, false)
+		wantedOld := wantReplicas(initialOld[i], steps.oldStep, steps.oldStepCount, true)
+		changes.growBy[i] = min(max(wantedNew-currentNew[i], 0), max(0, ceiling-total))
+		changes.scheduledDrain[i] = max(0, currentOld[i]-wantedOld)
+		changes.drainHeadroom[i] = max(0, total-floor)
+		changes.drainBy[i] = min(changes.scheduledDrain[i], changes.drainHeadroom[i])
 	}
+	return changes
+}
 
-	// If one role cannot drain proportionally yet, let new growth open its
-	// budget before draining the other roles. When no growth is possible, keep
-	// the safe drain so a valid zero-surge rollout cannot wedge.
+// postponeDrainWhileGrowthCanUnblock avoids applying only the drainable part
+// of a shared fractional step. If growth can open headroom for a blocked role,
+// it happens before any role drains. If no growth is possible, the floor-safe
+// drain remains so zero-surge rollouts can continue.
+func postponeDrainWhileGrowthCanUnblock(changes *replicaChanges) {
 	blocked, draining := false, false
-	for i := range proposedDrain {
-		blocked = blocked || fractionalDrain[i] > 0 && proposedDrain[i] == 0
-		draining = draining || proposedDrain[i] > 0
+	for i := range changes.drainBy {
+		blocked = blocked || changes.scheduledDrain[i] > 0 && changes.drainBy[i] == 0
+		draining = draining || changes.drainBy[i] > 0
 	}
-	if blocked && draining && anyPositive(addNew) {
-		clear(proposedDrain)
+	if blocked && draining && anyPositive(changes.growBy) {
+		clear(changes.drainBy)
 	}
+}
 
-	for i := range initialOld {
-		past[i] = currentOld[i] - proposedDrain[i]
-		now[i] = currentNew[i] + addNew[i]
-	}
-	if anyChange(past, now, currentOld, currentNew) {
-		return &UpdateStep{Past: past, New: now}
-	}
-
-	// Rounding can block both sides at zero surge. Open one floor-safe slot for
-	// replacement capacity rather than reporting completion.
+func applyReplicaChanges(
+	currentOld, currentNew RoleReplicaState,
+	changes replicaChanges,
+) *UpdateStep {
+	nextOld := make(RoleReplicaState, len(currentOld))
+	nextNew := make(RoleReplicaState, len(currentNew))
 	for i := range currentOld {
-		if currentOld[i] > 0 && currentNew[i] < targetNew[i] && specDrainHeadroom[i] > 0 {
-			past[i]--
-			return &UpdateStep{Past: past, New: now}
+		nextOld[i] = currentOld[i] - changes.drainBy[i]
+		nextNew[i] = currentNew[i] + changes.growBy[i]
+	}
+	if !anyChange(nextOld, nextNew, currentOld, currentNew) {
+		return nil
+	}
+	return &UpdateStep{Past: nextOld, New: nextNew}
+}
+
+// openReplacementSlot handles a rounding wedge when neither side otherwise
+// changes. It drains one floor-safe old replica so replacement growth can
+// start on a later iteration.
+func openReplacementSlot(
+	currentOld, currentNew, targetNew, drainHeadroom RoleReplicaState,
+) *UpdateStep {
+	for i := range currentOld {
+		if currentOld[i] > 0 && currentNew[i] < targetNew[i] && drainHeadroom[i] > 0 {
+			nextOld := append(RoleReplicaState(nil), currentOld...)
+			nextNew := append(RoleReplicaState(nil), currentNew...)
+			nextOld[i]--
+			return &UpdateStep{Past: nextOld, New: nextNew}
 		}
 	}
 	return nil
@@ -223,18 +285,18 @@ func anyChange(past, now, currentOld, currentNew RoleReplicaState) bool {
 	return false
 }
 
-func projectBudget(roleSize, budget, totalSteps int) int {
-	if roleSize <= 0 || budget <= 0 || totalSteps <= 0 {
+func projectBudget(roleSize, budget, stepCount int) int {
+	if roleSize <= 0 || budget <= 0 || stepCount <= 0 {
 		return 0
 	}
-	return (roleSize*budget + totalSteps - 1) / totalSteps
+	return (roleSize*budget + stepCount - 1) / stepCount
 }
 
-func projectProgressStep(step, fromSteps, toSteps int) int {
-	if step <= 0 || fromSteps <= 0 || toSteps <= 0 {
+func projectProgressStep(step, fromStepCount, toStepCount int) int {
+	if step <= 0 || fromStepCount <= 0 || toStepCount <= 0 {
 		return 0
 	}
-	return min((step*toSteps+fromSteps-1)/fromSteps, toSteps)
+	return min((step*toStepCount+fromStepCount-1)/fromStepCount, toStepCount)
 }
 
 // ComputeAllSteps simulates a complete rollout for tests and plan-steps.

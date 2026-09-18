@@ -359,9 +359,9 @@ func TestLeastAdvancedStep(t *testing.T) {
 
 func TestWantReplicas(t *testing.T) {
 	for _, tc := range []struct {
-		size, step, steps int
-		drained           bool
-		want              int
+		size, step, stepCount int
+		draining              bool
+		want                  int
 	}{
 		{8, 0, 4, false, 0}, {8, 1, 4, false, 2}, {8, 4, 4, false, 8},
 		{8, 0, 4, true, 8}, {8, 1, 4, true, 6}, {8, 4, 4, true, 0},
@@ -369,6 +369,6 @@ func TestWantReplicas(t *testing.T) {
 		{8, 1, 6, false, 2}, {8, 2, 6, false, 3},
 		{8, 0, 0, false, 0}, {8, 0, 0, true, 8},
 	} {
-		assert.Equal(t, tc.want, wantReplicas(tc.size, tc.step, tc.steps, tc.drained))
+		assert.Equal(t, tc.want, wantReplicas(tc.size, tc.step, tc.stepCount, tc.draining))
 	}
 }

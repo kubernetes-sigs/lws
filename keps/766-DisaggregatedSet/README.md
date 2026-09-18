@@ -182,18 +182,18 @@ smallestReplicaFraction  = 1 / max(roleSizes)
 largestReplicaFraction   = 1 / min(positiveRoleSizes)
 ```
 
-`fractionalStepCount` is the number of equal intervals between the start and end of one side. A checkpoint is a reference position at an interval boundary. Checkpoint `0` is the start and checkpoint `fractionalStepCount` is the end, so there are `fractionalStepCount + 1` checkpoint positions. A checkpoint is not a reconcile iteration. The controller may wait at one checkpoint or advance across more than one interval in a reconcile.
+`fractionalStepCount` is the number of equal fractional steps between the start and end of one side. Fractional step `0` is the start and fractional step `fractionalStepCount` is the end, so there are `fractionalStepCount + 1` positions. A fractional step is not a reconcile iteration. The controller may remain at one fractional step or advance across more than one fractional step in a reconcile.
 
-`smallestReplicaFraction` is the distance between adjacent checkpoints. It comes from the largest role because one replica is the smallest fraction of that role. In an `8P/4D` side, Prefill is the largest role, so one Prefill replica represents `1/8` of the rollout and creates eight equal intervals. `largestReplicaFraction` is the width of the coordination window. It comes from the smallest non-zero role because one replica is the largest fraction of that role. Decode is the smallest role in this example, so one Decode replica represents `1/4` of the rollout. The controller therefore allows at most `1/4` difference between role progress.
+`smallestReplicaFraction` is the distance covered by one fractional step. It comes from the largest role because one replica is the smallest fraction of that role. In an `8P/4D` side, Prefill is the largest role, so one Prefill replica represents `1/8` of the rollout and creates eight equal fractional steps. `largestReplicaFraction` is the width of the coordination window. It comes from the smallest non-zero role because one replica is the largest fraction of that role. Decode is the smallest role in this example, so one Decode replica represents `1/4` of the rollout. The controller therefore allows at most `1/4` difference between role progress.
 
-`newStepCount` is `fractionalStepCount` calculated from the new target counts. `oldStepCount` is `fractionalStepCount` calculated from the `initialOld` counts. At checkpoint `k`, the replica count for one role is calculated with ceiling division:
+`newStepCount` is `fractionalStepCount` calculated from the new target counts. `oldStepCount` is `fractionalStepCount` calculated from the `initialOld` counts. At fractional step `k`, the replica count for one role is calculated with ceiling division:
 
 ```
 newAtStep(k) = ceil(target * k / newStepCount)
 oldAtStep(k) = ceil(initialOld * (oldStepCount - k) / oldStepCount)
 ```
 
-The planner uses `leastAdvancedStep` to select the shared checkpoint from the current replica counts. It calculates each role's growth or drain progress and returns the smallest step reached by any non-empty role. The planner then calculates the replica count for every role at that checkpoint. Ceiling division keeps each old role above zero until the final checkpoint. It also prevents a smaller role from getting more than one replica's worth of progress ahead. When multiple checkpoints produce the same replica count, the controller uses the latest one.
+The planner uses `leastAdvancedStep` to select the shared fractional step from the current replica counts. It calculates each role's growth or drain progress and returns the smallest step reached by any non-empty role. The planner then calculates the replica count for every role at that fractional step. Ceiling division keeps each old role above zero until the final fractional step. It also prevents a smaller role from getting more than one replica's worth of progress ahead. When multiple fractional steps produce the same replica count, the controller uses the latest one.
 
 The following diagram shows every old-side step from the intended replica counts to zero. Each column is one fractional step. The coordination window is frozen over steps 5 through 7 for illustration. Roles do not need to occupy the same step; they only need to remain within the same window.
 
@@ -292,7 +292,7 @@ If every issued replica becomes Ready before the next observation, the Spec traj
 | 3           | 2 | 1 | 6 | 3 |
 | 4           | 0 | 0 | 8 | 4 |
 
-The observations are planner checkpoints, not a promise that every cluster will expose exactly this sequence. Readiness, API observations, and interrupted updates may introduce additional reconciles.
+The observations are planner fractional steps, not a promise that every cluster will expose exactly this sequence. Readiness, API observations, and interrupted updates may introduce additional reconciles.
 
 The pending window changes the slow-start case materially. After observation 1, suppose the new `2P/1D` is still unready. The next reconcile may still issue up to `4P/2D` because that is the proportional pending allowance. It may drain only availability that is actually committed; it cannot count those unready replicas, or stale Ready status above an already-reduced Spec, toward the floor. Once Ready advances, pending capacity opens and the pipeline continues.
 
