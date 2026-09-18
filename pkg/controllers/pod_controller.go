@@ -603,13 +603,15 @@ func (r *PodReconciler) groupLifecycleTeardownRequested(ctx context.Context, lws
 	if err != nil {
 		return false, fmt.Errorf("parsing group index for pod %s: %w", leader.Name, err)
 	}
-	if groupIndex >= int64(*lws.Spec.Replicas) {
-		return true, nil
-	}
 
 	var leaderSts appsv1.StatefulSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts); err != nil {
 		return false, client.IgnoreNotFound(err)
+	}
+	// The StatefulSet replica count includes active MaxSurge ordinals. Only an
+	// ordinal outside that range is actually being removed by scale-down.
+	if groupIndex >= int64(*leaderSts.Spec.Replicas) {
+		return true, nil
 	}
 	desiredRevision := revisionutils.GetRevisionKey(&leaderSts)
 	if desiredRevision == "" || desiredRevision == revisionutils.GetRevisionKey(leader) {

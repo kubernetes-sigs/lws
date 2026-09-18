@@ -118,7 +118,7 @@ const (
 	GroupRestartBudgetRecoverAnnotationKey string = "leaderworkerset.sigs.k8s.io/recover"
 
 	// GroupRestartBudgetCleanupFinalizer retains the terminating Pod API objects
-	// of an exhausted group until explicit recovery or workload teardown.
+	// to which it was added until explicit recovery or workload teardown.
 	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
 
 	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
@@ -238,8 +238,8 @@ type LeaderWorkerTemplate struct {
 
 	// maxGroupRestarts bounds how many times the controller can recreate a group
 	// under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
-	// the controller terminates the group, retains its Pod API objects with
-	// finalizers, and stops automatic group recreation. Setting
+	// the controller terminates the group, retains Pod API objects that can still
+	// receive finalizers, and stops automatic group recreation. Setting
 	// leaderworkerset.sigs.k8s.io/recover=true on the retained leader Pod resets
 	// that revision/group's budget and allows recovery. Changing this value does
 	// not resume an exhausted group. It is opt-in: when unset (nil), group

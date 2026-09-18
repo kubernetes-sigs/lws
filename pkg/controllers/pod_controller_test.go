@@ -767,16 +767,18 @@ func TestGroupLifecycleTeardownRequested(t *testing.T) {
 	tests := []struct {
 		name        string
 		replicas    int32
+		stsReplicas int32
 		groupIndex  string
 		podRevision string
 		stsRevision string
 		partition   int32
 		want        bool
 	}{
-		{name: "scale down removes the exhausted ordinal", replicas: 1, groupIndex: "1", podRevision: "revision-a", want: true},
-		{name: "rollout removes an ordinal inside the partition", replicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-b", partition: 1, want: true},
-		{name: "rollout preserves an ordinal below the partition", replicas: 2, groupIndex: "0", podRevision: "revision-a", stsRevision: "revision-b", partition: 1},
-		{name: "current revision is not teardown", replicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-a", partition: 1},
+		{name: "scale down removes the exhausted ordinal", replicas: 1, stsReplicas: 1, groupIndex: "1", podRevision: "revision-a", want: true},
+		{name: "active surge ordinal is not scale down", replicas: 1, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-a"},
+		{name: "rollout removes an ordinal inside the partition", replicas: 2, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-b", partition: 1, want: true},
+		{name: "rollout preserves an ordinal below the partition", replicas: 2, stsReplicas: 2, groupIndex: "0", podRevision: "revision-a", stsRevision: "revision-b", partition: 1},
+		{name: "current revision is not teardown", replicas: 2, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-a", partition: 1},
 	}
 
 	for _, tc := range tests {
@@ -792,7 +794,7 @@ func TestGroupLifecycleTeardownRequested(t *testing.T) {
 				},
 				Spec: appsv1.StatefulSetSpec{UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(tc.partition)},
-				}},
+				}, Replicas: ptr.To(tc.stsReplicas)},
 			}
 			r := &PodReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build()}
 			got, err := r.groupLifecycleTeardownRequested(context.Background(), lws, leader)

@@ -1137,6 +1137,39 @@ func TestSetCondition(t *testing.T) {
 	}
 }
 
+func TestSetConditionUpdatesDetailsWithoutStatusTransition(t *testing.T) {
+	transitionTime := metav1.Now()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Generation(2).
+		Conditions([]metav1.Condition{{
+			Type:               "Available",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: 1,
+			Reason:             "OldReason",
+			Message:            "old message",
+			LastTransitionTime: transitionTime,
+		}}).
+		Obj()
+
+	updated := metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: 2,
+		Reason:             "ReplicaRestartBudgetExceeded",
+		Message:            "Not all replicas are ready",
+	}
+	if !setCondition(lws, updated) {
+		t.Fatal("setCondition() should update changed condition details")
+	}
+	got := lws.Status.Conditions[0]
+	if got.Reason != updated.Reason || got.Message != updated.Message || got.ObservedGeneration != updated.ObservedGeneration {
+		t.Fatalf("condition details were not updated: %#v", got)
+	}
+	if !got.LastTransitionTime.Time.Equal(transitionTime.Time) {
+		t.Fatalf("LastTransitionTime changed without a status transition: got %v, want %v", got.LastTransitionTime, transitionTime)
+	}
+}
+
 func TestGetUpdatedRevision(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
@@ -1373,6 +1406,34 @@ func TestUpdateConditionsDoesNotReportDegradedReplicaAvailable(t *testing.T) {
 	}
 }
 
+func TestUpdateConditionsReportsActiveSurgeReplicaDegraded(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).Obj()
+	desired := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	desired.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	desired.Status.Phase = corev1.PodRunning
+	desired.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	surge := wrappers.MakePodWithLabels(lws.Name, "1", "0", lws.Namespace, 1)
+	surge.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	surge.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, desired, surge).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, _, err := r.updateConditions(context.Background(), lws, "revision-a"); err != nil {
+		t.Fatal(err)
+	}
+	degraded := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetDegraded))
+	if degraded == nil || degraded.Status != metav1.ConditionTrue {
+		t.Fatalf("Degraded condition = %#v, want True", degraded)
+	}
+}
+
 func TestCleanupObsoleteGroupRestartCounts(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := leaderworkerset.AddToScheme(scheme); err != nil {
@@ -1428,7 +1489,7 @@ func TestPruneScaledDownGroupRestartCounts(t *testing.T) {
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 	r := &LeaderWorkerSetReconciler{Client: fakeClient}
-	if err := r.pruneScaledDownGroupRestartCounts(context.Background(), lws); err != nil {
+	if err := r.pruneScaledDownGroupRestartCounts(context.Background(), lws, 1); err != nil {
 		t.Fatal(err)
 	}
 	var updated leaderworkerset.LeaderWorkerSet
@@ -1444,6 +1505,36 @@ func TestPruneScaledDownGroupRestartCounts(t *testing.T) {
 	}
 	if _, found := counts["revision-a/1"]; found {
 		t.Fatalf("scaled-down replica count was not removed: %#v", counts)
+	}
+}
+
+func TestPruneScaledDownGroupRestartCountsPreservesActiveSurgeReplica(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1,"revision-a/1":2,"revision-a/2":3}`,
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+	r := &LeaderWorkerSetReconciler{Client: fakeClient}
+	if err := r.pruneScaledDownGroupRestartCounts(context.Background(), lws, 2); err != nil {
+		t.Fatal(err)
+	}
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["revision-a/0"] != 1 || counts["revision-a/1"] != 2 {
+		t.Fatalf("active replica counts were removed: %#v", counts)
+	}
+	if _, found := counts["revision-a/2"]; found {
+		t.Fatalf("inactive replica count was not removed: %#v", counts)
 	}
 }
 

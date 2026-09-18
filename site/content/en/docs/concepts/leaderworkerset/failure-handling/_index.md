@@ -63,8 +63,9 @@ is not supported with `restartPolicy: None` or `groupIdentity: Hash`.
 When a group exhausts its budget, LWS:
 
 1. Terminates the leader and worker Pods to release their scheduled resources.
-2. Retains their Pod API objects with cleanup finalizers and stops automatic
-   recreation of that group.
+2. Retains Pod API objects that can still receive cleanup finalizers and stops
+   automatic recreation of that group. A Pod that was already deleting may
+   disappear because Kubernetes does not allow adding a finalizer at that point.
 3. Sets `Degraded=True` with reason `ReplicaRestartBudgetExceeded`. Other
    replica groups continue running.
 

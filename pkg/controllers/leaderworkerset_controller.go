@@ -180,7 +180,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Rolling partition error")
 		return ctrl.Result{}, err
 	}
-	if err := r.pruneScaledDownGroupRestartCounts(ctx, lws); err != nil {
+	if err := r.pruneScaledDownGroupRestartCounts(ctx, lws, replicas); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -234,12 +234,15 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, activeReplicas int32) error {
 	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
 		return nil
 	}
 	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
 		changed := false
+		// activeReplicas includes temporary MaxSurge ordinals. Do not discard
+		// their counters while those groups are still part of the StatefulSet.
+		replicaLimit := max(int64(activeReplicas), int64(*latest.Spec.Replicas))
 		for key := range counts {
 			separator := strings.LastIndexByte(key, '/')
 			if separator < 0 {
@@ -249,7 +252,7 @@ func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx contex
 			if err != nil {
 				return false, fmt.Errorf("invalid group restart count key %q: %w", key, err)
 			}
-			if groupIndex >= int64(*latest.Spec.Replicas) {
+			if groupIndex >= replicaLimit {
 				delete(counts, key)
 				changed = true
 			}
@@ -523,7 +526,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 	updateStatus := false
 	readyCount, updatedCount := 0, 0
-	readyNonDegradedCount, degradedGroupCount := 0, 0
+	readyNonDegradedCount, degradedGroupCount, desiredDegradedGroupCount := 0, 0, 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -534,11 +537,14 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if err != nil {
 			return false, false, err
 		}
-		degraded := index < int(*lws.Spec.Replicas) && pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+		degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
 		if degraded {
 			// Exhaustion is a leader-Pod state and must remain visible even when
 			// the worker StatefulSet was never created or is already gone.
 			degradedGroupCount++
+			if index < int(*lws.Spec.Replicas) {
+				desiredDegradedGroupCount++
+			}
 		}
 
 		var sts appsv1.StatefulSet
@@ -601,7 +607,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	// A degraded group is terminal only when all other desired groups are ready.
 	// A missing or unready non-degraded group can still make progress, even
 	// though Degraded remains true for the exhausted group.
-	progressing := rolloutInProgress || readyNonDegradedCount+degradedGroupCount < int(*lws.Spec.Replicas)
+	progressing := rolloutInProgress || readyNonDegradedCount+desiredDegradedGroupCount < int(*lws.Spec.Replicas)
 	if rolloutInProgress {
 		// upgradeInProgress is true when the upgrade replicas is smaller than the expected
 		// number of total replicas not including the burst replicas
@@ -1082,21 +1088,26 @@ func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Con
 }
 
 func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Condition) bool {
-	newCondition.LastTransitionTime = metav1.Now()
+	now := metav1.Now()
 	found := false
 	shouldUpdate := false
 
 	// Conditions are keyed by type and may be either True or False.
 	for i, curCondition := range lws.Status.Conditions {
 		if newCondition.Type == curCondition.Type {
-			if newCondition.Status != curCondition.Status ||
-				newCondition.ObservedGeneration != curCondition.ObservedGeneration {
-				// the conditions match but one is true and one is false. Update the stored condition
-				// with the new condition.
+			if newCondition.Status != curCondition.Status {
+				newCondition.LastTransitionTime = now
+				lws.Status.Conditions[i] = newCondition
+				shouldUpdate = true
+			} else if newCondition.ObservedGeneration != curCondition.ObservedGeneration ||
+				newCondition.Reason != curCondition.Reason ||
+				newCondition.Message != curCondition.Message {
+				// Status did not transition, so preserve LastTransitionTime while
+				// synchronizing the other user-visible condition fields.
+				newCondition.LastTransitionTime = curCondition.LastTransitionTime
 				lws.Status.Conditions[i] = newCondition
 				shouldUpdate = true
 			}
-			// if both are true or both are false, do nothing.
 			found = true
 		} else {
 			// if the conditions are not of the same type, do nothing unless one is Progressing and one is
@@ -1104,13 +1115,16 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 			if exclusiveConditionTypes(curCondition, newCondition) &&
 				(newCondition.Status == metav1.ConditionTrue) && (curCondition.Status == metav1.ConditionTrue) {
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
-				lws.Status.Conditions[i].LastTransitionTime = metav1.Now()
+				lws.Status.Conditions[i].LastTransitionTime = now
 				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				lws.Status.Conditions[i].Reason = newCondition.Reason
+				lws.Status.Conditions[i].Message = newCondition.Message
 				shouldUpdate = true
 			}
 		}
 	}
 	if !found {
+		newCondition.LastTransitionTime = now
 		lws.Status.Conditions = append(lws.Status.Conditions, newCondition)
 		shouldUpdate = true
 	}
