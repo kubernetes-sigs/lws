@@ -564,6 +564,13 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		}
 	}
 
+	// groupReplacementPolicy is not part of the revision, so a change on the
+	// role has to be pushed onto the existing LWS rather than waiting for a
+	// rollout that will never come.
+	if err := r.LWSManager.SyncGroupReplacementPolicy(ctx, existing, config.Spec.GroupReplacementPolicy); err != nil {
+		return fmt.Errorf("failed to sync groupReplacementPolicy on LWS %s: %w", existing.Name, err)
+	}
+
 	return nil
 }
 

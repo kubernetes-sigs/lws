@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -920,5 +922,162 @@ func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T)
 	}
 	if got := *cfg.Spec.ServiceName; got != "test-sample-9f2ac71b" {
 		t.Errorf("expected the worker StatefulSet to use the group key derived service name, got %q", got)
+	}
+}
+
+func TestReconcileGroupReplacementGate(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(2).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	base := time.Now()
+	leader := func(name string, createdOffset time.Duration, gated, terminating bool) *corev1.Pod {
+		p := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              name,
+				Namespace:         lws.Namespace,
+				CreationTimestamp: metav1.NewTime(base.Add(createdOffset)),
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  name,
+				},
+			},
+		}
+		if gated {
+			p.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+		}
+		if terminating {
+			now := metav1.Now()
+			p.DeletionTimestamp = &now
+			p.Finalizers = []string{"foregroundDeletion"}
+		}
+		return p
+	}
+	// worker builds a worker pod of the group led by leaderName. A rolling
+	// update or scale down deletes the leader in the background, so the leader
+	// object can be gone while its workers still hold capacity.
+	worker := func(leaderName string, terminating bool) *corev1.Pod {
+		p := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              leaderName + "-1",
+				Namespace:         lws.Namespace,
+				CreationTimestamp: metav1.NewTime(base.Add(-time.Minute)),
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "1",
+					leaderworkerset.GroupIndexLabelKey:  leaderName,
+				},
+			},
+		}
+		if terminating {
+			now := metav1.Now()
+			p.DeletionTimestamp = &now
+			p.Finalizers = []string{"test/hold"}
+		}
+		return p
+	}
+
+	tests := []struct {
+		name         string
+		policy       leaderworkerset.GroupReplacementPolicyType
+		pods         []*corev1.Pod
+		reconciled   string
+		wantAdmitted bool
+	}{
+		{
+			name:         "immediate policy lifts the gate while a group is still terminating",
+			policy:       leaderworkerset.GroupReplacementImmediate,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), leader("old", -time.Minute, false, true)},
+			reconciled:   "new",
+			wantAdmitted: true,
+		},
+		{
+			name:         "no terminating groups admits the gated leader",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), leader("running", -time.Minute, false, false)},
+			reconciled:   "new",
+			wantAdmitted: true,
+		},
+		{
+			name:         "a terminating group holds back the only gated leader",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), leader("old", -time.Minute, false, true)},
+			reconciled:   "new",
+			wantAdmitted: false,
+		},
+		{
+			name:         "oldest gated leader takes the free slot",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old", -time.Minute, false, true)},
+			reconciled:   "first",
+			wantAdmitted: true,
+		},
+		{
+			name:         "newest gated leader waits when only one slot is free",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old", -time.Minute, false, true)},
+			reconciled:   "second",
+			wantAdmitted: false,
+		},
+		{
+			name:         "two terminating groups hold back two gated leaders",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old-a", -time.Minute, false, true), leader("old-b", -time.Minute, false, true)},
+			reconciled:   "first",
+			wantAdmitted: false,
+		},
+		{
+			name:         "a leader that is already gone still holds while its worker exists",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), worker("old", true)},
+			reconciled:   "new",
+			wantAdmitted: false,
+		},
+		{
+			name:         "a terminating leader and its worker count as one group",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old", -time.Minute, false, true), worker("old", true)},
+			reconciled:   "first",
+			wantAdmitted: true,
+		},
+		{
+			name:         "a terminating worker under a live leader is not a tearing down group",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), leader("running", -time.Minute, false, false), worker("running", true)},
+			reconciled:   "new",
+			wantAdmitted: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := make([]client.Object, 0, len(tc.pods))
+			for _, p := range tc.pods {
+				objs = append(objs, p)
+			}
+			fakeClient := fake.NewClientBuilder().WithObjects(objs...).Build()
+			reconciler := PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+			testLws := lws.DeepCopy()
+			testLws.Spec.GroupReplacementPolicy = tc.policy
+
+			var pod corev1.Pod
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: tc.reconciled}, &pod); err != nil {
+				t.Fatalf("getting reconciled pod: %v", err)
+			}
+			admitted, err := reconciler.reconcileGroupReplacementGate(context.Background(), &pod, testLws)
+			if err != nil {
+				t.Fatalf("reconcileGroupReplacementGate() error = %v", err)
+			}
+			if admitted != tc.wantAdmitted {
+				t.Fatalf("reconcileGroupReplacementGate() admitted = %t, want %t", admitted, tc.wantAdmitted)
+			}
+			var stored corev1.Pod
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: tc.reconciled}, &stored); err != nil {
+				t.Fatalf("getting stored pod: %v", err)
+			}
+			if gated := podutils.HasSchedulingGate(&stored, leaderworkerset.GroupReplacementSchedulingGate); gated == tc.wantAdmitted {
+				t.Errorf("stored pod gated = %t, want %t", gated, !tc.wantAdmitted)
+			}
+		})
 	}
 }
