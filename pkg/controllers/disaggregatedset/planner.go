@@ -162,6 +162,10 @@ func nextFractionalSteps(
 	), newStepCount)
 	nextOldStep := min(currentOldStep+1, oldStepCount)
 
+	// The fractional schedule needs one shared lookahead even though budgets are
+	// configured per role. Use the largest budget so a smaller budget does not
+	// limit every role. This only widens the proposal: calculateReplicaChanges
+	// still applies each role's own surge ceiling and availability floor.
 	maxSurge, maxUnavailable := 0, 0
 	for _, cfg := range config {
 		maxSurge = max(maxSurge, cfg.MaxSurge)
