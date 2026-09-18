@@ -119,6 +119,15 @@ spec:
                       spec:
                         description: spec defines the behavior of an LWS.
                         properties:
+                          gangScheduling:
+                            description: gangScheduling defines the gang scheduling configuration of the group
+                            properties:
+                              enable:
+                                description: |-
+                                  enable specifies whether to create PodGroups and inject gang scheduling metadata.
+                                  Defaults to true when this struct is present, or if left unset in the presence of a global scheduler provider.
+                                type: boolean
+                            type: object
                           groupIdentity:
                             default: Ordinal
                             description: |-

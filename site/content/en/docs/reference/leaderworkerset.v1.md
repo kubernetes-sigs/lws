@@ -50,6 +50,33 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </tbody>
 </table>
 
+## `GangSchedulingConfig`     {#leaderworkerset-x-k8s-io-v1-GangSchedulingConfig}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GangSchedulingConfig defines the gang scheduling configuration of the group</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>enable</code><br/>
+<code>bool</code>
+</td>
+<td>
+   <p>enable specifies whether to create PodGroups and inject gang scheduling metadata.
+Defaults to true when this struct is present, or if left unset in the presence of a global scheduler provider.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `GroupIdentityType`     {#leaderworkerset-x-k8s-io-v1-GroupIdentityType}
     
 (Alias of `string`)
@@ -141,6 +168,13 @@ Hash manages leaders through a Deployment: group names are hash-suffixed,
 scale down prefers unscheduled and not-ready groups over healthy ones, and
 rollouts are paced by a group readiness gate on the leader pods.
 This field is immutable.</p>
+</td>
+</tr>
+<tr><td><code>gangScheduling</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-GangSchedulingConfig"><code>GangSchedulingConfig</code></a>
+</td>
+<td>
+   <p>gangScheduling defines the gang scheduling configuration of the group</p>
 </td>
 </tr>
 </tbody>

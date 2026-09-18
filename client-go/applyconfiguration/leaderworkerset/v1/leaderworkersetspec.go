@@ -60,6 +60,8 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// rollouts are paced by a group readiness gate on the leader pods.
 	// This field is immutable.
 	GroupIdentity *leaderworkersetv1.GroupIdentityType `json:"groupIdentity,omitempty"`
+	// gangScheduling defines the gang scheduling configuration of the group
+	GangScheduling *GangSchedulingConfigApplyConfiguration `json:"gangScheduling,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -113,5 +115,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *Network
 // If called multiple times, the GroupIdentity field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupIdentity(value leaderworkersetv1.GroupIdentityType) *LeaderWorkerSetSpecApplyConfiguration {
 	b.GroupIdentity = &value
+	return b
+}
+
+// WithGangScheduling sets the GangScheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GangScheduling field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithGangScheduling(value *GangSchedulingConfigApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
+	b.GangScheduling = value
 	return b
 }
