@@ -177,20 +177,20 @@ Within each side, the planner uses discrete linear interpolation. Every role use
 Each side measures progress on its own fractional scale. For one side, `roleSizes` is the list of replica counts for its roles. `positiveRoleSizes` is the same list without roles whose replica count is zero.
 
 ```
-sideSteps                = max(roleSizes)
+fractionalStepCount      = max(roleSizes)
 smallestReplicaFraction  = 1 / max(roleSizes)
 largestReplicaFraction   = 1 / min(positiveRoleSizes)
 ```
 
-`sideSteps` is the number of equal intervals between the start and end of one side. A checkpoint is a reference position at an interval boundary. Checkpoint `0` is the start and checkpoint `sideSteps` is the end, so there are `sideSteps + 1` checkpoint positions. A checkpoint is not a reconcile iteration. The controller may wait at one checkpoint or advance across more than one interval in a reconcile.
+`fractionalStepCount` is the number of equal intervals between the start and end of one side. A checkpoint is a reference position at an interval boundary. Checkpoint `0` is the start and checkpoint `fractionalStepCount` is the end, so there are `fractionalStepCount + 1` checkpoint positions. A checkpoint is not a reconcile iteration. The controller may wait at one checkpoint or advance across more than one interval in a reconcile.
 
 `smallestReplicaFraction` is the distance between adjacent checkpoints. It comes from the largest role because one replica is the smallest fraction of that role. In an `8P/4D` side, Prefill is the largest role, so one Prefill replica represents `1/8` of the rollout and creates eight equal intervals. `largestReplicaFraction` is the width of the coordination window. It comes from the smallest non-zero role because one replica is the largest fraction of that role. Decode is the smallest role in this example, so one Decode replica represents `1/4` of the rollout. The controller therefore allows at most `1/4` difference between role progress.
 
-`newSideSteps` is `sideSteps` calculated from the new target counts. `oldSideSteps` is `sideSteps` calculated from the `initialOld` counts. At checkpoint `k`, the replica count for one role is calculated with ceiling division:
+`newStepCount` is `fractionalStepCount` calculated from the new target counts. `oldStepCount` is `fractionalStepCount` calculated from the `initialOld` counts. At checkpoint `k`, the replica count for one role is calculated with ceiling division:
 
 ```
-newAtStep(k) = ceil(target * k / newSideSteps)
-oldAtStep(k) = ceil(initialOld * (oldSideSteps - k) / oldSideSteps)
+newAtStep(k) = ceil(target * k / newStepCount)
+oldAtStep(k) = ceil(initialOld * (oldStepCount - k) / oldStepCount)
 ```
 
 The controller uses the role that has made the least progress to select the next shared checkpoint. It then calculates the replica count for every role at that checkpoint. Ceiling division keeps each old role above zero until the final checkpoint. It also prevents a smaller role from getting more than one replica's worth of progress ahead. When multiple checkpoints produce the same replica count, the controller uses the latest one.

@@ -48,7 +48,7 @@ func rolloutCompletes(steps []UpdateStep, target []int) bool {
 	return true
 }
 
-func TestSideSteps(t *testing.T) {
+func TestFractionalStepCount(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		replicas []int
@@ -60,7 +60,7 @@ func TestSideSteps(t *testing.T) {
 		{"empty", []int{0, 0}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, sideSteps(tc.replicas))
+			assert.Equal(t, tc.want, fractionalStepCount(tc.replicas))
 		})
 	}
 }
@@ -194,8 +194,8 @@ func TestPlannerProgress(t *testing.T) {
 
 	t.Run("old and new use independent fractions", func(t *testing.T) {
 		initial, target := []int{4, 4}, []int{12, 3}
-		assert.Equal(t, 4, sideSteps(initial))
-		assert.Equal(t, 12, sideSteps(target))
+		assert.Equal(t, 4, fractionalStepCount(initial))
+		assert.Equal(t, 12, fractionalStepCount(target))
 		assert.True(t, rolloutCompletes(
 			ComputeAllSteps(initial, target, configs([]int{2, 2}, []int{2, 2})), target))
 	})

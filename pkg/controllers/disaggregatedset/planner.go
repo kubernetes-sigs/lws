@@ -19,16 +19,16 @@ limitations under the License.
 // Each side of a rollout advances on its own fraction scale. The local
 // variables in ComputeNextStep map to the KEP terms as follows:
 //
-//	newSideSteps  = sideSteps(targetNew)  = max(targetNew)
-//	oldSideSteps  = sideSteps(initialOld) = max(initialOld)
-//	smallestReplicaFraction for each side = 1 / that side's sideSteps
+//	newStepCount = fractionalStepCount(targetNew)  = max(targetNew)
+//	oldStepCount = fractionalStepCount(initialOld) = max(initialOld)
+//	smallestReplicaFraction for each side = 1 / that side's step count
 //
 // The executor stores the denominator of largestReplicaFraction in
 // fractionalCoordinationWindow.largestReplicaFractionDenominator. It is the
 // smallest role.NewTargetReplicas value greater than zero.
 //
-// At step k, a role targets ceil(size*k/sideSteps) new replicas or
-// ceil(size*(sideSteps-k)/sideSteps) old replicas. The least-advanced role
+// At step k, a role targets ceil(size*k/stepCount) new replicas or
+// ceil(size*(stepCount-k)/stepCount) old replicas. The least-advanced role
 // determines side progress, keeping role ratios within the rounding error of
 // one replica (largestReplicaFraction).
 //
@@ -50,10 +50,9 @@ type RollingUpdateConfig struct {
 	MaxUnavailable int
 }
 
-// sideSteps returns max(replicas). ComputeNextStep stores the result in either
-// newSideSteps or oldSideSteps. One step represents the KEP's
-// smallestReplicaFraction for that side: 1 / newSideSteps or 1 / oldSideSteps.
-func sideSteps(replicas RoleReplicaState) int {
+// fractionalStepCount returns max(replicas). One step represents the KEP's
+// smallestReplicaFraction for that side: 1 / fractionalStepCount.
+func fractionalStepCount(replicas RoleReplicaState) int {
 	maxReplicas := 0
 	for _, replicas := range replicas {
 		maxReplicas = max(maxReplicas, replicas)
@@ -110,36 +109,36 @@ func ComputeNextStep(
 	// Fractions are represented as integer checkpoints, not floating-point
 	// values. These assignments map the code directly to the KEP formulas:
 	//
-	//   newSideSteps = max(targetNew);  new smallestReplicaFraction = 1 / newSideSteps
-	//   oldSideSteps = max(initialOld); old smallestReplicaFraction = 1 / oldSideSteps
-	newSideSteps := sideSteps(targetNew)
-	oldSideSteps := sideSteps(initialOld)
-	budgetSteps := max(newSideSteps, oldSideSteps)
+	//   newStepCount = max(targetNew);  new smallestReplicaFraction = 1 / newStepCount
+	//   oldStepCount = max(initialOld); old smallestReplicaFraction = 1 / oldStepCount
+	newStepCount := fractionalStepCount(targetNew)
+	oldStepCount := fractionalStepCount(initialOld)
+	budgetSteps := max(newStepCount, oldStepCount)
 
 	// The least-advanced role selects the shared checkpoint. Projecting every
 	// role from that checkpoint with ceiling division keeps the ideal plan
 	// within one replica of the smallest non-empty role. That is the KEP's
 	// largestReplicaFraction. The executor calculates its denominator explicitly
 	// and reapplies the window after readiness clamps roles independently.
-	currentNewStep := sideProgress(currentNew, targetNew, newSideSteps, false)
-	currentOldStep := sideProgress(currentOld, initialOld, oldSideSteps, true)
+	currentNewStep := sideProgress(currentNew, targetNew, newStepCount, false)
+	currentOldStep := sideProgress(currentOld, initialOld, oldStepCount, true)
 
 	// Each side normally advances by one checkpoint. If the old side has
 	// already drained farther, the new side catches up to the equivalent
 	// checkpoint on its own scale.
 	nextNewStep := min(max(
 		currentNewStep+1,
-		projectProgressStep(currentOldStep, oldSideSteps, newSideSteps),
-	), newSideSteps)
-	nextOldStep := min(currentOldStep+1, oldSideSteps)
+		projectProgressStep(currentOldStep, oldStepCount, newStepCount),
+	), newStepCount)
+	nextOldStep := min(currentOldStep+1, oldStepCount)
 
 	maxSurge, maxUnavailable := 0, 0
 	for _, cfg := range config {
 		maxSurge = max(maxSurge, cfg.MaxSurge)
 		maxUnavailable = max(maxUnavailable, cfg.MaxUnavailable)
 	}
-	newTargetStep := min(nextNewStep+maxSurge, newSideSteps)
-	oldTargetStep := min(nextOldStep+maxUnavailable, oldSideSteps)
+	newTargetStep := min(nextNewStep+maxSurge, newStepCount)
+	oldTargetStep := min(nextOldStep+maxUnavailable, oldStepCount)
 
 	past := make(RoleReplicaState, len(initialOld))
 	now := make(RoleReplicaState, len(initialOld))
@@ -159,8 +158,8 @@ func ComputeNextStep(
 		}
 
 		total := currentOld[i] + currentNew[i]
-		addNew[i] = min(max(wantReplicas(targetNew[i], newTargetStep, newSideSteps, false)-currentNew[i], 0), max(0, ceiling-total))
-		fractionalDrain[i] = max(0, currentOld[i]-wantReplicas(initialOld[i], oldTargetStep, oldSideSteps, true))
+		addNew[i] = min(max(wantReplicas(targetNew[i], newTargetStep, newStepCount, false)-currentNew[i], 0), max(0, ceiling-total))
+		fractionalDrain[i] = max(0, currentOld[i]-wantReplicas(initialOld[i], oldTargetStep, oldStepCount, true))
 		specDrainHeadroom[i] = max(0, total-floor)
 		proposedDrain[i] = min(fractionalDrain[i], specDrainHeadroom[i])
 	}
@@ -243,7 +242,7 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 	currentNew := make(RoleReplicaState, len(initialOld))
 	steps := []UpdateStep{{Past: append(RoleReplicaState(nil), initialOld...), New: make(RoleReplicaState, len(initialOld))}}
 
-	for range max(sideSteps(initialOld), sideSteps(target))*4 + 10 {
+	for range max(fractionalStepCount(initialOld), fractionalStepCount(target))*4 + 10 {
 		next := ComputeNextStep(initialOld, currentOld, currentNew, target, config)
 		if next == nil {
 			break
