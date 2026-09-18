@@ -89,7 +89,7 @@ while leaving healthy replicas and unrelated rollouts active.
 `maxGroupRestarts` is a circuit breaker for LWS-initiated `RecreateGroup`
 actions. Its exhaustion behavior is fixed: terminate the group, release its
 scheduled resources after Pods become terminal, retain the Pod API objects with
-finalizers, and report `Degraded=True`. This KEP does not add a configurable
+finalizers when they can still receive them, and report `Degraded=True`. This KEP does not add a configurable
 `restartBudgetExhaustionPolicy` such as `Retain` or `Terminate`. It does not
 make the LWS or replica a Kubernetes terminal object.
 
@@ -99,10 +99,11 @@ make the LWS or replica a Kubernetes terminal object.
 
 An operator runs a distributed preflight check in init containers. One replica
 fails consistently, so LWS recreates that group until it consumes the configured
-budget. LWS then terminates the exhausted group, adds cleanup finalizers to its
-leader and worker Pods, and stops automatic group recovery. Once the Pods reach
-terminal state, their scheduled resources are released while the API objects
-remain available for inspection. The remaining replicas continue running.
+budget. LWS then terminates the exhausted group, adds cleanup finalizers to the
+leader and worker Pods that can still receive them, and stops automatic group
+recovery. Once those Pods reach terminal state, their scheduled resources are
+released while the retained API objects remain available for inspection. The
+remaining replicas continue running.
 
 #### Story 2: Inspect and recover an exhausted group
 
@@ -200,7 +201,7 @@ For each failure for which `RecreateGroupOnPodRestart` or
 1. If the replica has remaining budget, consume one restart and request leader
    deletion. Existing group recreation then creates a replacement.
 2. If the budget is exhausted, mark the group as exhausted, add the cleanup
-   finalizer to its leader and worker Pods, and initiate deletion of the group.
+   finalizer to leader and worker Pods that can still receive it, and initiate deletion of the group.
    Set `Degraded=True` and do not allow the owner chain to create a replacement
    while the exhausted group's Pod objects are retained.
 3. Repeated Pod events while the group is terminating do not increase the count,
@@ -224,7 +225,7 @@ exhaustion/termination event does not increment the count.
 | State or user action | LWS action | User-visible result |
 |---|---|---|
 | Budget remains | Delete the leader and recreate the group | `Progressing=True` while recovery is active |
-| Budget exhausted | Terminate the group, retain its Pod API objects with cleanup finalizers, and stop `RecreateGroup` | `Degraded=True`, reason `ReplicaRestartBudgetExceeded`; resources are released after Pods become terminal; `Progressing=False` if nothing else is progressing |
+| Budget exhausted | Terminate the group, retain Pod API objects that can receive cleanup finalizers, and stop `RecreateGroup` | `Degraded=True`, reason `ReplicaRestartBudgetExceeded`; resources are released after Pods become terminal; `Progressing=False` if nothing else is progressing |
 | Change `maxGroupRestarts` on an exhausted group | Keep the terminating group unchanged | Only the explicit recovery annotation resumes recovery |
 | Increase `maxGroupRestarts` before exhaustion | Use the larger limit for the next failure | The current count is preserved |
 | Decrease `maxGroupRestarts` | Keep the current group unchanged until its next failure | The next failure uses the smaller limit; if the current count already meets it, terminate and retain the group immediately |
@@ -282,7 +283,8 @@ Deleting the LWS object is not group recovery; it deletes the whole workload.
 ### Status and recovery
 
 The LWS carries the restart-count map. The exhausted leader carries the
-exhausted-state marker, and the leader and worker Pods carry cleanup finalizers.
+exhausted-state marker, and the leader and worker Pods that can receive them
+carry cleanup finalizers.
 LWS initiates deletion of the group when the budget is exhausted, and the
 finalizers keep the Pod API objects available while containers terminate. A
 deletion timestamp on its own is not recovery: LWS must see
