@@ -939,6 +939,7 @@ func TestReconcileGroupReplacementGate(t *testing.T) {
 				Labels: map[string]string{
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  name,
 				},
 			},
 		}
@@ -949,6 +950,29 @@ func TestReconcileGroupReplacementGate(t *testing.T) {
 			now := metav1.Now()
 			p.DeletionTimestamp = &now
 			p.Finalizers = []string{"foregroundDeletion"}
+		}
+		return p
+	}
+	// worker builds a worker pod of the group led by leaderName. A rolling
+	// update or scale down deletes the leader in the background, so the leader
+	// object can be gone while its workers still hold capacity.
+	worker := func(leaderName string, terminating bool) *corev1.Pod {
+		p := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              leaderName + "-1",
+				Namespace:         lws.Namespace,
+				CreationTimestamp: metav1.NewTime(base.Add(-time.Minute)),
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "1",
+					leaderworkerset.GroupIndexLabelKey:  leaderName,
+				},
+			},
+		}
+		if terminating {
+			now := metav1.Now()
+			p.DeletionTimestamp = &now
+			p.Finalizers = []string{"test/hold"}
 		}
 		return p
 	}
@@ -1001,6 +1025,27 @@ func TestReconcileGroupReplacementGate(t *testing.T) {
 			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old-a", -time.Minute, false, true), leader("old-b", -time.Minute, false, true)},
 			reconciled:   "first",
 			wantAdmitted: false,
+		},
+		{
+			name:         "a leader that is already gone still holds while its worker exists",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), worker("old", true)},
+			reconciled:   "new",
+			wantAdmitted: false,
+		},
+		{
+			name:         "a terminating leader and its worker count as one group",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("first", 0, true, false), leader("second", time.Second, true, false), leader("old", -time.Minute, false, true), worker("old", true)},
+			reconciled:   "first",
+			wantAdmitted: true,
+		},
+		{
+			name:         "a terminating worker under a live leader is not a tearing down group",
+			policy:       leaderworkerset.GroupReplacementPostTermination,
+			pods:         []*corev1.Pod{leader("new", 0, true, false), leader("running", -time.Minute, false, false), worker("running", true)},
+			reconciled:   "new",
+			wantAdmitted: true,
 		},
 	}
 
