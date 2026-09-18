@@ -325,8 +325,8 @@ func TestNRoleNewSideReplicaFractionCoordination(t *testing.T) {
 
 	for stepIndex, state := range steps {
 		minProgress, maxProgress := 1.0, 0.0
-		for roleIndex, size := range target {
-			progress := float64(state.New[roleIndex]) / float64(size)
+		for roleIndex, roleReplicaCount := range target {
+			progress := float64(state.New[roleIndex]) / float64(roleReplicaCount)
 			minProgress = min(minProgress, progress)
 			maxProgress = max(maxProgress, progress)
 		}
@@ -336,7 +336,7 @@ func TestNRoleNewSideReplicaFractionCoordination(t *testing.T) {
 }
 
 func TestLeastAdvancedStep(t *testing.T) {
-	roleSizes := []int{8, 4}
+	roleReplicaCounts := []int{8, 4}
 	for _, tc := range []struct {
 		name     string
 		current  []int
@@ -352,16 +352,16 @@ func TestLeastAdvancedStep(t *testing.T) {
 		{"old fully drained", []int{0, 0}, true, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.step, leastAdvancedStep(tc.current, roleSizes, 4, tc.draining))
+			assert.Equal(t, tc.step, leastAdvancedStep(tc.current, roleReplicaCounts, 4, tc.draining))
 		})
 	}
 }
 
 func TestWantReplicas(t *testing.T) {
 	for _, tc := range []struct {
-		size, step, stepCount int
-		draining              bool
-		want                  int
+		roleReplicaCount, step, stepCount int
+		draining                          bool
+		want                              int
 	}{
 		{8, 0, 4, false, 0}, {8, 1, 4, false, 2}, {8, 4, 4, false, 8},
 		{8, 0, 4, true, 8}, {8, 1, 4, true, 6}, {8, 4, 4, true, 0},
@@ -369,6 +369,6 @@ func TestWantReplicas(t *testing.T) {
 		{8, 1, 6, false, 2}, {8, 2, 6, false, 3},
 		{8, 0, 0, false, 0}, {8, 0, 0, true, 8},
 	} {
-		assert.Equal(t, tc.want, wantReplicas(tc.size, tc.step, tc.stepCount, tc.draining))
+		assert.Equal(t, tc.want, wantReplicas(tc.roleReplicaCount, tc.step, tc.stepCount, tc.draining))
 	}
 }

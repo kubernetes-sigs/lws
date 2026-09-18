@@ -223,8 +223,8 @@ func assertRolloutSnapshotInvariants(t *testing.T, roles []string, state rollout
 		budgetSteps = max(budgetSteps, roleState.InitialOldReplicas, roleState.NewTargetReplicas)
 	}
 	for i, roleState := range state {
-		roleSize := max(roleState.InitialOldReplicas, roleState.NewTargetReplicas)
-		ceiling := roleSize + roleState.Config.MaxSurge
+		roleReplicaCount := max(roleState.InitialOldReplicas, roleState.NewTargetReplicas)
+		ceiling := roleReplicaCount + roleState.Config.MaxSurge
 		floor := max(0, min(roleState.InitialOldReplicas, roleState.NewTargetReplicas)-roleState.Config.MaxUnavailable)
 		if roleState.OldSpecReplicas+roleState.NewSpecReplicas > ceiling {
 			t.Fatalf("surge ceiling violated at iteration %d for %s role=%s: state=%+v", iteration, scenario, roles[i], roleState)
@@ -232,7 +232,7 @@ func assertRolloutSnapshotInvariants(t *testing.T, roles []string, state rollout
 		if roleState.OldReadyReplicas+roleState.NewReadyReplicas < floor {
 			t.Fatalf("availability floor violated at iteration %d for %s role=%s: state=%+v", iteration, scenario, roles[i], roleState)
 		}
-		pendingAllowance := projectBudget(roleSize, roleState.Config.MaxSurge+roleState.Config.MaxUnavailable, budgetSteps)
+		pendingAllowance := projectBudget(roleReplicaCount, roleState.Config.MaxSurge+roleState.Config.MaxUnavailable, budgetSteps)
 		if roleState.NewSpecReplicas-roleState.NewReadyReplicas > pendingAllowance {
 			t.Fatalf("pending allowance violated at iteration %d for %s role=%s: state=%+v", iteration, scenario, roles[i], roleState)
 		}

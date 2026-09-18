@@ -79,9 +79,9 @@ func boundNewReplicaTargetsByHardLimits(
 // hardNewReplicaLimits returns the largest new-revision Spec currently
 // permitted for each role. The formulas use the terminology from KEP 766:
 //
-//	roleSize          = max(initialOld, target)
-//	surgeCeiling      = roleSize + MaxSurge
-//	pendingAllowance  = projected(roleSize, MaxSurge + MaxUnavailable)
+//	roleReplicaCount = max(initialOld, target)
+//	surgeCeiling     = roleReplicaCount + MaxSurge
+//	pendingAllowance = projected(roleReplicaCount, MaxSurge + MaxUnavailable)
 //
 // Therefore newSpec cannot exceed either:
 //
@@ -101,12 +101,12 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 		budgetSteps = max(budgetSteps, role.InitialOldReplicas, role.NewTargetReplicas)
 	}
 	for i, role := range snapshot {
-		roleSize := max(role.InitialOldReplicas, role.NewTargetReplicas)
-		surgeCeiling := roleSize + role.Config.MaxSurge
+		roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
+		surgeCeiling := roleReplicaCount + role.Config.MaxSurge
 		newSpecAllowedBySurge := surgeCeiling - role.OldSpecReplicas
 
 		pendingAllowance := projectBudget(
-			roleSize,
+			roleReplicaCount,
 			role.Config.MaxSurge+role.Config.MaxUnavailable,
 			budgetSteps,
 		)

@@ -27,10 +27,10 @@ limitations under the License.
 // fractionalCoordinationWindow.largestReplicaFractionDenominator. It is the
 // smallest role.NewTargetReplicas value greater than zero.
 //
-// At step k, a role targets ceil(size*k/stepCount) new replicas or
-// ceil(size*(stepCount-k)/stepCount) old replicas. The least-advanced role
-// determines side progress, keeping role ratios within the rounding error of
-// one replica (largestReplicaFraction).
+// At step k, a role targets ceil(roleReplicaCount*k/stepCount) new replicas or
+// ceil(roleReplicaCount*(stepCount-k)/stepCount) old replicas. The
+// least-advanced role determines side progress, keeping role ratios within the
+// rounding error of one replica (largestReplicaFraction).
 //
 // Spec replicas represent issued work and drive this planner. The executor
 // separately uses Ready replicas to enforce availability and bound pending
@@ -51,8 +51,8 @@ type RollingUpdateConfig struct {
 }
 
 // fractionalSteps describes the planner's next position on the old and new
-// fraction scales. Each side has its own step count because its role sizes may
-// differ from the other side.
+// fraction scales. Each side has its own step count because its role replica
+// counts may differ from the other side.
 type fractionalSteps struct {
 	newStep         int // New-side fractional step proposed for this iteration.
 	newStepCount    int // Total number of fractional steps on the new side.
@@ -83,40 +83,40 @@ func fractionalStepCount(replicas RoleReplicaState) int {
 // leastAdvancedStep returns the progress step of the least-advanced non-empty
 // role. Both sides use ceiling targets, so the inverse differs for growth and
 // drain.
-func leastAdvancedStep(current, roleSizes RoleReplicaState, stepCount int, draining bool) int {
+func leastAdvancedStep(current, roleReplicaCounts RoleReplicaState, stepCount int, draining bool) int {
 	if stepCount == 0 {
 		return 0
 	}
 	progress := stepCount
-	for i, roleSize := range roleSizes {
-		if roleSize == 0 {
+	for i, roleReplicaCount := range roleReplicaCounts {
+		if roleReplicaCount == 0 {
 			continue
 		}
 		count := current[i]
 		var roleProgress int
 		if draining {
-			count = min(count, roleSize)
-			roleProgress = (stepCount*(roleSize-count+1) - 1) / roleSize
+			count = min(count, roleReplicaCount)
+			roleProgress = (stepCount*(roleReplicaCount-count+1) - 1) / roleReplicaCount
 			roleProgress = min(max(roleProgress, 0), stepCount)
 		} else {
-			roleProgress = count * stepCount / roleSize
+			roleProgress = count * stepCount / roleReplicaCount
 		}
 		progress = min(progress, roleProgress)
 	}
 	return progress
 }
 
-func wantReplicas(roleSize, step, stepCount int, draining bool) int {
+func wantReplicas(roleReplicaCount, step, stepCount int, draining bool) int {
 	if stepCount == 0 {
 		if draining {
-			return roleSize
+			return roleReplicaCount
 		}
 		return 0
 	}
 	if draining {
 		step = stepCount - step
 	}
-	return (roleSize*step + stepCount - 1) / stepCount
+	return (roleReplicaCount*step + stepCount - 1) / stepCount
 }
 
 func ComputeNextStep(
@@ -195,10 +195,10 @@ func calculateReplicaChanges(
 		drainBy:        make(RoleReplicaState, len(initialOld)),
 	}
 	for i := range initialOld {
-		roleSize := max(initialOld[i], targetNew[i])
-		ceiling := roleSize + projectBudget(roleSize, config[i].MaxSurge, steps.budgetStepCount)
+		roleReplicaCount := max(initialOld[i], targetNew[i])
+		ceiling := roleReplicaCount + projectBudget(roleReplicaCount, config[i].MaxSurge, steps.budgetStepCount)
 		floor := max(0, min(initialOld[i], targetNew[i])-
-			projectBudget(roleSize, config[i].MaxUnavailable, steps.budgetStepCount))
+			projectBudget(roleReplicaCount, config[i].MaxUnavailable, steps.budgetStepCount))
 		if config[i].MaxSurge == 0 && config[i].MaxUnavailable == 0 {
 			ceiling++
 		}
@@ -289,11 +289,11 @@ func anyChange(past, now, currentOld, currentNew RoleReplicaState) bool {
 	return false
 }
 
-func projectBudget(roleSize, budget, stepCount int) int {
-	if roleSize <= 0 || budget <= 0 || stepCount <= 0 {
+func projectBudget(roleReplicaCount, budget, stepCount int) int {
+	if roleReplicaCount <= 0 || budget <= 0 || stepCount <= 0 {
 		return 0
 	}
-	return (roleSize*budget + stepCount - 1) / stepCount
+	return (roleReplicaCount*budget + stepCount - 1) / stepCount
 }
 
 func projectProgressStep(step, fromStepCount, toStepCount int) int {

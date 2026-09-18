@@ -174,12 +174,12 @@ If an old LWS does not have a valid `initial-replicas` annotation, the controlle
 
 Within each side, the planner uses discrete linear interpolation. Every role uses the same progress fraction. The resulting replica counts are rounded up to whole numbers.
 
-Each side measures progress on its own fractional scale. For one side, `roleSizes` is the list of replica counts for its roles. `positiveRoleSizes` is the same list without roles whose replica count is zero.
+Each side measures progress on its own fractional scale. For one side, `roleReplicaCounts` is the list of replica counts for its roles. `positiveRoleReplicaCounts` is the same list without roles whose replica count is zero.
 
 ```
-fractionalStepCount      = max(roleSizes)
-smallestReplicaFraction  = 1 / max(roleSizes)
-largestReplicaFraction   = 1 / min(positiveRoleSizes)
+fractionalStepCount      = max(roleReplicaCounts)
+smallestReplicaFraction  = 1 / max(roleReplicaCounts)
+largestReplicaFraction   = 1 / min(positiveRoleReplicaCounts)
 ```
 
 `fractionalStepCount` is the number of equal fractional steps between the start and end of one side. Fractional step `0` is the start and fractional step `fractionalStepCount` is the end, so there are `fractionalStepCount + 1` positions. A fractional step is not a reconcile iteration. The controller may remain at one fractional step or advance across more than one fractional step in a reconcile.
@@ -236,8 +236,8 @@ This prevents a terminating replica from authorizing another drain.
 `MaxSurge` and `MaxUnavailable` remain hard, absolute per-role limits. For each role the executor enforces:
 
 ```
-roleSize          = max(initialOld, target)
-surgeCeiling      = roleSize + MaxSurge
+roleReplicaCount  = max(initialOld, target)
+surgeCeiling      = roleReplicaCount + MaxSurge
 availabilityFloor = max(0, min(initialOld, target) - MaxUnavailable)
 
 oldSpec + newSpec                    <= surgeCeiling
@@ -247,7 +247,7 @@ oldCommittedReady + newCommittedReady >= availabilityFloor
 The proportional planner can intentionally use less than those raw limits to keep differently sized roles moving together. Let `budgetSteps` be the larger of the old and new side step counts. A raw per-role budget is projected onto the shared fraction scale as:
 
 ```
-projected(role, budget) = ceil(roleSize * budget / budgetSteps)
+projected(role, budget) = ceil(roleReplicaCount * budget / budgetSteps)
 ```
 
 The same projection defines the maximum new work allowed to be issued but not yet Ready:
