@@ -52,6 +52,9 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
+	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+	// This field is immutable.
+	Scheduling *LeaderWorkerSetSchedulingApplyConfiguration `json:"scheduling,omitempty"`
 	// groupIdentity determines how group identities are assigned.
 	// Ordinal (default) manages leaders through a StatefulSet: groups are named
 	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
@@ -105,6 +108,14 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderwo
 // If called multiple times, the NetworkConfig field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *NetworkConfigApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.NetworkConfig = value
+	return b
+}
+
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithScheduling(value *LeaderWorkerSetSchedulingApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
+	b.Scheduling = value
 	return b
 }
 
