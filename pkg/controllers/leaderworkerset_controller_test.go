@@ -1170,6 +1170,34 @@ func TestSetConditionUpdatesDetailsWithoutStatusTransition(t *testing.T) {
 	}
 }
 
+func TestSetConditionPreservesOtherConditionDetailsOnExclusiveTransition(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Generation(1).
+		Conditions([]metav1.Condition{{
+			Type:               string(leaderworkerset.LeaderWorkerSetProgressing),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: 1,
+			Reason:             GroupsProgressing,
+			Message:            "Replicas are progressing",
+		}}).
+		Obj()
+
+	if !setCondition(lws, metav1.Condition{
+		Type:               string(leaderworkerset.LeaderWorkerSetAvailable),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: 1,
+		Reason:             "AllGroupsReady",
+		Message:            "All replicas are ready",
+	}) {
+		t.Fatal("setCondition() should transition Progressing to False")
+	}
+	progressing := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetProgressing))
+	if progressing == nil || progressing.Status != metav1.ConditionFalse ||
+		progressing.Reason != GroupsProgressing || progressing.Message != "Replicas are progressing" {
+		t.Fatalf("Progressing condition = %#v, want False with its original details", progressing)
+	}
+}
+
 func TestGetUpdatedRevision(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 

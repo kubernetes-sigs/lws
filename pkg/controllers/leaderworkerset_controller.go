@@ -1117,8 +1117,6 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
 				lws.Status.Conditions[i].LastTransitionTime = now
 				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-				lws.Status.Conditions[i].Reason = newCondition.Reason
-				lws.Status.Conditions[i].Message = newCondition.Message
 				shouldUpdate = true
 			}
 		}
