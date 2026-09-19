@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -185,6 +187,69 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 			output := IsNotMoreThan100Percent(tc.input, testPath)
 			if diff := cmp.Diff(tc.wantOutput, output); diff != "" {
 				t.Errorf("unexpected result: (-want, +got) %s", diff)
+			}
+		})
+	}
+}
+
+func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
+	tests := []struct {
+		name      string
+		lws       *v1.LeaderWorkerSet
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil MaxGroupRestarts is always allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "MaxGroupRestarts with RecreateGroupOnPodRestart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				MaxGroupRestarts(3).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "MaxGroupRestarts with None policy is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				MaxGroupRestarts(1).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "maxGroupRestarts is only supported when restartPolicy recreates the group",
+		},
+		{
+			name: "MaxGroupRestarts with RecreateGroupAfterStart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupAfterStart).
+				MaxGroupRestarts(0).
+				Obj(),
+			wantErr: false,
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := r.generalValidate(tc.lws)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatalf("expected validation error, got none")
+				}
+				joined := ""
+				for _, e := range errs {
+					joined += e.Error() + "\n"
+				}
+				if !strings.Contains(joined, tc.errSubstr) {
+					t.Fatalf("expected error to contain %q, got %q", tc.errSubstr, joined)
+				}
+			} else if len(errs) != 0 {
+				t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
 			}
 		})
 	}

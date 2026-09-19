@@ -45,3 +45,55 @@ The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
 {{% /alert %}}
 
 {{< include file="examples/leaderworkerset/failure-handling/recreate-group-after-start.yaml" lang="yaml" >}}
+
+## Limit Automatic Group Recreation
+
+For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, set
+`maxGroupRestarts` to limit how many times LWS can automatically recreate each
+replica group. When the field is unset, group recreation remains unlimited. A
+value of `0` disables automatic group recreation on the first qualifying
+failure.
+
+{{< include file="examples/leaderworkerset/failure-handling/bounded-group-recovery.yaml" lang="yaml" >}}
+
+The budget is tracked independently for each replica group and Pod template
+revision. It is consumed only when LWS initiates a group recreation. The field
+is not supported with `restartPolicy: None` or `groupIdentity: Hash`.
+
+When a group exhausts its budget, LWS:
+
+1. Terminates the leader and worker Pods to release their scheduled resources.
+2. Retains Pod API objects that can still receive cleanup finalizers and stops
+   automatic recreation of that group. A Pod that was already deleting may
+   disappear because Kubernetes does not allow adding a finalizer at that point.
+3. Sets `Degraded=True` with reason `ReplicaRestartBudgetExceeded`. Other
+   replica groups continue running.
+
+{{% alert title="Kubernetes version requirement" color="warning" %}}
+Budget exhaustion handling requires Kubernetes 1.27 or later. It relies on the
+[Kubernetes 1.27+ Pod deletion flow](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#termination-of-pods)
+to stop containers and transition deleted Pods to a terminal phase while
+finalizers retain their API objects. The general LWS minimum Kubernetes version
+remains unchanged.
+{{% /alert %}}
+
+Retaining a Pod API object preserves its status, but does not guarantee that
+`kubectl logs` remains available after the container runtime removes the
+terminated container. Use an external logging system when logs must survive
+group termination.
+
+### Recover an Exhausted Group
+
+After fixing the underlying problem, explicitly recover one exhausted group by
+annotating its retained leader Pod:
+
+```shell
+kubectl annotate pod <leader-pod-name> leaderworkerset.sigs.k8s.io/recover=true
+```
+
+LWS then clears that group's count, removes the cleanup finalizers, and allows
+the StatefulSet to create a replacement group with a fresh budget. Editing or
+unsetting `maxGroupRestarts`, or deleting retained Pods, does not recover an
+exhausted group. LWS deletion, scale-down, and selecting the group for
+replacement during a rollout remove retained objects as normal lifecycle
+cleanup rather than starting recovery.

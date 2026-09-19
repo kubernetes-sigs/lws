@@ -166,6 +166,11 @@ func (in *LeaderWorkerTemplate) DeepCopyInto(out *LeaderWorkerTemplate) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MaxGroupRestarts != nil {
+		in, out := &in.MaxGroupRestarts, &out.MaxGroupRestarts
+		*out = new(int32)
+		**out = **in
+	}
 	if in.SubGroupPolicy != nil {
 		in, out := &in.SubGroupPolicy, &out.SubGroupPolicy
 		*out = new(SubGroupPolicy)

@@ -27,6 +27,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -88,6 +89,7 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 		case "after":
 			expected := readSnapshot()
 			expectCurrentControllerReady()
+			expectLeaderWorkerSetDegradedFalse(existingLWSName)
 			gomega.Consistently(func(g gomega.Gomega) {
 				current, err := captureSnapshot()
 				g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -98,6 +100,20 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 		}
 	})
 })
+
+func expectLeaderWorkerSetDegradedFalse(name string) {
+	gomega.Eventually(func() (metav1.ConditionStatus, error) {
+		lws := &leaderworkersetv1.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: name}, lws); err != nil {
+			return metav1.ConditionUnknown, err
+		}
+		condition := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkersetv1.LeaderWorkerSetDegraded))
+		if condition == nil {
+			return metav1.ConditionUnknown, nil
+		}
+		return condition.Status, nil
+	}, 2*time.Minute, time.Second).Should(gomega.Equal(metav1.ConditionFalse))
+}
 
 func waitForWebhooks() {
 	ginkgo.By("waiting for the LeaderWorkerSet webhook")

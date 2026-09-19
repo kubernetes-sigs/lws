@@ -104,6 +104,23 @@ const (
 	// all pods in the group are not pending
 	RecreateGroupAfterStartAnnotationKey string = "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start"
 
+	// GroupRestartCountsAnnotationKey is set on a LeaderWorkerSet and stores a JSON
+	// map of restart budget consumed by controller-initiated group recreation. Keys
+	// use "<revision>/<groupIndex>" and values are non-negative integers.
+	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
+
+	// GroupRestartBudgetExhaustedAnnotationKey is set on a leader Pod after its
+	// group exhausts maxGroupRestarts.
+	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
+
+	// GroupRestartBudgetRecoverAnnotationKey is set on an exhausted leader Pod to
+	// explicitly resume that group after its terminating Pod objects are inspected.
+	GroupRestartBudgetRecoverAnnotationKey string = "leaderworkerset.sigs.k8s.io/recover"
+
+	// GroupRestartBudgetCleanupFinalizer retains the terminating Pod API objects
+	// to which it was added until explicit recovery or workload teardown.
+	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
+
 	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
 	// LeaderWorkerSet runs with GroupIdentity=Hash so that admission and controllers
 	// can tell the identity scheme apart without fetching the LWS object.
@@ -218,6 +235,22 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Enum={Default,RecreateGroupOnPodRestart,RecreateGroupAfterStart,None}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// maxGroupRestarts bounds how many times the controller can recreate a group
+	// under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
+	// the controller terminates the group, retains Pod API objects that can still
+	// receive finalizers, and stops automatic group recreation. Setting
+	// leaderworkerset.sigs.k8s.io/recover=true on the retained leader Pod resets
+	// that revision/group's budget and allows recovery. Changing this value does
+	// not resume an exhausted group. It is opt-in: when unset (nil), group
+	// recreation is unlimited. This field is not supported with groupIdentity=Hash.
+	// Budget exhaustion handling requires Kubernetes 1.27 or later because it
+	// relies on deleted Pods reaching a terminal phase while finalizers retain
+	// their API objects.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
@@ -464,6 +497,11 @@ const (
 	// is true when the lws is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
+
+	// LeaderWorkerSetDegraded means one or more groups exhausted their restart
+	// budget and automatic recovery stopped. Other replicas can remain available
+	// or continue progressing.
+	LeaderWorkerSetDegraded LeaderWorkerSetConditionType = "Degraded"
 )
 
 // +genclient

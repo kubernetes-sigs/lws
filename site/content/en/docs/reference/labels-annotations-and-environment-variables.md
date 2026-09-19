@@ -34,6 +34,9 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/subgroup-size`               | The number of pods per subgroup.                                       | 2                                | Pod (only if SubGroup is set)                                                          |
 | `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` | Specifies the topology for exclusive 1:1 scheduling within a subgroup. | topologyKey                      | LeaderWorkerSet, Pod (only if SubGroup is set and subgroup-exclusive-topology is used) |
 | `leaderworkerset.sigs.k8s.io/leader-requests-tpus`        | Indicates if the leader pod requests TPU.                              | true                             | Pod (only if leader pod requests TPU)                                                  |
+| `leaderworkerset.sigs.k8s.io/group-restart-counts`        | Stores restart budget consumed by each revision and replica group.     | `{"abc123/0":3}`                 | LeaderWorkerSet (only if maxGroupRestarts is set)                                      |
+| `leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted` | Marks the retained leader after its group exhausts its restart budget. | true                             | Pod (only leader)                                                                      |
+| `leaderworkerset.sigs.k8s.io/recover`                     | Set to `true` on a retained leader to explicitly recover its exhausted group. | true                       | Pod (only an exhausted leader)                                                         |
 | `disaggregatedset.x-k8s.io/initial-replicas`              | Initial replica count captured when a DisaggregatedSet rollout starts. | 2                                | LeaderWorkerSet                                                                         |
 
 # Environment Variables
