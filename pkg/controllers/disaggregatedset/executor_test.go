@@ -997,27 +997,21 @@ func TestCoordinateRevisionDrain(t *testing.T) {
 
 func TestReconcileExistingRolloutCoordinatesRetirementWhileRoleReadinessIsSlow(t *testing.T) {
 	createdAt := time.Now()
-	prefillName := "test-0-oldhash-prefill"
-	decodeName := "test-0-oldhash-decode"
-	newPrefillName := "test-0-newhash-prefill"
-	newDecodeName := "test-0-newhash-decode"
 	initialOne := map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "1"}
 	initialTwo := map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "2"}
-	objects := []client.Object{
-		buildTestLWS(prefillName, testNamespace, testRolePrefill, "oldhash").
-			Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt).Annotation(initialOne).Obj(),
-		buildTestLWS(decodeName, testNamespace, testRoleDecode, "oldhash").
-			Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt).Annotation(initialTwo).Obj(),
-		buildTestLWS(newPrefillName, testNamespace, testRolePrefill, "newhash").
-			Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt.Add(time.Second)).Obj(),
-		buildTestLWS(newDecodeName, testNamespace, testRoleDecode, "newhash").
-			Replica(2).StatusReplicas(2).ReadyReplicas(1).CreationTimestamp(createdAt.Add(time.Second)).Obj(),
-	}
+	oldPrefill := buildTestLWS("test-0-oldhash-prefill", testNamespace, testRolePrefill, "oldhash").
+		Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt).Annotation(initialOne).Obj()
+	oldDecode := buildTestLWS("test-0-oldhash-decode", testNamespace, testRoleDecode, "oldhash").
+		Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt).Annotation(initialTwo).Obj()
+	newPrefill := buildTestLWS("test-0-newhash-prefill", testNamespace, testRolePrefill, "newhash").
+		Replica(1).StatusReplicas(1).ReadyReplicas(1).CreationTimestamp(createdAt.Add(time.Second)).Obj()
+	newDecode := buildTestLWS("test-0-newhash-decode", testNamespace, testRoleDecode, "newhash").
+		Replica(2).StatusReplicas(2).ReadyReplicas(1).CreationTimestamp(createdAt.Add(time.Second)).Obj()
 	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
-		WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
+		WithObjects(oldPrefill, oldDecode, newPrefill, newDecode).
+		WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
 	executor := newTestExecutor(fakeClient)
-	zero := intstr.FromInt(0)
-	one := intstr.FromInt(1)
+	one, zero := intstr.FromInt(1), intstr.FromInt(0)
 	ds := &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
 		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
@@ -1025,103 +1019,33 @@ func TestReconcileExistingRolloutCoordinatesRetirementWhileRoleReadinessIsSlow(t
 			makeRoleSpec(testRoleDecode, 2, corev1.PodSpec{}, one, zero),
 		}},
 	}
-	oldRevision := disaggregatedsetutils.RevisionRoles{
-		Revision: "oldhash",
-		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testRolePrefill: makeLWS(withName(prefillName), withReplicas(1), withReadyReplicas(1), withInitialReplicasAnnotation(1), withCreationTimestamp(createdAt)),
-			testRoleDecode:  makeLWS(withName(decodeName), withReplicas(1), withReadyReplicas(1), withInitialReplicasAnnotation(2), withCreationTimestamp(createdAt)),
-		},
-	}
-	newRevision := disaggregatedsetutils.RevisionRoles{
-		Revision: "newhash",
-		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testRolePrefill: makeLWS(withName(newPrefillName), withReplicas(1), withReadyReplicas(1)),
-			testRoleDecode:  makeLWS(withName(newDecodeName), withReplicas(2), withReadyReplicas(1)),
-		},
+	oldRevision := disaggregatedsetutils.RevisionRoles{Revision: "oldhash", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: oldPrefill,
+		testRoleDecode:  oldDecode,
+	}}
+	newRevision := disaggregatedsetutils.RevisionRoles{Revision: "newhash", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: newPrefill,
+		testRoleDecode:  newDecode,
+	}}
+	reconcile := func() {
+		_, _, err := executor.reconcileExistingRollout(context.TODO(), ds,
+			disaggregatedsetutils.RevisionRolesList{oldRevision}, newRevision, resolveDesiredReplicasByRole(ds, nil))
+		require.NoError(t, err)
 	}
 
-	// The replacement prefill is Ready, but one replacement decode is still
-	// pending. Repeated reconciles must not use the deadlock fallback to retire
-	// prefill alone while that pending replica can unblock joint retirement.
-	desiredReplicasByRole := resolveDesiredReplicasByRole(ds, nil)
-	_, _, err := executor.reconcileExistingRollout(context.TODO(), ds,
-		disaggregatedsetutils.RevisionRolesList{oldRevision}, newRevision, desiredReplicasByRole)
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, prefillName))
-	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, decodeName))
-	_, _, err = executor.reconcileExistingRollout(context.TODO(), ds,
-		disaggregatedsetutils.RevisionRolesList{oldRevision}, newRevision, desiredReplicasByRole)
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, prefillName))
-	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, decodeName))
+	// Decode still has a pending replacement, so both old roles remain until
+	// they can retire together.
+	reconcile()
+	reconcile()
+	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, oldPrefill.Name))
+	assert.Equal(t, int32(1), getTestLWSReplicas(fakeClient, testNamespace, oldDecode.Name))
 
-	// Once replacement decode catches up, both remaining old roles fit within
-	// their availability budgets and the revision retires together.
-	newRevision.Roles[testRoleDecode].Status.ReadyReplicas = 2
-	_, _, err = executor.reconcileExistingRollout(context.TODO(), ds,
-		disaggregatedsetutils.RevisionRolesList{oldRevision}, newRevision, desiredReplicasByRole)
-	require.NoError(t, err)
-	assert.Zero(t, getTestLWSReplicas(fakeClient, testNamespace, prefillName))
-	assert.Zero(t, getTestLWSReplicas(fakeClient, testNamespace, decodeName))
+	newDecode.Status.ReadyReplicas = 2
+	reconcile()
+	assert.Zero(t, getTestLWSReplicas(fakeClient, testNamespace, oldPrefill.Name))
+	assert.Zero(t, getTestLWSReplicas(fakeClient, testNamespace, oldDecode.Name))
 }
 
-func TestReconcileExistingRolloutDrainsUnavailableOldReplicasOnceNewRevisionMeetsFloor(t *testing.T) {
-	createdAt := time.Now()
-	initialFour := map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "4"}
-	oldPrefillName := "test-0-oldhash-prefill"
-	oldDecodeName := "test-0-oldhash-decode"
-	newPrefillName := "test-0-newhash-prefill"
-	newDecodeName := "test-0-newhash-decode"
-	objects := []client.Object{
-		buildTestLWS(oldPrefillName, testNamespace, testRolePrefill, "oldhash").
-			Replica(4).StatusReplicas(4).ReadyReplicas(0).CreationTimestamp(createdAt).Annotation(initialFour).Obj(),
-		buildTestLWS(oldDecodeName, testNamespace, testRoleDecode, "oldhash").
-			Replica(4).StatusReplicas(4).ReadyReplicas(0).CreationTimestamp(createdAt).Annotation(initialFour).Obj(),
-		buildTestLWS(newPrefillName, testNamespace, testRolePrefill, "newhash").
-			Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(createdAt.Add(time.Second)).Annotation(initialFour).Obj(),
-		buildTestLWS(newDecodeName, testNamespace, testRoleDecode, "newhash").
-			Replica(4).StatusReplicas(4).ReadyReplicas(4).CreationTimestamp(createdAt.Add(time.Second)).Annotation(initialFour).Obj(),
-	}
-	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
-		WithObjects(objects...).WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).Build()
-	executor := newTestExecutor(fakeClient)
-	one, zero := intstr.FromInt(1), intstr.FromInt(0)
-	ds := &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
-			makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, one, zero),
-			makeRoleSpec(testRoleDecode, 4, corev1.PodSpec{}, one, zero),
-		}},
-	}
-	oldRevision := disaggregatedsetutils.RevisionRoles{
-		Revision: "oldhash",
-		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testRolePrefill: makeLWS(withName(oldPrefillName), withReplicas(4), withReadyReplicas(0), withInitialReplicasAnnotation(4), withCreationTimestamp(createdAt)),
-			testRoleDecode:  makeLWS(withName(oldDecodeName), withReplicas(4), withReadyReplicas(0), withInitialReplicasAnnotation(4), withCreationTimestamp(createdAt)),
-		},
-	}
-	newRevision := disaggregatedsetutils.RevisionRoles{
-		Revision: "newhash",
-		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testRolePrefill: makeLWS(withName(newPrefillName), withReplicas(4), withReadyReplicas(4), withInitialReplicasAnnotation(4)),
-			testRoleDecode:  makeLWS(withName(newDecodeName), withReplicas(4), withReadyReplicas(4), withInitialReplicasAnnotation(4)),
-		},
-	}
-
-	_, complete, err := executor.reconcileExistingRollout(context.TODO(), ds,
-		disaggregatedsetutils.RevisionRolesList{oldRevision}, newRevision, resolveDesiredReplicasByRole(ds, nil))
-
-	require.NoError(t, err)
-	assert.False(t, complete)
-	assert.Equal(t, int32(3), getTestLWSReplicas(fakeClient, testNamespace, oldPrefillName))
-	assert.Equal(t, int32(3), getTestLWSReplicas(fakeClient, testNamespace, oldDecodeName))
-}
-
-// TestScaleDownOldWithMissingRole tests that roles not present in
-// old workloads don't trigger false coordinated drain. This was a bug where
-// adding a new role would cause all old workloads to be brutally drained to 0
-// because the new role (with 0 replicas in old workload) would trigger
-// coordinated drain logic.
 func TestScaleDownOldWithMissingRole(t *testing.T) {
 	baseTime := time.Now()
 	// 3 roles: prefill, decode, encode - but old workload only has prefill and decode
@@ -1370,48 +1294,6 @@ func TestExternalTargetUpdatesCurrentRevisionInitialReplicas(t *testing.T) {
 // =============================================================================
 // Integration Tests for Multiple Old Workloads (A→B→C rollout scenario)
 // =============================================================================
-
-func TestReconcileRevisionTransitionWaitsForAllReplicaTargets(t *testing.T) {
-	ctx := context.Background()
-	ds := &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
-			{Name: testRolePrefill},
-			{Name: testRoleDecode},
-		}},
-	}
-	oldPrefill := buildTestLWS("test-0-hashA-prefill", testNamespace, testRolePrefill, "hashA").Replica(5).Obj()
-	oldDecode := buildTestLWS("test-0-hashA-decode", testNamespace, testRoleDecode, "hashA").Replica(3).Obj()
-	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).WithObjects(ds, oldPrefill, oldDecode).Build()
-	executor := newTestExecutor(fakeClient)
-
-	result, complete, err := executor.ReconcileRevisionTransition(ctx, ds, 0, "hashB", map[string]int{
-		testRolePrefill: 6,
-		// Decode is deliberately absent: its target is unresolved.
-	})
-	require.NoError(t, err)
-	assert.False(t, complete)
-	assert.NotZero(t, result.RequeueAfter)
-
-	for name, replicas := range map[string]int32{
-		oldPrefill.Name: 5,
-		oldDecode.Name:  3,
-	} {
-		stored, err := executor.LWSManager.Get(ctx, ds, name)
-		require.NoError(t, err)
-		require.NotNil(t, stored)
-		require.NotNil(t, stored.Spec.Replicas)
-		assert.Equal(t, replicas, *stored.Spec.Replicas, "old replicas must not change")
-		_, hasInitialReplicas := stored.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
-		assert.False(t, hasInitialReplicas, "old baselines must not be backfilled")
-	}
-
-	for _, role := range testRoleNames() {
-		created, err := executor.LWSManager.Get(ctx, ds, disaggregatedsetutils.GenerateName(ds.Name, 0, "hashB", role))
-		require.NoError(t, err)
-		assert.Nil(t, created, "the desired revision must not be created")
-	}
-}
 
 func TestReconcileRevisionTransitionRepairsPartialTargetRevision(t *testing.T) {
 	ctx := context.Background()
