@@ -24,12 +24,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
@@ -38,223 +39,240 @@ const (
 	EventReasonRollingUpdateCompleted = "RollingUpdateCompleted"
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
+	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
+	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	EventReasonWaitingForServiceGC    = "WaitingForServiceGarbageCollection"
 )
 
 type RollingUpdateExecutor struct {
-	Client     client.Client
 	Record     events.EventRecorder
 	LWSManager *LeaderWorkerSetManager
 }
 
-// ReconcileRollingUpdateNew is the entry point for rolling update reconciliation.
-// It fetches current cluster state and either:
-//  1. Starts a new rolling update (initRollingUpdate) if no LWS for the target
-//     revision exist yet, or
-//  2. Continues an in-progress rolling update (ReconcileRollingUpdate) by
-//     computing and executing the next scale step.
-func (executor *RollingUpdateExecutor) ReconcileRollingUpdateNew(
+// ReconcileRevisionTransition is the entry point for rolling update reconciliation.
+// It fetches current cluster state, ensures every role exists in the target
+// revision, and then continues the rollout by computing and executing its next
+// scale step.
+//
+// desiredReplicasByRole contains the resolved target for each Static or External
+// role. If any role is missing, reconciliation waits without changing LWS objects.
+//
+// complete is true only after all old Specs are zero and every target-revision
+// role has reached its target in both Spec and Ready replicas.
+func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
-) (ctrl.Result, error) {
+	desiredReplicasByRole map[string]int,
+) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
+	if unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole); len(unresolvedRoles) > 0 {
+		log.Info("Waiting for replica targets before reconciling revision transition", "roles", unresolvedRoles)
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	}
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, false, err
 	}
 	if len(oldRevisions) == 0 {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	}
+	// Persist any missing old-revision baseline before planning can drain it.
+	if err := executor.ensureOldInitialReplicas(ctx, disaggregatedSet, oldRevisions); err != nil {
+		return ctrl.Result{}, false, err
 	}
 
-	addedRoles, removedRoles := detectRoleChanges(roleNames, oldRevisions)
-	if len(addedRoles) > 0 || len(removedRoles) > 0 {
-		log.Info("Role changes detected", "added", addedRoles, "removed", removedRoles)
+	created, err := executor.ensureDesiredRevision(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, newRevision, desiredReplicasByRole)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if created || newRevision == nil {
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
-	if newRevision == nil {
-		return executor.initRollingUpdate(ctx, disaggregatedSet, slice, revision, roleNames, roleConfigs, oldRevisions)
-	}
-
-	return executor.ReconcileRollingUpdate(ctx, disaggregatedSet, slice, oldRevisions, *newRevision, scalers)
+	// The slice was used above to discover the relevant LWS objects. Continuing
+	// the rollout updates those objects by their actual names, so the executor
+	// does not need the slice index below.
+	return executor.reconcileExistingRollout(ctx, disaggregatedSet, oldRevisions, *newRevision, desiredReplicasByRole)
 }
 
-func (executor *RollingUpdateExecutor) initRollingUpdate(
+func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
 	roleNames []string,
 	roleConfigs map[string]*disaggregatedsetv1.DisaggregatedRoleSpec,
-	oldRevisions disaggregatedsetutils.RevisionRolesList,
-) (ctrl.Result, error) {
+	newRevision *disaggregatedsetutils.RevisionRoles,
+	desiredReplicasByRole map[string]int,
+) (bool, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Initiating new rolling update", "revision", revision)
-	executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
-		"Update", "Started rolling update to revision %s", revision)
-
-	// Snapshot each old LWS's current replica count as the initial-replicas
-	// annotation. The planner uses this as the baseline for proportional drain
-	// calculations, since Spec.Replicas changes as the rollout progresses.
-	for _, oldGrouped := range oldRevisions {
-		for _, roleLWS := range oldGrouped.Roles {
-			replicas := 1
-			if roleLWS.Spec.Replicas != nil {
-				replicas = int(*roleLWS.Spec.Replicas)
-			}
-			// Address by the LWS's actual name so a legacy slice-0 object (whose name
-			// has no slice segment) is updated rather than missed.
-			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, roleLWS.Name, replicas); err != nil {
-				log.Error(err, "Failed to set initial-replicas annotation", "lws", roleLWS.Name)
-			}
-		}
+	if newRevision == nil {
+		log.Info("Initiating new rolling update", "revision", revision)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
+			"Update", "Started rolling update to revision %s", revision)
 	}
 
-	// Create new LWS objects (one per role) for the target revision with 0
-	// replicas. The next reconcile loop will start scaling them up.
+	// Ensure one LWS exists per role for the target revision:
+	//  1. Start the LWS at 0 replicas. The executor grows it on later reconciles.
+	//  2. Store the role's final target in initial-replicas.
+	//
+	// If another rollout interrupts this one, the stored target becomes this
+	// revision's contribution to the old-side baseline. Its partially scaled
+	// Spec does not replace that target.
+	created := false
 	for _, roleName := range roleNames {
-		if _, err := executor.ensureNewLWSExists(ctx, disaggregatedSet, slice, revision, roleName, roleConfigs[roleName], 0); err != nil {
-			return ctrl.Result{}, err
+		if newRevision != nil && newRevision.Roles[roleName] != nil {
+			continue
 		}
+		initialReplicas := desiredReplicasByRole[roleName]
+		if err := executor.LWSManager.Create(ctx, disaggregatedSet, roleConfigs[roleName], slice, 0, initialReplicas); err != nil {
+			return false, err
+		}
+		created = true
 	}
 
-	return ctrl.Result{RequeueAfter: time.Second}, nil
+	return created, nil
 }
 
-// ReconcileRollingUpdate executes one step of an in-progress rolling update:
-//  1. Wait for the new revision to stabilize (all roles have ReadyReplicas == Replicas).
-//  2. Compute the next scale step using the planner.
-//  3. Scale up new revision LWS objects.
-//  4. Scale down old revision LWS objects (newest-first, with coordinated drain).
-func (executor *RollingUpdateExecutor) ReconcileRollingUpdate(
+// reconcileExistingRollout executes one step of an in-progress rolling update:
+//  1. Refresh the current revision's initial replica values.
+//  2. Build a snapshot of issued and Ready replicas for every role.
+//  3. Ask the planner for the next safe old and new Spec counts.
+//  4. Drain old revisions newest-first, then grow the current revision.
+//
+// Object updates and a one-second timer trigger the next step. The rollout is
+// complete only after the old Specs reach zero and the target revision is Ready.
+// The returned complete flag reports that terminal state to the caller.
+func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
-) (ctrl.Result, error) {
+	desiredReplicasByRole map[string]int,
+) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
-	specRoleSet, oldRoleSet := buildRoleSets(specRoleNames, oldRevisions)
-
-	allRoleNames := append(slices.Clone(specRoleNames), removedRoles(oldRoleSet, specRoleSet)...)
-
-	// A revision is "stable" when every role's LWS has ReadyReplicas == Replicas,
-	// meaning all pods from the previous scale step are Running and Ready.
-	// We wait for stability before computing the next step to avoid over-scaling.
-	if !isRevisionStable(newRevision, specRoleNames) {
-		log.V(1).Info("Waiting for new revision to stabilize")
-		return ctrl.Result{RequeueAfter: time.Second}, nil
+	desiredRoles, oldRoles := collectDesiredAndOldRoles(specRoleNames, oldRevisions)
+	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, specRoleNames, newRevision, desiredReplicasByRole); err != nil {
+		return ctrl.Result{}, false, err
 	}
 
-	initialOld, currentOld, currentNew, targetNew := buildPlannerState(disaggregatedSet, allRoleNames, specRoleSet, oldRevisions, newRevision, scalers)
-	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, scalers)
+	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoles, desiredRoles)...)
+	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
+	snapshot := buildRolloutSnapshot(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, newRevision, desiredReplicasByRole, config)
 
-	nextStep := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
-	if nextStep == nil {
+	if isRolloutSpecComplete(snapshot) {
+		if !isRolloutReady(snapshot) {
+			log.V(1).Info("Waiting for target revision to become ready")
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
 			"Update", "Completed rolling update to revision %s", newRevision.Revision)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, true, nil
+	}
+	nextStep := ComputeNextStep(snapshot)
+	if nextStep == nil {
+		log.Info("Rolling update is temporarily blocked; waiting for state to change")
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, slice, newRevision, allRoleNames, specRoleSet, currentNew, nextStep.New); err != nil {
-		return ctrl.Result{}, err
+	// Scale down old replicas before scaling up new ones. This ordering ensures
+	// the total replica count never exceeds the surge limit between the two
+	// API calls: e.g. with surge=0, scaling up first would briefly make
+	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
+	// currentOld down.
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, snapshot, nextStep.Past, nextStep.New); err != nil {
+		return ctrl.Result{}, false, err
 	}
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, currentOld, nextStep.Past); err != nil {
-		return ctrl.Result{}, err
+	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, nextStep.New); err != nil {
+		return ctrl.Result{}, false, err
 	}
 
-	return ctrl.Result{}, nil
+	// Object updates normally trigger the next reconcile immediately. The
+	// timer also lets the planner retry when pending replicas become Ready.
+	return ctrl.Result{RequeueAfter: time.Second}, false, nil
 }
 
 // --- Helpers ---
 
-func buildRoleSets(specRoleNames []string, oldRevisions disaggregatedsetutils.RevisionRolesList) (spec, old map[string]bool) {
-	spec = make(map[string]bool, len(specRoleNames))
-	for _, name := range specRoleNames {
-		spec[name] = true
-	}
-	old = make(map[string]bool)
+func collectDesiredAndOldRoles(specRoleNames []string, oldRevisions disaggregatedsetutils.RevisionRolesList) (desiredRoles, oldRoles sets.Set[string]) {
+	desiredRoles = sets.New(specRoleNames...)
+	oldRoles = sets.New[string]()
 	for _, wl := range oldRevisions {
 		for name := range wl.Roles {
-			old[name] = true
+			oldRoles.Insert(name)
 		}
 	}
-	return spec, old
+	return desiredRoles, oldRoles
 }
 
-func removedRoles(oldRoleSet, specRoleSet map[string]bool) []string {
-	var removed []string
-	for role := range oldRoleSet {
-		if !specRoleSet[role] {
-			removed = append(removed, role)
-		}
-	}
+func removedRoleNames(oldRoles, desiredRoles sets.Set[string]) []string {
+	removed := oldRoles.Difference(desiredRoles).UnsortedList()
+	slices.Sort(removed)
 	return removed
 }
 
-func buildPlannerState(
+// committedReadyReplicas returns the Ready capacity that can authorize another
+// scale-down. Status can briefly report more Ready replicas than Spec after a
+// previous scale-down; those excess replicas are already terminating and must
+// not be counted again.
+func committedReadyReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
+	if lws == nil {
+		return 0
+	}
+	return max(0, min(int(lws.Status.ReadyReplicas), int(getLWSReplicas(lws))))
+}
+
+func buildRolloutSnapshot(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
-	specRoleSet map[string]bool,
+	desiredRoles sets.Set[string],
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
-) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
-	n := len(allRoleNames)
-	initialOld, currentOld, currentNew, targetNew = make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n), make(RoleReplicaState, n)
+	desiredReplicasByRole map[string]int,
+	config []RollingUpdateConfig,
+) rolloutSnapshot {
+	snapshot := make(rolloutSnapshot, len(allRoleNames))
 
 	for i, roleName := range allRoleNames {
-		initialOld[i] = oldRevisions.GetTotalInitialReplicasPerRole(roleName)
-		currentOld[i] = oldRevisions.GetTotalReplicasPerRole(roleName)
-
-		if specRoleSet[roleName] {
-			if lws := newRevision.Roles[roleName]; lws != nil {
-				currentNew[i] = int(getLWSReplicas(lws))
+		roleState := roleRolloutSnapshot{
+			InitialOldReplicas: oldRevisions.GetMaxInitialReplicasPerRole(roleName),
+			OldSpecReplicas:    oldRevisions.GetTotalReplicasPerRole(roleName),
+			Config:             config[i],
+		}
+		for _, revision := range oldRevisions {
+			if lws := revision.Roles[roleName]; lws != nil {
+				roleState.OldReadyReplicas += committedReadyReplicas(lws)
 			}
-			targetNew[i] = getTargetReplicas(ds, roleName, scalers, currentNew[i])
+		}
+
+		if desiredRoles.Has(roleName) {
+			lws := newRevision.Roles[roleName]
+			if lws != nil {
+				roleState.NewSpecReplicas = int(getLWSReplicas(lws))
+				roleState.NewReadyReplicas = committedReadyReplicas(lws)
+			}
+			roleState.NewTargetReplicas = desiredReplicasByRole[roleName]
 			// No-shrink guard: an External role mid-rollout must not shrink the
 			// new-revision fleet if HPA writes a smaller value while the old
 			// revision is still draining. Releases once the rollout completes.
-			if isExternal(ds, roleName) && len(oldRevisions) > 0 && targetNew[i] < currentNew[i] {
-				targetNew[i] = currentNew[i]
+			if isExternal(ds, roleName) && len(oldRevisions) > 0 && lws != nil {
+				roleState.NewTargetReplicas = max(roleState.NewTargetReplicas, roleState.NewSpecReplicas)
 			}
 		}
+		snapshot[i] = roleState
 	}
-	return
-}
 
-// getTargetReplicas resolves the desired replica count. External roles read
-// spec.replicas from the scaler (always materialised since the CRD defaults it
-// to 0 and the controller seeds it at creation to avoid draining a running
-// Static→External flip).
-func getTargetReplicas(ds *disaggregatedsetv1.DisaggregatedSet, roleName string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, currentNew int) int {
-	for _, p := range ds.Spec.Roles {
-		if p.Name != roleName {
-			continue
-		}
-		if p.Scaling != nil && p.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
-			if s := scalers[roleName]; s != nil {
-				return int(s.Spec.Replicas)
-			}
-			return currentNew
-		}
-		if p.Spec.Replicas == nil {
-			return 1
-		}
-		return int(*p.Spec.Replicas)
-	}
-	return 1
+	return snapshot
 }
 
 func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
@@ -269,32 +287,30 @@ func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
 func extractRollingUpdateConfig(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+	desiredReplicasByRole map[string]int,
 ) []RollingUpdateConfig {
-	config := DefaultRollingUpdateConfig(len(allRoleNames))
-
+	config := make([]RollingUpdateConfig, len(allRoleNames))
 	roleIndex := make(map[string]int, len(allRoleNames))
 	for i, name := range allRoleNames {
+		config[i].MaxSurge = 1
 		roleIndex[name] = i
 	}
 
 	for _, role := range ds.Spec.Roles {
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
-			i := roleIndex[role.Name]
-			// For External roles this returns the scaler value (or currentNew=0
-			// if none is available); percentages against 0 collapse to 0, which
-			// matches how a paused rollout should behave.
-			replicas := getTargetReplicas(ds, role.Name, scalers, 0)
+			replicas := desiredReplicasByRole[role.Name]
 			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
 			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
+			cfg := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
 			if unavail > 0 {
-				config[i].MaxUnavailable = unavail
-				config[i].MaxSurge = surge
+				cfg.MaxUnavailable = unavail
+				cfg.MaxSurge = surge
 			} else if surge > 0 {
-				config[i].MaxSurge = surge
+				cfg.MaxSurge = surge
 			}
+			config[roleIndex[role.Name]] = cfg
 		}
 	}
 	return config
@@ -303,43 +319,21 @@ func extractRollingUpdateConfig(
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	args := make([]interface{}, 0, len(roleNames)*4)
 	for i, name := range roleNames {
-		args = append(args, "past"+name, step.Past[i], "new"+name, step.New[i])
+		args = append(args,
+			"past_"+name, step.Past[i],
+			"new_"+name, step.New[i],
+		)
 	}
 	return args
 }
 
-func isRevisionStable(rev disaggregatedsetutils.RevisionRoles, roleNames []string) bool {
-	for _, name := range roleNames {
-		lws := rev.Roles[name]
-		if lws == nil {
-			return false
-		}
-		if getLWSReplicas(lws) != lws.Status.ReadyReplicas {
+func isRolloutReady(snapshot rolloutSnapshot) bool {
+	for _, role := range snapshot {
+		if role.OldSpecReplicas != 0 || role.NewReadyReplicas < role.NewTargetReplicas {
 			return false
 		}
 	}
 	return true
-}
-
-func maxTimestamp(wl disaggregatedsetutils.RevisionRoles) time.Time {
-	var maxTS time.Time
-	for _, lws := range wl.Roles {
-		if lws.CreationTimestamp.Time.After(maxTS) {
-			maxTS = lws.CreationTimestamp.Time
-		}
-	}
-	return maxTS
-}
-
-func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList, roleNames []string) disaggregatedsetutils.RevisionRolesList {
-	if len(roleNames) == 0 {
-		return revisions
-	}
-	sorted := slices.Clone(revisions)
-	slices.SortFunc(sorted, func(a, b disaggregatedsetutils.RevisionRoles) int {
-		return maxTimestamp(b).Compare(maxTimestamp(a))
-	})
-	return sorted
 }
 
 // --- Scaling operations ---
@@ -347,24 +341,28 @@ func sortByNewestTimestamp(revisions disaggregatedsetutils.RevisionRolesList, ro
 func (executor *RollingUpdateExecutor) scaleUpNew(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	allRoleNames []string,
-	specRoleSet map[string]bool,
-	current, target RoleReplicaState,
+	roleNames []string,
+	targetNew RoleReplicaState,
 ) error {
 	log := logf.FromContext(ctx)
-	for i, name := range allRoleNames {
-		if !specRoleSet[name] || current[i] >= target[i] {
+	for i, name := range roleNames {
+		lws := newRevision.Roles[name]
+		if lws == nil {
 			continue
 		}
-		lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, newRevision.Revision, name)
-		log.Info("Scaling up", "lws", lwsName, "from", current[i], "to", target[i])
-		if err := executor.LWSManager.Scale(ctx, ds, lwsName, target[i]); err != nil {
+		currentSpec := int(getLWSReplicas(lws))
+		desiredSpec := targetNew[i]
+		if currentSpec >= desiredSpec {
+			continue
+		}
+		lwsName := lws.Name
+		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", committedReadyReplicas(lws), "to", desiredSpec)
+		if err := executor.LWSManager.Scale(ctx, ds, lwsName, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, current[i], target[i])
+			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentSpec, desiredSpec)
 	}
 	return nil
 }
@@ -374,128 +372,198 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	roleNames []string,
-	current, target RoleReplicaState,
+	snapshot rolloutSnapshot,
+	targetOld RoleReplicaState,
+	targetNew RoleReplicaState,
 ) error {
-	budget := make([]int, len(roleNames))
+	budget := make(RoleReplicaState, len(roleNames))
 	for i := range roleNames {
-		budget[i] = current[i] - target[i]
+		roleState := snapshot[i]
+		budget[i] = max(0, min(roleState.OldSpecReplicas-targetOld[i], maxSafeDrain(roleState)))
 	}
 
 	log := logf.FromContext(ctx)
-	for _, wl := range sortByNewestTimestamp(oldRevisions, roleNames) {
-		if allZero(budget) {
-			break
-		}
-
-		newReplicas := make(map[string]int)
-		plannedDrain := make(map[string]int)
-		triggersCoordinated := make(map[string]bool)
-
+	for _, wl := range oldRevisions.SortedByNewestTimestamp() {
+		plannedDrain := make(RoleReplicaState, len(roleNames))
 		for i, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
-				continue
-			}
-			replicas := int(getLWSReplicas(lws))
-			drain := min(budget[i], replicas)
-			plannedDrain[name] = drain
-			newReplicas[name] = replicas - drain
-			if newReplicas[name] == 0 {
-				triggersCoordinated[name] = true
+			if lws := wl.Roles[name]; lws != nil {
+				plannedDrain[i] = min(budget[i], int(getLWSReplicas(lws)))
 			}
 		}
+		if !anyPositive(plannedDrain) {
+			continue
+		}
 
-		anyTriggered := len(triggersCoordinated) > 0
-		if anyTriggered {
-			for _, name := range roleNames {
-				if _, exists := wl.Roles[name]; exists {
-					newReplicas[name] = 0
-				}
-			}
+		blocked := coordinateRevisionDrain(roleNames, wl.Roles, plannedDrain, targetNew, snapshot)
+		if blocked {
+			log.Info("Waiting to retire old revision without leaving it incomplete", "revision", wl.Revision)
+			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked,
+				"Wait", "Waiting to retire revision %s: no safe partial drain or replacement growth is currently available", wl.Revision)
 		}
 
 		for i, name := range roleNames {
-			lws, exists := wl.Roles[name]
-			if !exists {
+			lws := wl.Roles[name]
+			if lws == nil || plannedDrain[i] == 0 {
 				continue
 			}
 			replicas := int(getLWSReplicas(lws))
-			if replicas <= newReplicas[name] {
-				continue
-			}
+			drain := plannedDrain[i]
+			newReplicas := replicas - drain
 			// Address by the LWS's actual name so a legacy slice-0 object drains too.
 			lwsName := lws.Name
-			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
-			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas[name]); err != nil {
+			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas)
+			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas); err != nil {
 				return fmt.Errorf("failed to scale %s: %w", lwsName, err)
 			}
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
-				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas[name])
-
-			if triggersCoordinated[name] || !anyTriggered {
-				budget[i] -= plannedDrain[name]
-			}
+				"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lwsName, replicas, newReplicas)
 		}
+		// Never move a budget past the newest revision that can consume it.
+		return nil
 	}
+
 	return nil
 }
 
-func allZero(s []int) bool {
-	for _, v := range s {
-		if v > 0 {
+// coordinateRevisionDrain prevents a reconciliation from intentionally leaving
+// an old revision without one of its roles. It is called for every proposed
+// old-revision drain. Cases 2-4 handle the fixed point where per-role surge or
+// availability limits prevent the proposed roles from retiring together. The
+// planner cannot manufacture capacity when those hard limits leave neither a
+// safe drain nor room for replacement replicas.
+//
+// The function resolves a proposed drain in this order:
+//  1. If every role can retire within its availability budget, retire the whole
+//     revision.
+//  2. Otherwise, turn proposed full drains into partial drains, leaving at
+//     least one replica of every role currently present in the revision.
+//  3. If no partial drain remains, cancel the full drains and grow the new roles
+//     that currently prevent coordinated retirement.
+//     This may relax fractional lockstep, but never the hard surge or pending
+//     readiness limits.
+//  4. If neither a partial drain nor replacement growth is currently possible,
+//     cancel the unsafe drain and report the step as blocked. A later readiness,
+//     capacity, or rollout-budget change can make coordinated retirement possible.
+//
+// Both drain and targetNew are mutated in place. The return value is true only
+// for case 4.
+func coordinateRevisionDrain(
+	roleNames []string,
+	roles map[string]*leaderworkersetv1.LeaderWorkerSet,
+	drain RoleReplicaState,
+	targetNew RoleReplicaState,
+	snapshot rolloutSnapshot,
+) bool {
+	anyAliveAfter, anyRetired, canRetire := false, false, true
+	for i, name := range roleNames {
+		lws := roles[name]
+		if lws == nil || getLWSReplicas(lws) == 0 {
+			continue
+		}
+		replicas := int(getLWSReplicas(lws))
+		anyAliveAfter = anyAliveAfter || replicas > drain[i]
+		anyRetired = anyRetired || drain[i] == replicas
+		canRetire = canRetire && replicas <= maxSafeDrain(snapshot[i])
+	}
+	if !anyAliveAfter || !anyRetired {
+		return false
+	}
+	if canRetire {
+		for i, name := range roleNames {
+			if lws := roles[name]; lws != nil {
+				drain[i] = int(getLWSReplicas(lws))
+			}
+		}
+		return false
+	}
+
+	// Keep at least one replica of every role until the whole revision can be
+	// retired. A full drain of N replicas therefore becomes a partial drain of
+	// N-1; a singleton cannot be partially drained.
+	for i, name := range roleNames {
+		if lws := roles[name]; lws != nil {
+			replicas := int(getLWSReplicas(lws))
+			if replicas > 0 && drain[i] == replicas {
+				drain[i] = replicas - 1
+			}
+		}
+	}
+	if anyPositive(drain) {
+		return false
+	}
+
+	// All proposed drains were singletons. Grow only the roles whose current
+	// availability prevents the whole revision from retiring. hardNewReplicaLimits
+	// deliberately omits the fractional coordination window here: this is the
+	// liveness escape hatch, while surge and pending-readiness limits remain hard.
+	limits := hardNewReplicaLimits(snapshot)
+	for i, name := range roleNames {
+		lws := roles[name]
+		if lws == nil || getLWSReplicas(lws) == 0 {
+			continue
+		}
+		neededForRetirement := int(getLWSReplicas(lws)) - maxSafeDrain(snapshot[i])
+		if neededForRetirement > 0 {
+			targetNew[i] = max(targetNew[i], min(limits[i], snapshot[i].NewSpecReplicas+neededForRetirement))
+		}
+	}
+	for i := range snapshot {
+		if targetNew[i] > snapshot[i].NewSpecReplicas {
 			return false
 		}
 	}
 	return true
 }
 
-// --- LWS creation ---
-
-func (executor *RollingUpdateExecutor) ensureNewLWSExists(
+// ensureOldInitialReplicas is a safety net. The controller writes
+// initial-replicas while a revision is current, so an old LWS should already
+// have a valid value. If it does not, recover from its current Spec and emit a
+// warning. An existing valid value remains immutable once the revision is old.
+func (executor *RollingUpdateExecutor) ensureOldInitialReplicas(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	slice int,
-	revision, role string,
-	config *disaggregatedsetv1.DisaggregatedRoleSpec,
-	initialReplicas int,
-) (bool, error) {
-	lwsName := disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role)
-	existing, err := executor.LWSManager.Get(ctx, ds, lwsName)
-	if err != nil {
-		return false, fmt.Errorf("failed to get LWS %s: %w", lwsName, err)
+	oldRevisions disaggregatedsetutils.RevisionRolesList,
+) error {
+	for _, revision := range oldRevisions {
+		for _, lws := range revision.Roles {
+			if _, ok := disaggregatedsetutils.GetInitialReplicas(lws); ok {
+				continue
+			}
+			initial := int(getLWSReplicas(lws))
+			executor.Record.Eventf(ds, nil, corev1.EventTypeWarning, EventReasonInitialReplicasMissing,
+				"Recover", "LWS %s has no valid %s annotation; restoring it from current spec.replicas (%d)",
+				lws.Name, disaggregatedsetv1.InitialReplicasAnnotationKey, initial)
+			if err := executor.LWSManager.UpdateInitialReplicas(ctx, ds, lws, initial); err != nil {
+				return fmt.Errorf("failed to backfill initial replicas on %s: %w", lws.Name, err)
+			}
+		}
 	}
-	if existing != nil {
-		return false, nil
-	}
-
-	if err := executor.LWSManager.Create(ctx, disaggregatedsetutils.CreateParams{
-		DisaggregatedSet: ds,
-		Role:             role,
-		Slice:            slice,
-		Config:           config,
-		Revision:         revision,
-		Labels:           disaggregatedsetutils.GenerateLabels(ds.Name, slice, revision, role),
-		Replicas:         initialReplicas,
-	}); err != nil {
-		return false, fmt.Errorf("failed to create LWS %s: %w", lwsName, err)
-	}
-	return true, nil
+	return nil
 }
 
-// --- Role change utils ---
-func detectRoleChanges(specRoleNames []string, oldRevisions disaggregatedsetutils.RevisionRolesList) ([]string, []string) {
-	specRoles, oldRoles := buildRoleSets(specRoleNames, oldRevisions)
-
-	var added, removed []string
-	for name := range oldRoles {
-		if !specRoles[name] {
-			removed = append(removed, name)
+// syncTargetInitialReplicas follows replica-only and external-scaler changes
+// while a revision is current. The value freezes when that revision becomes
+// old, preserving the target it would have reached had its rollout completed.
+func (executor *RollingUpdateExecutor) syncTargetInitialReplicas(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	roleNames []string,
+	newRevision disaggregatedsetutils.RevisionRoles,
+	desiredReplicasByRole map[string]int,
+) error {
+	for _, roleName := range roleNames {
+		lws := newRevision.Roles[roleName]
+		if lws == nil {
+			continue
+		}
+		initial := desiredReplicasByRole[roleName]
+		current, ok := disaggregatedsetutils.GetInitialReplicas(lws)
+		if ok && int(current) == initial {
+			continue
+		}
+		if err := executor.LWSManager.UpdateInitialReplicas(ctx, ds, lws, initial); err != nil {
+			return fmt.Errorf("failed to update initial replicas on %s: %w", lws.Name, err)
 		}
 	}
-	for _, name := range specRoleNames {
-		if !oldRoles[name] {
-			added = append(added, name)
-		}
-	}
-	return added, removed
+	return nil
 }
