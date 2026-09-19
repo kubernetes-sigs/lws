@@ -18,10 +18,13 @@ package revision
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/lru"
@@ -268,4 +271,152 @@ func TestGetHighestRevision(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetRevisionKey(t *testing.T) {
+	t.Run("returns the revision label when present", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+		lws.Labels = map[string]string{leaderworkerset.RevisionKey: "abc123"}
+		if got := GetRevisionKey(lws); got != "abc123" {
+			t.Fatalf("GetRevisionKey()=%q, want %q", got, "abc123")
+		}
+	})
+	t.Run("returns empty when labels are nil", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+		lws.Labels = nil
+		if got := GetRevisionKey(lws); got != "" {
+			t.Fatalf("GetRevisionKey()=%q, want empty", got)
+		}
+	})
+	t.Run("returns empty when the label is absent", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+		lws.Labels = map[string]string{"other": "x"}
+		if got := GetRevisionKey(lws); got != "" {
+			t.Fatalf("GetRevisionKey()=%q, want empty", got)
+		}
+	})
+}
+
+func TestRevisionName(t *testing.T) {
+	if got := revisionName("lws", "h4sh", 3); got != "lws-h4sh-3" {
+		t.Fatalf("revisionName()=%q, want %q", got, "lws-h4sh-3")
+	}
+	long := strings.Repeat("a", 230)
+	got := revisionName(long, "h4sh", 1)
+	if want := strings.Repeat("a", 220) + "-h4sh-1"; got != want {
+		t.Fatalf("revisionName() with long prefix = %d chars, want prefix truncated to 220", len(got))
+	}
+}
+
+func TestHashRevision(t *testing.T) {
+	a := &appsv1.ControllerRevision{Data: runtime.RawExtension{Raw: []byte(`{"a":1}`)}}
+	b := &appsv1.ControllerRevision{Data: runtime.RawExtension{Raw: []byte(`{"a":1}`)}}
+	c := &appsv1.ControllerRevision{Data: runtime.RawExtension{Raw: []byte(`{"a":2}`)}}
+	if hashRevision(a) != hashRevision(b) {
+		t.Fatalf("identical data must hash identically")
+	}
+	if hashRevision(a) == hashRevision(c) {
+		t.Fatalf("different data must hash differently")
+	}
+	empty := &appsv1.ControllerRevision{}
+	if hashRevision(empty) == "" {
+		t.Fatalf("empty revision must still produce a hash")
+	}
+}
+
+func TestGetRevisionAndTruncate(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	ctx := context.Background()
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.UID = types.UID("owner-uid")
+
+	mk := func(key string, number int64) *appsv1.ControllerRevision {
+		cr, err := NewRevision(ctx, client, lws, key)
+		if err != nil {
+			t.Fatalf("NewRevision: %v", err)
+		}
+		cr.Revision = number
+		cr.Name = revisionName(lws.Name, key, number)
+		if _, err := CreateRevision(ctx, client, cr); err != nil {
+			t.Fatalf("CreateRevision: %v", err)
+		}
+		return cr
+	}
+
+	t.Run("empty key returns nil without listing", func(t *testing.T) {
+		got, err := GetRevision(ctx, client, lws, "")
+		if err != nil || got != nil {
+			t.Fatalf("GetRevision(\"\")=%v,%v want nil,nil", got, err)
+		}
+	})
+
+	t.Run("no matching revision returns nil", func(t *testing.T) {
+		got, err := GetRevision(ctx, client, lws, "missing")
+		if err != nil || got != nil {
+			t.Fatalf("GetRevision(missing)=%v,%v want nil,nil", got, err)
+		}
+	})
+
+	keyA1 := mk("key-a", 1)
+	mk("key-b", 2)
+	keyA3 := mk("key-a", 3)
+
+	t.Run("single match is returned", func(t *testing.T) {
+		got, err := GetRevision(ctx, client, lws, "key-b")
+		if err != nil || got == nil || got.Revision != 2 {
+			t.Fatalf("GetRevision(key-b)=%v,%v want revision 2", got, err)
+		}
+	})
+
+	t.Run("multiple matches return the highest revision", func(t *testing.T) {
+		got, err := GetRevision(ctx, client, lws, "key-a")
+		if err != nil || got == nil {
+			t.Fatalf("GetRevision(key-a)=%v,%v", got, err)
+		}
+		if got.Name != keyA3.Name || got.Name == keyA1.Name {
+			t.Fatalf("GetRevision(key-a) returned %s, want %s", got.Name, keyA3.Name)
+		}
+	})
+
+	t.Run("revisions owned by another controller are ignored", func(t *testing.T) {
+		other := wrappers.BuildLeaderWorkerSet("default").Obj()
+		other.Name = lws.Name // same name label, different owner UID
+		other.UID = types.UID("other-uid")
+		cr, err := NewRevision(ctx, client, other, "key-c")
+		if err != nil {
+			t.Fatalf("NewRevision: %v", err)
+		}
+		cr.Revision = 9
+		cr.Name = revisionName("other", "key-c", 9)
+		if _, err := CreateRevision(ctx, client, cr); err != nil {
+			t.Fatalf("CreateRevision: %v", err)
+		}
+		got, err := GetRevision(ctx, client, lws, "key-c")
+		if err != nil || got != nil {
+			t.Fatalf("GetRevision(key-c) must not see another controller's revision, got %v,%v", got, err)
+		}
+	})
+
+	t.Run("truncate keeps only the current key", func(t *testing.T) {
+		if err := TruncateRevisions(ctx, client, lws, "key-a"); err != nil {
+			t.Fatalf("TruncateRevisions: %v", err)
+		}
+		list := &appsv1.ControllerRevisionList{}
+		if err := client.List(ctx, list); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		var mine []string
+		for i := range list.Items {
+			ref := metav1.GetControllerOfNoCopy(&list.Items[i])
+			if ref != nil && ref.UID == lws.UID {
+				mine = append(mine, GetRevisionKey(&list.Items[i]))
+			}
+		}
+		if len(mine) != 2 || mine[0] != "key-a" || mine[1] != "key-a" {
+			t.Fatalf("after truncate, owned revision keys = %v, want two key-a", mine)
+		}
+		if len(list.Items) != 3 {
+			t.Fatalf("truncate must not touch another controller's revision, total=%d want 3", len(list.Items))
+		}
+	})
 }
