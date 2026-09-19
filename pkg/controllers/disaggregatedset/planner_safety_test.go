@@ -21,9 +21,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestAvailabilityBounds(t *testing.T) {
+func TestPlannerAvailabilityBounds(t *testing.T) {
 	assert.Equal(t, 2, committedReadyReplicas(makeLWS(withReplicas(2), withReadyReplicas(4))))
 	assert.Equal(t, 1, committedReadyReplicas(makeLWS(withReplicas(3), withReadyReplicas(1))))
 	assert.Zero(t, committedReadyReplicas(nil))
@@ -66,19 +67,6 @@ func TestHardNewReplicaLimits(t *testing.T) {
 	assert.Equal(t, 3, bounded[1])
 }
 
-func TestFractionalCoordinationWindowUsesKEPExample(t *testing.T) {
-	snapshot := rolloutSnapshot{
-		{NewTargetReplicas: 8}, // Prefill
-		{NewTargetReplicas: 4}, // Decode
-	}
-
-	// Decode is the least-advanced role at 1/4. The window is also 1/4 wide,
-	// so Prefill may advance no farther than 1/2, or 4/8.
-	bounded := boundNewReplicaTargetsToCoordinationWindow(snapshot, RoleReplicaState{8, 1})
-
-	assert.Equal(t, RoleReplicaState{4, 1}, bounded)
-}
-
 func TestFractionalCoordinationWindowPreservesLargestReplicaFraction(t *testing.T) {
 	plannerTargets := []int{2, 2}
 	snapshot := rolloutSnapshot{
@@ -93,30 +81,101 @@ func TestFractionalCoordinationWindowPreservesLargestReplicaFraction(t *testing.
 	}
 
 	hardBounded := boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
-	bounded := boundNewReplicaTargetsToCoordinationWindow(snapshot, hardBounded)
+	bounded := boundGrowingRoleTargetsToWindow(
+		RoleReplicaState{snapshot[0].NewSpecReplicas, snapshot[1].NewSpecReplicas},
+		RoleReplicaState{snapshot[0].NewTargetReplicas, snapshot[1].NewTargetReplicas},
+		hardBounded,
+	)
 	assert.Equal(t, 1, bounded[0],
 		"100%% versus 33%% would exceed largestReplicaFraction=1/2")
 	assert.Equal(t, 1, bounded[1])
 
 	snapshot[1].NewReadyReplicas = 1
 	hardBounded = boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
-	bounded = boundNewReplicaTargetsToCoordinationWindow(snapshot, hardBounded)
+	bounded = boundGrowingRoleTargetsToWindow(
+		RoleReplicaState{snapshot[0].NewSpecReplicas, snapshot[1].NewSpecReplicas},
+		RoleReplicaState{snapshot[0].NewTargetReplicas, snapshot[1].NewTargetReplicas},
+		hardBounded,
+	)
 	assert.Equal(t, 2, bounded[0])
 	assert.Equal(t, 2, bounded[1])
 }
 
-func TestEnsureExecutableStepUsesSafeDrain(t *testing.T) {
+func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
 	snapshot := rolloutSnapshot{
 		{InitialOldReplicas: 4, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 4, NewReadyReplicas: 2, NewTargetReplicas: 4,
 			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
 		{InitialOldReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 1,
 			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
 	}
-	step := &UpdateStep{Past: []int{1, 1}, New: []int{4, 1}}
-
-	ensureExecutableStep(snapshot, step)
-
+	step := ComputeNextStep(snapshot)
+	require.NotNil(t, step)
 	assert.Equal(t, []int{1, 0}, step.Past)
+}
+
+func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
+	snapshot := rolloutSnapshot{{
+		InitialOldReplicas: 4,
+		OldSpecReplicas:    4,
+		OldReadyReplicas:   4,
+		NewTargetReplicas:  4,
+		Config:             RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1},
+	}}
+	step := ComputeNextStep(snapshot)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{3}, step.Past,
+		"one availability slot is used to make room for a replacement")
+
+	// The same configured budget is no longer usable while one old replica is
+	// unavailable. Readiness, rather than another forced drain, must unblock it.
+	snapshot[0].OldReadyReplicas = 3
+	assert.Nil(t, ComputeNextStep(snapshot))
+
+	snapshot[0].OldReadyReplicas = 4
+	step = ComputeNextStep(snapshot)
+	require.NotNil(t, step, "the slot becomes available again when the old replica recovers")
+	assert.Equal(t, RoleReplicaState{3}, step.Past)
+}
+
+func TestComputeNextStepKeepsDrainInsideWindow(t *testing.T) {
+	snapshot := rolloutSnapshot{
+		{
+			InitialOldReplicas: 4, OldSpecReplicas: 3, OldReadyReplicas: 3, NewTargetReplicas: 4,
+			Config: RollingUpdateConfig{MaxUnavailable: 2},
+		},
+		{
+			InitialOldReplicas: 8, OldSpecReplicas: 8, OldReadyReplicas: 8, NewTargetReplicas: 8,
+			Config: RollingUpdateConfig{MaxUnavailable: 1},
+		},
+	}
+	step := ComputeNextStep(snapshot)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{3, 7}, step.Past,
+		"the lagging role is drained instead of moving the leading role beyond the 1/4 window")
+}
+
+func TestOldTargetsApplyAvailabilityBeforeWindow(t *testing.T) {
+	snapshot := rolloutSnapshot{
+		{
+			InitialOldReplicas: 8, OldSpecReplicas: 8, OldReadyReplicas: 8, NewTargetReplicas: 8,
+			Config: RollingUpdateConfig{MaxUnavailable: 0},
+		},
+		{
+			InitialOldReplicas: 4, OldSpecReplicas: 4, OldReadyReplicas: 4, NewTargetReplicas: 4,
+			Config: RollingUpdateConfig{MaxUnavailable: 2},
+		},
+	}
+
+	availabilityBounded := boundOldReplicaTargetsByAvailability(snapshot, RoleReplicaState{6, 2})
+	assert.Equal(t, RoleReplicaState{8, 2}, availabilityBounded)
+
+	windowBounded := boundDrainingRoleTargetsToWindow(
+		RoleReplicaState{8, 4},
+		RoleReplicaState{8, 4},
+		availabilityBounded,
+	)
+	assert.Equal(t, RoleReplicaState{8, 3}, windowBounded,
+		"Decode may drain to the edge of the 1/4 window, but no farther")
 }
 
 func TestExecutorStateTransitionsExhaustive(t *testing.T) {
@@ -151,7 +210,7 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 						completed := false
 						for iteration := 0; iteration < 100; iteration++ {
 							assertRolloutSnapshotInvariants(t, roles, state, scenario, iteration)
-							initialOld, currentOld, currentNew, targetNew := plannerInputs(state)
+							_, currentOld, currentNew, targetNew, _ := plannerInputs(state)
 							if isComplete(currentOld, currentNew, targetNew) {
 								if isRolloutReady(state) {
 									completed = true
@@ -163,7 +222,7 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 								continue
 							}
 
-							step := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, config)
+							step := ComputeNextStep(state)
 							if step == nil {
 								if !makeOneNewReplicaReady(state) {
 									t.Fatalf("blocked without pending work: %s state=%+v", scenario, state)
@@ -171,10 +230,6 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 								continue
 							}
 
-							boundedNew := boundNewReplicaTargetsByHardLimits(state, step.New)
-							boundedNew = boundNewReplicaTargetsToCoordinationWindow(state, boundedNew)
-							step.New = boundedNew
-							ensureExecutableStep(state, step)
 							changed := false
 							for i, roleState := range state {
 								drain := min(max(0, roleState.OldSpecReplicas-step.Past[i]), maxSafeDrain(roleState))
@@ -183,8 +238,8 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 									roleState.OldReadyReplicas = min(roleState.OldReadyReplicas, roleState.OldSpecReplicas)
 									changed = true
 								}
-								if boundedNew[i] > roleState.NewSpecReplicas {
-									roleState.NewSpecReplicas = boundedNew[i]
+								if step.New[i] > roleState.NewSpecReplicas {
+									roleState.NewSpecReplicas = step.New[i]
 									changed = true
 								}
 								state[i] = roleState

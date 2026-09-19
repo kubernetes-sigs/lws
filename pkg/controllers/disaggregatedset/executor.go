@@ -143,9 +143,8 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 // reconcileExistingRollout executes one step of an in-progress rolling update:
 //  1. Refresh the current revision's initial replica values.
 //  2. Build a snapshot of issued and Ready replicas for every role.
-//  3. Ask the planner for the next old and new Spec counts.
-//  4. Limit that plan using current readiness, surge, and availability.
-//  5. Drain old revisions newest-first, then grow the current revision.
+//  3. Ask the planner for the next safe old and new Spec counts.
+//  4. Drain old revisions newest-first, then grow the current revision.
 //
 // Object updates and a one-second timer trigger the next step. The rollout is
 // complete only after the old Specs reach zero and the target revision is Ready.
@@ -167,9 +166,8 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoles, desiredRoles)...)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
 	snapshot := buildRolloutSnapshot(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, newRevision, desiredReplicasByRole, config)
-	initialOld, currentOld, currentNewSpec, targetNew := plannerInputs(snapshot)
 
-	if isComplete(currentOld, currentNewSpec, targetNew) {
+	if isRolloutSpecComplete(snapshot) {
 		if !isRolloutReady(snapshot) {
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: time.Second}, false, nil
@@ -179,14 +177,11 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			"Update", "Completed rolling update to revision %s", newRevision.Revision)
 		return ctrl.Result{}, true, nil
 	}
-	nextStep := ComputeNextStep(initialOld, currentOld, currentNewSpec, targetNew, config)
+	nextStep := ComputeNextStep(snapshot)
 	if nextStep == nil {
 		log.Info("Rolling update is temporarily blocked; waiting for state to change")
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
-	nextStep.New = boundNewReplicaTargetsByHardLimits(snapshot, nextStep.New)
-	nextStep.New = boundNewReplicaTargetsToCoordinationWindow(snapshot, nextStep.New)
-	ensureExecutableStep(snapshot, nextStep)
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
 
@@ -203,7 +198,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	}
 
 	// Object updates normally trigger the next reconcile immediately. The
-	// timer also covers a legal no-op while pending replicas become Ready.
+	// timer also lets the planner retry when pending replicas become Ready.
 	return ctrl.Result{RequeueAfter: time.Second}, false, nil
 }
 
@@ -224,6 +219,17 @@ func removedRoleNames(oldRoles, desiredRoles sets.Set[string]) []string {
 	removed := oldRoles.Difference(desiredRoles).UnsortedList()
 	slices.Sort(removed)
 	return removed
+}
+
+// committedReadyReplicas returns the Ready capacity that can authorize another
+// scale-down. Status can briefly report more Ready replicas than Spec after a
+// previous scale-down; those excess replicas are already terminating and must
+// not be counted again.
+func committedReadyReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
+	if lws == nil {
+		return 0
+	}
+	return max(0, min(int(lws.Status.ReadyReplicas), int(getLWSReplicas(lws))))
 }
 
 func buildRolloutSnapshot(
@@ -267,22 +273,6 @@ func buildRolloutSnapshot(
 	}
 
 	return snapshot
-}
-
-// plannerInputs projects the rollout snapshot onto the four replica vectors
-// used by the planner. Ready counts and safety limits remain in the executor.
-func plannerInputs(snapshot rolloutSnapshot) (initialOld, currentOld, currentNew, targetNew RoleReplicaState) {
-	initialOld = make(RoleReplicaState, len(snapshot))
-	currentOld = make(RoleReplicaState, len(snapshot))
-	currentNew = make(RoleReplicaState, len(snapshot))
-	targetNew = make(RoleReplicaState, len(snapshot))
-	for i, role := range snapshot {
-		initialOld[i] = role.InitialOldReplicas
-		currentOld[i] = role.OldSpecReplicas
-		currentNew[i] = role.NewSpecReplicas
-		targetNew[i] = role.NewTargetReplicas
-	}
-	return
 }
 
 func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {

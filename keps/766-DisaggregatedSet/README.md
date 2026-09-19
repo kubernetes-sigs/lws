@@ -87,7 +87,7 @@ We propose adding a new CRD called `DisaggregatedSet` that acts as a higher-leve
 
 **Risk**: The N-dimensional rolling update algorithm adds complexity that could lead to stuck rollouts.
 
-**Mitigation**: The controller distinguishes a completed rollout from one that is temporarily unable to progress. If it is waiting for replicas to become Ready, it requeues and tries again. If a zero-surge rollout cannot progress and no replicas are still starting, it permits a scale-down that respects `maxUnavailable` to unblock the next step. The controller identifies revisions using the `disaggregatedset.x-k8s.io/revision` label and reconstructs rollout state from the existing LeaderWorkerSets, so reconciliation can continue after a controller restart.
+**Mitigation**: The controller distinguishes a completed rollout from one that is temporarily unable to progress. The planner considers both requested and Ready replicas, so it returns only a step that is currently safe to execute. If readiness, surge, or availability leaves no valid step, the controller requeues and tries again instead of manufacturing progress outside those limits. The controller identifies revisions using the `disaggregatedset.x-k8s.io/revision` label and reconstructs rollout state from the existing LeaderWorkerSets, so reconciliation can continue after a controller restart.
 
 **Risk**: Adding a new CRD increases the API surface and maintenance burden.
 
@@ -210,7 +210,9 @@ Decode remaining   4 ---  4  ---  3  ---  3  ---  2  --- [2*  ---  1  ---  1 ] -
 
 The distance between adjacent columns is `1/8`, the `smallestReplicaFraction`. The window is two columns wide, or `2/8 = 1/4`, the `largestReplicaFraction`. Decode=2 maps to step 5 and defines the window. Prefill is at step 6, so it may advance to step 7 but no further until Decode advances. The window is then recalculated.
 
-This moving window is the fractional-lockstep guarantee. Roles can move by different replica counts, and their API updates are not atomic. Readiness, surge, and availability limits may make the executable part of the window smaller. To keep a zero-surge rollout moving, the controller may sometimes drain one old role beyond the normal old-side window, but that drain must still stay above the role's availability floor. `MaxSurge` and `MaxUnavailable` are enforced independently for each role. They do not provide an atomic availability guarantee across roles.
+This moving window is the fractional-lockstep guarantee. Roles can move by different replica counts, and they do not have to occupy the same fractional step. A planner step starting inside the window remains inside it. If observed state is already outside the window, the planner does not reverse applied work; it stops the leading roles and lets lagging roles catch up. Per-role limits can trim different parts of a candidate step, so the planner reapplies the window after those limits rather than cancelling every drain when one role cannot move.
+
+The planner also applies readiness-based limits before returning the step. If no mutation is currently safe, the controller waits for observed state to change. `MaxSurge` and `MaxUnavailable` are enforced independently for each role. They do not provide an atomic availability guarantee across roles.
 
 #### Issued work and available capacity
 
@@ -233,7 +235,7 @@ This prevents a terminating replica from authorizing another drain.
 
 #### Capacity and pending-work bounds
 
-`MaxSurge` and `MaxUnavailable` remain hard, absolute per-role limits. For each role the executor enforces:
+`MaxSurge` and `MaxUnavailable` remain hard, absolute per-role limits. For each role the planner enforces:
 
 ```
 roleReplicaCount  = max(initialOld, target)
@@ -261,7 +263,7 @@ This bounded window is what permits pipelining across slow pod starts. It does n
 
 #### Reconcile ordering and completion
 
-One plan may contain both an old-side drain and new-side growth. The executor applies the floor-safe old drain first and then grows the new revision, so the two API updates cannot create a transient surge violation. If readiness or capacity prevents either mutation, the controller requeues rather than mistaking the no-op for completion.
+One plan may contain both an old-side drain and new-side growth. Before returning the step, the planner limits old targets using committed Ready capacity and limits new targets using the surge and pending-readiness ceilings. It reapplies the coordination window after independent limits trim role targets. The executor then applies the floor-safe old drain before growing the new revision, so the two API updates cannot create a transient surge violation. If the bounded plan is a no-op, the controller requeues rather than mistaking the no-op for completion.
 
 Interrupted rollouts drain old revisions newest first. A revision is retired as soon as all of its role Specs are zero; stale status from its terminating pods neither blocks the next older revision nor contributes availability.
 

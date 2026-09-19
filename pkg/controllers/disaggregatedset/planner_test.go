@@ -35,6 +35,25 @@ func configs(surge, unavailable []int) []RollingUpdateConfig {
 	return result
 }
 
+func readySnapshot(
+	initialOld, currentOld, currentNew, targetNew RoleReplicaState,
+	config []RollingUpdateConfig,
+) rolloutSnapshot {
+	snapshot := make(rolloutSnapshot, len(initialOld))
+	for i := range initialOld {
+		snapshot[i] = roleRolloutSnapshot{
+			InitialOldReplicas: initialOld[i],
+			OldSpecReplicas:    currentOld[i],
+			OldReadyReplicas:   currentOld[i],
+			NewSpecReplicas:    currentNew[i],
+			NewReadyReplicas:   currentNew[i],
+			NewTargetReplicas:  targetNew[i],
+			Config:             config[i],
+		}
+	}
+	return snapshot
+}
+
 func rolloutCompletes(steps []UpdateStep, target []int) bool {
 	if len(steps) == 0 {
 		return false
@@ -91,30 +110,41 @@ func TestReplicaFractionCoordination(t *testing.T) {
 
 func TestComputeNextStep(t *testing.T) {
 	t.Run("complete", func(t *testing.T) {
-		result := ComputeNextStep(
+		result := ComputeNextStep(readySnapshot(
 			[]int{3, 6}, []int{0, 0}, []int{4, 7}, []int{3, 6},
 			configs([]int{1, 1}, []int{0, 0}),
-		)
+		))
 		assert.Nil(t, result)
 	})
 
 	t.Run("fresh rollout", func(t *testing.T) {
-		result := ComputeNextStep(
+		result := ComputeNextStep(readySnapshot(
 			[]int{4, 4}, []int{4, 4}, []int{0, 0}, []int{4, 4},
 			configs([]int{1, 1}, []int{0, 0}),
-		)
+		))
 		require.NotNil(t, result)
 		assert.Positive(t, result.New[0])
 		assert.Positive(t, result.New[1])
 	})
 
 	t.Run("new side catches up to released capacity", func(t *testing.T) {
-		result := ComputeNextStep(
+		result := ComputeNextStep(readySnapshot(
 			[]int{5, 5}, []int{3, 3}, []int{0, 0}, []int{5, 5},
 			configs([]int{0, 0}, []int{2, 2}),
-		)
+		))
 		require.NotNil(t, result)
 		assert.Equal(t, []int{2, 2}, result.New)
+	})
+
+	t.Run("allows progress up to the fractional window", func(t *testing.T) {
+		result := ComputeNextStep(readySnapshot(
+			[]int{2, 2}, []int{2, 2}, []int{0, 1}, []int{2, 2},
+			configs([]int{1, 1}, []int{0, 0}),
+		))
+		require.NotNil(t, result)
+		assert.Equal(t, []int{2, 1}, result.Past,
+			"Decode may drain one replica while Prefill remains at the other edge of the window")
+		assert.Equal(t, []int{1, 1}, result.New)
 	})
 }
 
@@ -143,9 +173,9 @@ func TestComputeAllSteps(t *testing.T) {
 			surge: []int{2, 2}, unavailable: []int{0, 0},
 			want: []UpdateStep{
 				step([]int{10, 2}, []int{0, 0}),
-				step([]int{9, 2}, []int{2, 3}),
-				step([]int{8, 2}, []int{3, 5}),
-				step([]int{7, 2}, []int{4, 7}),
+				step([]int{9, 2}, []int{2, 2}),
+				step([]int{8, 2}, []int{3, 4}),
+				step([]int{7, 2}, []int{4, 6}),
 				step([]int{6, 2}, []int{5, 8}),
 				step([]int{5, 1}, []int{6, 8}),
 				step([]int{4, 1}, []int{6, 8}),
@@ -312,7 +342,44 @@ func assertPlannerRolloutInvariants(
 			previous := steps[stepIndex-1]
 			assert.NotEqual(t, previous, state, "step %d makes no progress", stepIndex)
 		}
+
+		oldProgress := make(RoleReplicaState, len(initial))
+		for i := range initial {
+			oldProgress[i] = max(0, initial[i]-min(state.Past[i], initial[i]))
+		}
+		assertProgressWithinFractionalWindow(t, initial, oldProgress, stepIndex, "old")
+		assertProgressWithinFractionalWindow(t, target, state.New, stepIndex, "new")
 	}
+}
+
+func assertProgressWithinFractionalWindow(
+	t *testing.T,
+	roleReplicaCounts, progress RoleReplicaState,
+	stepIndex int,
+	side string,
+) {
+	t.Helper()
+	minProgress, maxProgress := 1.0, 0.0
+	minPositiveRoleReplicaCount := 0
+	for i, roleReplicaCount := range roleReplicaCounts {
+		if roleReplicaCount <= 0 {
+			continue
+		}
+		roleProgress := float64(progress[i]) / float64(roleReplicaCount)
+		minProgress = min(minProgress, roleProgress)
+		maxProgress = max(maxProgress, roleProgress)
+		if minPositiveRoleReplicaCount == 0 || roleReplicaCount < minPositiveRoleReplicaCount {
+			minPositiveRoleReplicaCount = roleReplicaCount
+		}
+	}
+	if minPositiveRoleReplicaCount == 0 {
+		return
+	}
+	assert.LessOrEqual(t,
+		maxProgress-minProgress,
+		1.0/float64(minPositiveRoleReplicaCount)+1e-9,
+		"step %d exceeds the %s-side fractional window", stepIndex, side,
+	)
 }
 
 func TestNRoleNewSideReplicaFractionCoordination(t *testing.T) {
