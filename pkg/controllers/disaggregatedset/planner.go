@@ -481,20 +481,24 @@ func calculateReplicaChanges(
 	}
 	for i := range initialOld {
 		roleReplicaCount := max(initialOld[i], targetNew[i])
-		ceiling := roleReplicaCount + projectBudget(roleReplicaCount, config[i].MaxSurge, steps.budgetStepCount)
-		floor := max(0, min(initialOld[i], targetNew[i])-
-			projectBudget(roleReplicaCount, config[i].MaxUnavailable, steps.budgetStepCount))
+		projectedSurgeBudget := projectBudget(roleReplicaCount, config[i].MaxSurge, steps.budgetStepCount)
+		projectedUnavailableBudget := projectBudget(roleReplicaCount, config[i].MaxUnavailable, steps.budgetStepCount)
+
+		surgeCeiling := roleReplicaCount + projectedSurgeBudget
+		unclampedAvailabilityFloor := min(initialOld[i], targetNew[i]) - projectedUnavailableBudget
+		availabilityFloor := max(0, unclampedAvailabilityFloor)
 		if config[i].MaxSurge == 0 && config[i].MaxUnavailable == 0 {
-			ceiling++
+			// Without either budget, the steady-state ceiling leaves no room
+			// for a replacement. Add one provisional slot to the Spec proposal;
+			// ComputeNextStep still applies the hard limits before returning it.
+			surgeCeiling++
 		}
 
 		total := currentOld[i] + currentNew[i]
 		wantedNew := wantReplicas(targetNew[i], steps.newStep, steps.newStepCount, false)
 		wantedOld := wantReplicas(initialOld[i], steps.oldStep, steps.oldStepCount, true)
-		changes.growBy[i] = min(max(wantedNew-currentNew[i], 0), max(0, ceiling-total))
-		scheduledDrain := max(0, currentOld[i]-wantedOld)
-		drainHeadroom := max(0, total-floor)
-		changes.drainBy[i] = min(scheduledDrain, drainHeadroom)
+		changes.growBy[i] = min(max(wantedNew-currentNew[i], 0), max(0, surgeCeiling-total))
+		changes.drainBy[i] = min(max(0, currentOld[i]-wantedOld), max(0, total-availabilityFloor))
 	}
 	return changes
 }
