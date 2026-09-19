@@ -22,6 +22,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -252,5 +254,125 @@ func TestGetEnvVarIfInContainer(t *testing.T) {
 				t.Errorf("Unexpected env var value, got: %s, expected: %s", envVarValue, tc.expectedEnvValue)
 			}
 		})
+	}
+}
+
+func TestPodReadinessHelpers(t *testing.T) {
+	ready := corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue}
+	notReady := corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionFalse}
+	containersReady := corev1.PodCondition{Type: corev1.ContainersReady, Status: corev1.ConditionTrue}
+
+	tests := []struct {
+		name                string
+		pod                 corev1.Pod
+		wantRunningAndReady bool
+		wantReady           bool
+		wantContainersReady bool
+	}{
+		{
+			name:                "running with ready condition true",
+			pod:                 corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{ready, containersReady}}},
+			wantRunningAndReady: true,
+			wantReady:           true,
+			wantContainersReady: true,
+		},
+		{
+			name:                "running but ready condition false",
+			pod:                 corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{notReady}}},
+			wantRunningAndReady: false,
+			wantReady:           false,
+		},
+		{
+			name:                "pending with ready condition true is not running and ready",
+			pod:                 corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{ready}}},
+			wantRunningAndReady: false,
+			wantReady:           true,
+		},
+		{
+			name:                "running without any ready condition",
+			pod:                 corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+			wantRunningAndReady: false,
+			wantReady:           false,
+		},
+		{
+			name:                "containers ready without pod ready",
+			pod:                 corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{containersReady}}},
+			wantRunningAndReady: false,
+			wantReady:           false,
+			wantContainersReady: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PodRunningAndReady(tc.pod); got != tc.wantRunningAndReady {
+				t.Fatalf("PodRunningAndReady()=%v, want %v", got, tc.wantRunningAndReady)
+			}
+			pod := tc.pod
+			if got := IsPodReady(&pod); got != tc.wantReady {
+				t.Fatalf("IsPodReady()=%v, want %v", got, tc.wantReady)
+			}
+			if got := IsPodReadyConditionTrue(pod.Status); got != tc.wantReady {
+				t.Fatalf("IsPodReadyConditionTrue()=%v, want %v", got, tc.wantReady)
+			}
+			if got := ContainersReady(&pod); got != tc.wantContainersReady {
+				t.Fatalf("ContainersReady()=%v, want %v", got, tc.wantContainersReady)
+			}
+		})
+	}
+}
+
+func TestGetPodCondition(t *testing.T) {
+	ready := corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue}
+	scheduled := corev1.PodCondition{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}
+
+	t.Run("nil status", func(t *testing.T) {
+		if idx, cond := GetPodCondition(nil, corev1.PodReady); idx != -1 || cond != nil {
+			t.Fatalf("GetPodCondition(nil)=%d,%v want -1,nil", idx, cond)
+		}
+	})
+	t.Run("nil conditions slice", func(t *testing.T) {
+		if idx, cond := GetPodConditionFromList(nil, corev1.PodReady); idx != -1 || cond != nil {
+			t.Fatalf("GetPodConditionFromList(nil)=%d,%v want -1,nil", idx, cond)
+		}
+	})
+	t.Run("empty conditions slice", func(t *testing.T) {
+		if idx, cond := GetPodConditionFromList([]corev1.PodCondition{}, corev1.PodReady); idx != -1 || cond != nil {
+			t.Fatalf("GetPodConditionFromList(empty)=%d,%v want -1,nil", idx, cond)
+		}
+	})
+	t.Run("returns the index of the matching condition", func(t *testing.T) {
+		status := corev1.PodStatus{Conditions: []corev1.PodCondition{scheduled, ready}}
+		idx, cond := GetPodCondition(&status, corev1.PodReady)
+		if idx != 1 || cond == nil || cond.Type != corev1.PodReady {
+			t.Fatalf("GetPodCondition()=%d,%v want index 1 and the Ready condition", idx, cond)
+		}
+		if got := GetPodReadyCondition(status); got == nil || got.Status != corev1.ConditionTrue {
+			t.Fatalf("GetPodReadyCondition()=%v want the Ready condition", got)
+		}
+	})
+	t.Run("returns nil for a type that is not present", func(t *testing.T) {
+		status := corev1.PodStatus{Conditions: []corev1.PodCondition{scheduled}}
+		if got := GetPodReadyCondition(status); got != nil {
+			t.Fatalf("GetPodReadyCondition()=%v want nil", got)
+		}
+	})
+}
+
+func TestPodDeletedAndLeaderPod(t *testing.T) {
+	now := metav1.Now()
+	if PodDeleted(corev1.Pod{}) {
+		t.Fatalf("PodDeleted() without deletionTimestamp must be false")
+	}
+	if !PodDeleted(corev1.Pod{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}) {
+		t.Fatalf("PodDeleted() with deletionTimestamp must be true")
+	}
+	if !LeaderPod(corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{leaderworkerset.WorkerIndexLabelKey: "0"}}}) {
+		t.Fatalf("LeaderPod() with worker index 0 must be true")
+	}
+	if LeaderPod(corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{leaderworkerset.WorkerIndexLabelKey: "1"}}}) {
+		t.Fatalf("LeaderPod() with worker index 1 must be false")
+	}
+	if LeaderPod(corev1.Pod{}) {
+		t.Fatalf("LeaderPod() without labels must be false")
 	}
 }
