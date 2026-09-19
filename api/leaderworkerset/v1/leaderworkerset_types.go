@@ -28,6 +28,12 @@ const (
 	// be used for 1:1 exclusive scheduling.
 	ExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology"
 
+	// Share topology annotation is used to specify the topology which will be used
+	// for co-location scheduling within the same replica, without anti-affinity
+	// between different replicas. Pods in the same replica will be scheduled to the
+	// same topology domain, but different replicas can share the same domain.
+	ShareTopologyAnnotationKey string = "leaderworkerset.sigs.k8s.io/share-topology"
+
 	// Subgroup exclusive topology annotation is used to specify the topology
 	// which will be used for 1:1 exclusive scheduling in a given subgroup.
 	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"

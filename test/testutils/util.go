@@ -604,6 +604,32 @@ func ValidatePodExclusivePlacementTerms(pod corev1.Pod, exclusiveAnnotationKey s
 	return validAffinity && validAntiAffinity && termsCount == 1
 }
 
+// ValidatePodShareTopologyTerms checks that the pod has exactly one pod affinity term
+// pinning it to other members of its group, and no pod anti-affinity: share topology
+// co-locates group members without forcing topology exclusivity.
+func ValidatePodShareTopologyTerms(pod corev1.Pod, shareAnnotationKey string, uniqueHashLabelKey string) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	if pod.Spec.Affinity.PodAntiAffinity != nil {
+		return false
+	}
+	termsCount := 0
+	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if podAffinityTerm.TopologyKey != pod.Annotations[shareAnnotationKey] {
+			continue
+		}
+		if podAffinityTerm.LabelSelector == nil || len(podAffinityTerm.LabelSelector.MatchExpressions) == 0 {
+			continue
+		}
+		requirement := podAffinityTerm.LabelSelector.MatchExpressions[0]
+		if requirement.Key == uniqueHashLabelKey && requirement.Operator == metav1.LabelSelectorOpIn && len(requirement.Values) > 0 && requirement.Values[0] != "" {
+			termsCount++
+		}
+	}
+	return termsCount == 1
+}
+
 func UpdateReplicaCount(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, count int32) {
 	gomega.Eventually(func() error {
 		var leaderworkerset leaderworkerset.LeaderWorkerSet

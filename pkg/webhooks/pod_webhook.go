@@ -134,6 +134,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
 			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+		} else if spKey := pod.Annotations[leaderworkerset.ShareTopologyAnnotationKey]; spKey != "" {
+			SetShareAffinities(pod, groupUniqueKey, spKey, leaderworkerset.GroupUniqueHashLabelKey)
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
@@ -307,4 +309,47 @@ func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)
 	}
 	return fmt.Sprint(workerIndex / subGroupSize)
+}
+
+// SetShareAffinities sets the pod affinity to co-locate all pods of a group on the
+// same topology domain, without anti-affinity between groups: unlike exclusive
+// placement, multiple groups may share one topology domain.
+func SetShareAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+	if shareAffinityApplied(*pod, topologyKey) {
+		return
+	}
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &corev1.Affinity{}
+	}
+	if pod.Spec.Affinity.PodAffinity == nil {
+		pod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+	}
+	// Pod affinity ensures the pods of this set land on the same topology domain.
+	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{groupUniqueKey},
+				},
+			}},
+			TopologyKey: topologyKey,
+		})
+
+}
+
+// shareAffinityApplied returns true if the pod already has a required pod affinity
+// term for the given topology key. Unlike exclusiveAffinityApplied it does not
+// require an anti-affinity term, since share placement sets none.
+func shareAffinityApplied(pod corev1.Pod, topologyKey string) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	for _, term := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey == topologyKey {
+			return true
+		}
+	}
+	return false
 }

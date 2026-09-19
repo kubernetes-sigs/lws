@@ -258,6 +258,23 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
+		ginkgo.Entry("creation with both exclusive-topology and share-topology should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Annotation(map[string]string{
+					leaderworkerset.ExclusiveKeyAnnotationKey:  "cloud.google.com/gke-nodepool",
+					leaderworkerset.ShareTopologyAnnotationKey: "cloud.google.com/gke-nodepool",
+				})
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("creation with only share-topology should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).Annotation(map[string]string{
+					leaderworkerset.ShareTopologyAnnotationKey: "cloud.google.com/gke-nodepool",
+				})
+			},
+			lwsCreationShouldFail: false,
+		}),
 		ginkgo.Entry("creation with subGroupSize larger than size should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).SubGroupSize(3)

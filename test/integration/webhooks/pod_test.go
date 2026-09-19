@@ -619,6 +619,53 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("Leader pod with share topology enabled has pod affinity and no anti-affinity", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:          "4",
+							leaderworkerset.ShareTopologyAnnotationKey: "topologyKey",
+						},
+					},
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodShareTopologyTerms(got, leaderworkerset.ShareTopologyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader pod with share topology enabled will not re-apply affinity terms", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:          "4",
+							leaderworkerset.ShareTopologyAnnotationKey: "topologyKey",
+						},
+					},
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodShareTopologyTerms(got, leaderworkerset.ShareTopologyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				gomega.Expect(got.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(gomega.HaveLen(1))
+				return nil
+			},
+		}),
 		ginkgo.Entry("Leader pod with exclusive placement enabled have pod affinity/anti-affinity", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
