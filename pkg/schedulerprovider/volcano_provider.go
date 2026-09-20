@@ -68,7 +68,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 			owner.APIVersion != corev1.SchemeGroupVersion.String() ||
 			owner.Kind != "Pod" ||
 			owner.Name != leaderPod.Name {
-			return fmt.Errorf("podgroup %s is owned by an unexpected object", pgName)
+			return fmt.Errorf("podgroup %s/%s has an unexpected controller owner: %+v", pg.Namespace, pgName, owner)
 		}
 		if owner.UID == leaderPod.UID {
 			return nil
