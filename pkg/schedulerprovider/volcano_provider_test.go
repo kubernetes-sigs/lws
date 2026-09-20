@@ -201,9 +201,8 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 				},
 				Spec: volcanov1beta1.PodGroupSpec{MinMember: 3},
 			},
-			expectError:   true,
-			expectErrorIs: ErrPodGroupNotReady,
-			expectExists:  true,
+			expectError:  true,
+			expectExists: true,
 		},
 		{
 			name: "return error without deleting podgroup owned by unexpected object",
@@ -235,8 +234,9 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 				},
 				Spec: volcanov1beta1.PodGroupSpec{MinMember: 3},
 			},
-			expectError:  true,
-			expectExists: true,
+			expectError:   true,
+			expectErrorIs: ErrUnexpectedPodGroupOwner,
+			expectExists:  true,
 		},
 		{
 			name: "podgroup already exists with current owner and no labels",
@@ -289,8 +289,7 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 				},
 				Spec: volcanov1beta1.PodGroupSpec{MinMember: 3},
 			},
-			expectError:   true,
-			expectErrorIs: ErrPodGroupNotReady,
+			expectError: true,
 		},
 		{
 			name: "create podgroup inherit volcano annotations",
@@ -379,6 +378,8 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 				assert.Error(t, err)
 				if tt.expectErrorIs != nil {
 					assert.ErrorIs(t, err, tt.expectErrorIs)
+				} else {
+					assert.NotErrorIs(t, err, ErrUnexpectedPodGroupOwner)
 				}
 				if tt.injectGetError != nil {
 					assert.Equal(t, tt.injectGetError, err)
@@ -434,7 +435,8 @@ func TestVolcanoProvider_RecreatesPodGroupAfterGarbageCollection(t *testing.T) {
 	provider := NewVolcanoProvider(fakeClient)
 
 	err := provider.CreatePodGroupIfNotExists(ctx, lws, leaderPod)
-	assert.ErrorIs(t, err, ErrPodGroupNotReady)
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrUnexpectedPodGroupOwner)
 	var actualPG volcanov1beta1.PodGroup
 	assert.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &actualPG))
 

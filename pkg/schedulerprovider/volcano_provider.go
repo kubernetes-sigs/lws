@@ -18,7 +18,6 @@ package schedulerprovider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -38,9 +37,6 @@ const (
 	VolcanoAnnotationPrefix string       = "volcano.sh/"
 )
 
-// ErrPodGroupNotReady indicates that an existing PodGroup cannot be used yet.
-var ErrPodGroupNotReady = errors.New("podgroup is not ready")
-
 type VolcanoProvider struct {
 	client client.Client
 }
@@ -58,7 +54,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 
 	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
 		if pg.DeletionTimestamp != nil {
-			return fmt.Errorf("%w: podgroup %s is being deleted", ErrPodGroupNotReady, pgName)
+			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
 		owner := metav1.GetControllerOf(&pg)
@@ -68,7 +64,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 			owner.APIVersion != corev1.SchemeGroupVersion.String() ||
 			owner.Kind != "Pod" ||
 			owner.Name != leaderPod.Name {
-			return fmt.Errorf("podgroup %s/%s has an unexpected controller owner: %+v", pg.Namespace, pgName, owner)
+			return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected v1 Pod %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, leaderPod.Name, leaderPod.UID)
 		}
 		if owner.UID == leaderPod.UID {
 			return nil
@@ -76,7 +72,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 
 		// The stale PodGroup is owned by the previous leader Pod. Wait for owner-reference garbage collection
 		// to delete it, then create a PodGroup owned by the current leader Pod on a subsequent reconciliation.
-		return fmt.Errorf("%w: podgroup %s belongs to a previous leader pod", ErrPodGroupNotReady, pgName)
+		return fmt.Errorf("waiting for podgroup %s/%s owned by previous leader UID %s to be deleted; current leader UID is %s", pg.Namespace, pgName, owner.UID, leaderPod.UID)
 	} else if client.IgnoreNotFound(err) != nil {
 		return err
 	}

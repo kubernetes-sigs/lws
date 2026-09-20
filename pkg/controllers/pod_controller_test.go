@@ -18,6 +18,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +36,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -59,7 +63,7 @@ func (*stubSchedulerProvider) InjectPodGroupMetadata(*corev1.Pod) error {
 	return nil
 }
 
-func TestPodReconcilerRequeuesWhenPodGroupIsNotReady(t *testing.T) {
+func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(testScheme); err != nil {
 		t.Fatal(err)
@@ -84,22 +88,45 @@ func TestPodReconcilerRequeuesWhenPodGroupIsNotReady(t *testing.T) {
 			},
 		},
 	}
-	provider := &stubSchedulerProvider{createErr: schedulerprovider.ErrPodGroupNotReady}
-	reconciler := &PodReconciler{
-		Client:            fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lws, leaderPod).Build(),
-		Scheme:            testScheme,
-		SchedulerProvider: provider,
-	}
-
-	result, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leaderPod, false))
-	if err != nil {
-		t.Fatalf("Reconcile() error = %v", err)
-	}
-	if result.RequeueAfter != podGroupRequeueDelay {
-		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, podGroupRequeueDelay)
-	}
-	if provider.calls != 1 {
-		t.Fatalf("CreatePodGroupIfNotExists() calls = %d, want 1", provider.calls)
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantEvent bool
+	}{
+		{name: "waiting for garbage collection", err: errors.New("waiting for podgroup deletion")},
+		{name: "unexpected owner", err: fmt.Errorf("%w: conflicting owner", schedulerprovider.ErrUnexpectedPodGroupOwner), wantEvent: true},
+		{name: "API failure", err: errors.New("API unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &stubSchedulerProvider{createErr: tc.err}
+			recorder := events.NewFakeRecorder(1)
+			reconciler := &PodReconciler{
+				Client:            fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lws, leaderPod).Build(),
+				Scheme:            testScheme,
+				SchedulerProvider: provider,
+				Record:            recorder,
+			}
+			result, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leaderPod, false))
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("reconcilePod() error = %v, want %v", err, tc.err)
+			}
+			if !result.IsZero() {
+				t.Fatalf("expected error-based retry without explicit requeue, got %+v", result)
+			}
+			if provider.calls != 1 {
+				t.Fatalf("provider calls = %d, want 1", provider.calls)
+			}
+			select {
+			case event := <-recorder.Events:
+				if !tc.wantEvent || !strings.Contains(event, "Warning UnexpectedPodGroupOwner") || !strings.Contains(event, tc.err.Error()) {
+					t.Fatalf("unexpected event: %s", event)
+				}
+			default:
+				if tc.wantEvent {
+					t.Fatal("expected unexpected-owner warning event")
+				}
+			}
+		})
 	}
 }
 
