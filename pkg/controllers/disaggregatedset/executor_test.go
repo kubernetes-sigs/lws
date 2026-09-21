@@ -186,19 +186,15 @@ func createLWSForTest(
 	specReplicas, readyReplicas int32,
 	podSpec corev1.PodSpec,
 	ownerRef metav1.OwnerReference,
-	createdAt ...time.Time,
 ) client.Object {
-	lws := wrappers.BuildBasicLeaderWorkerSet(name, "default").
+	return wrappers.BuildBasicLeaderWorkerSet(name, "default").
 		Labels(labels).
 		Replica(int(specReplicas)).
 		StatusReplicas(specReplicas).
 		ReadyReplicas(readyReplicas).
 		OwnerReference(ownerRef).
-		WorkerTemplateSpec(podSpec)
-	if len(createdAt) > 0 {
-		lws.CreationTimestamp(createdAt[0])
-	}
-	return lws.Obj()
+		WorkerTemplateSpec(podSpec).
+		Obj()
 }
 
 func withInitialReplicas(obj client.Object, replicas int32) client.Object {
