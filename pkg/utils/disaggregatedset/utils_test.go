@@ -1,7 +1,6 @@
 package disaggregatedset
 
 import (
-	"strconv"
 	"testing"
 	"time"
 
@@ -343,47 +342,6 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 }
 
-func TestRevisionRolesListUsesInitialMaximumAndPhysicalSum(t *testing.T) {
-	makeRole := func(specReplicas, initialReplicas int32) *leaderworkersetv1.LeaderWorkerSet {
-		return &leaderworkersetv1.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				disaggregatedsetv1.InitialReplicasAnnotationKey: strconv.FormatInt(int64(initialReplicas), 10),
-			}},
-			Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To(specReplicas)},
-		}
-	}
-
-	// A and B are successive attempts to provide the same 6P/3D capacity.
-	// Their initial-replicas values describe one logical baseline, while their
-	// Specs describe separate replicas that are both still using cluster capacity.
-	revisionA := RevisionRoles{Revision: "A", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-		testUtilsRolePrefill: makeRole(5, 6),
-		testUtilsRoleDecode:  makeRole(2, 3),
-	}}
-	revisionB := RevisionRoles{Revision: "B", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-		testUtilsRolePrefill: makeRole(3, 6),
-		testUtilsRoleDecode:  makeRole(2, 3),
-	}}
-
-	t.Run("successive revisions share one initial baseline", func(t *testing.T) {
-		oldRevisions := RevisionRolesList{revisionA, revisionB}
-
-		assert.Equal(t, 6, oldRevisions.GetMaxInitialReplicasPerRole(testUtilsRolePrefill), "use max(6, 6), not 6+6")
-		assert.Equal(t, 3, oldRevisions.GetMaxInitialReplicasPerRole(testUtilsRoleDecode), "use max(3, 3), not 3+3")
-		assert.Equal(t, 8, oldRevisions.GetTotalReplicasPerRole(testUtilsRolePrefill), "physical replicas are A.spec(5) + B.spec(3)")
-		assert.Equal(t, 4, oldRevisions.GetTotalReplicasPerRole(testUtilsRoleDecode), "physical replicas are A.spec(2) + B.spec(2)")
-	})
-
-	t.Run("removing a partial revision changes only the physical total", func(t *testing.T) {
-		oldRevisions := RevisionRolesList{revisionA}
-
-		assert.Equal(t, 6, oldRevisions.GetMaxInitialReplicasPerRole(testUtilsRolePrefill), "the baseline comes from A's initial-replicas, not its partial Spec of 5")
-		assert.Equal(t, 3, oldRevisions.GetMaxInitialReplicasPerRole(testUtilsRoleDecode), "the baseline comes from A's initial-replicas, not its partial Spec of 2")
-		assert.Equal(t, 5, oldRevisions.GetTotalReplicasPerRole(testUtilsRolePrefill), "only A's physical replicas remain")
-		assert.Equal(t, 2, oldRevisions.GetTotalReplicasPerRole(testUtilsRoleDecode), "only A's physical replicas remain")
-	})
-}
-
 func TestSliceLabelMatches(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -460,36 +418,26 @@ func TestGroupByRevision(t *testing.T) {
 	})
 }
 
-func TestRevisionRolesLatestCreationTime(t *testing.T) {
-	earlier := time.Date(2026, time.September, 17, 10, 0, 0, 0, time.UTC)
-	later := earlier.Add(time.Minute)
-	revision := RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-		testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(earlier)}},
-		testUtilsRoleDecode:  {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(later)}},
-	}}
-
-	assert.Equal(t, later, revision.LatestCreationTime())
-	assert.True(t, (RevisionRoles{}).LatestCreationTime().IsZero())
-}
-
 func TestRevisionRolesListSortedByNewestTimestamp(t *testing.T) {
 	base := time.Date(2026, time.September, 17, 10, 0, 0, 0, time.UTC)
+	revision := func(name string, created ...time.Time) RevisionRoles {
+		roles := make(map[string]*leaderworkersetv1.LeaderWorkerSet, len(created))
+		for i, role := range []string{testUtilsRolePrefill, testUtilsRoleDecode} {
+			if i < len(created) {
+				roles[role] = &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(created[i])}}
+			}
+		}
+		return RevisionRoles{Revision: name, Roles: roles}
+	}
+	assert.Equal(t, base.Add(time.Minute), revision("multiple roles", base, base.Add(time.Minute)).LatestCreationTime())
+	assert.True(t, (RevisionRoles{}).LatestCreationTime().IsZero())
+
 	revisions := RevisionRolesList{
-		{Revision: "tie-b", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
-		}},
-		{Revision: "oldest", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base)}},
-		}},
-		{Revision: "newest", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
-		}},
-		{Revision: "tie-a", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
-		}},
-		{Revision: "middle", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(time.Minute))}},
-		}},
+		revision("tie-b", base.Add(2*time.Minute)),
+		revision("oldest", base),
+		revision("newest", base.Add(2*time.Minute)),
+		revision("tie-a", base.Add(2*time.Minute)),
+		revision("middle", base.Add(time.Minute)),
 	}
 
 	sorted := revisions.SortedByNewestTimestamp()

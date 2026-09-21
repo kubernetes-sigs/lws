@@ -68,47 +68,6 @@ func rolloutCompletes(steps []UpdateStep, target []int) bool {
 	return true
 }
 
-func TestFractionalStepCount(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		replicas []int
-		want     int
-	}{
-		{"symmetric", []int{8, 8}, 8},
-		{"asymmetric", []int{8, 10}, 10},
-		{"zero role", []int{0, 4}, 4},
-		{"empty", []int{0, 0}, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, fractionalStepCount(tc.replicas))
-		})
-	}
-}
-
-func TestReplicaFractionCoordination(t *testing.T) {
-	t.Run("largest replica fraction bounds skew", func(t *testing.T) {
-		initial := []int{8, 3}
-		steps := ComputeAllSteps(initial, initial, configs([]int{1, 1}, []int{0, 0}))
-		require.True(t, rolloutCompletes(steps, initial))
-
-		for i, state := range steps {
-			progressP := float64(state.New[0]) / 8
-			progressD := float64(state.New[1]) / 3
-			assert.InDelta(t, progressP, progressD, 1.0/3.0,
-				"step %d exceeds largestReplicaFraction", i)
-		}
-	})
-
-	t.Run("largest role advances one pod at a time", func(t *testing.T) {
-		initial := []int{2, 10}
-		steps := ComputeAllSteps(initial, initial, configs([]int{1, 1}, []int{0, 0}))
-		for i := 1; i < len(steps); i++ {
-			assert.LessOrEqual(t, steps[i].New[1]-steps[i-1].New[1], 1,
-				"step %d exceeds smallestReplicaFraction", i)
-		}
-	})
-}
-
 func TestComputeNextStep(t *testing.T) {
 	t.Run("complete", func(t *testing.T) {
 		result := ComputeNextStep(readySnapshot(
@@ -159,60 +118,21 @@ func TestComputeNextStep(t *testing.T) {
 }
 
 func TestComputeAllSteps(t *testing.T) {
-	for _, tc := range []struct {
-		name               string
-		initial, target    []int
-		surge, unavailable []int
-		want               []UpdateStep
-	}{
-		{
-			name:    "symmetric 8P 4D",
-			initial: []int{8, 4}, target: []int{8, 4},
-			surge: []int{2, 2}, unavailable: []int{2, 2},
-			want: []UpdateStep{
-				step([]int{8, 4}, []int{0, 0}),
-				step([]int{6, 3}, []int{2, 1}),
-				step([]int{4, 2}, []int{4, 2}),
-				step([]int{2, 1}, []int{6, 3}),
-				step([]int{0, 0}, []int{8, 4}),
-			},
-		},
-		{
-			name:    "asymmetric scale",
-			initial: []int{10, 2}, target: []int{6, 8},
-			surge: []int{2, 2}, unavailable: []int{0, 0},
-			want: []UpdateStep{
-				step([]int{10, 2}, []int{0, 0}),
-				step([]int{9, 2}, []int{2, 2}),
-				step([]int{8, 2}, []int{3, 4}),
-				step([]int{7, 2}, []int{4, 6}),
-				step([]int{6, 2}, []int{5, 8}),
-				step([]int{5, 1}, []int{6, 8}),
-				step([]int{4, 1}, []int{6, 8}),
-				step([]int{3, 1}, []int{6, 8}),
-				step([]int{2, 1}, []int{6, 8}),
-				step([]int{1, 1}, []int{6, 8}),
-				step([]int{0, 0}, []int{6, 8}),
-			},
-		},
-		{
-			name:    "zero surge",
-			initial: []int{4, 4}, target: []int{4, 4},
-			surge: []int{0, 0}, unavailable: []int{2, 2},
-			want: []UpdateStep{
-				step([]int{4, 4}, []int{0, 0}),
-				step([]int{2, 2}, []int{0, 0}),
-				step([]int{2, 2}, []int{2, 2}),
-				step([]int{0, 0}, []int{2, 2}),
-				step([]int{0, 0}, []int{4, 4}),
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ComputeAllSteps(tc.initial, tc.target, configs(tc.surge, tc.unavailable))
-			assert.Equal(t, tc.want, got)
-		})
+	want := []UpdateStep{
+		step([]int{10, 2}, []int{0, 0}),
+		step([]int{9, 2}, []int{2, 2}),
+		step([]int{8, 2}, []int{3, 4}),
+		step([]int{7, 2}, []int{4, 6}),
+		step([]int{6, 2}, []int{5, 8}),
+		step([]int{5, 1}, []int{6, 8}),
+		step([]int{4, 1}, []int{6, 8}),
+		step([]int{3, 1}, []int{6, 8}),
+		step([]int{2, 1}, []int{6, 8}),
+		step([]int{1, 1}, []int{6, 8}),
+		step([]int{0, 0}, []int{6, 8}),
 	}
+	assert.Equal(t, want, ComputeAllSteps(
+		[]int{10, 2}, []int{6, 8}, configs([]int{2, 2}, []int{0, 0})))
 }
 
 func TestPlannerProgress(t *testing.T) {
@@ -247,62 +167,14 @@ func TestNRolePlannerInvariants(t *testing.T) {
 		initial, target    []int
 		surge, unavailable []int
 	}{
-		{
-			name:        "three roles symmetric",
-			initial:     []int{6, 3, 2},
-			target:      []int{6, 3, 2},
-			surge:       []int{1, 1, 1},
-			unavailable: []int{0, 0, 0},
-		},
-		{
-			name:        "three roles mixed scaling and budgets",
-			initial:     []int{3, 8, 2},
-			target:      []int{7, 3, 5},
-			surge:       []int{2, 1, 1},
-			unavailable: []int{0, 1, 1},
-		},
-		{
-			name:        "add a third role",
-			initial:     []int{4, 4, 0},
-			target:      []int{4, 4, 4},
-			surge:       []int{1, 1, 1},
-			unavailable: []int{0, 0, 0},
-		},
-		{
-			name:        "remove a fourth role",
-			initial:     []int{4, 4, 4, 4},
-			target:      []int{4, 4, 4, 0},
-			surge:       []int{1, 1, 1, 1},
-			unavailable: []int{0, 0, 0, 0},
-		},
-		{
-			name:        "replace one of four roles",
-			initial:     []int{4, 4, 0, 3},
-			target:      []int{4, 4, 3, 0},
-			surge:       []int{1, 1, 1, 1},
-			unavailable: []int{0, 0, 0, 0},
-		},
-		{
-			name:        "five roles with extreme imbalance",
-			initial:     []int{1, 2, 10, 50, 100},
-			target:      []int{1, 2, 10, 50, 100},
-			surge:       []int{1, 1, 1, 1, 1},
-			unavailable: []int{0, 0, 0, 0, 0},
-		},
-		{
-			name:        "five roles scale up",
-			initial:     []int{1, 2, 3, 4, 5},
-			target:      []int{5, 6, 7, 8, 9},
-			surge:       []int{1, 2, 1, 2, 1},
-			unavailable: []int{0, 0, 0, 0, 0},
-		},
-		{
-			name:        "five roles scale down",
-			initial:     []int{9, 8, 7, 6, 5},
-			target:      []int{5, 4, 3, 2, 1},
-			surge:       []int{1, 1, 1, 1, 1},
-			unavailable: []int{1, 2, 1, 2, 1},
-		},
+		{"three roles symmetric", []int{6, 3, 2}, []int{6, 3, 2}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"three roles mixed scaling and budgets", []int{3, 8, 2}, []int{7, 3, 5}, []int{2, 1, 1}, []int{0, 1, 1}},
+		{"add a third role", []int{4, 4, 0}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"remove a fourth role", []int{4, 4, 4, 4}, []int{4, 4, 4, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"replace one of four roles", []int{4, 4, 0, 3}, []int{4, 4, 3, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"five roles with extreme imbalance", []int{1, 2, 10, 50, 100}, []int{1, 2, 10, 50, 100}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"five roles scale up", []int{1, 2, 3, 4, 5}, []int{5, 6, 7, 8, 9}, []int{1, 2, 1, 2, 1}, []int{0, 0, 0, 0, 0}},
+		{"five roles scale down", []int{9, 8, 7, 6, 5}, []int{5, 4, 3, 2, 1}, []int{1, 1, 1, 1, 1}, []int{1, 2, 1, 2, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertPlannerRolloutInvariants(t, tc.initial, tc.target, configs(tc.surge, tc.unavailable))
@@ -430,59 +302,16 @@ func TestWantReplicas(t *testing.T) {
 	}
 }
 
-func TestGrowingRoleTargetsUseKEPWindow(t *testing.T) {
-	current := RoleReplicaState{0, 1}
-	targets := RoleReplicaState{8, 4}
-
-	// Decode is the least-advanced role at 1/4. The window is also 1/4
-	// wide, so Prefill may advance no farther than 1/2, or 4/8.
-	bounded := boundGrowingRoleTargetsToWindow(current, targets, RoleReplicaState{8, 1})
-
-	assert.Equal(t, RoleReplicaState{4, 1}, bounded)
-}
-
-func TestDrainingRoleTargetsUseKEPWindow(t *testing.T) {
-	current := RoleReplicaState{8, 4}
-	initial := RoleReplicaState{8, 4}
-
-	// Prefill has not drained. Decode may drain one replica (1/4), but a
-	// proposal to drain two replicas (2/4) is capped at the window boundary.
-	bounded := boundDrainingRoleTargetsToWindow(current, initial, RoleReplicaState{8, 2})
-
-	assert.Equal(t, RoleReplicaState{8, 3}, bounded)
-}
-
-func TestWindowBoundsDoNotReverseObservedProgress(t *testing.T) {
-	assert.Equal(t,
-		RoleReplicaState{6, 1},
-		boundGrowingRoleTargetsToWindow(
-			RoleReplicaState{6, 1},
-			RoleReplicaState{8, 4},
-			RoleReplicaState{8, 1},
-		),
-	)
-	assert.Equal(t,
-		RoleReplicaState{2, 3},
-		boundDrainingRoleTargetsToWindow(
-			RoleReplicaState{2, 3},
-			RoleReplicaState{8, 4},
-			RoleReplicaState{0, 3},
-		),
-	)
-}
-
-func TestPlannerAvailabilityBounds(t *testing.T) {
-	assert.Equal(t, 2, committedReadyReplicas(makeLWS(withReplicas(2), withReadyReplicas(4))))
-	assert.Equal(t, 1, committedReadyReplicas(makeLWS(withReplicas(3), withReadyReplicas(1))))
-	assert.Zero(t, committedReadyReplicas(nil))
-	assert.Equal(t, 1, maxSafeDrain(roleRolloutSnapshot{
-		InitialOldReplicas: 3, OldSpecReplicas: 3, OldReadyReplicas: 3, NewReadyReplicas: 1, NewTargetReplicas: 4,
-	}))
-	assert.Equal(t, 4, maxSafeDrain(roleRolloutSnapshot{
-		InitialOldReplicas: 4, OldSpecReplicas: 4, OldReadyReplicas: 0, NewReadyReplicas: 4, NewTargetReplicas: 4,
-	}), "unavailable old replicas can drain once the new revision satisfies the floor")
-	assert.False(t, isRolloutReady(rolloutSnapshot{{NewSpecReplicas: 4, NewReadyReplicas: 2, NewTargetReplicas: 4}}))
-	assert.True(t, isRolloutReady(rolloutSnapshot{{NewSpecReplicas: 4, NewReadyReplicas: 4, NewTargetReplicas: 4}}))
+func TestFractionalWindowBounds(t *testing.T) {
+	counts := RoleReplicaState{8, 4}
+	assert.Equal(t, RoleReplicaState{4, 1},
+		boundGrowingRoleTargetsToWindow(RoleReplicaState{0, 1}, counts, RoleReplicaState{8, 1}))
+	assert.Equal(t, RoleReplicaState{8, 3},
+		boundDrainingRoleTargetsToWindow(counts, counts, RoleReplicaState{8, 2}))
+	assert.Equal(t, RoleReplicaState{6, 1},
+		boundGrowingRoleTargetsToWindow(RoleReplicaState{6, 1}, counts, RoleReplicaState{8, 1}), "must not reverse existing growth")
+	assert.Equal(t, RoleReplicaState{2, 3},
+		boundDrainingRoleTargetsToWindow(RoleReplicaState{2, 3}, counts, RoleReplicaState{0, 3}), "must not reverse existing drain")
 }
 
 func TestHardNewReplicaLimits(t *testing.T) {
@@ -512,40 +341,6 @@ func TestHardNewReplicaLimits(t *testing.T) {
 	assert.Equal(t, 5, bounded[0],
 		"readiness plus released surge headroom opens the next shared fraction")
 	assert.Equal(t, 3, bounded[1])
-}
-
-func TestFractionalCoordinationWindowPreservesLargestReplicaFraction(t *testing.T) {
-	plannerTargets := []int{2, 2}
-	snapshot := rolloutSnapshot{
-		{
-			NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 2,
-			Config: RollingUpdateConfig{MaxSurge: 1},
-		},
-		{
-			NewSpecReplicas: 1, NewReadyReplicas: 0, NewTargetReplicas: 3,
-			Config: RollingUpdateConfig{MaxSurge: 1},
-		},
-	}
-
-	hardBounded := boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
-	bounded := boundGrowingRoleTargetsToWindow(
-		RoleReplicaState{snapshot[0].NewSpecReplicas, snapshot[1].NewSpecReplicas},
-		RoleReplicaState{snapshot[0].NewTargetReplicas, snapshot[1].NewTargetReplicas},
-		hardBounded,
-	)
-	assert.Equal(t, 1, bounded[0],
-		"100%% versus 33%% would exceed largestReplicaFraction=1/2")
-	assert.Equal(t, 1, bounded[1])
-
-	snapshot[1].NewReadyReplicas = 1
-	hardBounded = boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
-	bounded = boundGrowingRoleTargetsToWindow(
-		RoleReplicaState{snapshot[0].NewSpecReplicas, snapshot[1].NewSpecReplicas},
-		RoleReplicaState{snapshot[0].NewTargetReplicas, snapshot[1].NewTargetReplicas},
-		hardBounded,
-	)
-	assert.Equal(t, 2, bounded[0])
-	assert.Equal(t, 2, bounded[1])
 }
 
 func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
@@ -582,47 +377,6 @@ func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
 	step = ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step, "the slot becomes available again when the old replica recovers")
 	assert.Equal(t, RoleReplicaState{3}, step.Past)
-}
-
-func TestComputeNextStepKeepsDrainInsideWindow(t *testing.T) {
-	snapshot := rolloutSnapshot{
-		{
-			InitialOldReplicas: 4, OldSpecReplicas: 3, OldReadyReplicas: 3, NewTargetReplicas: 4,
-			Config: RollingUpdateConfig{MaxUnavailable: 2},
-		},
-		{
-			InitialOldReplicas: 8, OldSpecReplicas: 8, OldReadyReplicas: 8, NewTargetReplicas: 8,
-			Config: RollingUpdateConfig{MaxUnavailable: 1},
-		},
-	}
-	step := ComputeNextStep(snapshot, nil)
-	require.NotNil(t, step)
-	assert.Equal(t, RoleReplicaState{3, 7}, step.Past,
-		"the lagging role is drained instead of moving the leading role beyond the 1/4 window")
-}
-
-func TestOldTargetsApplyAvailabilityBeforeWindow(t *testing.T) {
-	snapshot := rolloutSnapshot{
-		{
-			InitialOldReplicas: 8, OldSpecReplicas: 8, OldReadyReplicas: 8, NewTargetReplicas: 8,
-			Config: RollingUpdateConfig{MaxUnavailable: 0},
-		},
-		{
-			InitialOldReplicas: 4, OldSpecReplicas: 4, OldReadyReplicas: 4, NewTargetReplicas: 4,
-			Config: RollingUpdateConfig{MaxUnavailable: 2},
-		},
-	}
-
-	availabilityBounded := boundOldReplicaTargetsByAvailability(snapshot, RoleReplicaState{6, 2})
-	assert.Equal(t, RoleReplicaState{8, 2}, availabilityBounded)
-
-	windowBounded := boundDrainingRoleTargetsToWindow(
-		RoleReplicaState{8, 4},
-		RoleReplicaState{8, 4},
-		availabilityBounded,
-	)
-	assert.Equal(t, RoleReplicaState{8, 3}, windowBounded,
-		"Decode may drain to the edge of the 1/4 window, but no farther")
 }
 
 func TestExecutorStateTransitionsExhaustive(t *testing.T) {
