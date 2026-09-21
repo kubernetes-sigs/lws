@@ -114,7 +114,7 @@ func TestComputeNextStep(t *testing.T) {
 		result := ComputeNextStep(readySnapshot(
 			[]int{3, 6}, []int{0, 0}, []int{4, 7}, []int{3, 6},
 			configs([]int{1, 1}, []int{0, 0}),
-		))
+		), nil)
 		assert.Nil(t, result)
 	})
 
@@ -122,7 +122,7 @@ func TestComputeNextStep(t *testing.T) {
 		result := ComputeNextStep(readySnapshot(
 			[]int{4, 4}, []int{4, 4}, []int{0, 0}, []int{4, 4},
 			configs([]int{1, 1}, []int{0, 0}),
-		))
+		), nil)
 		require.NotNil(t, result)
 		assert.Positive(t, result.New[0])
 		assert.Positive(t, result.New[1])
@@ -132,7 +132,7 @@ func TestComputeNextStep(t *testing.T) {
 		result := ComputeNextStep(readySnapshot(
 			[]int{5, 5}, []int{3, 3}, []int{0, 0}, []int{5, 5},
 			configs([]int{0, 0}, []int{2, 2}),
-		))
+		), nil)
 		require.NotNil(t, result)
 		assert.Equal(t, []int{2, 2}, result.New)
 	})
@@ -141,11 +141,20 @@ func TestComputeNextStep(t *testing.T) {
 		result := ComputeNextStep(readySnapshot(
 			[]int{2, 2}, []int{2, 2}, []int{0, 1}, []int{2, 2},
 			configs([]int{1, 1}, []int{0, 0}),
-		))
+		), nil)
 		require.NotNil(t, result)
 		assert.Equal(t, []int{2, 1}, result.Past,
 			"Decode may drain one replica while Prefill remains at the other edge of the window")
 		assert.Equal(t, []int{1, 1}, result.New)
+	})
+
+	t.Run("phase target does not lower the global availability floor", func(t *testing.T) {
+		snapshot := rolloutSnapshot{{
+			InitialOldReplicas: 6, OldSpecReplicas: 3, OldReadyReplicas: 2,
+			NewSpecReplicas: 4, NewReadyReplicas: 4, NewTargetReplicas: 6,
+			Config: RollingUpdateConfig{MaxSurge: 1},
+		}}
+		assert.Nil(t, ComputeNextStep(snapshot, RoleReplicaState{1}))
 	})
 }
 
@@ -546,7 +555,7 @@ func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
 		{InitialOldReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 1,
 			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
 	}
-	step := ComputeNextStep(snapshot)
+	step := ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step)
 	assert.Equal(t, []int{1, 0}, step.Past)
 }
@@ -559,7 +568,7 @@ func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
 		NewTargetReplicas:  4,
 		Config:             RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1},
 	}}
-	step := ComputeNextStep(snapshot)
+	step := ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step)
 	assert.Equal(t, RoleReplicaState{3}, step.Past,
 		"one availability slot is used to make room for a replacement")
@@ -567,10 +576,10 @@ func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
 	// The same configured budget is no longer usable while one old replica is
 	// unavailable. Readiness, rather than another forced drain, must unblock it.
 	snapshot[0].OldReadyReplicas = 3
-	assert.Nil(t, ComputeNextStep(snapshot))
+	assert.Nil(t, ComputeNextStep(snapshot, nil))
 
 	snapshot[0].OldReadyReplicas = 4
-	step = ComputeNextStep(snapshot)
+	step = ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step, "the slot becomes available again when the old replica recovers")
 	assert.Equal(t, RoleReplicaState{3}, step.Past)
 }
@@ -586,7 +595,7 @@ func TestComputeNextStepKeepsDrainInsideWindow(t *testing.T) {
 			Config: RollingUpdateConfig{MaxUnavailable: 1},
 		},
 	}
-	step := ComputeNextStep(snapshot)
+	step := ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step)
 	assert.Equal(t, RoleReplicaState{3, 7}, step.Past,
 		"the lagging role is drained instead of moving the leading role beyond the 1/4 window")
@@ -658,7 +667,7 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 								continue
 							}
 
-							step := ComputeNextStep(state)
+							step := ComputeNextStep(state, nil)
 							if step == nil {
 								if !makeOneNewReplicaReady(state) {
 									t.Fatalf("blocked without pending work: %s state=%+v", scenario, state)

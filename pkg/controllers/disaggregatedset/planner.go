@@ -94,13 +94,17 @@ type replicaChanges struct {
 	drainBy RoleReplicaState // Scheduled old drain capped by the Spec floor.
 }
 
-// ComputeNextStep returns one rollout step that is ready to execute. It first
-// computes the next fractional-lockstep proposal from Spec, then applies the
-// Ready-based hard limits and restores the coordination window if those limits
-// constrained different roles by different amounts. It returns nil when the
-// rollout is complete or must wait for observed state to change.
-func ComputeNextStep(snapshot rolloutSnapshot) *UpdateStep {
+// ComputeNextStep returns one rollout step that is ready to execute. Ready
+// replicas in parked revisions reduce the fractional phase target, while the
+// complete snapshot continues to enforce hard surge and availability limits.
+// It returns nil when the rollout is complete or must wait for state to change.
+func ComputeNextStep(snapshot rolloutSnapshot, parkedReadyReplicas RoleReplicaState) *UpdateStep {
 	initialOld, currentOld, currentNew, targetNew, config := plannerInputs(snapshot)
+	for i := range targetNew {
+		if i < len(parkedReadyReplicas) {
+			targetNew[i] = max(currentNew[i], targetNew[i]-parkedReadyReplicas[i])
+		}
+	}
 	proposal := computeFractionalProposal(initialOld, currentOld, currentNew, targetNew, config)
 	if proposal == nil {
 		return nil
@@ -577,7 +581,7 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 	steps := []UpdateStep{{Past: append(RoleReplicaState(nil), initialOld...), New: make(RoleReplicaState, len(initialOld))}}
 
 	for range max(fractionalStepCount(initialOld), fractionalStepCount(target))*4 + 10 {
-		next := ComputeNextStep(snapshot)
+		next := ComputeNextStep(snapshot, nil)
 		if next == nil {
 			break
 		}

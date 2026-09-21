@@ -265,7 +265,7 @@ This bounded window is what permits pipelining across slow pod starts. It does n
 
 One plan may contain both an old-side drain and new-side growth. Before returning the step, the planner limits old targets using committed Ready capacity and limits new targets using the surge and pending-readiness ceilings. It reapplies the coordination window after independent limits trim role targets. The executor then applies the floor-safe old drain before growing the new revision, so the two API updates cannot create a transient surge violation. If the bounded plan is a no-op, the controller requeues rather than mistaking the no-op for completion.
 
-Interrupted rollouts drain old revisions newest first. A revision is retired as soon as all of its role Specs are zero; stale status from its terminating pods neither blocks the next older revision nor contributes availability.
+Interrupted rollouts process one old revision at a time and leave the others unchanged. A revision with no committed Ready replicas is removed first because it contributes no serving capacity. Otherwise, the newest old revision is selected, so the oldest revision is replaced last. Ready replicas in the parked revisions reduce the current revision's temporary planning target. The full desired target and every revision's observed Spec and Ready counts still enforce surge and availability limits. A revision is retired as soon as all of its role Specs are zero; stale status from its terminating pods neither blocks the next revision nor contributes availability.
 
 The controller does not intentionally remove the last replica of one role while another role in the same old revision remains. It retires all roles together when safe. Otherwise, it first tries a partial drain that leaves at least one replica of every role, then replacement growth within the hard limits. If neither is possible, it requeues and emits an event.
 
@@ -319,7 +319,7 @@ to implement this enhancement.
 #### Unit tests
 
 - Rolling update planner: step computation, edge cases, constraint violations
-- Executor: Spec/Ready separation, pending bounds, availability-safe drains, slow-role readiness, coordinated retirement, and newest-first retirement
+- Executor: Spec/Ready separation, pending bounds, availability-safe drains, slow-role readiness, coordinated retirement, and staged interrupted rollouts
 - Service manager: creation conditions, cleanup logic
 - API validation: role count, unique names, replica constraints
 
@@ -355,6 +355,7 @@ to implement this enhancement.
 - 2026-03-22: Updated to reflect N-dimensional roles API
 - 2026-03-23: Renamed "phase" to "role" throughout for semantic clarity
 - 2026-09-14: Updated the rolling-update contract to cover fractional lockstep, readiness and availability bounds, how old revisions are removed, and how an interrupted rollout remembers the replica counts it was meant to reach.
+- 2026-09-21: Updated interrupted rollouts to process one old revision at a time, removing revisions with no Ready replicas first and parking the remaining revisions.
 
 ## Drawbacks
 

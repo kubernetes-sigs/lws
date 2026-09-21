@@ -143,8 +143,8 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 // reconcileExistingRollout executes one step of an in-progress rolling update:
 //  1. Refresh the current revision's initial replica values.
 //  2. Build a snapshot of issued and Ready replicas for every role.
-//  3. Ask the planner for the next safe old and new Spec counts.
-//  4. Drain old revisions newest-first, then grow the current revision.
+//  3. Select one old revision and ask the planner for its next safe step.
+//  4. Drain that revision, then grow the current revision.
 //
 // Object updates and a one-second timer trigger the next step. The rollout is
 // complete only after the old Specs reach zero and the target revision is Ready.
@@ -177,20 +177,37 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			"Update", "Completed rolling update to revision %s", newRevision.Revision)
 		return ctrl.Result{}, true, nil
 	}
-	nextStep := ComputeNextStep(snapshot)
+	activeRevision, hasActiveRevision, fullyUnready := selectRevisionToDrain(oldRevisions)
+	var parkedReadyReplicas RoleReplicaState
+	activeSpecs := make(RoleReplicaState, len(snapshot))
+	revisionsToDrain := oldRevisions
+	if hasActiveRevision {
+		parkedReadyReplicas, activeSpecs = planningStateForRevision(snapshot, allRoleNames, activeRevision)
+		revisionsToDrain = disaggregatedsetutils.RevisionRolesList{activeRevision}
+	}
+
+	var nextStep *UpdateStep
+	if fullyUnready {
+		nextStep = &UpdateStep{Past: make(RoleReplicaState, len(snapshot)), New: make(RoleReplicaState, len(snapshot))}
+		for i := range snapshot {
+			nextStep.Past[i] = snapshot[i].OldSpecReplicas - activeSpecs[i]
+			nextStep.New[i] = snapshot[i].NewSpecReplicas
+		}
+	} else {
+		nextStep = ComputeNextStep(snapshot, parkedReadyReplicas)
+	}
 	if nextStep == nil {
 		log.Info("Rolling update is temporarily blocked; waiting for state to change")
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
 	log.Info("Next step computed", buildStepLogArgs(allRoleNames, nextStep)...)
-
 	// Scale down old replicas before scaling up new ones. This ordering ensures
 	// the total replica count never exceeds the surge limit between the two
 	// API calls: e.g. with surge=0, scaling up first would briefly make
 	// (currentOld + nextStep.New) exceed the target before scaleDownOld brings
 	// currentOld down.
-	if err := executor.scaleDownOld(ctx, disaggregatedSet, oldRevisions, allRoleNames, snapshot, nextStep.Past, nextStep.New); err != nil {
+	if err := executor.scaleDownOld(ctx, disaggregatedSet, revisionsToDrain, allRoleNames, snapshot, nextStep.Past, nextStep.New, parkedReadyReplicas); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, nextStep.New); err != nil {
@@ -219,6 +236,53 @@ func removedRoleNames(oldRoles, desiredRoles sets.Set[string]) []string {
 	removed := oldRoles.Difference(desiredRoles).UnsortedList()
 	slices.Sort(removed)
 	return removed
+}
+
+// selectRevisionToDrain picks one revision for this phase. Revisions with no Ready
+// replicas are discarded first; otherwise revisions drain newest to oldest.
+func selectRevisionToDrain(oldRevisions disaggregatedsetutils.RevisionRolesList) (
+	disaggregatedsetutils.RevisionRoles, bool, bool,
+) {
+	var newest disaggregatedsetutils.RevisionRoles
+	found := false
+	for _, revision := range oldRevisions.SortedByNewestTimestamp() {
+		replicas, ready := 0, 0
+		for _, lws := range revision.Roles {
+			replicas += int(getLWSReplicas(lws))
+			ready += committedReadyReplicas(lws)
+		}
+		if replicas == 0 {
+			continue
+		}
+		if !found {
+			newest, found = revision, true
+		}
+		if ready == 0 {
+			return revision, true, true
+		}
+	}
+	return newest, found, false
+}
+
+// planningStateForRevision returns the Ready capacity parked outside the active
+// revision and the active revision's current Specs.
+func planningStateForRevision(
+	snapshot rolloutSnapshot,
+	roleNames []string,
+	active disaggregatedsetutils.RevisionRoles,
+) (RoleReplicaState, RoleReplicaState) {
+	parkedReadyReplicas := make(RoleReplicaState, len(snapshot))
+	activeSpecs := make(RoleReplicaState, len(snapshot))
+	for i, roleName := range roleNames {
+		lws := active.Roles[roleName]
+		activeReady := 0
+		if lws != nil {
+			activeSpecs[i] = int(getLWSReplicas(lws))
+			activeReady = committedReadyReplicas(lws)
+		}
+		parkedReadyReplicas[i] = snapshot[i].OldReadyReplicas - activeReady
+	}
+	return parkedReadyReplicas, activeSpecs
 }
 
 // committedReadyReplicas returns the Ready capacity that can authorize another
@@ -378,6 +442,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	snapshot rolloutSnapshot,
 	targetOld RoleReplicaState,
 	targetNew RoleReplicaState,
+	parkedReadyReplicas RoleReplicaState,
 ) error {
 	budget := make(RoleReplicaState, len(roleNames))
 	for i := range roleNames {
@@ -387,17 +452,24 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 
 	log := logf.FromContext(ctx)
 	for _, wl := range oldRevisions.SortedByNewestTimestamp() {
+		fullyUnready := true
+		for _, lws := range wl.Roles {
+			fullyUnready = fullyUnready && committedReadyReplicas(lws) == 0
+		}
 		plannedDrain := make(RoleReplicaState, len(roleNames))
 		for i, name := range roleNames {
 			if lws := wl.Roles[name]; lws != nil {
 				plannedDrain[i] = min(budget[i], int(getLWSReplicas(lws)))
+				if fullyUnready {
+					plannedDrain[i] = int(getLWSReplicas(lws))
+				}
 			}
 		}
 		if !anyPositive(plannedDrain) {
 			continue
 		}
 
-		blocked := coordinateRevisionDrain(roleNames, wl.Roles, plannedDrain, targetNew, snapshot)
+		blocked := coordinateRevisionDrain(roleNames, wl.Roles, plannedDrain, targetNew, parkedReadyReplicas, snapshot)
 		if blocked {
 			log.Info("Waiting to retire old revision without leaving it incomplete", "revision", wl.Revision)
 			executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked,
@@ -440,21 +512,25 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 //     revision.
 //  2. Otherwise, turn proposed full drains into partial drains, leaving at
 //     least one replica of every role currently present in the revision.
-//  3. If no partial drain remains, cancel the full drains and grow the new roles
+//  3. If no proposed partial drain remains, use any other safe partial drain
+//     in this revision. This can relax fractional lockstep to unblock the
+//     newest revision, but every role keeps at least one replica.
+//  4. If no partial drain exists, cancel the full drains and grow the new roles
 //     that currently prevent coordinated retirement.
 //     This may relax fractional lockstep, but never the hard surge or pending
 //     readiness limits.
-//  4. If neither a partial drain nor replacement growth is currently possible,
+//  5. If neither a partial drain nor replacement growth is currently possible,
 //     cancel the unsafe drain and report the step as blocked. A later readiness,
 //     capacity, or rollout-budget change can make coordinated retirement possible.
 //
 // Both drain and targetNew are mutated in place. The return value is true only
-// for case 4.
+// for case 5.
 func coordinateRevisionDrain(
 	roleNames []string,
 	roles map[string]*leaderworkersetv1.LeaderWorkerSet,
 	drain RoleReplicaState,
 	targetNew RoleReplicaState,
+	parkedReadyReplicas RoleReplicaState,
 	snapshot rolloutSnapshot,
 ) bool {
 	anyAliveAfter, anyRetired, canRetire := false, false, true
@@ -494,8 +570,17 @@ func coordinateRevisionDrain(
 	if anyPositive(drain) {
 		return false
 	}
+	for i, name := range roleNames {
+		if lws := roles[name]; lws != nil {
+			replicas := int(getLWSReplicas(lws))
+			drain[i] = min(max(0, replicas-1), maxSafeDrain(snapshot[i]))
+		}
+	}
+	if anyPositive(drain) {
+		return false
+	}
 
-	// All proposed drains were singletons. Grow only the roles whose current
+	// No safe partial drain remains. Grow only the roles whose current
 	// availability prevents the whole revision from retiring. hardNewReplicaLimits
 	// deliberately omits the fractional coordination window here: this is the
 	// liveness escape hatch, while surge and pending-readiness limits remain hard.
@@ -507,7 +592,12 @@ func coordinateRevisionDrain(
 		}
 		neededForRetirement := int(getLWSReplicas(lws)) - maxSafeDrain(snapshot[i])
 		if neededForRetirement > 0 {
-			targetNew[i] = max(targetNew[i], min(limits[i], snapshot[i].NewSpecReplicas+neededForRetirement))
+			phaseTarget := snapshot[i].NewTargetReplicas
+			if i < len(parkedReadyReplicas) {
+				phaseTarget -= parkedReadyReplicas[i]
+			}
+			phaseTarget = max(snapshot[i].NewSpecReplicas, phaseTarget)
+			targetNew[i] = max(targetNew[i], min(limits[i], phaseTarget, snapshot[i].NewSpecReplicas+neededForRetirement))
 		}
 	}
 	for i := range snapshot {

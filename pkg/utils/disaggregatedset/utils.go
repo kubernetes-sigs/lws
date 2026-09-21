@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -210,11 +211,14 @@ func (revision RevisionRoles) LatestCreationTime() time.Time {
 }
 
 // SortedByNewestTimestamp returns a copy ordered by the newest LWS creation
-// time in each revision. The receiver's order is unchanged.
+// time in each revision, then by revision ID. The receiver is unchanged.
 func (revisions RevisionRolesList) SortedByNewestTimestamp() RevisionRolesList {
 	sorted := slices.Clone(revisions)
 	slices.SortFunc(sorted, func(a, b RevisionRoles) int {
-		return b.LatestCreationTime().Compare(a.LatestCreationTime())
+		if byTime := b.LatestCreationTime().Compare(a.LatestCreationTime()); byTime != 0 {
+			return byTime
+		}
+		return strings.Compare(a.Revision, b.Revision)
 	})
 	return sorted
 }

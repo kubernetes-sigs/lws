@@ -475,10 +475,16 @@ func TestRevisionRolesLatestCreationTime(t *testing.T) {
 func TestRevisionRolesListSortedByNewestTimestamp(t *testing.T) {
 	base := time.Date(2026, time.September, 17, 10, 0, 0, 0, time.UTC)
 	revisions := RevisionRolesList{
+		{Revision: "tie-b", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
+		}},
 		{Revision: "oldest", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base)}},
 		}},
 		{Revision: "newest", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
+		}},
+		{Revision: "tie-a", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 			testUtilsRolePrefill: {ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(base.Add(2 * time.Minute))}},
 		}},
 		{Revision: "middle", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
@@ -488,8 +494,10 @@ func TestRevisionRolesListSortedByNewestTimestamp(t *testing.T) {
 
 	sorted := revisions.SortedByNewestTimestamp()
 
-	assert.Equal(t, []string{"newest", "middle", "oldest"}, []string{sorted[0].Revision, sorted[1].Revision, sorted[2].Revision})
-	assert.Equal(t, []string{"oldest", "newest", "middle"}, []string{revisions[0].Revision, revisions[1].Revision, revisions[2].Revision})
+	assert.Equal(t, []string{"newest", "tie-a", "tie-b", "middle", "oldest"},
+		[]string{sorted[0].Revision, sorted[1].Revision, sorted[2].Revision, sorted[3].Revision, sorted[4].Revision})
+	assert.Equal(t, []string{"tie-b", "oldest", "newest", "tie-a", "middle"},
+		[]string{revisions[0].Revision, revisions[1].Revision, revisions[2].Revision, revisions[3].Revision, revisions[4].Revision})
 	assert.Empty(t, (RevisionRolesList(nil)).SortedByNewestTimestamp())
 }
 
