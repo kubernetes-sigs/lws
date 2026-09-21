@@ -658,6 +658,16 @@ func TestSelectRevisionToDrainPrefersUnreadyOverNewest(t *testing.T) {
 	require.True(t, found)
 	assert.False(t, fullyUnready)
 	assert.Equal(t, "B", selected.Revision)
+
+	// A pending drain can reserve all readiness from another drain without
+	// making the revision actually unready. It must not enter the fast path
+	// that discards a fully unready revision.
+	oldestUnready.Roles[testRolePrefill].Status.Replicas = 2
+	assert.Zero(t, committedReadyReplicas(oldestUnready.Roles[testRolePrefill]))
+	selected, found, fullyUnready = selectRevisionToDrain(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady})
+	require.True(t, found)
+	assert.False(t, fullyUnready)
+	assert.Equal(t, "B", selected.Revision)
 }
 
 // =============================================================================

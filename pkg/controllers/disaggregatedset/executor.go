@@ -246,10 +246,9 @@ func selectRevisionToDrain(oldRevisions disaggregatedsetutils.RevisionRolesList)
 	var newest disaggregatedsetutils.RevisionRoles
 	found := false
 	for _, revision := range oldRevisions.SortedByNewestTimestamp() {
-		replicas, ready := 0, 0
+		replicas := 0
 		for _, lws := range revision.Roles {
 			replicas += int(getLWSReplicas(lws))
-			ready += committedReadyReplicas(lws)
 		}
 		if replicas == 0 {
 			continue
@@ -257,11 +256,23 @@ func selectRevisionToDrain(oldRevisions disaggregatedsetutils.RevisionRolesList)
 		if !found {
 			newest, found = revision, true
 		}
-		if ready == 0 {
+		if revisionIsFullyUnready(revision) {
 			return revision, true, true
 		}
 	}
 	return newest, found, false
+}
+
+// revisionIsFullyUnready reports whether the revision has no Ready replicas.
+// This intentionally uses observed readiness rather than committed readiness:
+// replicas reserved by an in-flight drain are still Ready replicas.
+func revisionIsFullyUnready(revision disaggregatedsetutils.RevisionRoles) bool {
+	for _, lws := range revision.Roles {
+		if lws.Status.ReadyReplicas > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // planningStateForRevision returns the Ready capacity parked outside the active
@@ -452,10 +463,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 
 	log := logf.FromContext(ctx)
 	for _, wl := range oldRevisions.SortedByNewestTimestamp() {
-		fullyUnready := true
-		for _, lws := range wl.Roles {
-			fullyUnready = fullyUnready && committedReadyReplicas(lws) == 0
-		}
+		fullyUnready := revisionIsFullyUnready(wl)
 		plannedDrain := make(RoleReplicaState, len(roleNames))
 		for i, name := range roleNames {
 			if lws := wl.Roles[name]; lws != nil {
