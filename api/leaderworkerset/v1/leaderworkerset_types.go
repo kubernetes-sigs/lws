@@ -121,6 +121,12 @@ const (
 // instead of bare leader pods.
 const GroupReadyConditionType corev1.PodConditionType = "leaderworkerset.sigs.k8s.io/group-ready"
 
+// GroupReplacementSchedulingGate is the scheduling gate placed on every leader
+// pod when GroupIdentity=Hash. The pod controller lifts it according to the
+// groupReplacementPolicy, so a replacement group does not compete for capacity
+// before the group it replaces has been fully deleted.
+const GroupReplacementSchedulingGate = "leaderworkerset.sigs.k8s.io/group-replacement"
+
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 // LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).
 //
@@ -175,6 +181,24 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={Ordinal,Hash}
 	// +optional
 	GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
+
+	// groupReplacementPolicy controls when a replacement group may start
+	// scheduling after a group is deleted, whether by the restart policy
+	// recreating a failed group, by a rolling update or by a scale down that
+	// races a scale up.
+	// PostTermination (default) admits a replacement only once a previously
+	// deleted group has been fully removed, so the new group lands on the
+	// capacity the old one released instead of preempting other workloads.
+	// This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+	// leader pod cannot be recreated until its predecessor is gone, and is the
+	// only supported value in that mode.
+	// Immediate admits replacement groups as soon as the leader Deployment
+	// creates them, overlapping with the teardown of the old group. Only
+	// supported with groupIdentity Hash.
+	// +kubebuilder:default=PostTermination
+	// +kubebuilder:validation:Enum={Immediate,PostTermination}
+	// +optional
+	GroupReplacementPolicy GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
 }
 
 // GroupIdentityType defines how group identities are assigned.
@@ -187,6 +211,19 @@ const (
 	// GroupIdentityHash names groups by hash-suffixed leader pod names managed
 	// through a Deployment.
 	GroupIdentityHash GroupIdentityType = "Hash"
+)
+
+// GroupReplacementPolicyType defines when a replacement group may start scheduling.
+type GroupReplacementPolicyType string
+
+const (
+	// GroupReplacementImmediate admits replacement groups as soon as they are
+	// created, overlapping with the teardown of the groups they replace.
+	GroupReplacementImmediate GroupReplacementPolicyType = "Immediate"
+
+	// GroupReplacementPostTermination holds replacement groups back until the
+	// groups they replace have been fully deleted.
+	GroupReplacementPostTermination GroupReplacementPolicyType = "PostTermination"
 )
 
 // Template of the leader/worker pods, the group will include at least one leader pod.

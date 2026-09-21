@@ -50,6 +50,16 @@ func PodDeleted(pod corev1.Pod) bool {
 }
 
 // LeaderPod check is the pod is a leader pod
+// HasSchedulingGate reports whether the pod still carries the named scheduling gate.
+func HasSchedulingGate(pod *corev1.Pod, name string) bool {
+	for _, gate := range pod.Spec.SchedulingGates {
+		if gate.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func LeaderPod(pod corev1.Pod) bool {
 	return pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0"
 }

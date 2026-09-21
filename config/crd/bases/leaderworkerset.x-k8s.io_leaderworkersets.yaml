@@ -71,6 +71,26 @@ spec:
                 - Ordinal
                 - Hash
                 type: string
+              groupReplacementPolicy:
+                default: PostTermination
+                description: |-
+                  groupReplacementPolicy controls when a replacement group may start
+                  scheduling after a group is deleted, whether by the restart policy
+                  recreating a failed group, by a rolling update or by a scale down that
+                  races a scale up.
+                  PostTermination (default) admits a replacement only once a previously
+                  deleted group has been fully removed, so the new group lands on the
+                  capacity the old one released instead of preempting other workloads.
+                  This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+                  leader pod cannot be recreated until its predecessor is gone, and is the
+                  only supported value in that mode.
+                  Immediate admits replacement groups as soon as the leader Deployment
+                  creates them, overlapping with the teardown of the old group. Only
+                  supported with groupIdentity Hash.
+                enum:
+                - Immediate
+                - PostTermination
+                type: string
               leaderWorkerTemplate:
                 description: leaderWorkerTemplate defines the template for leader/worker
                   pods

@@ -28,12 +28,15 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	"sigs.k8s.io/lws/test/testutils"
 	testing "sigs.k8s.io/lws/test/testutils"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -400,6 +403,77 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 			}
 			return numberOfPodsInCommon, nil
 		}, timeout, interval).Should(gomega.Equal(0))
+	})
+
+	ginkgo.It("Holds the replacement group until the failed group is gone with groupIdentity Hash", func() {
+		workerSpec := wrappers.MakeWorkerPodSpec()
+		// Ignore SIGTERM so the old group holds its capacity for the whole grace
+		// period, which keeps the window under test long enough to observe.
+		workerSpec.Containers[0].Command = []string{"sh", "-c", "trap '' TERM; sleep infinity"}
+		workerSpec.TerminationGracePeriodSeconds = ptr.To[int64](20)
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).RestartPolicy(v1.RecreateGroupOnPodRestart).WorkerTemplateSpec(workerSpec).Obj()
+		lws.Spec.GroupIdentity = v1.GroupIdentityHash
+		testing.MustCreateLws(ctx, k8sClient, lws)
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+		leaderSelector := client.MatchingLabels{v1.SetNameLabelKey: lws.Name, v1.WorkerIndexLabelKey: "0"}
+		leaderPods := &corev1.PodList{}
+		gomega.Expect(k8sClient.List(ctx, leaderPods, client.InNamespace(lws.Namespace), leaderSelector)).To(gomega.Succeed())
+		gomega.Expect(leaderPods.Items).To(gomega.HaveLen(1))
+		oldLeaderKey := client.ObjectKeyFromObject(&leaderPods.Items[0])
+
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: oldLeaderKey.Name + "-1"}})).To(gomega.Succeed())
+
+		var replacementKey types.NamespacedName
+		ginkgo.By("waiting for the replacement leader to appear while the old leader is still terminating")
+		gomega.Eventually(func() bool {
+			var old corev1.Pod
+			if err := k8sClient.Get(ctx, oldLeaderKey, &old); err != nil || old.DeletionTimestamp == nil {
+				return false
+			}
+			pods := &corev1.PodList{}
+			if err := k8sClient.List(ctx, pods, client.InNamespace(lws.Namespace), leaderSelector); err != nil {
+				return false
+			}
+			for _, p := range pods.Items {
+				if p.Name != oldLeaderKey.Name {
+					replacementKey = client.ObjectKeyFromObject(&p)
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(gomega.BeTrue())
+
+		ginkgo.By("keeping the replacement gated with no worker statefulset while the old leader exists")
+		gomega.Consistently(func() bool {
+			var old corev1.Pod
+			if err := k8sClient.Get(ctx, oldLeaderKey, &old); apierrors.IsNotFound(err) {
+				return true
+			}
+			var replacement corev1.Pod
+			if err := k8sClient.Get(ctx, replacementKey, &replacement); err != nil {
+				return false
+			}
+			if !podutils.HasSchedulingGate(&replacement, v1.GroupReplacementSchedulingGate) {
+				return false
+			}
+			var sts appsv1.StatefulSet
+			return apierrors.IsNotFound(k8sClient.Get(ctx, replacementKey, &sts))
+		}, 10*time.Second, interval).Should(gomega.BeTrue())
+
+		ginkgo.By("admitting the replacement once the old group is gone")
+		gomega.Eventually(func() bool {
+			var old corev1.Pod
+			if err := k8sClient.Get(ctx, oldLeaderKey, &old); !apierrors.IsNotFound(err) {
+				return false
+			}
+			var replacement corev1.Pod
+			if err := k8sClient.Get(ctx, replacementKey, &replacement); err != nil {
+				return false
+			}
+			return !podutils.HasSchedulingGate(&replacement, v1.GroupReplacementSchedulingGate)
+		}, timeout, interval).Should(gomega.BeTrue())
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
 
 	// metricsRoleBindingName := "lws-metrics-reader-rolebinding"
