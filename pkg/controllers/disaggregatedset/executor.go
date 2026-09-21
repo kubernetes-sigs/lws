@@ -222,14 +222,17 @@ func removedRoleNames(oldRoles, desiredRoles sets.Set[string]) []string {
 }
 
 // committedReadyReplicas returns the Ready capacity that can authorize another
-// scale-down. Status can briefly report more Ready replicas than Spec after a
-// previous scale-down; those excess replicas are already terminating and must
-// not be counted again.
+// scale-down. While a previous scale-down is still pending, any replica above
+// Spec may be a Ready replica selected for deletion. Reserve all such replicas
+// so the same availability capacity cannot be spent twice.
 func committedReadyReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
 	if lws == nil {
 		return 0
 	}
-	return max(0, min(int(lws.Status.ReadyReplicas), int(getLWSReplicas(lws))))
+	specReplicas := int(getLWSReplicas(lws))
+	pendingDrain := max(0, int(lws.Status.Replicas)-specReplicas)
+	readyAfterPendingDrain := max(0, int(lws.Status.ReadyReplicas)-pendingDrain)
+	return min(specReplicas, readyAfterPendingDrain)
 }
 
 func buildRolloutSnapshot(

@@ -530,6 +530,82 @@ func TestReconcilerIntegration(t *testing.T) {
 	}
 }
 
+func TestReconcileExistingRolloutDoesNotReuseReadyCapacityFromPendingDrain(t *testing.T) {
+	ctx := context.Background()
+	podSpec := corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}}
+	role := makeRoleSpec(
+		testRolePrefill,
+		6,
+		podSpec,
+		intstr.FromInt(1),
+		intstr.FromInt(1),
+	)
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
+		Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{role}},
+	}
+	newRevision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+	const oldRevision = "old"
+	labels := func(revision string) map[string]string {
+		return map[string]string{
+			disaggregatedsetv1.RoleLabelKey:     testRolePrefill,
+			disaggregatedsetv1.SetNameLabelKey:  ds.Name,
+			disaggregatedsetv1.SliceLabelKey:    "0",
+			disaggregatedsetv1.RevisionLabelKey: revision,
+		}
+	}
+	oldName := fmt.Sprintf("%s-0-%s-%s", ds.Name, oldRevision, testRolePrefill)
+	newName := fmt.Sprintf("%s-0-%s-%s", ds.Name, newRevision, testRolePrefill)
+	oldLWS := withInitialReplicas(createLWSForTest(
+		oldName, labels(oldRevision), 4, 3, podSpec, testDSOwnerRef,
+	), 6)
+	newLWS := withInitialReplicas(createLWSForTest(
+		newName, labels(newRevision), 3, 3, podSpec, testDSOwnerRef,
+	), 6)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testSchemeForUnit()).
+		WithObjects(oldLWS, newLWS).
+		WithStatusSubresource(statusSubresourceObjects()...).
+		Build()
+	executor := newTestExecutor(fakeClient)
+
+	reconcile := func() {
+		oldRevisions, currentRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, newRevision)
+		require.NoError(t, err)
+		require.NotNil(t, currentRevision)
+		_, complete, err := executor.reconcileExistingRollout(
+			ctx, ds, oldRevisions, *currentRevision, map[string]int{testRolePrefill: 6},
+		)
+		require.NoError(t, err)
+		assert.False(t, complete)
+	}
+
+	// The first reconciliation spends the only replica above the availability
+	// floor and requests a scale-down from four old replicas to three.
+	reconcile()
+	assert.EqualValues(t, 3, getTestLWSReplicas(fakeClient, testNamespace, oldName))
+
+	// Keep status stale to model the next reconciliation arriving before the
+	// underlying scale-down finishes. status.replicas=4 exposes one pending
+	// deletion; status.readyReplicas=3 must not be treated as three survivors.
+	var observedOld leaderworkersetv1.LeaderWorkerSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: oldName}, &observedOld))
+	assert.EqualValues(t, 4, observedOld.Status.Replicas)
+	assert.EqualValues(t, 3, observedOld.Status.ReadyReplicas)
+	reconcile()
+	assert.EqualValues(t, 3, getTestLWSReplicas(fakeClient, testNamespace, oldName),
+		"a pending deletion must reserve the Ready replica it may remove")
+
+	// If status catches up and confirms that three Ready replicas survived, the
+	// availability slot is real again and the rollout may continue.
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: oldName}, &observedOld))
+	observedOld.Status.Replicas = 3
+	observedOld.Status.ReadyReplicas = 3
+	require.NoError(t, fakeClient.Status().Update(ctx, &observedOld))
+	reconcile()
+	assert.EqualValues(t, 2, getTestLWSReplicas(fakeClient, testNamespace, oldName))
+}
+
 func TestBuildRolloutSnapshotPreservesExternalSpecDuringRollout(t *testing.T) {
 	const roleName = "prefill"
 	ds := &disaggregatedsetv1.DisaggregatedSet{
