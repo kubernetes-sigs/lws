@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"time"
@@ -31,7 +32,9 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -46,6 +49,9 @@ type DisaggregatedSetReconciler struct {
 	LWSManager     *LeaderWorkerSetManager
 	ServiceManager *ServiceManager
 	ScalerManager  *ScalerManager
+	TargetResolver *SubRoleTargetResolver
+	Assignments    *SubRoleAssignmentReconciler
+	SubRoleRollout *SubRoleRolloutCoordinator
 }
 
 // legacyServiceGCRequeue paces the retries while a legacy Service is being garbage
@@ -63,6 +69,7 @@ const legacyServiceGCRequeue = 5 * time.Second
 // Needed to set blockOwnerDeletion on the Services this controller hands to a LeaderWorkerSet.
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -117,6 +124,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(r.Client, r.Record)
 	}
+	r.ensureSubRoleComponents()
 	seedFor, err := r.seedForRole(ctx, disaggregatedSet)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaler seeds: %w", err)
@@ -124,6 +132,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, seedFor)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile scalers: %w", err)
+	}
+	if err := r.TargetResolver.ValidateParentTargets(disaggregatedSet, scalers); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Step 3: Reconcile LWS objects.
@@ -189,51 +200,117 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // slices and revisions), and persists the result if anything changed. roleNames is
 // always the current spec.roles: a role removed from spec has no RoleStatuses entry
 // even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, scalers ScalerMap) error {
+	r.ensureSubRoleComponents()
 	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
 	sliceCount := disaggregatedsetutils.GetSlices(disaggregatedSet)
 	available := true
+	assignmentsConverged := true
+	hasSubRoles := false
 
-	for _, role := range roleNames {
-		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, role)
+	for _, roleName := range roleNames {
+		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, roleName)
 		if err != nil {
-			return fmt.Errorf("failed to list LWS for role %s status: %w", role, err)
+			return fmt.Errorf("failed to list LWS for role %s status: %w", roleName, err)
 		}
 
-		roleStatus := disaggregatedsetv1.RoleStatus{Name: role}
-		for _, lws := range lwsList {
-			roleStatus.Replicas += lws.Status.Replicas
-			roleStatus.ReadyReplicas += lws.Status.ReadyReplicas
-			// Only LWS at the target revision contribute to UpdatedReplicas; a
-			// draining old-revision LWS is by definition not updated.
-			if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
-				roleStatus.UpdatedReplicas += lws.Status.UpdatedReplicas
+		role := r.TargetResolver.Role(disaggregatedSet, roleName)
+		roleStatus := disaggregatedsetv1.RoleStatus{Name: roleName}
+		if role != nil && len(role.SubRoles) > 0 {
+			hasSubRoles = true
+			_, valid := subRoleOrderAndSet(role)
+			roleStatus.SubRoleStatuses = make([]disaggregatedsetv1.SubRoleStatus, len(role.SubRoles))
+			byName := make(map[string]*disaggregatedsetv1.SubRoleStatus, len(role.SubRoles))
+			for i, subRole := range role.SubRoles {
+				roleStatus.SubRoleStatuses[i].Name = subRole.Name
+				byName[subRole.Name] = &roleStatus.SubRoleStatuses[i]
+			}
+			for _, lws := range lwsList {
+				summary, err := r.Assignments.Observe(ctx, disaggregatedSet.Namespace, lws.Name, valid)
+				if err != nil {
+					return fmt.Errorf("observe sub-role assignments for %s status: %w", lws.Name, err)
+				}
+				if summary.Unassigned != 0 || !hasExpectedGroupOrdinals(summary, int(getLWSReplicas(lws))) {
+					assignmentsConverged = false
+				}
+				for name, count := range summary.Replicas {
+					subStatus := byName[name]
+					if subStatus == nil {
+						continue
+					}
+					subStatus.Replicas += int32(count)
+					subStatus.ReadyReplicas += int32(summary.ReadyReplicas[name])
+					if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+						subStatus.UpdatedReplicas += int32(count)
+					}
+				}
+			}
+			for _, subStatus := range roleStatus.SubRoleStatuses {
+				roleStatus.Replicas += subStatus.Replicas
+				roleStatus.ReadyReplicas += subStatus.ReadyReplicas
+				roleStatus.UpdatedReplicas += subStatus.UpdatedReplicas
+
+				key := RoleKey{Role: roleName, SubRole: subStatus.Name}
+				if r.TargetResolver.IsExternal(disaggregatedSet, key) && scalers[key] == nil {
+					available = false
+					continue
+				}
+				desired := int32(r.TargetResolver.Resolve(disaggregatedSet, key, scalers, 0)) * sliceCount
+				if subStatus.Replicas != desired || subStatus.ReadyReplicas != desired || subStatus.UpdatedReplicas != desired {
+					available = false
+				}
+			}
+		} else {
+			for _, lws := range lwsList {
+				roleStatus.Replicas += lws.Status.Replicas
+				roleStatus.ReadyReplicas += lws.Status.ReadyReplicas
+				// Only LWS at the target revision contribute to UpdatedReplicas; a
+				// draining old-revision LWS is by definition not updated.
+				if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+					roleStatus.UpdatedReplicas += lws.Status.UpdatedReplicas
+				}
+			}
+
+			key := RoleKey{Role: roleName}
+			if r.TargetResolver.IsExternal(disaggregatedSet, key) && scalers[key] == nil {
+				available = false
+			} else {
+				desired := int32(r.TargetResolver.Resolve(disaggregatedSet, key, scalers, 0)) * sliceCount
+				if roleStatus.Replicas != desired || roleStatus.ReadyReplicas != desired || roleStatus.UpdatedReplicas != desired {
+					available = false
+				}
 			}
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
-
-		// An External role with no scaler in the map (e.g. its generated name
-		// collided with a foreign, non-owned object — see #981 for the analogous
-		// LWS case) has no known target: getTargetReplicas would fall back to a
-		// literal 0, which can spuriously read as satisfied if the role also has
-		// 0 actual replicas. Treat that as explicitly Progressing instead of
-		// guessing a target that might accidentally match.
-		if isExternal(disaggregatedSet, role) && scalers[role] == nil {
-			available = false
-			continue
-		}
-
-		// getTargetReplicas resolves the *effective* per-slice target: spec.replicas
-		// for Static roles, the scaler's resolved value for External roles.
-		desired := int32(getTargetReplicas(disaggregatedSet, role, scalers, 0)) * sliceCount
-		if roleStatus.Replicas != desired || roleStatus.ReadyReplicas != desired || roleStatus.UpdatedReplicas != desired {
-			available = false
-		}
 	}
+	available = available && assignmentsConverged
 
 	changed := setRoleStatuses(disaggregatedSet, roleStatuses)
 	if setDisaggregatedSetCondition(disaggregatedSet, disaggregatedSetCondition(disaggregatedSet, available)) {
 		changed = true
+	}
+	if hasSubRoles {
+		assignmentCondition := metav1.Condition{
+			Type:               string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: disaggregatedSet.Generation,
+			Reason:             "AssignmentsConverged",
+			Message:            "Every live LWS group has a valid sub-role assignment",
+		}
+		if !assignmentsConverged {
+			assignmentCondition.Status = metav1.ConditionFalse
+			assignmentCondition.Reason = "AssignmentsPending"
+			assignmentCondition.Message = "One or more live LWS groups are waiting for a valid sub-role assignment"
+		}
+		if setDisaggregatedSetCondition(disaggregatedSet, assignmentCondition) {
+			changed = true
+		}
+	} else {
+		before := len(disaggregatedSet.Status.Conditions)
+		disaggregatedSet.Status.Conditions = slices.DeleteFunc(disaggregatedSet.Status.Conditions, func(condition metav1.Condition) bool {
+			return condition.Type == string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)
+		})
+		changed = changed || len(disaggregatedSet.Status.Conditions) != before
 	}
 	if disaggregatedSet.Status.ObservedGeneration != disaggregatedSet.Generation {
 		disaggregatedSet.Status.ObservedGeneration = disaggregatedSet.Generation
@@ -250,7 +327,7 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 }
 
 func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) bool {
-	if slices.Equal(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
+	if reflect.DeepEqual(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
 		return false
 	}
 	disaggregatedSet.Status.RoleStatuses = roleStatuses
@@ -356,13 +433,15 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 // HPAScaleToZero feature gate is enabled. Autoscalers that support scale-from-
 // zero (KEDA, HPA with the gate flipped) can still take the role down to 0
 // after attach.
-func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(string) int32, error) {
+func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(RoleKey, ScalerMap) int32, error) {
+	r.ensureSubRoleComponents()
 	all, err := r.LWSManager.List(ctx, ds, -1, "")
 	if err != nil {
 		return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
 	}
 	sums := make(map[string]int32)
 	seen := make(map[string]bool)
+	observed := make(map[RoleKey]int32)
 	for _, lws := range all {
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
 		seen[role] = true
@@ -371,12 +450,57 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 		} else {
 			sums[role]++
 		}
+		roleSpec := r.TargetResolver.Role(ds, role)
+		if roleSpec == nil || len(roleSpec.SubRoles) == 0 {
+			continue
+		}
+		_, valid := subRoleOrderAndSet(roleSpec)
+		summary, observeErr := r.Assignments.Observe(ctx, ds.Namespace, lws.Name, valid)
+		if observeErr != nil {
+			return nil, fmt.Errorf("observe sub-role assignments for scaler seed: %w", observeErr)
+		}
+		for _, subRole := range roleSpec.SubRoles {
+			observed[RoleKey{Role: role, SubRole: subRole.Name}] += int32(summary.Replicas[subRole.Name])
+		}
 	}
-	return func(role string) int32 {
-		if !seen[role] {
+	return func(key RoleKey, existing ScalerMap) int32 {
+		if !seen[key.Role] {
 			return 1
 		}
-		return sums[role]
+		role := r.TargetResolver.Role(ds, key.Role)
+		if role == nil || len(role.SubRoles) == 0 {
+			return sums[key.Role]
+		}
+
+		remaining := sums[key.Role]
+		missing := make([]RoleKey, 0, len(role.SubRoles))
+		for _, subRole := range role.SubRoles {
+			subRoleKey := RoleKey{Role: role.Name, SubRole: subRole.Name}
+			if !r.TargetResolver.IsExternal(ds, subRoleKey) {
+				remaining -= int32(r.TargetResolver.Resolve(ds, subRoleKey, nil, 0))
+			} else if scaler := existing[subRoleKey]; scaler != nil {
+				remaining -= scaler.Spec.Replicas
+			} else {
+				missing = append(missing, subRoleKey)
+			}
+		}
+		remaining = max(remaining, 0)
+		seeds := make(map[RoleKey]int32, len(missing))
+		for _, missingKey := range missing {
+			seed := min(observed[missingKey], remaining)
+			seeds[missingKey] = seed
+			remaining -= seed
+		}
+		for remaining > 0 && len(missing) > 0 {
+			for _, missingKey := range missing {
+				if remaining == 0 {
+					break
+				}
+				seeds[missingKey]++
+				remaining--
+			}
+		}
+		return seeds[key]
 	}, nil
 }
 
@@ -387,8 +511,9 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+	scalers ScalerMap,
 ) error {
+	r.ensureSubRoleComponents()
 	if len(scalers) == 0 {
 		return nil
 	}
@@ -396,13 +521,28 @@ func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	if err != nil {
 		return fmt.Errorf("list LWS for scaler status: %w", err)
 	}
-	observed := make(map[string]int32, len(scalers))
+	observed := make(map[RoleKey]int32, len(scalers))
 	for _, lws := range all {
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
-		if _, ok := scalers[role]; !ok {
+		parentKey := RoleKey{Role: role}
+		if _, ok := scalers[parentKey]; ok {
+			observed[parentKey] += lws.Status.Replicas
+		}
+		roleSpec := r.TargetResolver.Role(ds, role)
+		if roleSpec == nil || len(roleSpec.SubRoles) == 0 {
 			continue
 		}
-		observed[role] += lws.Status.Replicas
+		_, valid := subRoleOrderAndSet(roleSpec)
+		summary, observeErr := r.Assignments.Observe(ctx, ds.Namespace, lws.Name, valid)
+		if observeErr != nil {
+			return fmt.Errorf("observe sub-role assignments for scaler status: %w", observeErr)
+		}
+		for _, subRole := range roleSpec.SubRoles {
+			key := RoleKey{Role: role, SubRole: subRole.Name}
+			if _, ok := scalers[key]; ok {
+				observed[key] += int32(summary.Replicas[subRole.Name])
+			}
+		}
 	}
 	return r.ScalerManager.WriteStatus(ctx, ds, scalers, observed)
 }
@@ -417,7 +557,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	slice int,
 	revision string,
 	roleNames []string,
-	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
+	scalers ScalerMap,
 ) (ctrl.Result, error) {
 	if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
 		return ctrl.Result{}, err
@@ -454,6 +594,14 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 
 	if err := r.ServiceManager.ReconcileServices(ctx, disaggregatedSet, revisionRoles, revision); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile services: %w", err)
+	}
+
+	assignmentsConverged, err := r.SubRoleRollout.ReconcileAssignments(ctx, disaggregatedSet, slice, revision, scalers)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !assignmentsConverged {
+		result = earliestRequeue(result, ctrl.Result{RequeueAfter: 250 * time.Millisecond})
 	}
 
 	return result, nil
@@ -502,14 +650,16 @@ func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, d
 
 func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		Client:     r.Client,
-		Record:     r.Record,
-		LWSManager: r.LWSManager,
+		Client:             r.Client,
+		Record:             r.Record,
+		LWSManager:         r.LWSManager,
+		TargetResolver:     r.TargetResolver,
+		RolloutCoordinator: r.SubRoleRollout,
 	}
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, scalers ScalerMap) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
@@ -521,7 +671,7 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
+func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers ScalerMap) error {
 	log := logf.FromContext(ctx)
 
 	// GetForRole adopts a legacy slice-0 LWS in place, so we do not create a
@@ -536,7 +686,9 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 	if existing != nil && existing.Spec.Replicas != nil {
 		currentReplicas = *existing.Spec.Replicas
 	}
-	desiredReplicas := int32(getTargetReplicas(disaggregatedSet, role, scalers, int(currentReplicas)))
+	desiredReplicas := int32(r.TargetResolver.ParentTarget(disaggregatedSet, role, scalers, map[RoleKey]int{
+		{Role: role}: int(currentReplicas),
+	}))
 
 	if existing == nil {
 		lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role)
@@ -558,6 +710,11 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		existingReplicas = *existing.Spec.Replicas
 	}
 	if existingReplicas != desiredReplicas {
+		if existingReplicas > desiredReplicas {
+			if err := r.SubRoleRollout.PrepareScaleDown(ctx, disaggregatedSet, slice, revision, role, existing, int(desiredReplicas), scalers); err != nil {
+				return err
+			}
+		}
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
 		if err := r.LWSManager.Scale(ctx, disaggregatedSet, existing.Name, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale LWS %s: %w", existing.Name, err)
@@ -719,11 +876,33 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)
 	}
+	r.ensureSubRoleComponents()
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.requestsForPod)).
 		Named("disaggregatedset").
 		Complete(r)
+}
+
+func (r *DisaggregatedSetReconciler) ensureSubRoleComponents() {
+	if r.TargetResolver == nil {
+		r.TargetResolver = NewSubRoleTargetResolver()
+	}
+	if r.Assignments == nil {
+		r.Assignments = NewSubRoleAssignmentReconciler(r.Client)
+	}
+	if r.SubRoleRollout == nil {
+		r.SubRoleRollout = NewSubRoleRolloutCoordinator(r.LWSManager, r.Assignments, r.TargetResolver)
+	}
+}
+
+func (r *DisaggregatedSetReconciler) requestsForPod(_ context.Context, obj client.Object) []reconcile.Request {
+	name := obj.GetLabels()[disaggregatedsetv1.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: obj.GetNamespace(), Name: name}}}
 }

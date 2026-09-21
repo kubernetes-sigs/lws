@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strconv"
@@ -340,4 +341,42 @@ func (manager *LeaderWorkerSetManager) SetInitialReplicas(
 	}
 
 	return oldValue, nil
+}
+
+func parseInitialSubRoleReplicasAnnotation(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (map[string]int, bool) {
+	value := leaderWorkerSet.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey]
+	if value == "" {
+		return nil, false
+	}
+	result := make(map[string]int)
+	if err := json.Unmarshal([]byte(value), &result); err != nil {
+		return nil, false
+	}
+	return result, true
+}
+
+// SetInitialSubRoleReplicas snapshots an LWS's distribution once. Unlike the
+// aggregate initial-replicas helper, an existing valid snapshot is immutable:
+// later target changes during the rollout must not rewrite its starting point.
+func (manager *LeaderWorkerSetManager) SetInitialSubRoleReplicas(
+	ctx context.Context,
+	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
+	replicas map[string]int,
+) (bool, error) {
+	if _, ok := parseInitialSubRoleReplicasAnnotation(leaderWorkerSet); ok {
+		return false, nil
+	}
+	value, err := json.Marshal(replicas)
+	if err != nil {
+		return false, fmt.Errorf("marshal initial sub-role replicas for %s: %w", leaderWorkerSet.Name, err)
+	}
+	before := leaderWorkerSet.DeepCopy()
+	if leaderWorkerSet.Annotations == nil {
+		leaderWorkerSet.Annotations = make(map[string]string)
+	}
+	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = string(value)
+	if err := manager.client.Patch(ctx, leaderWorkerSet, client.MergeFrom(before)); err != nil {
+		return false, fmt.Errorf("patch initial sub-role replicas on %s: %w", leaderWorkerSet.Name, err)
+	}
+	return true, nil
 }

@@ -28,7 +28,7 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
-const NumRequiredRoles = 2
+const NumRequiredRoles = 1
 
 func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int32, bool) {
 	if leaderWorkerSet.Annotations == nil {

@@ -882,7 +882,7 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 	// owned by a different DisaggregatedSet UID — ScalerManager won't adopt it.
 	foreignScaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      controller.ScalerName(disaggregatedSet.Name, testControllerRolePrefill),
+			Name:      controller.ScalerName(disaggregatedSet.Name, controller.RoleKey{Role: testControllerRolePrefill}),
 			Namespace: disaggregatedSet.Namespace,
 			Labels: map[string]string{
 				disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name,
