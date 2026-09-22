@@ -326,15 +326,8 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 	return gi
 }
 
-// ValidateGroupIdentity rejects the combinations of group identity and the
-// rest of the API surface that cannot be implemented: features that depend on
-// stable StatefulSet identity under groupIdentity Hash, and Immediate group
-// replacement under groupIdentity Ordinal, where the StatefulSet always waits
-// for the previous leader pod to be gone.
-// Exported so the DisaggregatedSet webhook can run the same checks against each
-// role's inline LeaderWorkerSet spec at DisaggregatedSet admission time, where a
-// bad combination would otherwise only surface as LWS creation failures during
-// reconciliation.
+// ValidateGroupIdentity rejects unsupported groupIdentity combinations.
+// Exported for DisaggregatedSet webhook reuse.
 func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if normalizeGroupIdentity(spec.GroupIdentity) != v1.GroupIdentityHash {
@@ -344,6 +337,9 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 		return allErrs
 	}
 	giPath := specPath.Child("groupIdentity")
+	if spec.Scheduling != nil {
+		allErrs = append(allErrs, field.Forbidden(specPath.Child("scheduling"), "is not supported with groupIdentity Hash"))
+	}
 	if len(spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "volumeClaimTemplates are not supported with groupIdentity Hash"))
 	}

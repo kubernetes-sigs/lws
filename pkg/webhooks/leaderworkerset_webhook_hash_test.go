@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -69,6 +70,14 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 	uniqueSubdomain.Spec.NetworkConfig = &v1.NetworkConfig{SubdomainPolicy: &policy}
 	if _, err := webhook.ValidateCreate(context.TODO(), uniqueSubdomain); err != nil {
 		t.Errorf("expected UniquePerReplica subdomain policy to be accepted with groupIdentity Hash: %v", err)
+	}
+
+	scheduled := hashLws("scheduled")
+	scheduled.Spec.Scheduling = &v1.LeaderWorkerSetScheduling{}
+	if _, err := webhook.ValidateCreate(context.TODO(), scheduled); err == nil {
+		t.Error("expected scheduling to be rejected with groupIdentity Hash")
+	} else if !strings.Contains(err.Error(), "is not supported with groupIdentity Hash") {
+		t.Errorf("expected hash+scheduling error, got: %v", err)
 	}
 }
 

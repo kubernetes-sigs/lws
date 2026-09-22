@@ -67,6 +67,17 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 ## `GroupReplacementPolicyType`     {#leaderworkerset-x-k8s-io-v1-GroupReplacementPolicyType}
     
 (Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GroupReplacementPolicyType defines when a replacement group may start scheduling.</p>
+
+
+
+
 ## `LeaderWorkerSetLeaderScheduling`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetLeaderScheduling}
     
 
@@ -176,12 +187,6 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 - [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
 
 
-<<<<<<< HEAD
-<p>GroupReplacementPolicyType defines when a replacement group may start scheduling.</p>
-
-
-
-=======
 <p>LeaderWorkerSetScheduling defines scheduling for all replicas.</p>
 
 
@@ -220,7 +225,6 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 </tr>
 </tbody>
 </table>
->>>>>>> 5fe9020 (Simplify spec.scheduling comments and mark the field immutable.)
 
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
