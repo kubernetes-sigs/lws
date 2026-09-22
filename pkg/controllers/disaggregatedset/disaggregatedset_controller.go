@@ -28,9 +28,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -731,6 +733,23 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
+		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(enqueueDisaggregatedSetForService)).
 		Named("disaggregatedset").
 		Complete(r)
+}
+
+// Private Services are owned by LWS for garbage collection, but reconciled by DS.
+func enqueueDisaggregatedSetForService(_ context.Context, obj client.Object) []ctrl.Request {
+	service, ok := obj.(*corev1.Service)
+	if !ok || !isPrivateRoleService(service) {
+		return nil
+	}
+	name := service.Labels[disaggregatedsetv1.SetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: service.Namespace,
+		Name:      name,
+	}}}
 }
