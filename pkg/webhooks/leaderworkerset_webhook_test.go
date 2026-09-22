@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestGetPercentValue(t *testing.T) {
@@ -346,6 +348,23 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("subgroup placement is immutable", func(t *testing.T) {
+		oldLWS := wrappers.BuildLeaderWorkerSet("default").
+			Size(4).
+			SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+			SubGroupPlacement(
+				v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"zone": "remote"}},
+				v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"zone": "local"}},
+			).
+			Obj()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupPlacement[0].MatchLabels["zone"] = "local"
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Fatal("expected validation error when changing subGroupPlacement")
+		}
+	})
+
 	t.Run("nil old network config on update should not panic", func(t *testing.T) {
 		oldLWS := &v1.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
@@ -364,4 +383,151 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 			t.Fatal("expected validation error for a nil subdomainPolicy")
 		}
 	})
+}
+
+func TestValidateSubGroupPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		lws     *v1.LeaderWorkerSet
+		wantErr string
+	}{
+		{
+			name: "subgroup placement rejects invalid label key",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"bad/key/": "schedule-zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+				).
+				Obj(),
+			wantErr: "must be a valid label key",
+		},
+		{
+			name: "subgroup placement rejects invalid label value",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "bad value"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule-zone"}},
+				).
+				Obj(),
+			wantErr: "must be a valid label value",
+		},
+		{
+			name: "subgroup placement and subgroup size are mutually exclusive",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupSize(2).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement and subGroupSize are mutually exclusive",
+		},
+		{
+			name: "subgroup placement requires LeaderExcluded",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderWorker).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement only supports LeaderExcluded",
+		},
+		{
+			name: "subgroup placement must cover all workers once",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "workerIndexes must cover every worker exactly once",
+		},
+		{
+			name: "subgroup placement does not support leader requesting TPUs",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				LeaderTemplateSpec(wrappers.MakeLeaderPodSpecWithTPUResource()).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement does not support TPU-requesting leader pods",
+		},
+		{
+			name: "subgroup placement rejects TPU-requesting effective leader when leader template is omitted",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				LeaderTemplate(nil).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpecWithTPUResource()).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+			wantErr: "subGroupPlacement does not support TPU-requesting leader pods",
+		},
+		{
+			name: "valid subgroup placement",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupPlacement(
+					v1.SubGroupPlacement{WorkerIndexes: []int32{1, 2}, MatchLabels: map[string]string{"local": "schedule_zone"}},
+					v1.SubGroupPlacement{WorkerIndexes: []int32{3}, MatchLabels: map[string]string{"remote": "schedule_zone"}},
+				).
+				Obj(),
+		},
+		{
+			name: "legacy subgroup size still valid",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				Size(4).
+				SubGroupType(v1.SubGroupPolicyTypeLeaderExcluded).
+				SubGroupSize(2).
+				Obj(),
+			wantErr: "size-1 must be divisible by subGroupSize when using LeaderExcluded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.lws.Spec.Replicas == nil {
+				tc.lws.Spec.Replicas = ptr.To[int32](1)
+			}
+			if tc.lws.Spec.LeaderWorkerTemplate.Size == nil {
+				tc.lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+			}
+			errList := validateSubGroupPolicy(field.NewPath("spec"), tc.lws)
+			if tc.wantErr == "" {
+				if len(errList) != 0 {
+					t.Fatalf("unexpected errors: %v", errList)
+				}
+				return
+			}
+			if len(errList) == 0 {
+				t.Fatalf("expected error containing %q, got none", tc.wantErr)
+			}
+			found := false
+			for _, err := range errList {
+				if err != nil && err.Detail != "" && strings.Contains(err.Detail, tc.wantErr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, errList)
+			}
+		})
+	}
 }
