@@ -204,7 +204,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			log.Error(err, "Reconciling workload-aware scheduling prerequisites")
 			return ctrl.Result{}, r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
 		}
-		if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesReady", "Workload and PodGroups are ready"); err != nil {
+		if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -277,7 +277,7 @@ func (r *LeaderWorkerSetReconciler) failWorkloadScheduling(ctx context.Context, 
 
 func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, status metav1.ConditionStatus, reason, message string) error {
 	changed := apimeta.SetStatusCondition(&lws.Status.Conditions, metav1.Condition{
-		Type:               string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingReady),
+		Type:               string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated),
 		Status:             status,
 		ObservedGeneration: lws.Generation,
 		Reason:             reason,
@@ -287,7 +287,7 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 		return nil
 	}
 	if err := r.Status().Update(ctx, lws); err != nil {
-		return fmt.Errorf("update WorkloadSchedulingReady condition: %w", err)
+		return fmt.Errorf("update WorkloadSchedulingCreated condition: %w", err)
 	}
 	return nil
 }

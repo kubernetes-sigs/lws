@@ -41,7 +41,11 @@ const (
 	RolePodGroupNameFmt = "%s-%s-%s-%s"
 	LWSGroupNameFmt     = "%s-lws"
 
-	GroupTemplateNameAnnotation       = "scheduling.k8s.io/group-template-name"
+	// GroupTemplateNameAnnotation names a template in a parent-owned Workload.
+	// Set by the user or parent controller, not by LWS.
+	GroupTemplateNameAnnotation = "scheduling.k8s.io/group-template-name"
+	// ParentCompositePodGroupAnnotation names a parent CompositePodGroup.
+	// Set by the user or parent controller, not by LWS. Requires GroupTemplateNameAnnotation.
 	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
 
 	ReasonAPINotAvailable                = "APINotAvailable"

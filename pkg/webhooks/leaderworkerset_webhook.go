@@ -177,6 +177,7 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 		allErrs = append(allErrs, field.NotSupported(path, r.SchedulerProvider, []string{string(schedulerprovider.Kubernetes), string(schedulerprovider.Volcano)}))
 	}
 	if r.SchedulerProvider == schedulerprovider.Kubernetes && r.RESTMapper != nil {
+		// Require scheduling.k8s.io/v1beta1 Workload and PodGroup APIs.
 		for _, resource := range []string{"Workload", "PodGroup"} {
 			if _, err := r.RESTMapper.RESTMapping(schema.GroupKind{Group: schedulingv1beta1.GroupName, Kind: resource}, schedulingv1beta1.SchemeGroupVersion.Version); err != nil {
 				allErrs = append(allErrs, field.Forbidden(path, fmt.Sprintf("scheduling.k8s.io/v1beta1 %s API is not available: %v", resource, err)))
@@ -184,6 +185,10 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 		}
 	}
 	if r.SchedulerProvider == schedulerprovider.Kubernetes {
+		// Users or a parent controller may set these KEP-6089 annotations; LWS does not.
+		// group-template-name names a template in a parent-owned Workload and requires
+		// a controller owner. parent-compositepodgroup is optional and requires the
+		// template annotation. Delegated scheduling is limited to whole-LWS or replica mode.
 		templateName, delegated := lws.Annotations[schedulerprovider.GroupTemplateNameAnnotation]
 		parentName, hasParent := lws.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation]
 		if hasParent && !delegated {

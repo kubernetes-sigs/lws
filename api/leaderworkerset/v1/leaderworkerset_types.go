@@ -594,9 +594,9 @@ const (
 	// not be considered as UpdateInProgress.
 	LeaderWorkerSetUpdateInProgress LeaderWorkerSetConditionType = "UpdateInProgress"
 
-	// LeaderWorkerSetWorkloadSchedulingReady reports whether all upstream
-	// scheduling prerequisites for the current LWS generation exist.
-	LeaderWorkerSetWorkloadSchedulingReady LeaderWorkerSetConditionType = "WorkloadSchedulingReady"
+	// LeaderWorkerSetWorkloadSchedulingCreated reports that scheduling objects
+	// for the current LWS generation were created. It is not replica health.
+	LeaderWorkerSetWorkloadSchedulingCreated LeaderWorkerSetConditionType = "WorkloadSchedulingCreated"
 )
 
 // +genclient

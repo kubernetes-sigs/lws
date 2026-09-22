@@ -103,7 +103,7 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 
 			persistedLWS := &leaderworkerset.LeaderWorkerSet{}
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
-			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingReady))).To(gomega.BeTrue())
+			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 

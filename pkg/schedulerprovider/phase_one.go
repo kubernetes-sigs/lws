@@ -36,9 +36,12 @@ import (
 type SchedulingMode string
 
 const (
-	SchedulingModeLWS     SchedulingMode = "lws"
+	// SchedulingModeLWS materializes one PodGroup for the complete LeaderWorkerSet.
+	SchedulingModeLWS SchedulingMode = "lws"
+	// SchedulingModeReplica materializes one PodGroup per replica (leader and workers).
 	SchedulingModeReplica SchedulingMode = "replica"
-	SchedulingModeRole    SchedulingMode = "role"
+	// SchedulingModeRole materializes separate leader and worker PodGroups per replica.
+	SchedulingModeRole SchedulingMode = "role"
 
 	lwsWorkloadTemplateName     = "lws"
 	replicaWorkloadTemplateName = "replica"
@@ -62,8 +65,9 @@ func workloadBuildOptions(lws *leaderworkerset.LeaderWorkerSet) workloadbuilder.
 	}
 }
 
-// SchedulingModeFor selects the active scheduling level. Empty scheduling and an
-// explicitly empty replica node both select replica mode.
+// SchedulingModeFor selects the single active scheduling level.
+// Empty spec.scheduling and an explicitly empty replica node both select replica
+// mode. More than one active level returns an error.
 func SchedulingModeFor(lws *leaderworkerset.LeaderWorkerSet) (SchedulingMode, error) {
 	if lws.Spec.Scheduling == nil {
 		return "", fmt.Errorf("spec.scheduling is not configured")
@@ -343,6 +347,8 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 		if err == nil && oldMode != mode {
 			allErrs = append(allErrs, field.Forbidden(path, "cannot switch the active scheduling level after creation"))
 		}
+		// Create already requires the same priorityClassName on leader and worker.
+		// When that shared class was set, it is immutable after creation.
 		if oldPriority, oldConsistent := workloadPriorityClassName(oldLWS); oldConsistent {
 			if newPriority, newConsistent := workloadPriorityClassName(lws); newConsistent && newPriority != oldPriority {
 				allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "leaderWorkerTemplate"), "cannot change priorityClassName while workload-aware scheduling is configured"))
@@ -378,6 +384,8 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 	return allErrs
 }
 
+// workloadPriorityClassName returns the effective class and whether leader and
+// worker templates agree. A Workload requires one shared class.
 func workloadPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
 	workerPriority := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName
 	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate == nil {
@@ -387,6 +395,14 @@ func workloadPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) (string, bo
 	return leaderPriority, leaderPriority == workerPriority
 }
 
+// validatePhaseOneSemantics enforces LWS rules on top of workloadbuilder:
+//   - minGroupCount is rejected
+//   - role mode requires size >= 2 and leaf minCount equals membership
+//   - a gang covering leader and workers is incompatible with startupPolicy LeaderReady
+//   - gang or topology cannot combine with exclusive topology
+//   - leader and worker templates must use the same priorityClassName
+//   - managed templates must not set spec.schedulingGroup
+//   - resourceClaims must match the corresponding pod template
 func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode) field.ErrorList {
 	path := field.NewPath("spec", "scheduling")
 	size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
