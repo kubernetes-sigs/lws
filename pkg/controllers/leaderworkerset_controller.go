@@ -81,6 +81,9 @@ const (
 	GroupReplacementDeferred = "GroupReplacementDeferred"
 	GroupReplacementAdmitted = "GroupReplacementAdmitted"
 
+	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
+	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
+
 	// Event actions
 	Create = "Create"
 	Update = "Update"

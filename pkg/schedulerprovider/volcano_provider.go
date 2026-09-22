@@ -18,6 +18,7 @@ package schedulerprovider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,51 +52,71 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
-	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return err
-		}
-		minResources := utils.CalculatePGMinResources(lws)
-		pg = volcanov1beta1.PodGroup{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pgName,
-				Namespace: lws.Namespace,
-				Labels: map[string]string{
-					leaderworkerset.SetNameLabelKey:    lws.Name,
-					leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
-					leaderworkerset.RevisionKey:        leaderPod.Labels[leaderworkerset.RevisionKey],
-				},
-				Annotations: inheritVolcanoAnnotations(lws),
-			},
-			Spec: volcanov1beta1.PodGroupSpec{
-				// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
-				MinMember:    *lws.Spec.LeaderWorkerTemplate.Size,
-				MinResources: &minResources,
-			},
+	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
+		if pg.DeletionTimestamp != nil {
+			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
-		// If the StartUpPolicy of lws is LeaderReady, set MinMember to 1 to allow the Leader Pod to be scheduled.
-		// However, minResources should still be set to the minResources of the PodGroup (1 Leader + (size-1) Workers).
-		// If the cluster resources are insufficient, scheduling the Leader Pod alone would be meaningless,
-		// as at least one Worker will definitely not be able to be scheduled.
-		if lws.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy {
-			pg.Spec.MinMember = 1
+		owner := metav1.GetControllerOf(&pg)
+		// LWS-created PodGroups are always controlled by their leader Pod. This should not happen during
+		// normal reconciliation, so fail without modifying a same-name PodGroup with an unexpected owner.
+		if owner == nil ||
+			owner.APIVersion != corev1.SchemeGroupVersion.String() ||
+			owner.Kind != "Pod" ||
+			owner.Name != leaderPod.Name {
+			return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected v1 Pod %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, leaderPod.Name, leaderPod.UID)
+		}
+		if owner.UID == leaderPod.UID {
+			return nil
 		}
 
-		if queueName, ok := lws.Annotations[volcanov1beta1.QueueNameAnnotationKey]; ok {
-			pg.Spec.Queue = queueName
-		}
-
-		err = ctrl.SetControllerReference(leaderPod, &pg, v.client.Scheme())
-		if err != nil {
-			return err
-		}
-
-		if err = v.client.Create(ctx, &pg); err != nil {
-			return err
-		}
-		log.V(2).Info("Created PodGroup for LeaderWorkerSet")
+		// The stale PodGroup is owned by the previous leader Pod. Wait for owner-reference garbage collection
+		// to delete it, then create a PodGroup owned by the current leader Pod on a subsequent reconciliation.
+		return fmt.Errorf("waiting for podgroup %s/%s owned by previous leader UID %s to be deleted; current leader UID is %s", pg.Namespace, pgName, owner.UID, leaderPod.UID)
+	} else if client.IgnoreNotFound(err) != nil {
+		return err
 	}
+
+	minResources := utils.CalculatePGMinResources(lws)
+	pg = volcanov1beta1.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pgName,
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:    lws.Name,
+				leaderworkerset.GroupIndexLabelKey: leaderPod.Labels[leaderworkerset.GroupIndexLabelKey],
+				leaderworkerset.RevisionKey:        leaderPod.Labels[leaderworkerset.RevisionKey],
+			},
+			Annotations: inheritVolcanoAnnotations(lws),
+		},
+		Spec: volcanov1beta1.PodGroupSpec{
+			// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
+			MinMember:    *lws.Spec.LeaderWorkerTemplate.Size,
+			MinResources: &minResources,
+		},
+	}
+
+	// If the StartUpPolicy of lws is LeaderReady, set MinMember to 1 to allow the Leader Pod to be scheduled.
+	// However, minResources should still be set to the minResources of the PodGroup (1 Leader + (size-1) Workers).
+	// If the cluster resources are insufficient, scheduling the Leader Pod alone would be meaningless,
+	// as at least one Worker will definitely not be able to be scheduled.
+	if lws.Spec.StartupPolicy == leaderworkerset.LeaderReadyStartupPolicy {
+		pg.Spec.MinMember = 1
+	}
+
+	if queueName, ok := lws.Annotations[volcanov1beta1.QueueNameAnnotationKey]; ok {
+		pg.Spec.Queue = queueName
+	}
+
+	err := ctrl.SetControllerReference(leaderPod, &pg, v.client.Scheme())
+	if err != nil {
+		return err
+	}
+
+	if err = v.client.Create(ctx, &pg); err != nil {
+		return err
+	}
+	log.V(2).Info("Created PodGroup for LeaderWorkerSet")
 
 	return nil
 }

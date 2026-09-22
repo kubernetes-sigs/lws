@@ -179,6 +179,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if r.SchedulerProvider != nil {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
+			if errors.Is(err, schedulerprovider.ErrUnexpectedPodGroupOwner) {
+				r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, UnexpectedPodGroupOwner, Create, "%s", err.Error())
+			}
+			// Return transient errors too, so controller-runtime retries with backoff
+			// if garbage collection is delayed or blocked by a finalizer.
 			return ctrl.Result{}, err
 		}
 	}

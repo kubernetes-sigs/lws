@@ -18,6 +18,7 @@ package schedulerprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,10 @@ import (
 
 var (
 	SupportedSchedulerProviders = sets.New("volcano")
+
+	// ErrUnexpectedPodGroupOwner indicates that an existing PodGroup has a missing
+	// or conflicting controller owner and cannot be safely reused.
+	ErrUnexpectedPodGroupOwner = errors.New("unexpected podgroup controller owner")
 )
 
 const (
@@ -37,7 +42,9 @@ const (
 
 // SchedulerProvider defines the interface for managing pod group resources
 type SchedulerProvider interface {
-	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller
+	// CreatePodGroupIfNotExists creates a PodGroup if it doesn't exist, called by pod controller.
+	// It returns an error wrapping ErrUnexpectedPodGroupOwner if an existing
+	// PodGroup has a missing or conflicting controller owner.
 	CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error
 
 	// InjectPodGroupMetadata sets pod meta for PodGroup association, called by webhook
