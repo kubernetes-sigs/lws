@@ -571,6 +571,33 @@ func TestSetNodeSelectorForWorkerPodsReturnsNotFoundWhenLeaderNodeIsMissing(t *t
 	}
 }
 
+func TestSetNodeSelectorForWorkerPodsReturnsErrorNamingLabelWhenTopologyLabelMissing(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-without-topology-label"},
+	}
+	reconciler := PodReconciler{Client: fake.NewClientBuilder().WithObjects(node).Build()}
+	// Node is cluster-scoped, so its namespace bucket in the fake tracker is "";
+	// leave the pod's namespace empty too so the lookup below matches it.
+	leaderPod := &corev1.Pod{
+		Spec: corev1.PodSpec{NodeName: node.Name},
+	}
+	workerStatefulSet := &appsapplyv1.StatefulSetApplyConfiguration{
+		Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+			Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+				Spec: &coreapplyv1.PodSpecApplyConfiguration{},
+			},
+		},
+	}
+
+	err := reconciler.setNodeSelectorForWorkerPods(context.Background(), leaderPod, workerStatefulSet, "topology.kubernetes.io/zone")
+	if err == nil {
+		t.Fatal("setNodeSelectorForWorkerPods() error = nil, want error naming the missing topology label")
+	}
+	if !strings.Contains(err.Error(), "topology.kubernetes.io/zone") {
+		t.Fatalf("setNodeSelectorForWorkerPods() error = %q, want it to name the missing label key %q", err.Error(), "topology.kubernetes.io/zone")
+	}
+}
+
 func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
