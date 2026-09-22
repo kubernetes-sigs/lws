@@ -54,9 +54,6 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 	if lws.Spec.Scheduling == nil {
 		return nil
 	}
-	if errs := ValidatePhaseOneWorkload(ctx, nil, lws); len(errs) > 0 {
-		return NewReconcileError(ReasonInvalidSchedulingConfiguration, errs.ToAggregate())
-	}
 	mode, err := SchedulingModeFor(lws)
 	if err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)

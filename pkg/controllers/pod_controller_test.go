@@ -54,6 +54,10 @@ type stubSchedulerProvider struct {
 	calls     int
 }
 
+func (*stubSchedulerProvider) ReconcileScheduling(context.Context, *leaderworkerset.LeaderWorkerSet, int32, string) error {
+	return nil
+}
+
 func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(context.Context, *leaderworkerset.LeaderWorkerSet, *corev1.Pod) error {
 	s.calls++
 	return s.createErr

@@ -551,10 +551,7 @@ func validateClaims(claims []schedulingv1alpha3.WorkloadPodGroupResourceClaim, t
 	return allErrs
 }
 
-func buildFlatWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
-	if errs := ValidatePhaseOneWorkload(ctx, nil, lws); len(errs) > 0 {
-		return nil, errs.ToAggregate()
-	}
+func buildFlatWorkload(lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	items, err := phaseOneLeafItems(lws)
 	if err != nil {
 		return nil, err

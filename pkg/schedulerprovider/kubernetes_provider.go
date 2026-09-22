@@ -394,7 +394,7 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 		return workload, nil
 	}
 
-	desiredWorkload, err := buildFlatWorkload(ctx, lws)
+	desiredWorkload, err := buildFlatWorkload(lws)
 	if err != nil {
 		return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("build Workload: %w", err))
 	}
@@ -431,9 +431,6 @@ func (p *KubernetesProvider) reconcileWorkload(ctx context.Context, lws *leaderw
 	}
 	if !workloadControlledByLWS(persisted, lws) {
 		return nil, NewReconcileError(ReasonWorkloadCreateFailed, fmt.Errorf("Workload %s already exists but is not controlled by this LeaderWorkerSet UID", key))
-	}
-	if err := updateMutableWorkloadFields(ctx, p.client, persisted, desiredWorkload); err != nil {
-		return nil, NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
 	return persisted, nil
 }

@@ -117,7 +117,7 @@ func TestBuildFlatWorkloadReplicaConfiguration(t *testing.T) {
 		},
 	}
 
-	workload, err := buildFlatWorkload(context.Background(), lws)
+	workload, err := buildFlatWorkload(lws)
 	require.NoError(t, err)
 	require.Len(t, workload.Spec.PodGroupTemplates, 1)
 	template := workload.Spec.PodGroupTemplates[0]
@@ -146,7 +146,7 @@ func TestBuildFlatWorkloadRoleResourceClaims(t *testing.T) {
 		ResourceClaimTemplateName: ptr.To("shared-gpu-template"),
 	}}
 
-	workload, err := buildFlatWorkload(context.Background(), lws)
+	workload, err := buildFlatWorkload(lws)
 	require.NoError(t, err)
 	require.Len(t, workload.Spec.PodGroupTemplates, 2)
 	var worker *schedulingv1beta1.PodGroupTemplate
@@ -340,7 +340,7 @@ func TestBuildFlatWorkloadSynthesizesOmittedRoleAsBasic(t *testing.T) {
 		},
 	}
 
-	workload, err := buildFlatWorkload(context.Background(), lws)
+	workload, err := buildFlatWorkload(lws)
 	require.NoError(t, err)
 	require.Len(t, workload.Spec.PodGroupTemplates, 2)
 	require.NotNil(t, workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Basic)
@@ -389,7 +389,7 @@ func TestPhaseOnePolicyDefaults(t *testing.T) {
 			if tc.configure != nil {
 				tc.configure(lws)
 			}
-			workload, err := buildFlatWorkload(context.Background(), lws)
+			workload, err := buildFlatWorkload(lws)
 			require.NoError(t, err)
 			require.Len(t, workload.Spec.PodGroupTemplates, len(tc.wantNames))
 			for i := range tc.wantNames {
