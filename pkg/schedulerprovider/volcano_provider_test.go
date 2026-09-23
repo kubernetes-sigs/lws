@@ -450,6 +450,48 @@ func TestVolcanoProvider_RecreatesPodGroupAfterGarbageCollection(t *testing.T) {
 	}
 }
 
+// TestVolcanoProvider_CreatePodGroupIfNotExists_TypedSchedulingIsNoop reproduces
+// https://github.com/kubernetes-sigs/lws/issues/1075: with spec.scheduling set,
+// ReconcileScheduling has already pre-created a PodGroup controlled by the
+// LeaderWorkerSet itself, before any leader Pod exists. CreatePodGroupIfNotExists
+// must not treat that LWS-owned PodGroup as an unexpected owner and block worker
+// creation; it must leave PodGroup ownership to ReconcileScheduling entirely.
+func TestVolcanoProvider_CreatePodGroupIfNotExists_TypedSchedulingIsNoop(t *testing.T) {
+	ctx := context.Background()
+	lws := &leaderworkerset.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: leaderworkerset.LeaderWorkerSetSpec{
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](3)},
+			Scheduling:           &leaderworkerset.LeaderWorkerSetScheduling{},
+		},
+	}
+	leaderPod := createTestLeaderPod("test-lws-0", "default", "test-lws", "0", "abc123")
+	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+	lwsOwnedPG := &volcanov1beta1.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            pgName,
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		},
+		Spec: volcanov1beta1.PodGroupSpec{MinMember: 3},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lwsOwnedPG).Build()
+	provider := NewVolcanoProvider(fakeClient)
+
+	assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leaderPod))
+
+	// The LWS-owned PodGroup must be left untouched: still owned by the
+	// LeaderWorkerSet, not reassigned or recreated under the leader Pod.
+	var actualPG volcanov1beta1.PodGroup
+	assert.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &actualPG))
+	owner := metav1.GetControllerOf(&actualPG)
+	if assert.NotNil(t, owner) {
+		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
+		assert.Equal(t, lws.UID, owner.UID)
+	}
+}
+
 // Helper function to create test leader pods
 func createTestLeaderPod(name, namespace, lwsName, groupIndex, revision string) *corev1.Pod {
 	return &corev1.Pod{

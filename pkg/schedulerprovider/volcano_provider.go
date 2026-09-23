@@ -99,6 +99,16 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 }
 
 func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
+	// spec.scheduling (typed API) mode is mutually exclusive with this pod-driven,
+	// annotation-based flow: ReconcileScheduling already pre-created and owns the
+	// PodGroup before this leader Pod existed, under the LeaderWorkerSet's own
+	// controller reference rather than the leader Pod's. Mirrors the same
+	// mutual-exclusion check ReconcileScheduling itself makes, and matches how
+	// KubernetesProvider.CreatePodGroupIfNotExists is a no-op for the same reason.
+	if lws.Spec.Scheduling != nil {
+		return nil
+	}
+
 	var pg volcanov1beta1.PodGroup
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
