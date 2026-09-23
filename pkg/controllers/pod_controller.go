@@ -122,26 +122,24 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// get the leaderWorkerSet object
 	var leaderWorkerSet leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: pod.Namespace}, &leaderWorkerSet); err != nil {
-		if apierrors.IsNotFound(err) && controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		if apierrors.IsNotFound(err) {
+			// The LWS may disappear before its terminating Pods. Release our
+			// finalizers so garbage collection can finish without the LWS.
 			if podutils.LeaderPod(pod) {
-				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizers(ctx, &pod)
+				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 			}
-			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
+			return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 		}
-		// If lws not found, it's mostly because deleted, ignore the error as Pods will be GCed finally.
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, err
 	}
-	// LWS deletion is workload teardown, not recovery of an exhausted group.
-	// Release budget finalizers without clearing restart accounting or creating a
-	// replacement group.
+	// LWS deletion is workload teardown, not a restart-policy event or recovery
+	// of an exhausted group. Release budget finalizers before handleRestartPolicy,
+	// without clearing restart accounting or creating a replacement group.
 	if leaderWorkerSet.DeletionTimestamp != nil {
-		if controllerutil.ContainsFinalizer(&pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
-			if podutils.LeaderPod(pod) {
-				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizers(ctx, &pod)
-			}
-			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizer(ctx, &pod)
+		if podutils.LeaderPod(pod) {
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
 	if podutils.LeaderPod(pod) && pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		teardown, err := r.groupLifecycleTeardownRequested(ctx, &leaderWorkerSet, &pod)
@@ -149,13 +147,13 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			return ctrl.Result{}, err
 		}
 		if teardown {
-			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizers(ctx, &pod)
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 		}
 		if pod.DeletionTimestamp != nil && pod.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] == "true" {
 			if err := r.clearGroupRestartCount(ctx, &leaderWorkerSet, &pod); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizers(ctx, &pod)
+			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 		}
 		if pod.DeletionTimestamp != nil {
 			return ctrl.Result{}, nil
@@ -559,7 +557,12 @@ func (r *PodReconciler) addGroupRestartBudgetFinalizers(ctx context.Context, lea
 	return nil
 }
 
-func (r *PodReconciler) removeGroupRestartBudgetFinalizers(ctx context.Context, leader *corev1.Pod) error {
+// removeGroupRestartBudgetFinalizersForGroup releases the retained Pods of an
+// exhausted group during explicit recovery or workload teardown (LWS deletion,
+// scale-down, or rollout). It removes worker finalizers before the leader's so
+// foreground deletion can finish before a replacement group is created. This
+// function does not clear the restart count; explicit recovery does that first.
+func (r *PodReconciler) removeGroupRestartBudgetFinalizersForGroup(ctx context.Context, leader *corev1.Pod) error {
 	pods, err := r.groupPods(ctx, leader)
 	if err != nil {
 		return err
@@ -568,20 +571,22 @@ func (r *PodReconciler) removeGroupRestartBudgetFinalizers(ctx context.Context, 
 	// before the leader StatefulSet creates a replacement with the same name.
 	for i := range pods {
 		pod := &pods[i]
-		if podutils.LeaderPod(*pod) || !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		if podutils.LeaderPod(*pod) {
 			continue
 		}
-		if err := r.removeGroupRestartBudgetFinalizer(ctx, pod); err != nil {
+		if err := r.removePodGroupRestartBudgetFinalizer(ctx, pod); err != nil {
 			return err
 		}
 	}
-	if controllerutil.ContainsFinalizer(leader, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
-		return r.removeGroupRestartBudgetFinalizer(ctx, leader)
-	}
-	return nil
+	return r.removePodGroupRestartBudgetFinalizer(ctx, leader)
 }
 
-func (r *PodReconciler) removeGroupRestartBudgetFinalizer(ctx context.Context, pod *corev1.Pod) error {
+// removePodGroupRestartBudgetFinalizer releases a single Pod, if held by the
+// restart-budget finalizer. Worker events use this during LWS teardown.
+func (r *PodReconciler) removePodGroupRestartBudgetFinalizer(ctx context.Context, pod *corev1.Pod) error {
+	if !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		return nil
+	}
 	patch := client.MergeFrom(pod.DeepCopy())
 	controllerutil.RemoveFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
 	return r.Patch(ctx, pod, patch)

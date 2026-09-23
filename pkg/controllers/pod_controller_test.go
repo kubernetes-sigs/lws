@@ -645,6 +645,42 @@ func TestReconcilePodWithoutLWSRemovesGroupFinalizers(t *testing.T) {
 	}
 }
 
+func TestReconcilePodDuringLWSDeletionRemovesWorkerFinalizerWithoutLeaderFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	now := metav1.Now()
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).Obj()
+	lws.DeletionTimestamp = &now
+	lws.Finalizers = []string{"test.lws/finalizer"}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+
+	var updatedWorker corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(worker), &updatedWorker); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&updatedWorker, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("worker restart-budget finalizer was not removed")
+	}
+}
+
 func TestExhaustedGroupFinalizesWorkersAndRecoversExplicitly(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
