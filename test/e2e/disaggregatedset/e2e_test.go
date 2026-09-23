@@ -324,7 +324,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			kubectl.CleanupDeployment(deploymentName)
 		})
 
-		It("should create headless portless private services automatically", func() {
+		It("should create private services and recover them after deletion", func() {
 			By("creating DisaggregatedSet")
 			yaml := fixtures.PrefillDecode(deploymentName,
 				fixtures.Role{Replicas: 1},
@@ -378,6 +378,51 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 						"%s EndpointSlice should be portless, got: %q", role, trimmed)
 				}, 60*time.Second, time.Second).Should(Succeed())
 			}
+
+			By("waiting for DS and LWS resource versions to stabilize before deleting a Service")
+			var previousVersions string
+			Eventually(func(g Gomega) {
+				dsVersion, err := kubectl.Get("disaggregatedset").Namespace("default").FieldSelector("metadata.name=" + deploymentName).
+					JSONPath("{.items[0].metadata.resourceVersion}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				lwsVersions, err := kubectl.LWS(deploymentName).JSONPath("{.items[*].metadata.resourceVersion}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				versions := dsVersion + ":" + lwsVersions
+				old := previousVersions
+				previousVersions = versions
+				g.Expect(versions).NotTo(BeEmpty())
+				g.Expect(versions).To(Equal(old))
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("deleting a private Service without changing the DS or LWS")
+			podUIDs, err := kubectl.Pods(deploymentName).JSONPath("{.items[*].metadata.uid}").Run()
+			Expect(err).NotTo(HaveOccurred())
+			oldUID, err := kubectl.ServiceByRole(deploymentName, "prefill").JSONPath("{.items[0].metadata.uid}").Run()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oldUID).NotTo(BeEmpty())
+			serviceName, err := kubectl.ServiceByRole(deploymentName, "prefill").JSONPath("{.items[0].metadata.name}").Run()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectl.Delete("service", serviceName).Run()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the private Service and its ready endpoints are restored automatically")
+			Eventually(func(g Gomega) {
+				uid, err := kubectl.ServiceByRole(deploymentName, "prefill").JSONPath("{.items[0].metadata.uid}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(uid).NotTo(BeEmpty())
+				g.Expect(uid).NotTo(Equal(oldUID))
+				ready, err := kubectl.Get("endpointslices").Label("kubernetes.io/service-name", serviceName).
+					JSONPath("{.items[*].endpoints[*].conditions.ready}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ready).To(ContainSubstring("true"))
+				owners, err := kubectl.Get("endpointslices").Label("kubernetes.io/service-name", serviceName).
+					JSONPath("{.items[*].metadata.ownerReferences[*].uid}").Run()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(owners).To(ContainSubstring(uid))
+			}, 30*time.Second, time.Second).Should(Succeed())
+			currentPodUIDs, err := kubectl.Pods(deploymentName).JSONPath("{.items[*].metadata.uid}").Run()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(currentPodUIDs).To(Equal(podUIDs), "Service recovery should not replace Pods")
 		})
 	})
 

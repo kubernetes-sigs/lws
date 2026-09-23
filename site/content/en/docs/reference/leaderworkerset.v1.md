@@ -64,6 +64,168 @@ description: Generated API reference documentation for leaderworkerset.x-k8s.io/
 
 
 
+## `GroupReplacementPolicyType`     {#leaderworkerset-x-k8s-io-v1-GroupReplacementPolicyType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>GroupReplacementPolicyType defines when a replacement group may start scheduling.</p>
+
+
+
+
+## `LeaderWorkerSetLeaderScheduling`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetLeaderScheduling}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetReplicaScheduling](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetReplicaScheduling)
+
+
+<p>LeaderWorkerSetLeaderScheduling defines scheduling for the leader PodGroup.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>schedulingPolicy</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupschedulingpolicy-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingPolicy</code></a>
+</td>
+<td>
+   <p>schedulingPolicy defines scheduling for the leader PodGroup.</p>
+</td>
+</tr>
+<tr><td><code>schedulingConstraints</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupschedulingconstraints-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingConstraints</code></a>
+</td>
+<td>
+   <p>schedulingConstraints defines placement constraints for the leader PodGroup.</p>
+</td>
+</tr>
+<tr><td><code>disruptionMode</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupdisruptionmode-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupDisruptionMode</code></a>
+</td>
+<td>
+   <p>disruptionMode defines how leader pods may be disrupted.</p>
+</td>
+</tr>
+<tr><td><code>resourceClaims</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupresourceclaim-v1alpha3-scheduling"><code>[]k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupResourceClaim</code></a>
+</td>
+<td>
+   <p>resourceClaims lists dynamic resource claims shared by leader pods.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `LeaderWorkerSetReplicaScheduling`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetReplicaScheduling}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetScheduling](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetScheduling)
+
+
+<p>LeaderWorkerSetReplicaScheduling defines scheduling for a leader and its workers.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>schedulingPolicy</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupschedulingpolicy-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupSchedulingPolicy</code></a>
+</td>
+<td>
+   <p>schedulingPolicy defines scheduling for a leader and its workers.</p>
+</td>
+</tr>
+<tr><td><code>schedulingConstraints</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupschedulingconstraints-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupSchedulingConstraints</code></a>
+</td>
+<td>
+   <p>schedulingConstraints defines placement constraints for a replica.</p>
+</td>
+</tr>
+<tr><td><code>disruptionMode</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupdisruptionmode-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupDisruptionMode</code></a>
+</td>
+<td>
+   <p>disruptionMode defines how the leader and worker groups may be disrupted.</p>
+</td>
+</tr>
+<tr><td><code>leader</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetLeaderScheduling"><code>LeaderWorkerSetLeaderScheduling</code></a>
+</td>
+<td>
+   <p>leader defines scheduling for the leader PodGroup.</p>
+</td>
+</tr>
+<tr><td><code>worker</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetWorkerScheduling"><code>LeaderWorkerSetWorkerScheduling</code></a>
+</td>
+<td>
+   <p>worker defines scheduling for the worker PodGroup.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `LeaderWorkerSetScheduling`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetScheduling}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>LeaderWorkerSetScheduling defines scheduling for all replicas.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>schedulingPolicy</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupschedulingpolicy-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupSchedulingPolicy</code></a>
+</td>
+<td>
+   <p>schedulingPolicy defines scheduling for all replicas.</p>
+</td>
+</tr>
+<tr><td><code>schedulingConstraints</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupschedulingconstraints-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupSchedulingConstraints</code></a>
+</td>
+<td>
+   <p>schedulingConstraints defines placement constraints for all replicas.</p>
+</td>
+</tr>
+<tr><td><code>disruptionMode</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadcompositepodgroupdisruptionmode-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadCompositePodGroupDisruptionMode</code></a>
+</td>
+<td>
+   <p>disruptionMode defines how replica groups may be disrupted.</p>
+</td>
+</tr>
+<tr><td><code>replica</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetReplicaScheduling"><code>LeaderWorkerSetReplicaScheduling</code></a>
+</td>
+<td>
+   <p>replica defines scheduling for each replica.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `LeaderWorkerSetSpec`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec}
     
 
@@ -130,6 +292,14 @@ when a revision is made to the leaderWorkerTemplate.</p>
    <p>networkConfig defines the network configuration of the group</p>
 </td>
 </tr>
+<tr><td><code>scheduling</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetScheduling"><code>LeaderWorkerSetScheduling</code></a>
+</td>
+<td>
+   <p>scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+This field is immutable.</p>
+</td>
+</tr>
 <tr><td><code>groupIdentity</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-GroupIdentityType"><code>GroupIdentityType</code></a>
 </td>
@@ -141,6 +311,25 @@ Hash manages leaders through a Deployment: group names are hash-suffixed,
 scale down prefers unscheduled and not-ready groups over healthy ones, and
 rollouts are paced by a group readiness gate on the leader pods.
 This field is immutable.</p>
+</td>
+</tr>
+<tr><td><code>groupReplacementPolicy</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-GroupReplacementPolicyType"><code>GroupReplacementPolicyType</code></a>
+</td>
+<td>
+   <p>groupReplacementPolicy controls when a replacement group may start
+scheduling after a group is deleted, whether by the restart policy
+recreating a failed group, by a rolling update or by a scale down that
+races a scale up.
+PostTermination (default) admits a replacement only once a previously
+deleted group has been fully removed, so the new group lands on the
+capacity the old one released instead of preempting other workloads.
+This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+leader pod cannot be recreated until its predecessor is gone, and is the
+only supported value in that mode.
+Immediate admits replacement groups as soon as the leader Deployment
+creates them, overlapping with the teardown of the old group. Only
+supported with groupIdentity Hash.</p>
 </td>
 </tr>
 </tbody>
@@ -204,6 +393,53 @@ we only select the leader pods.</p>
 </td>
 <td>
    <p>observedGeneration is the most recent generation observed for this LeaderWorkerSet.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `LeaderWorkerSetWorkerScheduling`     {#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetWorkerScheduling}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetReplicaScheduling](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetReplicaScheduling)
+
+
+<p>LeaderWorkerSetWorkerScheduling defines scheduling for the worker PodGroup.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>schedulingPolicy</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupschedulingpolicy-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingPolicy</code></a>
+</td>
+<td>
+   <p>schedulingPolicy defines scheduling for the worker PodGroup.</p>
+</td>
+</tr>
+<tr><td><code>schedulingConstraints</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupschedulingconstraints-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupSchedulingConstraints</code></a>
+</td>
+<td>
+   <p>schedulingConstraints defines placement constraints for the worker PodGroup.</p>
+</td>
+</tr>
+<tr><td><code>disruptionMode</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupdisruptionmode-v1alpha3-scheduling"><code>k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupDisruptionMode</code></a>
+</td>
+<td>
+   <p>disruptionMode defines how worker pods may be disrupted.</p>
+</td>
+</tr>
+<tr><td><code>resourceClaims</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#workloadpodgroupresourceclaim-v1alpha3-scheduling"><code>[]k8s.io/api/scheduling/v1alpha3.WorkloadPodGroupResourceClaim</code></a>
+</td>
+<td>
+   <p>resourceClaims lists dynamic resource claims shared by worker pods.</p>
 </td>
 </tr>
 </tbody>

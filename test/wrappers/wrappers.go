@@ -255,6 +255,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	}
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
 	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityOrdinal
+	lws.Spec.GroupReplacementPolicy = leaderworkerset.GroupReplacementPostTermination
 	subdomainPolicy := leaderworkerset.SubdomainShared
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,

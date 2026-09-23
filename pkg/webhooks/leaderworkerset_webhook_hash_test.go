@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -76,6 +77,14 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 	if _, err := webhook.ValidateCreate(context.TODO(), uniqueSubdomain); err != nil {
 		t.Errorf("expected UniquePerReplica subdomain policy to be accepted with groupIdentity Hash: %v", err)
 	}
+
+	scheduled := hashLws("scheduled")
+	scheduled.Spec.Scheduling = &v1.LeaderWorkerSetScheduling{}
+	if _, err := webhook.ValidateCreate(context.TODO(), scheduled); err == nil {
+		t.Error("expected scheduling to be rejected with groupIdentity Hash")
+	} else if !strings.Contains(err.Error(), "is not supported with groupIdentity Hash") {
+		t.Errorf("expected hash+scheduling error, got: %v", err)
+	}
 }
 
 func TestGroupIdentityImmutable(t *testing.T) {
@@ -95,5 +104,37 @@ func TestGroupIdentityImmutable(t *testing.T) {
 	newDefault.Spec.GroupIdentity = v1.GroupIdentityOrdinal
 	if _, err := webhook.ValidateUpdate(context.TODO(), oldDefault, newDefault); err != nil {
 		t.Errorf("empty -> Ordinal should be allowed, got: %v", err)
+	}
+}
+
+func TestGroupReplacementPolicyDefaultAndValidation(t *testing.T) {
+	webhook := &LeaderWorkerSetWebhook{}
+
+	defaulted := hashLws("defaulted")
+	if err := webhook.Default(context.TODO(), defaulted); err != nil {
+		t.Fatalf("defaulting lws: %v", err)
+	}
+	if defaulted.Spec.GroupReplacementPolicy != v1.GroupReplacementPostTermination {
+		t.Errorf("expected groupReplacementPolicy to default to PostTermination, got %q", defaulted.Spec.GroupReplacementPolicy)
+	}
+
+	immediateHash := hashLws("immediate-hash")
+	immediateHash.Spec.GroupReplacementPolicy = v1.GroupReplacementImmediate
+	if _, err := webhook.ValidateCreate(context.TODO(), immediateHash); err != nil {
+		t.Errorf("expected Immediate to be accepted with groupIdentity Hash: %v", err)
+	}
+
+	immediateOrdinal := hashLws("immediate-ordinal")
+	immediateOrdinal.Spec.GroupIdentity = v1.GroupIdentityOrdinal
+	immediateOrdinal.Spec.GroupReplacementPolicy = v1.GroupReplacementImmediate
+	if _, err := webhook.ValidateCreate(context.TODO(), immediateOrdinal); err == nil {
+		t.Error("expected Immediate to be rejected with groupIdentity Ordinal")
+	}
+
+	postTerminationOrdinal := hashLws("post-termination-ordinal")
+	postTerminationOrdinal.Spec.GroupIdentity = v1.GroupIdentityOrdinal
+	postTerminationOrdinal.Spec.GroupReplacementPolicy = v1.GroupReplacementPostTermination
+	if _, err := webhook.ValidateCreate(context.TODO(), postTerminationOrdinal); err != nil {
+		t.Errorf("expected PostTermination to be accepted with groupIdentity Ordinal: %v", err)
 	}
 }

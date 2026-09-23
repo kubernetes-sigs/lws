@@ -19,6 +19,7 @@ package v1
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -138,6 +139,12 @@ const (
 // instead of bare leader pods.
 const GroupReadyConditionType corev1.PodConditionType = "leaderworkerset.sigs.k8s.io/group-ready"
 
+// GroupReplacementSchedulingGate is the scheduling gate placed on every leader
+// pod when GroupIdentity=Hash. The pod controller lifts it according to the
+// groupReplacementPolicy, so a replacement group does not compete for capacity
+// before the group it replaces has been fully deleted.
+const GroupReplacementSchedulingGate = "leaderworkerset.sigs.k8s.io/group-replacement"
+
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.
 // LeaderWorkerSet will create N replicas of leader-worker pod groups (hereinafter referred to as group).
 //
@@ -181,6 +188,11 @@ type LeaderWorkerSetSpec struct {
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 
+	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+	// This field is immutable.
+	// +optional
+	Scheduling *LeaderWorkerSetScheduling `json:"scheduling,omitempty"`
+
 	// groupIdentity determines how group identities are assigned.
 	// Ordinal (default) manages leaders through a StatefulSet: groups are named
 	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
@@ -192,6 +204,110 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={Ordinal,Hash}
 	// +optional
 	GroupIdentity GroupIdentityType `json:"groupIdentity,omitempty"`
+
+	// groupReplacementPolicy controls when a replacement group may start
+	// scheduling after a group is deleted, whether by the restart policy
+	// recreating a failed group, by a rolling update or by a scale down that
+	// races a scale up.
+	// PostTermination (default) admits a replacement only once a previously
+	// deleted group has been fully removed, so the new group lands on the
+	// capacity the old one released instead of preempting other workloads.
+	// This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+	// leader pod cannot be recreated until its predecessor is gone, and is the
+	// only supported value in that mode.
+	// Immediate admits replacement groups as soon as the leader Deployment
+	// creates them, overlapping with the teardown of the old group. Only
+	// supported with groupIdentity Hash.
+	// +kubebuilder:default=PostTermination
+	// +kubebuilder:validation:Enum={Immediate,PostTermination}
+	// +optional
+	GroupReplacementPolicy GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
+}
+
+// LeaderWorkerSetScheduling defines scheduling for all replicas.
+type LeaderWorkerSetScheduling struct {
+	// schedulingPolicy defines scheduling for all replicas.
+	// +optional
+	SchedulingPolicy *schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+
+	// schedulingConstraints defines placement constraints for all replicas.
+	// +optional
+	SchedulingConstraints *schedulingv1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+
+	// disruptionMode defines how replica groups may be disrupted.
+	// +optional
+	DisruptionMode *schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+
+	// replica defines scheduling for each replica.
+	// +optional
+	Replica *LeaderWorkerSetReplicaScheduling `json:"replica,omitempty"`
+}
+
+// LeaderWorkerSetReplicaScheduling defines scheduling for a leader and its workers.
+type LeaderWorkerSetReplicaScheduling struct {
+	// schedulingPolicy defines scheduling for a leader and its workers.
+	// +optional
+	SchedulingPolicy *schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+
+	// schedulingConstraints defines placement constraints for a replica.
+	// +optional
+	SchedulingConstraints *schedulingv1alpha3.WorkloadCompositePodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+
+	// disruptionMode defines how the leader and worker groups may be disrupted.
+	// +optional
+	DisruptionMode *schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+
+	// leader defines scheduling for the leader PodGroup.
+	// +optional
+	Leader *LeaderWorkerSetLeaderScheduling `json:"leader,omitempty"`
+
+	// worker defines scheduling for the worker PodGroup.
+	// +optional
+	Worker *LeaderWorkerSetWorkerScheduling `json:"worker,omitempty"`
+}
+
+// LeaderWorkerSetLeaderScheduling defines scheduling for the leader PodGroup.
+type LeaderWorkerSetLeaderScheduling struct {
+	// schedulingPolicy defines scheduling for the leader PodGroup.
+	// +optional
+	SchedulingPolicy *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+
+	// schedulingConstraints defines placement constraints for the leader PodGroup.
+	// +optional
+	SchedulingConstraints *schedulingv1alpha3.WorkloadPodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+
+	// disruptionMode defines how leader pods may be disrupted.
+	// +optional
+	DisruptionMode *schedulingv1alpha3.WorkloadPodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+
+	// resourceClaims lists dynamic resource claims shared by leader pods.
+	// +optional
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=map
+	// +listMapKey=name
+	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaim `json:"resourceClaims,omitempty"`
+}
+
+// LeaderWorkerSetWorkerScheduling defines scheduling for the worker PodGroup.
+type LeaderWorkerSetWorkerScheduling struct {
+	// schedulingPolicy defines scheduling for the worker PodGroup.
+	// +optional
+	SchedulingPolicy *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+
+	// schedulingConstraints defines placement constraints for the worker PodGroup.
+	// +optional
+	SchedulingConstraints *schedulingv1alpha3.WorkloadPodGroupSchedulingConstraints `json:"schedulingConstraints,omitempty"`
+
+	// disruptionMode defines how worker pods may be disrupted.
+	// +optional
+	DisruptionMode *schedulingv1alpha3.WorkloadPodGroupDisruptionMode `json:"disruptionMode,omitempty"`
+
+	// resourceClaims lists dynamic resource claims shared by worker pods.
+	// +optional
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=map
+	// +listMapKey=name
+	ResourceClaims []schedulingv1alpha3.WorkloadPodGroupResourceClaim `json:"resourceClaims,omitempty"`
 }
 
 // GroupIdentityType defines how group identities are assigned.
@@ -204,6 +320,19 @@ const (
 	// GroupIdentityHash names groups by hash-suffixed leader pod names managed
 	// through a Deployment.
 	GroupIdentityHash GroupIdentityType = "Hash"
+)
+
+// GroupReplacementPolicyType defines when a replacement group may start scheduling.
+type GroupReplacementPolicyType string
+
+const (
+	// GroupReplacementImmediate admits replacement groups as soon as they are
+	// created, overlapping with the teardown of the groups they replace.
+	GroupReplacementImmediate GroupReplacementPolicyType = "Immediate"
+
+	// GroupReplacementPostTermination holds replacement groups back until the
+	// groups they replace have been fully deleted.
+	GroupReplacementPostTermination GroupReplacementPolicyType = "PostTermination"
 )
 
 // Template of the leader/worker pods, the group will include at least one leader pod.
@@ -502,6 +631,10 @@ const (
 	// budget and automatic recovery stopped. Other replicas can remain available
 	// or continue progressing.
 	LeaderWorkerSetDegraded LeaderWorkerSetConditionType = "Degraded"
+
+	// LeaderWorkerSetWorkloadSchedulingCreated reports that scheduling objects
+	// for the current LWS generation were created. It is not replica health.
+	LeaderWorkerSetWorkloadSchedulingCreated LeaderWorkerSetConditionType = "WorkloadSchedulingCreated"
 )
 
 // +genclient

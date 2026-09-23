@@ -893,19 +893,19 @@ Users can inspect:
 - `PodGroup.status.conditions[type=PodGroupInitiallyScheduled]`, as an
   initial-placement signal only;
 - pod events and `spec.schedulingGroup`;
-- LWS events and a new `WorkloadSchedulingReady` condition.
+- LWS events and a new `WorkloadSchedulingCreated` condition.
 
 `PodGroupInitiallyScheduled` is a terminal initial-placement signal: once
 True it does not revert, even if members are later evicted. Reusing the
 replica PodGroup across a leader restart can therefore leave it True while
 the replacement generation is Pending. It is not replica health.
 
-`WorkloadSchedulingReady` reports that LWS successfully compiled and created
+`WorkloadSchedulingCreated` reports that LWS successfully compiled and created
 the WAS objects for the requested shape. It is not replica runtime health and
 must not be derived from `PodGroupInitiallyScheduled`. LWS continues to
 derive replica health from pods.
 
-`WorkloadSchedulingReady=False` includes stable reasons for:
+`WorkloadSchedulingCreated=False` includes stable reasons for:
 
 - `APINotAvailable`;
 - `UnsupportedProviderCapability`;

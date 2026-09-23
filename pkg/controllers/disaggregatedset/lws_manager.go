@@ -152,6 +152,32 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 	return nil
 }
 
+// SyncGroupReplacementPolicy patches leaderWorkerSet so its
+// groupReplacementPolicy matches the role's desired policy. The policy is a
+// live knob on the LWS (it is not part of the LWS revision and changing it
+// does not roll pods), so the DisaggregatedSet syncs it in place instead of
+// bumping its own revision. An empty desired value means the API default,
+// PostTermination. leaderWorkerSet must already be known to be owned by ds.
+func (manager *LeaderWorkerSetManager) SyncGroupReplacementPolicy(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet, desired leaderworkersetv1.GroupReplacementPolicyType) error {
+	if desired == "" {
+		desired = leaderworkersetv1.GroupReplacementPostTermination
+	}
+	current := leaderWorkerSet.Spec.GroupReplacementPolicy
+	if current == "" {
+		current = leaderworkersetv1.GroupReplacementPostTermination
+	}
+	if current == desired {
+		return nil
+	}
+
+	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+	leaderWorkerSet.Spec.GroupReplacementPolicy = desired
+	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
+		return fmt.Errorf("failed to set groupReplacementPolicy on LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
+	}
+	return nil
+}
+
 // Get returns the LWS named name, but only if it's actually controller-owned
 // by ds — consistent with List's ownership filtering. A same-named LWS that
 // exists but isn't owned by ds (e.g. left over from a same-named
