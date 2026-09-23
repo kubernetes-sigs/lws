@@ -105,6 +105,13 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
 	if req.DeletedPod != nil {
+		// A leader delete event arrives after its finalizers have been released.
+		// Replaying recovery from that snapshot could reset the budget or release
+		// worker finalizers for a replacement group with the same name/revision.
+		// Deleted workers still need restart-policy handling below.
+		if podutils.LeaderPod(*req.DeletedPod) {
+			return ctrl.Result{}, nil
+		}
 		pod = *req.DeletedPod.DeepCopy()
 	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -417,6 +424,26 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	} else {
 		leader = pod
 	}
+	// The caller's objects may come from a lagging cache snapshot. Re-read the
+	// leader and the LWS so that budget enforcement below uses the persisted
+	// restart count and the leader's current annotations; a stale count would
+	// let the group restart past MaxGroupRestarts.
+	freshLeader := corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(&leader), &freshLeader); err != nil {
+		// The leader is already gone, so the recreate it belonged to is done.
+		return true, client.IgnoreNotFound(err)
+	}
+	if freshLeader.UID != leader.UID {
+		// A same-name replacement leader already exists; do not act on it on
+		// behalf of the previous group.
+		return false, nil
+	}
+	leader = freshLeader
+	var freshLWS leaderworkerset.LeaderWorkerSet
+	if err := r.Get(ctx, client.ObjectKeyFromObject(&leaderWorkerSet), &freshLWS); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	leaderWorkerSet = freshLWS
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, nil
@@ -459,6 +486,9 @@ func parseGroupRestartCounts(raw string) (map[string]int32, error) {
 	counts := map[string]int32{}
 	if err := json.Unmarshal([]byte(raw), &counts); err != nil {
 		return nil, err
+	}
+	if counts == nil {
+		return nil, fmt.Errorf("invalid group restart counts: expected a JSON object")
 	}
 	for groupIndex, count := range counts {
 		if count < 0 {
