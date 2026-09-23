@@ -28,7 +28,6 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
@@ -112,12 +111,10 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 }
 
 // validateGeneratedNames rejects the DisaggregatedSet if any role would produce
-// a generated LWS name or derived Service name (<lws>-prv) exceeding the
-// DNS-1035 63-character limit. The generated name format is:
+// a generated LWS name, or a name derived from it, exceeding the DNS-1035
+// 63-character limit. The generated name format is:
 //
 //	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
-//
-// and the service appends "-prv".
 func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -131,8 +128,7 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 
 	const (
 		dns1035MaxLen                     = 63
-		revisionLen                       = 8 // hex characters in the revision hash
-		serviceSuffixLen                  = len(disaggregatedsetutils.PrivateServiceSuffix)
+		revisionLen                       = 8  // hex characters in the revision hash
 		separators                        = 3  // three "-" between dsName, slice, revision, roleName
 		statefulSetRevisionLabelSuffixLen = 11 // len("-<10-char-hash>")
 	)
@@ -149,12 +145,7 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 		// The worker StatefulSet pods get a label "controller-revision-hash" with value:
 		// <lwsName>-<groupIndex>-<hash>
 		// Which translates to: lwsNameLen + 1 (dash) + groupIndexDigits + statefulSetRevisionLabelSuffixLen
-		workerRevisionLabelSuffixLen := 1 + groupIndexDigits + statefulSetRevisionLabelSuffixLen
-
-		maxSuffixLen := serviceSuffixLen
-		if workerRevisionLabelSuffixLen > maxSuffixLen {
-			maxSuffixLen = workerRevisionLabelSuffixLen
-		}
+		maxSuffixLen := 1 + groupIndexDigits + statefulSetRevisionLabelSuffixLen
 
 		maxNameLen := lwsNameLen + maxSuffixLen
 
@@ -164,7 +155,7 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 				rolesPath.Index(i).Child("name"),
 				role.Name,
 				fmt.Sprintf(
-					"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for service name and StatefulSet revision hash labels); "+
+					"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for StatefulSet revision hash labels); "+
 						"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
 					maxNameLen, dns1035MaxLen, combinedLimit,
 				),

@@ -65,8 +65,9 @@ func (manager *LeaderWorkerSetManager) Create(ctx context.Context, params disagg
 	lwsSpec := config.Spec
 	lwsSpec.Replicas = &replicas
 
-	// Inject system labels (role, name, revision) into pod templates.
-	// These don't come from the user's spec — services select pods by them.
+	// Inject system labels (role, name, revision, slice) into pod templates.
+	// These don't come from the user's spec — they identify the pod's place in the
+	// set for placement affinity, status, and client-side Pod discovery.
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, params.Labels)
 	// Defensive copy: struct copy is shallow, so maps are shared with the original config.
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(config.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
@@ -247,9 +248,10 @@ func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disag
 	return manager.Get(ctx, ds, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
 }
 
-// deleteInForeground deletes the LWS so Kubernetes removes its children — including
-// the private Service — before the LWS itself. The UID precondition keeps a same-named
-// replacement created since the caller read this object from being deleted instead.
+// deleteInForeground deletes the LWS so Kubernetes removes its children — the
+// StatefulSets and Services the LeaderWorkerSet controller owns — before the LWS
+// itself. The UID precondition keeps a same-named replacement created since the
+// caller read this object from being deleted instead.
 func (manager *LeaderWorkerSetManager) deleteInForeground(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) error {
 	if err := manager.client.Delete(ctx, leaderWorkerSet,
 		client.PropagationPolicy(metav1.DeletePropagationForeground),

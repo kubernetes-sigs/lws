@@ -39,7 +39,6 @@ const (
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonLWSDeleted             = "LWSDeleted"
-	EventReasonWaitingForServiceGC    = "WaitingForServiceGarbageCollection"
 )
 
 type RollingUpdateExecutor struct {
