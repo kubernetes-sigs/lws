@@ -230,7 +230,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		} else {
 			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, updateMsg, updateMsg)
 	}
 
 	// Create headless service if it does not exist.
@@ -1009,7 +1009,13 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
 	shouldUpdate := false
 	for _, condition := range conditions {
-		shouldUpdate = shouldUpdate || setCondition(lws, condition)
+		// setCondition mutates the status, so it must run for every requested
+		// condition. Accumulating with `shouldUpdate || setCondition(...)` would
+		// short-circuit and silently drop every condition after the first one
+		// that changed.
+		if setCondition(lws, condition) {
+			shouldUpdate = true
+		}
 	}
 
 	for i := range lws.Status.Conditions {

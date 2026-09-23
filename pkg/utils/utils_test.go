@@ -165,3 +165,60 @@ func Test_CalculatePGMinResources(t *testing.T) {
 		})
 	}
 }
+
+func Test_Sha1Hash(t *testing.T) {
+	testCases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+		},
+		{
+			name:  "namespaced pod name",
+			input: "default/lws-0",
+			want:  "9f7c49a9534189e737848b962d712086e1d5dfd8",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The digest must stay stable: it is embedded in pod labels, so a
+			// change would recreate every group.
+			if got := Sha1Hash(tc.input); got != tc.want {
+				t.Errorf("Sha1Hash(%q) = %s, want %s", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func Test_NonZeroValue(t *testing.T) {
+	testCases := []struct {
+		name  string
+		input int32
+		want  int32
+	}{
+		{name: "negative value is clamped to zero", input: -3, want: 0},
+		{name: "zero stays zero", input: 0, want: 0},
+		{name: "positive value is unchanged", input: 7, want: 7},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NonZeroValue(tc.input); got != tc.want {
+				t.Errorf("NonZeroValue(%d) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func Test_GetOperatorNamespace(t *testing.T) {
+	// Outside a pod there is no service account namespace file, so the default
+	// namespace is returned.
+	if got := GetOperatorNamespace(); got != defaultNamespace {
+		t.Errorf("GetOperatorNamespace() = %s, want %s", got, defaultNamespace)
+	}
+}
