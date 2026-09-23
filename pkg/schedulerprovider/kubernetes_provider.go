@@ -628,6 +628,35 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	}); err != nil {
 		return fmt.Errorf("list Pods before PodGroup cleanup: %w", err)
 	}
+	desiredGroups := make(map[string]struct{}, len(desired))
+	for k, v := range desired {
+		desiredGroups[k] = v
+	}
+	// Under Hash identity, replica instances cannot be enumerated from replica
+	// count alone at reconcile start, but each active leader pod represents an
+	// active replica whose PodGroups must be preserved. Deriving their names
+	// from the leader's labels matches CreatePodGroupIfNotExists and prevents
+	// cleanup from racing before member pods have spec.schedulingGroup populated
+	// (such as worker PodGroups in role mode before workers are created).
+	if hashGroupIdentity(lws) {
+		mode, err := SchedulingModeFor(lws)
+		if err == nil && (mode == SchedulingModeReplica || mode == SchedulingModeRole) {
+			for i := range pods.Items {
+				pod := &pods.Items[i]
+				if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" || !pod.DeletionTimestamp.IsZero() {
+					continue
+				}
+				groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
+				revision := pod.Labels[leaderworkerset.RevisionKey]
+				if groupIndex == "" || revision == "" {
+					continue
+				}
+				for _, group := range replicaPodGroups(lws, mode, groupIndex, revision) {
+					desiredGroups[group.name] = struct{}{}
+				}
+			}
+		}
+	}
 	inUseGroups := make(map[string]struct{}, len(pods.Items))
 	for i := range pods.Items {
 		ref := pods.Items[i].Spec.SchedulingGroup
@@ -641,7 +670,7 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 		if !controllerReferencesEqual(metav1.GetControllerOf(group), desiredOwner) {
 			continue
 		}
-		if _, keep := desired[group.Name]; keep {
+		if _, keep := desiredGroups[group.Name]; keep {
 			continue
 		}
 		if _, inUse := inUseGroups[group.Name]; !inUse {
