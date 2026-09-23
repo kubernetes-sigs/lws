@@ -201,20 +201,20 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregate
 }
 
 // List returns the LWS controlled by disaggregatedSet, filtered to one slice. A
-// slice < 0 matches all slices. Slice 0 also matches legacy (pre-slices) LWS that
-// carry no slice label, so they are reconciled as slice 0. Slice filtering is
-// client-side because "slice label == 0 OR absent" cannot be expressed as a label
-// selector. Results are additionally filtered by controller-owner UID (every LWS
-// this manager creates is owned by its DisaggregatedSet), so an unrelated LWS that
-// happens to carry matching name/role labels — e.g. hand-crafted, or left over from
-// a same-named DisaggregatedSet that was deleted and recreated — cannot be
-// mistaken for one of this DisaggregatedSet's own replicas.
+// slice < 0 matches all slices. Results are additionally filtered by controller-owner
+// UID (every LWS this manager creates is owned by its DisaggregatedSet), so an
+// unrelated LWS that happens to carry matching name/role labels — e.g. hand-crafted,
+// or left over from a same-named DisaggregatedSet that was deleted and recreated —
+// cannot be mistaken for one of this DisaggregatedSet's own replicas.
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name}
 	if role != "" {
 		labels[disaggregatedsetv1.RoleLabelKey] = role
+	}
+	if slice >= 0 {
+		labels[disaggregatedsetv1.SliceLabelKey] = strconv.Itoa(slice)
 	}
 
 	if err := manager.client.List(ctx, lwsObjList, client.InNamespace(disaggregatedSet.Namespace), labels); err != nil {
@@ -224,7 +224,7 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSe
 	result := make([]*leaderworkersetv1.LeaderWorkerSet, 0, len(lwsObjList.Items))
 	for i := range lwsObjList.Items {
 		lws := &lwsObjList.Items[i]
-		if metav1.IsControlledBy(lws, disaggregatedSet) && disaggregatedsetutils.SliceLabelMatches(lws.Labels, slice) {
+		if metav1.IsControlledBy(lws, disaggregatedSet) {
 			result = append(result, lws)
 		}
 	}
@@ -232,20 +232,11 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSe
 }
 
 // GetForRole returns the existing LWS for (slice, revision, role) that is
-// actually controller-owned by ds, or nil if none. It looks up the
-// slice-aware name and, for slice 0, falls back to the legacy (pre-slices)
-// name so a legacy object is adopted in place rather than duplicated. A
-// same-named LWS occupied by a foreign object is treated as absent rather
-// than returned for the caller to mutate.
+// actually controller-owned by ds, or nil if none. A same-named LWS occupied
+// by a foreign object is treated as absent rather than returned for the caller
+// to mutate.
 func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision, role string) (*leaderworkersetv1.LeaderWorkerSet, error) {
-	lws, err := manager.Get(ctx, ds, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
-	if err != nil {
-		return nil, err
-	}
-	if lws != nil || slice != 0 {
-		return lws, nil
-	}
-	return manager.Get(ctx, ds, disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role))
+	return manager.Get(ctx, ds, disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role))
 }
 
 // deleteInForeground deletes the LWS so Kubernetes removes its children — the

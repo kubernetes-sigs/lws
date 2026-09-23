@@ -110,12 +110,6 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	executor := r.createRollingUpdateExecutor()
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 
-	// Backward compatibility. A pre-slices (label-less) LWS is adopted in place as
-	// slice 0 by GetForRole, including when slices is raised above 1: nothing about
-	// it has to become slice-aware, since the placement affinity terms already treat
-	// an unlabeled pod as slice 0 (see SetPlacementAffinities). It converges to a
-	// slice-aware name on the next revision change, without a restart.
-
 	// Slices reconcile independently, so a failure in one must not skip the others.
 	// Collect per-slice errors and join them; a non-nil result requeues the whole set.
 	var result ctrl.Result
@@ -462,8 +456,6 @@ func (r *DisaggregatedSetReconciler) reconcileSimple(ctx context.Context, disagg
 func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
 	log := logf.FromContext(ctx)
 
-	// GetForRole adopts a legacy slice-0 LWS in place, so we do not create a
-	// duplicate slice-aware object over a pre-slices deployment.
 	existing, err := r.LWSManager.GetForRole(ctx, disaggregatedSet, slice, revision, role)
 	if err != nil {
 		return fmt.Errorf("failed to get LWS for role %s revision %s: %w", role, revision, err)
@@ -526,8 +518,7 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 
 	// revisionLWS maps revision -> role -> LWS for old (non-target) revisions, so a
 	// revision's LWS can be deleted by their actual names once every role has drained
-	// to 0. Using the listed objects rather than regenerated names handles a legacy
-	// slice-0 LWS, whose name has no slice segment.
+	// to 0.
 	revisionLWS := make(map[string]map[string]*leaderworkersetv1.LeaderWorkerSet)
 	for _, lws := range lwsList {
 		lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
@@ -569,10 +560,6 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 
 	return nil
 }
-
-// TODO(0.11.0): remove legacy slice-0 handling once pre-slices DisaggregatedSets are no
-// longer supported: GenerateLegacyName, GetForRole's legacy-name fallback, and the
-// label-less branch in SliceLabelMatches.
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
