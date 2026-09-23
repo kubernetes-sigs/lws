@@ -967,6 +967,128 @@ func TestReconcileLeaderPodDeletingSkipsHeadlessService(t *testing.T) {
 	}
 }
 
+func TestPodReconcilerWaitsForStaleHeadlessService(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminating := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminating=%t", terminating), func(t *testing.T) {
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+				Size(2).
+				SubdomainPolicy(leaderworkerset.SubdomainUniquePerReplica).
+				Obj()
+			lws.UID = "current-lws"
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+			revision, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := k8sClient.Create(ctx, revision); err != nil {
+				t.Fatal(err)
+			}
+			leader := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-lws-0", Namespace: lws.Namespace, UID: "current-leader",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:         lws.Name,
+						leaderworkerset.WorkerIndexLabelKey:     "0",
+						leaderworkerset.GroupIndexLabelKey:      "0",
+						leaderworkerset.GroupUniqueHashLabelKey: "current-group",
+						leaderworkerset.RevisionKey:             revisionutils.GetRevisionKey(revision),
+					},
+				},
+				Spec: corev1.PodSpec{Hostname: "test-lws-0", Subdomain: "test-lws-0"},
+			}
+			if err := k8sClient.Create(ctx, leader); err != nil {
+				t.Fatal(err)
+			}
+			previousLeader := leader.DeepCopy()
+			previousLeader.UID = "previous-leader"
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Spec.Subdomain, Namespace: lws.Namespace,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(previousLeader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+			}
+			if terminating {
+				service.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+			}
+			if err := k8sClient.Create(ctx, service); err != nil {
+				t.Fatal(err)
+			}
+			if terminating {
+				if err := k8sClient.Delete(ctx, service); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(service), service); err != nil {
+				t.Fatal(err)
+			}
+			provider := &stubSchedulerProvider{}
+			reconciler := PodReconciler{
+				Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}, SchedulerProvider: provider,
+			}
+			req := podReconcileRequestForPod(leader, false)
+			for range 2 {
+				result, err := reconciler.reconcilePod(ctx, req)
+				if err == nil || !result.IsZero() {
+					t.Fatalf("expected error-based retry while service is stale, got result %+v, error %v", result, err)
+				}
+			}
+			if provider.calls != 0 {
+				t.Fatalf("PodGroup reconciliation proceeded before service was usable: %d calls", provider.calls)
+			}
+			var workers appsv1.StatefulSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &workers); !apierrors.IsNotFound(err) {
+				t.Fatalf("expected no worker StatefulSet while service is stale, got error %v", err)
+			}
+			var actual corev1.Service
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(service), &actual); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(service, &actual); diff != "" {
+				t.Fatalf("stale service was modified (-want +got):\n%s", diff)
+			}
+			// Simulate garbage collection without changing the replacement leader.
+			if terminating {
+				actual.Finalizers = nil
+				if err := k8sClient.Update(ctx, &actual); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := k8sClient.Delete(ctx, &actual); err != nil {
+				t.Fatal(err)
+			}
+			result, err := reconciler.reconcilePod(ctx, req)
+			if err != nil || !result.IsZero() {
+				t.Fatalf("expected successful retry after service deletion, got result %+v, error %v", result, err)
+			}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(service), &actual); err != nil {
+				t.Fatal(err)
+			}
+			if !metav1.IsControlledBy(&actual, leader) || actual.DeletionTimestamp != nil {
+				t.Fatalf("replacement service is not usable by the current leader: %+v", actual)
+			}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &workers); err != nil {
+				t.Fatal(err)
+			}
+			if workers.Spec.ServiceName != actual.Name || !metav1.IsControlledBy(&workers, leader) {
+				t.Fatalf("workers do not belong to the replacement group: %+v", workers)
+			}
+			if provider.calls != 1 {
+				t.Fatalf("PodGroup reconciliation calls = %d, want 1", provider.calls)
+			}
+		})
+	}
+}
+
 func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
