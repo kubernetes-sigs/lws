@@ -201,11 +201,12 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregate
 }
 
 // List returns the LWS controlled by disaggregatedSet, filtered to one slice. A
-// slice < 0 matches all slices. Results are additionally filtered by controller-owner
-// UID (every LWS this manager creates is owned by its DisaggregatedSet), so an
-// unrelated LWS that happens to carry matching name/role labels — e.g. hand-crafted,
-// or left over from a same-named DisaggregatedSet that was deleted and recreated —
-// cannot be mistaken for one of this DisaggregatedSet's own replicas.
+// slice < 0 matches all explicitly labeled slices. Results are additionally filtered
+// by controller-owner UID (every LWS this manager creates is owned by its
+// DisaggregatedSet), so an unrelated LWS that happens to carry matching name/role
+// labels — e.g. hand-crafted, or left over from a same-named DisaggregatedSet that
+// was deleted and recreated — cannot be mistaken for one of this DisaggregatedSet's
+// own replicas.
 func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
@@ -217,7 +218,11 @@ func (manager *LeaderWorkerSetManager) List(ctx context.Context, disaggregatedSe
 		labels[disaggregatedsetv1.SliceLabelKey] = strconv.Itoa(slice)
 	}
 
-	if err := manager.client.List(ctx, lwsObjList, client.InNamespace(disaggregatedSet.Namespace), labels); err != nil {
+	listOptions := []client.ListOption{client.InNamespace(disaggregatedSet.Namespace), labels}
+	if slice < 0 {
+		listOptions = append(listOptions, client.HasLabels{disaggregatedsetv1.SliceLabelKey})
+	}
+	if err := manager.client.List(ctx, lwsObjList, listOptions...); err != nil {
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", disaggregatedSet.Namespace, disaggregatedSet.Name, err)
 	}
 
