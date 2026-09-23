@@ -230,7 +230,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		} else {
 			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, updateMsg, updateMsg)
 	}
 
 	// Create headless service if it does not exist.
