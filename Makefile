@@ -224,11 +224,16 @@ test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-bui
 VOLCANO_VERSION ?= v1.12.1
 
 .PHONY: test-e2e-gang-scheduling
+# TODO: Include WAS after the Volcano Prow job uses its dedicated target.
 test-e2e-gang-scheduling: test-e2e-gang-scheduling-volcano ## Run all gang scheduling E2E tests
 
 .PHONY: test-e2e-gang-scheduling-volcano
 test-e2e-gang-scheduling-volcano: kustomize manifests fmt vet envtest ginkgo kind-image-build ## Run gang scheduling E2E tests with Volcano
 	SCHEDULER_PROVIDER=volcano VOLCANO_VERSION=$(VOLCANO_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+
+.PHONY: test-e2e-gang-scheduling-was
+test-e2e-gang-scheduling-was: kustomize manifests fmt vet ginkgo kind-image-build ## Run native Kubernetes workload-aware scheduling E2E tests
+	SCHEDULER_PROVIDER=kubernetes E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
