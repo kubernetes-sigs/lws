@@ -31,6 +31,7 @@ import (
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -46,7 +47,7 @@ import (
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
-	"sigs.k8s.io/lws/pkg/features"
+	_ "sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
@@ -145,6 +146,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(cfg.FeatureGates); err != nil {
+		setupLog.Error(err, "Unable to set flag gates for known features")
+		os.Exit(1)
+	}
+
 	kubeConfig := ctrl.GetConfigOrDie()
 
 	kubeConfig.QPS = *cfg.ClientConnection.QPS
@@ -209,16 +215,13 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 	<-certsReady
 	setupLog.Info("certs ready")
 
-	featureGates, err := features.New(cfg.FeatureGates)
-	if err != nil {
-		setupLog.Error(err, "unable to configure feature gates")
-		os.Exit(1)
-	}
-
 	// Set up scheduler provider before controllers and webhooks so every
-	// component observes the same provider and feature-gate snapshot.
-	var sp schedulerprovider.SchedulerProvider
-	var providerType schedulerprovider.ProviderType
+	// component observes the same provider.
+	var (
+		err          error
+		sp           schedulerprovider.SchedulerProvider
+		providerType schedulerprovider.ProviderType
+	)
 	if cfg.GangSchedulingManagement != nil {
 		providerType = schedulerprovider.ProviderType(*cfg.GangSchedulingManagement.SchedulerProvider)
 		sp, err = schedulerprovider.NewSchedulerProvider(providerType, mgr.GetClient())
@@ -257,7 +260,6 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 	// Set up webhooks
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr, webhooks.LeaderWorkerSetWebhook{
-			FeatureGates:      featureGates,
 			SchedulerProvider: providerType,
 		}); err != nil {
 			setupLog.Error(err, "unable to create leaderworkerset webhook", "webhook", "LeaderWorkerSet")

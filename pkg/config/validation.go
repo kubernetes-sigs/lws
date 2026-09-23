@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"slices"
 	"strings"
 
 	apimachineryvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -42,8 +43,10 @@ func validate(c *configapi.Configuration) field.ErrorList {
 }
 
 func validateFeatureGates(c *configapi.Configuration) field.ErrorList {
-	if _, err := features.New(c.FeatureGates); err != nil {
-		return field.ErrorList{field.NotSupported(field.NewPath("featureGates"), c.FeatureGates, features.Known())}
+	for name := range c.FeatureGates {
+		if !slices.Contains(features.Known(), name) {
+			return field.ErrorList{field.NotSupported(field.NewPath("featureGates"), c.FeatureGates, features.Known())}
+		}
 	}
 	return nil
 }

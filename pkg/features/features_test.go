@@ -21,19 +21,24 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/component-base/featuregate"
 )
 
-func TestNew(t *testing.T) {
-	gates, err := New(map[string]bool{WorkloadAwareScheduling: true})
-	require.NoError(t, err)
-	assert.True(t, gates.Enabled(WorkloadAwareScheduling))
-
-	_, err = New(map[string]bool{"UnknownGate": true})
-	require.ErrorContains(t, err, "unknown LWS feature gate")
+func TestWorkloadAwareSchedulingDefaultsOff(t *testing.T) {
+	assert.False(t, Enabled(WorkloadAwareScheduling))
 }
 
-func TestWorkloadAwareSchedulingDefaultsOff(t *testing.T) {
-	gates, err := New(nil)
-	require.NoError(t, err)
-	assert.False(t, gates.Enabled(WorkloadAwareScheduling))
+func TestSetFeatureGateDuringTest(t *testing.T) {
+	SetFeatureGateDuringTest(t, WorkloadAwareScheduling, true)
+	assert.True(t, Enabled(WorkloadAwareScheduling))
+}
+
+func TestUnknownFeatureGateRejected(t *testing.T) {
+	fg := featuregate.NewFeatureGate()
+	require.NoError(t, fg.Add(defaultFeatureGates))
+	require.Error(t, fg.SetFromMap(map[string]bool{"UnknownGate": true}))
+}
+
+func TestKnown(t *testing.T) {
+	assert.Equal(t, []string{string(WorkloadAwareScheduling)}, Known())
 }

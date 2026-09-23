@@ -600,11 +600,6 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 		GroupTemplateNameAnnotation:       "child-template",
 		ParentCompositePodGroupAnnotation: "parent-group",
 	}
-	parent := &unstructured.Unstructured{}
-	parent.SetGroupVersionKind(schema.GroupVersionKind{Group: "example.test", Version: "v1", Kind: "ParentJob"})
-	parent.SetName("parent")
-	parent.SetNamespace(lws.Namespace)
-	parent.SetUID(parentOwner.UID)
 	workload := &schedulingv1beta1.Workload{
 		ObjectMeta: metav1.ObjectMeta{Name: "parent-workload", Namespace: lws.Namespace, OwnerReferences: []metav1.OwnerReference{parentOwner}},
 		Spec: schedulingv1beta1.WorkloadSpec{
@@ -622,12 +617,14 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	staleWorkload := workload.DeepCopy()
 	staleWorkload.Name = "stale-parent-workload"
 	staleWorkload.OwnerReferences = []metav1.OwnerReference{staleOwner}
-	parentGroup := &schedulingv1alpha3.CompositePodGroup{ObjectMeta: metav1.ObjectMeta{Name: "parent-group", Namespace: lws.Namespace}}
 	parentGets := 0
 	workloadLists := 0
-	fakeClient := newKubernetesFakeClientBuilder().WithObjects(parent, workload, staleWorkload, parentGroup).
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(workload, staleWorkload).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					parentGets++
+				}
 				if _, ok := obj.(*schedulingv1alpha3.CompositePodGroup); ok {
 					parentGets++
 				}
@@ -643,13 +640,13 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 
 	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 4, "revision-1"))
 	assert.Equal(t, 1, workloadLists, "each owner level uses one UID-indexed Workload lookup")
-	assert.Equal(t, 1, parentGets, "the shared parent must be checked once per reconciliation")
+	assert.Equal(t, 0, parentGets, "must not GET the third-party parent or a CompositePodGroup after the Workload is found")
 	group := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, group))
 	require.NotNil(t, group.Spec.WorkloadRef)
 	assert.Equal(t, "parent-workload", group.Spec.WorkloadRef.WorkloadName)
 	assert.Equal(t, "child-template", group.Spec.WorkloadRef.TemplateName)
-	assert.Equal(t, ptr.To("parent-group"), group.Spec.ParentCompositePodGroupName)
+	assert.Nil(t, group.Spec.ParentCompositePodGroupName, "Phase 1 does not attach a parent CompositePodGroup")
 	assert.Nil(t, workloadOwnerReference(group), "delegated groups must not own a parent Workload")
 	lwsController := metav1.GetControllerOf(group)
 	require.NotNil(t, lwsController)

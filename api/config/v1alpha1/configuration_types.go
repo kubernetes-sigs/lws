@@ -37,8 +37,9 @@ type Configuration struct {
 	// GangSchedulingManagement is configuration for gang scheduling management.
 	GangSchedulingManagement *GangSchedulingManagement `json:"gangSchedulingManagement,omitempty"`
 
-	// FeatureGates is the set of alpha or beta LWS features enabled for the
-	// controller manager. Unknown feature gates are rejected during startup.
+	// FeatureGates is a map of feature names to bools that allows to override the
+	// default enablement status of a feature. Unknown feature gates are rejected
+	// during startup.
 	// +optional
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 

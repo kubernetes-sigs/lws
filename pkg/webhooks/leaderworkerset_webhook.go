@@ -41,7 +41,6 @@ import (
 )
 
 type LeaderWorkerSetWebhook struct {
-	FeatureGates      features.Gates
 	SchedulerProvider schedulerprovider.ProviderType
 	RESTMapper        meta.RESTMapper
 }
@@ -166,7 +165,7 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 	var allErrs field.ErrorList
 	// Disabling the gate prevents new opt-ins, but existing scheduled objects
 	// must remain updateable so they can scale down and be deleted safely.
-	if !r.FeatureGates.Enabled(features.WorkloadAwareScheduling) && (oldLws == nil || oldLws.Spec.Scheduling == nil) {
+	if !features.Enabled(features.WorkloadAwareScheduling) && (oldLws == nil || oldLws.Spec.Scheduling == nil) {
 		allErrs = append(allErrs, field.Forbidden(path, "requires the WorkloadAwareScheduling feature gate"))
 	}
 	if r.SchedulerProvider == "" {
@@ -188,7 +187,8 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 		// Users or a parent controller may set these KEP-6089 annotations; LWS does not.
 		// group-template-name names a template in a parent-owned Workload and requires
 		// a controller owner. parent-compositepodgroup is optional and requires the
-		// template annotation. Delegated scheduling is limited to whole-LWS or replica mode.
+		// template annotation; Phase 1 stores it and does not Get a CompositePodGroup.
+		// Delegated scheduling is limited to whole-LWS or replica mode.
 		templateName, delegated := lws.Annotations[schedulerprovider.GroupTemplateNameAnnotation]
 		parentName, hasParent := lws.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation]
 		if hasParent && !delegated {

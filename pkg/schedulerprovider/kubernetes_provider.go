@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -154,13 +153,10 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 	if err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
-	parentName := lws.Annotations[ParentCompositePodGroupAnnotation]
-	if parentName != "" {
-		parent := &schedulingv1alpha3.CompositePodGroup{}
-		if err := p.client.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: parentName}, parent); err != nil {
-			return NewReconcileError(ReasonParentWorkloadNotReady, fmt.Errorf("get parent CompositePodGroup %s/%s: %w", lws.Namespace, parentName, err))
-		}
-	}
+	// TODO(phase2): honor ParentCompositePodGroupAnnotation by reading the named
+	// CompositePodGroup (API reader or dedicated RBAC, not the cached client)
+	// and setting PodGroup.Spec.ParentCompositePodGroupName. A cached Get
+	// without list/watch stalls the reconciler.
 	if templateName := lws.Annotations[GroupTemplateNameAnnotation]; templateName != "" {
 		for i := range groups {
 			groups[i].templateName = templateName
@@ -182,9 +178,6 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 		podGroup.Labels = group.labels
 		if !delegated {
 			attachWorkloadOwnerReference(podGroup, persisted)
-		}
-		if parentName != "" {
-			podGroup.Spec.ParentCompositePodGroupName = ptr.To(parentName)
 		}
 		existing := &schedulingv1beta1.PodGroup{}
 		key := types.NamespacedName{Namespace: podGroup.Namespace, Name: name}
@@ -473,14 +466,15 @@ func controllerReferencesEqual(current, desired *metav1.OwnerReference) bool {
 }
 
 // findDelegatedWorkload walks the LWS controller-owner chain until it finds the
-// parent-owned Workload that contains the annotated group template.
+// parent-owned Workload that contains the annotated group template. Stop at the
+// first matching hop so we do not GET third-party parents after the Workload
+// is already known (ClusterRole does not cover those kinds).
 func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	owner := metav1.GetControllerOf(lws)
 	if owner == nil {
 		return nil, fmt.Errorf("%s requires a controller owner", GroupTemplateNameAnnotation)
 	}
 
-	var selected *schedulingv1beta1.Workload
 	for owner != nil {
 		if owner.UID == "" {
 			return nil, fmt.Errorf("controller owner %s %s/%s has no UID", owner.Kind, lws.Namespace, owner.Name)
@@ -495,6 +489,7 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 		}); err != nil {
 			return nil, fmt.Errorf("list delegated Workloads for controller owner UID %q: %w", owner.UID, err)
 		}
+		var selected *schedulingv1beta1.Workload
 		for i := range workloads.Items {
 			candidate := &workloads.Items[i]
 			ref := candidate.Spec.ControllerRef
@@ -505,6 +500,9 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 				}
 				selected = candidate
 			}
+		}
+		if selected != nil {
+			return selected, nil
 		}
 
 		parent := &unstructured.Unstructured{}
@@ -517,10 +515,7 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 		}
 		owner = metav1.GetControllerOf(parent)
 	}
-	if selected == nil {
-		return nil, fmt.Errorf("no parent Workload matches the LWS controller-owner chain")
-	}
-	return selected, nil
+	return nil, fmt.Errorf("no parent Workload matches the LWS controller-owner chain")
 }
 
 // updateMutableWorkloadFields applies gang minCount (for example whole-LWS scale)

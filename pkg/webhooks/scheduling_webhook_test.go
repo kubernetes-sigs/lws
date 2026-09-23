@@ -33,18 +33,18 @@ import (
 
 func TestValidateScheduling(t *testing.T) {
 	tests := map[string]struct {
-		mutate   func(*leaderworkerset.LeaderWorkerSet)
-		gates    features.Gates
-		wantErrs int
+		mutate     func(*leaderworkerset.LeaderWorkerSet)
+		enableGate bool
+		wantErrs   int
 	}{
 		"empty scheduling defaults to replica-sized gang": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 		},
 		"feature gate disabled": {
 			wantErrs: 1,
 		},
 		"rejects composite minGroupCount": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
 					Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{MinGroupCount: ptr.To[int32](2)},
@@ -53,14 +53,14 @@ func TestValidateScheduling(t *testing.T) {
 			wantErrs: 1,
 		},
 		"gang is incompatible with LeaderReady": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.StartupPolicy = leaderworkerset.LeaderReadyStartupPolicy
 			},
 			wantErrs: 1,
 		},
 		"multiple active levels are rejected": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.SchedulingConstraints = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingConstraints{}
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{}
@@ -68,7 +68,7 @@ func TestValidateScheduling(t *testing.T) {
 			wantErrs: 1,
 		},
 		"role leaves must use the workload priority": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "other-priority"}}
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
@@ -78,7 +78,7 @@ func TestValidateScheduling(t *testing.T) {
 			wantErrs: 1,
 		},
 		"whole LWS gang supports zero replicas": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Replicas = ptr.To[int32](0)
 				lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
@@ -87,7 +87,7 @@ func TestValidateScheduling(t *testing.T) {
 			},
 		},
 		"worker-only gang is compatible with LeaderReady": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.StartupPolicy = leaderworkerset.LeaderReadyStartupPolicy
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
@@ -100,7 +100,7 @@ func TestValidateScheduling(t *testing.T) {
 			},
 		},
 		"leaf gang minimum must equal membership": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
 					Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
@@ -113,7 +113,7 @@ func TestValidateScheduling(t *testing.T) {
 			wantErrs: 1,
 		},
 		"leader and worker priority must match": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{
 					Spec: corev1.PodSpec{PriorityClassName: "other-priority"},
@@ -122,7 +122,7 @@ func TestValidateScheduling(t *testing.T) {
 			wantErrs: 1,
 		},
 		"worker resource claims matching the worker template are admitted": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.ResourceClaims = []corev1.PodResourceClaim{{
 					Name: "gpu", ResourceClaimName: ptr.To("shared-gpu"),
@@ -137,7 +137,7 @@ func TestValidateScheduling(t *testing.T) {
 			},
 		},
 		"worker resource claims must match the worker template": {
-			gates: features.Gates{features.WorkloadAwareScheduling: true},
+			enableGate: true,
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
 					Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
@@ -157,8 +157,10 @@ func TestValidateScheduling(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(lws)
 			}
+			if tc.enableGate {
+				features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, true)
+			}
 			hook := &LeaderWorkerSetWebhook{
-				FeatureGates:      tc.gates,
 				SchedulerProvider: schedulerprovider.Kubernetes,
 			}
 			errs := hook.validateScheduling(context.Background(), nil, lws)
@@ -168,8 +170,8 @@ func TestValidateScheduling(t *testing.T) {
 }
 
 func TestValidateSchedulingUpdate(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, true)
 	hook := &LeaderWorkerSetWebhook{
-		FeatureGates:      features.Gates{features.WorkloadAwareScheduling: true},
 		SchedulerProvider: schedulerprovider.Kubernetes,
 	}
 
@@ -197,6 +199,7 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		oldLWS := validScheduledLWS()
 		newLWS := oldLWS.DeepCopy()
 		newLWS.Spec.Replicas = ptr.To[int32](0)
+		features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, false)
 		disabledHook := &LeaderWorkerSetWebhook{SchedulerProvider: schedulerprovider.Kubernetes}
 		assert.Empty(t, disabledHook.validateScheduling(context.Background(), oldLWS, newLWS))
 	})
@@ -227,8 +230,8 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 }
 
 func TestValidateSchedulingKEPConstraints(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, true)
 	hook := &LeaderWorkerSetWebhook{
-		FeatureGates:      features.Gates{features.WorkloadAwareScheduling: true},
 		SchedulerProvider: schedulerprovider.Kubernetes,
 	}
 

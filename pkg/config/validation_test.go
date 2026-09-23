@@ -126,6 +126,11 @@ func TestValidate(t *testing.T) {
 				},
 			},
 		},
+		"known feature gate": {
+			cfg: &configapi.Configuration{
+				FeatureGates: map[string]bool{"WorkloadAwareScheduling": true},
+			},
+		},
 	}
 
 	for name, tc := range testCases {

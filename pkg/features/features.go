@@ -14,46 +14,55 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package features declares versioned feature gates owned by LWS.
 package features
 
 import (
-	"fmt"
+	"slices"
+	"testing"
 
-	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/component-base/featuregate"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 )
 
 const (
-	// WorkloadAwareScheduling enables spec.scheduling.
-	// Existing scheduled objects continue reconciling when it is disabled.
-	WorkloadAwareScheduling = "WorkloadAwareScheduling"
+	// owner: @pacoxu
+	// kep: https://github.com/kubernetes-sigs/lws/blob/main/keps/666-gang-scheduling-in-lws/README.md
+	//
+	// Enables spec.scheduling. Existing scheduled objects continue reconciling
+	// when it is disabled.
+	WorkloadAwareScheduling featuregate.Feature = "WorkloadAwareScheduling"
 )
 
-var known = sets.New(WorkloadAwareScheduling)
-
-// Gates is an immutable snapshot of the configured LWS feature gates.
-type Gates map[string]bool
-
-// New validates and copies a feature gate configuration.
-func New(config map[string]bool) (Gates, error) {
-	for name := range config {
-		if !known.Has(name) {
-			return nil, fmt.Errorf("unknown LWS feature gate %q", name)
-		}
-	}
-	gates := make(Gates, len(config))
-	for name, enabled := range config {
-		gates[name] = enabled
-	}
-	return gates, nil
+func init() {
+	runtime.Must(utilfeature.DefaultMutableFeatureGate.Add(defaultFeatureGates))
 }
 
-// Enabled reports whether the named gate is enabled. Alpha gates default off.
-func (g Gates) Enabled(name string) bool {
-	return g != nil && g[name]
+// defaultFeatureGates consists of all known LWS-specific feature keys.
+// To add a new feature, define a key for it above and add it here.
+//
+// Entries are separated from each other with blank lines to avoid sweeping gofmt
+// changes when adding or removing one entry.
+var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
+	WorkloadAwareScheduling: {Default: false, PreRelease: featuregate.Alpha},
+}
+
+func SetFeatureGateDuringTest(tb testing.TB, f featuregate.Feature, value bool) {
+	featuregatetesting.SetFeatureGateDuringTest(tb, utilfeature.DefaultFeatureGate, f, value)
+}
+
+// Enabled is helper for `utilfeature.DefaultFeatureGate.Enabled()`
+func Enabled(f featuregate.Feature) bool {
+	return utilfeature.DefaultFeatureGate.Enabled(f)
 }
 
 // Known returns the set of supported LWS feature-gate names.
 func Known() []string {
-	return sets.List(known)
+	names := make([]string, 0, len(defaultFeatureGates))
+	for name := range defaultFeatureGates {
+		names = append(names, string(name))
+	}
+	slices.Sort(names)
+	return names
 }

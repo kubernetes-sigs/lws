@@ -46,6 +46,7 @@ const (
 	GroupTemplateNameAnnotation = "scheduling.k8s.io/group-template-name"
 	// ParentCompositePodGroupAnnotation names a parent CompositePodGroup.
 	// Set by the user or parent controller, not by LWS. Requires GroupTemplateNameAnnotation.
+	// Phase 1 accepts the annotation and does not read or attach that CPG.
 	ParentCompositePodGroupAnnotation = "scheduling.k8s.io/parent-compositepodgroup"
 
 	ReasonAPINotAvailable                = "APINotAvailable"
