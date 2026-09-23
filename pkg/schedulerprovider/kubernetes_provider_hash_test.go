@@ -132,13 +132,19 @@ func TestKubernetesProviderHashCleanupKeepsGroupsWithMemberPods(t *testing.T) {
 	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
 	name := KubernetesPodGroupName(lws, hashGroupKey, "revision-1")
 
-	// The LWS reconcile cannot name this group, so only the member pod keeps it alive.
-	require.NoError(t, provider.InjectPodGroupMetadata(leader))
+	// Even before any pod has spec.schedulingGroup populated (or before member pods
+	// are admitted), the active leader's labels keep the PodGroup alive.
 	require.NoError(t, fakeClient.Create(ctx, leader))
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, &schedulingv1beta1.PodGroup{}))
 
-	// Once the group is gone, the next reconcile collects the PodGroup.
+	// With spec.schedulingGroup stamped, the group continues to be retained.
+	require.NoError(t, provider.InjectPodGroupMetadata(leader))
+	require.NoError(t, fakeClient.Update(ctx, leader))
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, &schedulingv1beta1.PodGroup{}))
+
+	// Once the leader and all member pods are deleted, the next reconcile collects the PodGroup.
 	require.NoError(t, fakeClient.Delete(ctx, leader))
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
 	err := fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, &schedulingv1beta1.PodGroup{})
@@ -179,6 +185,26 @@ func TestKubernetesProviderHashRoleMode(t *testing.T) {
 	require.NoError(t, provider.InjectPodGroupMetadata(worker))
 	assert.Equal(t, KubernetesRolePodGroupName(lws, hashGroupKey, workerWorkloadTemplateName, "revision-1"),
 		ptr.Deref(worker.Spec.SchedulingGroup.PodGroupName, ""))
+
+	// When only the leader pod exists (no worker pods created yet), ReconcileScheduling
+	// must retain BOTH leader and worker PodGroups.
+	require.NoError(t, provider.InjectPodGroupMetadata(leader))
+	require.NoError(t, fakeClient.Create(ctx, leader))
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	for _, role := range []string{leaderWorkloadTemplateName, workerWorkloadTemplateName} {
+		name := KubernetesRolePodGroupName(lws, hashGroupKey, role, "revision-1")
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, &schedulingv1beta1.PodGroup{}),
+			"expected %s PodGroup to be retained before worker pods exist", role)
+	}
+
+	// Once the leader is deleted and no member pods exist, both PodGroups are cleaned up.
+	require.NoError(t, fakeClient.Delete(ctx, leader))
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	for _, role := range []string{leaderWorkloadTemplateName, workerWorkloadTemplateName} {
+		name := KubernetesRolePodGroupName(lws, hashGroupKey, role, "revision-1")
+		err := fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, &schedulingv1beta1.PodGroup{})
+		assert.True(t, apierrors.IsNotFound(err), "expected %s PodGroup to be cleaned up after leader deletion", role)
+	}
 }
 
 func TestKubernetesProviderHashWholeLWSGroupStaysControllerDriven(t *testing.T) {
