@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +31,8 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
+// CreateHeadlessServiceIfNotExists only reuses a non-terminating Service controlled by owner.
+// Errors keep callers retrying until stale or terminating Services have been removed.
 func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Client, Scheme *runtime.Scheme, lws *leaderworkerset.LeaderWorkerSet, serviceName string, serviceSelector map[string]string, owner metav1.Object) error {
 	log := ctrl.LoggerFrom(ctx)
 	// If the headless service does not exist in the namespace, create it.
@@ -60,6 +63,10 @@ func CreateHeadlessServiceIfNotExists(ctx context.Context, k8sClient client.Clie
 		if err := k8sClient.Create(ctx, &headlessService); err != nil {
 			return err
 		}
+	} else if headlessService.DeletionTimestamp != nil {
+		return fmt.Errorf("waiting for headless service %s/%s to finish deletion", headlessService.Namespace, serviceName)
+	} else if !metav1.IsControlledBy(&headlessService, owner) {
+		return fmt.Errorf("headless service %s/%s has controller owner %+v; expected %s with UID %s", headlessService.Namespace, serviceName, metav1.GetControllerOf(&headlessService), owner.GetName(), owner.GetUID())
 	}
 	return nil
 }

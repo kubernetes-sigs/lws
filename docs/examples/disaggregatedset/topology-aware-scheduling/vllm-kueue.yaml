@@ -1,0 +1,92 @@
+# DisaggregatedSet + Kueue topology-aware scheduling: vLLM.
+# Requires Kueue with TAS and a LocalQueue named "default" (see the guide).
+#
+# Kueue is not integrated directly with DisaggregatedSet: it is not aware of the
+# Role or Slice concepts. But because Kueue is integrated with LWS, we can apply
+# the same LWS annotations to the underlying pod groups to get all-or-nothing
+# scheduling and binpack more than one LWS group into a topology domain.
+apiVersion: disaggregatedset.x-k8s.io/v1
+kind: DisaggregatedSet
+metadata:
+  name: vllm-disagg
+  labels:
+    # Admit this workload through Kueue.
+    kueue.x-k8s.io/queue-name: default
+spec:
+  roles:
+    - name: prefill
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: prefill
+              annotations:
+                # Group the prefill role's leader and workers into one Kueue
+                # scheduling unit, so Kueue treats the whole role as a single
+                # LWS pod group instead of independent pods. Needed for size > 1.
+                kueue.x-k8s.io/podset-group-name: "vllm-disagg-prefill"
+                # Require the whole group inside one topology block (all-or-nothing).
+                # Set the value to your topology level's node label.
+                kueue.x-k8s.io/podset-required-topology: cloud.google.com/gce-topology-block
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_producer\"}'"
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+    - name: decode
+      spec:
+        leaderWorkerTemplate:
+          size: 1
+          workerTemplate:
+            metadata:
+              labels:
+                role: decode
+              annotations:
+                # Group the decode role's leader and workers into one Kueue
+                # scheduling unit (see the prefill role above).
+                kueue.x-k8s.io/podset-group-name: "vllm-disagg-decode"
+                # Require the whole group inside one topology block (all-or-nothing).
+                kueue.x-k8s.io/podset-required-topology: cloud.google.com/gce-topology-block
+            spec:
+              containers:
+                - name: vllm
+                  image: vllm/vllm-openai:v0.28.0 # pinned; bump to the latest release
+                  env:
+                    - name: HF_TOKEN
+                      value: $HF_TOKEN
+                  command:
+                    - sh
+                    - -c
+                    - "python3 -m vllm.entrypoints.openai.api_server --port 8080
+                       --model meta-llama/Meta-Llama-3.1-8B-Instruct
+                       --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_consumer\"}'"
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                  ports:
+                    - containerPort: 8080
+                  readinessProbe:
+                    tcpSocket:
+                      port: 8080
+                    initialDelaySeconds: 15
+                    periodSeconds: 10

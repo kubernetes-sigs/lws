@@ -41,7 +41,6 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
 - **Disaggregated Architecture Support:** Specifically designed for workloads where different phases (e.g., prefill and decode) run on separate infrastructure.
 - **Coordinated N-Dimensional Rollouts:** Updates multiple roles (2-10) in lockstep, preserving capacity ratios throughout the update process.
 - **Unified Lifecycle Management:** Manages multiple underlying LeaderWorkerSets as a single logical unit.
-- **Automatic Service Orchestration:** Automatically creates and manages headless services for each role to facilitate discovery and revision-aware routing.
 - **Coordinated Lifecycle Operations:** Coordinated rollout and drain across all roles in the disaggregated set.
 
 <p align="center">

@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +36,7 @@ import (
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
 	"sigs.k8s.io/lws/test/wrappers"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
@@ -2594,6 +2596,87 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				// Reset the SchedulerProvider to nil
 				podController.SchedulerProvider = nil
 			})
+
+			ginkgo.DescribeTable("retries a stale PodGroup until it can be recreated",
+				func(terminating bool) {
+					ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lws-stale-pg-"}}
+					gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+					lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1).Obj()
+					gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+					ginkgo.DeferCleanup(func() {
+						gomega.Expect(k8sClient.Delete(ctx, lws)).To(gomega.Succeed())
+					})
+					var leaderSts appsv1.StatefulSet
+					testing.GetLeaderStatefulset(ctx, lws, k8sClient, &leaderSts)
+
+					oldLeader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+						Name: lws.Name + "-0", Namespace: ns.Name, UID: "previous-leader-uid",
+					}}
+					pg := &volcanov1beta1.PodGroup{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:            schedulerprovider.GetPodGroupName(lws.Name, "0", revisionutils.GetRevisionKey(&leaderSts)),
+							Namespace:       ns.Name,
+							OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(oldLeader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+						},
+						Spec: volcanov1beta1.PodGroupSpec{MinMember: 1},
+					}
+					if terminating {
+						pg.Finalizers = []string{"test.lws.sigs.k8s.io/hold-podgroup"}
+					}
+					gomega.Expect(k8sClient.Create(ctx, pg)).To(gomega.Succeed())
+					oldPGUID := pg.UID
+					if terminating {
+						gomega.Expect(k8sClient.Delete(ctx, pg)).To(gomega.Succeed())
+					}
+
+					ginkgo.By("creating the replacement leader while its old PodGroup still exists")
+					gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, leaderSts, k8sClient, lws, 0, 1, func(pod *corev1.Pod) {
+						gomega.Expect(podController.SchedulerProvider.InjectPodGroupMetadata(pod)).To(gomega.Succeed())
+					})).To(gomega.Succeed())
+					var leader corev1.Pod
+					gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldLeader), &leader)).To(gomega.Succeed())
+					gomega.Expect(leader.UID).NotTo(gomega.Equal(oldLeader.UID))
+					gomega.Expect(leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]).To(gomega.Equal(pg.Name))
+					leaderVersion := leader.ResourceVersion
+
+					// Size one avoids worker StatefulSet events triggering an unrelated retry.
+					gomega.Consistently(func(g gomega.Gomega) {
+						var current volcanov1beta1.PodGroup
+						g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pg), &current)).To(gomega.Succeed())
+						g.Expect(current.UID).To(gomega.Equal(oldPGUID))
+						owner := metav1.GetControllerOf(&current)
+						g.Expect(owner).NotTo(gomega.BeNil())
+						g.Expect(owner.UID).To(gomega.Equal(oldLeader.UID))
+						g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldLeader), &leader)).To(gomega.Succeed())
+						g.Expect(leader.ResourceVersion).To(gomega.Equal(leaderVersion))
+					}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
+
+					ginkgo.By("completing old PodGroup deletion without updating the replacement leader")
+					gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pg), pg)).To(gomega.Succeed())
+					if terminating {
+						before := pg.DeepCopy()
+						pg.Finalizers = nil
+						gomega.Expect(k8sClient.Patch(ctx, pg, client.MergeFrom(before))).To(gomega.Succeed())
+					} else {
+						gomega.Expect(k8sClient.Delete(ctx, pg)).To(gomega.Succeed())
+					}
+					gomega.Eventually(func() bool {
+						var current volcanov1beta1.PodGroup
+						err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pg), &current)
+						if apierrors.IsNotFound(err) {
+							return false
+						}
+						gomega.Expect(err).To(gomega.Succeed())
+						owner := metav1.GetControllerOf(&current)
+						return current.UID != oldPGUID && current.DeletionTimestamp == nil &&
+							owner != nil && owner.UID == leader.UID
+					}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+					gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldLeader), &leader)).To(gomega.Succeed())
+					gomega.Expect(leader.ResourceVersion).To(gomega.Equal(leaderVersion))
+				},
+				ginkgo.Entry("with an old owner UID before deletion starts", false),
+				ginkgo.Entry("with a terminating PodGroup", true),
+			)
 
 			type gangTestCase struct {
 				makeLeaderWorkerSet func(nsName string) *wrappers.LeaderWorkerSetWrapper

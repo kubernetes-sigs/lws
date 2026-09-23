@@ -81,7 +81,7 @@ We propose adding a new CRD called `DisaggregatedSet` that acts as a higher-leve
 
 1. Create and manage multiple LeaderWorkerSets (one per role, 2-10 roles supported)
 2. Coordinate rolling updates using an N-dimensional algorithm
-3. Automatically create headless Services for each role per revision
+3. ~~Automatically create headless Services for each role per revision~~ (removed, see [Service Orchestration](#service-orchestration))
 
 ### Risks and Mitigations
 
@@ -300,15 +300,24 @@ The pending window changes the slow-start case materially. After observation 1, 
 
 ### Service Orchestration
 
-Headless Services are automatically created for each role per revision. This allows load balancers (e.g., llm-d) to count pods per revision across all roles and route traffic proportionally during rolling updates.
-
-- **Naming**: `{disaggregatedset-name}-{revision}-{role}-prv` (e.g., `my-llm-abc12345-prefill-prv`)
-- **Selector**: Selects pods from the specific revision's LeaderWorkerSet for that role
-- **Cleanup**: Owned by the corresponding LeaderWorkerSet and garbage collected with it
+> **Removed.** The controller used to create a headless Service per `(revision, role)`,
+> named `{disaggregatedset-name}-{revision}-{role}-prv`, selecting that revision's pods
+> for the role. Its only purpose was to let a custom load balancer count pods per revision
+> through native EndpointSlices and gate traffic during a rollout. llm-d now implements
+> revision gating with Kubernetes watches and label selectors over the Pods directly, so
+> these Services carried complexity (and a DNS-1035 name budget) for no consumer, were
+> never part of the supported surface (hence the `-prv` suffix), and could not be extended
+> to upcoming features such as virtual roles. They are no longer created.
+>
+> Services left behind by an earlier controller are not deleted; they are garbage collected
+> with the LeaderWorkerSet that owns them, or can be deleted by hand. Consumers that need
+> per-revision, per-role Pod discovery should select on the
+> `disaggregatedset.x-k8s.io/{name,role,revision,slice}` labels the controller stamps on
+> every managed Pod.
 
 ### Controller Architecture
 
-The controller is stateless: all state is derived from observed resources. The `initial-replicas` annotation preserves each revision's replica target across rolling updates. Owner references on managed LeaderWorkerSets and Services ensure proper garbage collection.
+The controller is stateless: all state is derived from observed resources. The `initial-replicas` annotation preserves each revision's intended replica target across rolling updates. Owner references on managed LeaderWorkerSets ensure proper garbage collection.
 
 ### Test Plan
 
@@ -320,14 +329,12 @@ to implement this enhancement.
 
 - Rolling update planner: step computation, edge cases, constraint violations
 - Executor: Spec/Ready separation, pending bounds, availability-safe drains, slow-role readiness, coordinated retirement, and staged interrupted rollouts
-- Service manager: creation conditions, cleanup logic
 - API validation: role count, unique names, replica constraints
 
 #### Integration tests
 
 - DisaggregatedSet creation creates LeaderWorkerSets for all roles
 - Template update triggers coordinated rolling update
-- Headless Services created for each role
 - Interrupted rollout resumes correctly after controller restart
 - Deletion cascades to owned resources
 
@@ -337,7 +344,6 @@ to implement this enhancement.
 - DisaggregatedSet CRD with validation
 - LeaderWorkerSet creation and ownership
 - N-dimensional rolling update algorithm
-- Automatic headless Service creation
 - Comprehensive test coverage (>80%)
 - Documentation and examples
 

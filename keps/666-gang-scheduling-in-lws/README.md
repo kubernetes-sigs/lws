@@ -18,6 +18,7 @@
 - [Design Details](#design-details)
   - [Compiling an LWS into a Workload](#compiling-an-lws-into-a-workload)
   - [Workload and PodGroup Lifecycle](#workload-and-podgroup-lifecycle)
+  - [Group Identity Hash](#group-identity-hash)
   - [Replica, Size, and Rollout Updates](#replica-size-and-rollout-updates)
   - [Parent Controller Integration](#parent-controller-integration)
   - [Future DisaggregatedSet Integration](#future-disaggregatedset-integration)
@@ -753,6 +754,40 @@ On scale-down or rollout cleanup, delete member pods first, then the PodGroup,
 and wait for the protection finalizer. Deleting the LWS uses owner GC, with
 reconciliation as best-effort ordered cleanup.
 
+### Group Identity Hash
+
+With [KEP-898][kep898] `groupIdentity: Hash`, leaders are managed by a
+Deployment and a group is identified by a key that admission draws for each
+leader pod, not by a StatefulSet ordinal. The compilation step is unchanged: a
+Workload still has only the stable templates of its selected level, and the
+whole-LWS PodGroup still has a group independent name. Only the instantiation
+of the per-replica groups moves:
+
+1. The LWS controller compiles the Workload and, in whole-LWS mode, its single
+   PodGroup before applying the leader Deployment. It cannot enumerate replica
+   or role instances, because their names do not exist yet.
+2. The pod webhook draws the group key of a leader pod, stores it in the group
+   index label, and stamps `spec.schedulingGroup.podGroupName` from it. Worker
+   pods inherit the same label from their leader, so both roles resolve to the
+   same names the controller will create.
+3. Every hash mode leader is admitted with the
+   `leaderworkerset.sigs.k8s.io/group-replacement` scheduling gate. The pod
+   controller instantiates the group's leaf PodGroups from the persisted
+   Workload template and only then lifts the gate, which preserves the
+   ordering rule that a pod's leaf PodGroup exists before it can be scheduled.
+4. Ownership is unchanged: leaf PodGroups controller-own to the LWS and carry
+   the non-controller Workload ownerReference. A leader pod never owns a group
+   it does not create.
+
+In the runtime name table, `<group-index>` is the group key in hash mode. Group
+keys are unique per leader pod, so a replacement group never reuses the name of
+the group it replaces and the two never share a gang. Because the desired set
+the LWS controller computes does not contain these names, cleanup relies on the
+rule it already applies: an LWS-owned PodGroup is deleted only when it is
+neither desired nor referenced by a member pod.
+
+[kep898]: ../898-group-identity/README.md
+
 ### Replica, Size, and Rollout Updates
 
 Replica count and rollout updates in the default replica mode are reconciled
@@ -893,19 +928,19 @@ Users can inspect:
 - `PodGroup.status.conditions[type=PodGroupInitiallyScheduled]`, as an
   initial-placement signal only;
 - pod events and `spec.schedulingGroup`;
-- LWS events and a new `WorkloadSchedulingReady` condition.
+- LWS events and a new `WorkloadSchedulingCreated` condition.
 
 `PodGroupInitiallyScheduled` is a terminal initial-placement signal: once
 True it does not revert, even if members are later evicted. Reusing the
 replica PodGroup across a leader restart can therefore leave it True while
 the replacement generation is Pending. It is not replica health.
 
-`WorkloadSchedulingReady` reports that LWS successfully compiled and created
+`WorkloadSchedulingCreated` reports that LWS successfully compiled and created
 the WAS objects for the requested shape. It is not replica runtime health and
 must not be derived from `PodGroupInitiallyScheduled`. LWS continues to
 derive replica health from pods.
 
-`WorkloadSchedulingReady=False` includes stable reasons for:
+`WorkloadSchedulingCreated=False` includes stable reasons for:
 
 - `APINotAvailable`;
 - `UnsupportedProviderCapability`;

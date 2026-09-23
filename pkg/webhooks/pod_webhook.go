@@ -114,6 +114,13 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if pod.Spec.Hostname == "" {
 				pod.Spec.Hostname = hashLeaderHostname(pod.Labels[leaderworkerset.SetNameLabelKey], groupUniqueKey)
 			}
+			// Every hash leader starts gated. The pod controller lifts the gate
+			// according to the LeaderWorkerSet's groupReplacementPolicy, which it
+			// reads from the LWS object rather than from the pod template so that
+			// changing the policy does not roll the leaders.
+			if !podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate) {
+				pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: leaderworkerset.GroupReplacementSchedulingGate})
+			}
 		} else {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if groupIndex == -1 {

@@ -42,7 +42,6 @@ const (
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
-	EventReasonWaitingForServiceGC    = "WaitingForServiceGarbageCollection"
 )
 
 type RollingUpdateExecutor struct {

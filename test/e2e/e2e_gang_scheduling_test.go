@@ -15,12 +15,17 @@ package e2e
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -30,31 +35,31 @@ import (
 )
 
 var _ = ginkgo.Describe("leaderWorkerSet e2e gang scheduling tests", func() {
-	// Each test runs in a separate namespace.
-	var ns *corev1.Namespace
-	var lws *leaderworkerset.LeaderWorkerSet
-
-	ginkgo.BeforeEach(func() {
-		// Create test namespace before each test.
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-ns-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-
-		// Wait for namespace to exist before proceeding with test.
-		gomega.Eventually(func() bool {
-			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Namespace, Name: ns.Name}, ns)
-			return err == nil
-		}, timeout, interval).Should(gomega.BeTrue())
-	})
-
-	ginkgo.AfterEach(func() {
-		gomega.Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(gomega.Succeed())
-	})
-
 	ginkgo.Context("with volcano gang scheduling enabled", ginkgo.Ordered, func() {
+		// Each test runs in a separate namespace.
+		var ns *corev1.Namespace
+		var lws *leaderworkerset.LeaderWorkerSet
+
+		ginkgo.BeforeEach(func() {
+			// Create test namespace before each test.
+			ns = &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-ns-",
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+			// Wait for namespace to exist before proceeding with test.
+			gomega.Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Namespace, Name: ns.Name}, ns)
+				return err == nil
+			}, timeout, interval).Should(gomega.BeTrue())
+		})
+
+		ginkgo.AfterEach(func() {
+			gomega.Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(gomega.Succeed())
+		})
+
 		ginkgo.BeforeAll(func() {
 			if schedulerProvider != schedulerprovider.Volcano {
 				ginkgo.Skip("Volcano gang scheduling tests require SCHEDULER_PROVIDER=volcano")
@@ -153,6 +158,129 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e gang scheduling tests", func() {
 			// Verify final state: still 2 PodGroups exist with updated configuration
 			// ExpectValidPodGroups automatically uses current revision, ensuring new PodGroups are validated
 			testing.ExpectValidPodGroups(ctx, k8sClient, schedulerprovider.Volcano, lws, 2)
+		})
+	})
+
+	ginkgo.Context("with Kubernetes WAS enabled", ginkgo.Label("WorkloadAwareScheduling"), func() {
+		var ns *corev1.Namespace
+		var lws *leaderworkerset.LeaderWorkerSet
+
+		ginkgo.BeforeEach(func() {
+			if schedulerProvider != schedulerprovider.Kubernetes {
+				ginkgo.Skip("WAS tests require SCHEDULER_PROVIDER=kubernetes")
+			}
+			ns = &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "was-e2e-",
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+			lws = wrappers.BuildLeaderWorkerSet(ns.Name).
+				Replica(2).
+				Size(2).
+				Obj()
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		})
+
+		ginkgo.AfterEach(func() {
+			gomega.Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(gomega.Succeed())
+		})
+
+		ginkgo.It("Should schedule each replica as a gang", func() {
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 4, 2, 2)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		})
+
+		ginkgo.It("Should schedule the whole LWS as a gang", func() {
+			lws.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			}
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 4, 4)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		})
+
+		ginkgo.It("Should keep the gang pending until enough capacity is available", func() {
+			ginkgo.By("advertising two test-specific resource units on one node")
+			nodes := &corev1.NodeList{}
+			gomega.Expect(k8sClient.List(ctx, nodes)).To(gomega.Succeed())
+			var nodeKey client.ObjectKey
+			for _, node := range nodes.Items {
+				if node.Spec.Unschedulable {
+					continue
+				}
+				tainted := false
+				for _, taint := range node.Spec.Taints {
+					if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
+						tainted = true
+					}
+				}
+				for _, condition := range node.Status.Conditions {
+					if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue && !tainted {
+						nodeKey = client.ObjectKeyFromObject(&node)
+						break
+					}
+				}
+				if nodeKey.Name != "" {
+					break
+				}
+			}
+			gomega.Expect(nodeKey.Name).NotTo(gomega.BeEmpty(), "capacity tests need a Ready, schedulable, untainted node")
+			resourceName := corev1.ResourceName("example.com/" + ns.Name)
+			updateCapacity := func(remove bool) {
+				gomega.Eventually(func(g gomega.Gomega) {
+					node := &corev1.Node{}
+					g.Expect(k8sClient.Get(ctx, nodeKey, node)).To(gomega.Succeed())
+					original := node.DeepCopy()
+					if remove {
+						delete(node.Status.Capacity, resourceName)
+						delete(node.Status.Allocatable, resourceName)
+					} else {
+						node.Status.Capacity[resourceName] = resource.MustParse("2")
+						node.Status.Allocatable[resourceName] = resource.MustParse("2")
+					}
+					g.Expect(k8sClient.Status().Patch(ctx, node, client.MergeFrom(original))).To(gomega.Succeed())
+				}, timeout, interval).Should(gomega.Succeed())
+			}
+			updateCapacity(false)
+			ginkgo.DeferCleanup(updateCapacity, true)
+
+			resources := corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{resourceName: resource.MustParse("1")},
+				Limits:   corev1.ResourceList{resourceName: resource.MustParse("1")},
+			}
+			lws.Spec.Replicas = ptr.To[int32](1)
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Resources = resources
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Resources = resources
+			blocker := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "capacity-blocker", Namespace: ns.Name},
+				Spec:       *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.DeepCopy(),
+			}
+			gomega.Expect(k8sClient.Create(ctx, blocker)).To(gomega.Succeed())
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(blocker), blocker)).To(gomega.Succeed())
+				g.Expect(blocker.Status.Phase).To(gomega.Equal(corev1.PodRunning))
+			}, timeout, interval).Should(gomega.Succeed())
+
+			ginkgo.By("checking that neither gang member binds while only one resource unit is free")
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			assertPending := func(g gomega.Gomega) {
+				pods := &corev1.PodList{}
+				g.Expect(k8sClient.List(ctx, pods, client.InNamespace(ns.Name), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+				g.Expect(pods.Items).To(gomega.HaveLen(2))
+				for _, pod := range pods.Items {
+					g.Expect(pod.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+					g.Expect(pod.Spec.NodeName).To(gomega.BeEmpty())
+					g.Expect(pod.Status.Phase).To(gomega.Equal(corev1.PodPending))
+				}
+			}
+			gomega.Eventually(assertPending, timeout, interval).Should(gomega.Succeed())
+			gomega.Consistently(assertPending, 10*time.Second, interval).Should(gomega.Succeed())
+
+			ginkgo.By("releasing capacity and waiting for the entire gang to become Ready")
+			gomega.Expect(k8sClient.Delete(ctx, blocker)).To(gomega.Succeed())
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 2, 2)
 		})
 	})
 })

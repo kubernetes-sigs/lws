@@ -45,7 +45,7 @@ Each slice operates as an independent rolling update domain:
 ### 4. Zero-Downtime Scaling
 Modifying `spec.slices` is treated strictly as a scale operation:
 - **Scale-Up:** Adding a slice (e.g., increasing `slices` from 2 to 3) creates the new slice at the current active revision without restarting or modifying existing slices.
-- **Scale-Down:** Reducing `slices` deletes the highest-indexed slice and gracefully terminates its child LeaderWorkerSets and headless services.
+- **Scale-Down:** Reducing `slices` deletes the highest-indexed slice and gracefully terminates its child LeaderWorkerSets.
 
 ---
 

@@ -1,7 +1,7 @@
 # The LeaderWorkerSet and DisaggregatedSet APIs
 
 [![Latest Release](https://img.shields.io/github/v/release/kubernetes-sigs/lws?include_prereleases)](https://github.com/kubernetes-sigs/lws/releases/latest)
-[![Coverage Status](https://coveralls.io/repos/github/kubernetes-sigs/lws/badge.svg?branch=test-coverage)](https://coveralls.io/github/kubernetes-sigs/lws?branch=test-coverage)
+[![Coverage Status](https://coveralls.io/repos/github/kubernetes-sigs/lws/badge.svg?branch=main)](https://coveralls.io/github/kubernetes-sigs/lws?branch=main)
 
 <img src="site/static/images/lws-ds-logos.svg" width="300" alt="lws logo">
 
@@ -43,7 +43,23 @@ Read the [documentation](https://lws.sigs.k8s.io/docs/) or watch the [related ta
   <img src="site/static/images/ds-concept.svg" width="700" alt="DisaggregatedSet Concept">
 </p>
 
+## Compatibility
+
+LeaderWorkerSet maintains support for the latest Kubernetes minor versions (currently tested on Kubernetes 1.34 through 1.37).
+
+### Test Coverage
+
+- Unit Tests: [TestGrid](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-unit-main)
+- Integration Tests: [TestGrid](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-integration-main)
+- E2E Tests:
+  - Kubernetes [1.34](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-34) on KIND
+  - Kubernetes [1.35](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-35) on KIND
+  - Kubernetes [1.36](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-36) on KIND
+  - Kubernetes [1.37](https://testgrid.k8s.io/sig-apps-lws-presubmits#pull-lws-test-e2e-main-1-37) on KIND
+
 ## Installation
+
+**Officially supported and tested on Kubernetes 1.34 or newer.**
 
 Read the [installation guide](https://lws.sigs.k8s.io/docs/installation/) to learn more.
 

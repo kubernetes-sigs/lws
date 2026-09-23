@@ -26,9 +26,8 @@ description: >
 
 Make sure the following conditions are met:
 
-- A Kubernetes cluster with version >= 1.26 is **Required**, or it will behave unexpected. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
-    - For any cluster with version 1.26, you need to enable the [feature gate][feature_gate] for [Start Ordinal][start_ordinal] manually. For version greater than 1.26, it's enabled by default.
-    - Rolling update with max unavailable Pods, you must enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate, which is still in alpha since Kubernetes v1.24, see discussion [here][max_unavailable_enhancement]. Or lws will roll out the pods one by one.
+- A Kubernetes cluster with version >= 1.34 is **required** (officially supported and tested on Kubernetes 1.34 through 1.37), or it may behave unexpectedly. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
+    - On Kubernetes 1.34, enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate for rolling updates with max unavailable Pods. It is enabled by default in Kubernetes 1.35 and later; see discussion [here][max_unavailable_enhancement].
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
@@ -41,7 +40,7 @@ To install a released version of LeaderWorkerSet in your cluster, run the follow
 
 
 ```shell
-VERSION=v0.10.0
+VERSION=v0.11.0
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -56,7 +55,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.10.0
+CHART_VERSION=0.11.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -67,7 +66,7 @@ helm install lws oci://registry.k8s.io/lws/charts/lws \
 You can also use the following command:
 
 ```shell
-VERSION=v0.10.0
+VERSION=v0.11.0
 helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
   --namespace lws-system \
   --create-namespace \
@@ -85,7 +84,7 @@ so CRD schema changes and newly added CRDs do not reach the cluster through
 Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
 ```shell
-CHART_VERSION=0.10.0
+CHART_VERSION=0.11.0
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
 kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
@@ -127,7 +126,7 @@ Then follow the regular upgrade flow above (apply the CRDs, then
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.10.0
+VERSION=v0.11.0
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -208,7 +207,7 @@ The optional validating webhook and user-facing editor/viewer/admin ClusterRoles
 by passing `--set enableDisaggregatedSet=true` to the Helm install command:
 
 ```shell
-CHART_VERSION=0.10.0
+CHART_VERSION=0.11.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -250,7 +249,7 @@ Use the [Upgrade by Helm](#upgrade-by-helm) steps, which apply every CRD in the 
 DisaggregatedSet flag added:
 
 ```shell
-CHART_VERSION=0.10.0
+CHART_VERSION=0.11.0
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
 kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \

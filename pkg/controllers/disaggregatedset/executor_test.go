@@ -64,12 +64,11 @@ func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 	scheme := testSchemeForUnit()
 	recorder := events.NewFakeRecorder(100)
 	return &DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: NewServiceManager(fakeClient, scheme),
-		ScalerManager:  NewScalerManager(fakeClient, recorder),
-		Record:         recorder,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		LWSManager:    NewLeaderWorkerSetManager(fakeClient),
+		ScalerManager: NewScalerManager(fakeClient, recorder),
+		Record:        recorder,
 	}
 }
 

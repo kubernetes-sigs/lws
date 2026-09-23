@@ -208,13 +208,6 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 			By("waiting for rolling update to complete")
 			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 
-			By("verifying Services from old revisions are garbage collected via their owning LWS")
-			Eventually(func(g Gomega) {
-				count, err := kubectl.CountService(deploymentName)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(count).To(Equal(2))
-			}, kubectl.DefaultTimeout, kubectl.DefaultInterval).Should(Succeed())
-
 			By("verifying no orphaned single-role workloads exist")
 			output, err := kubectl.LWS(deploymentName).
 				JSONPath(`{range .items[*]}{.metadata.labels.disaggregatedset\.x-k8s\.io/revision},{.metadata.labels.disaggregatedset\.x-k8s\.io/role},{.spec.replicas}{"\n"}{end}`).
@@ -317,70 +310,6 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 	})
 
-	Context("Service Creation", func() {
-		const deploymentName = "test-service"
-
-		AfterEach(func() {
-			kubectl.CleanupDeployment(deploymentName)
-		})
-
-		It("should create headless portless private services automatically", func() {
-			By("creating DisaggregatedSet")
-			yaml := fixtures.PrefillDecode(deploymentName,
-				fixtures.Role{Replicas: 1},
-				fixtures.Role{Replicas: 1},
-			).YAML()
-			Expect(applyYAML(yaml)).To(Succeed())
-
-			By("waiting for pods to be ready")
-			kubectl.ForRunningPodCount(deploymentName, 2)
-
-			By("verifying headless portless services are created for both roles")
-			for _, role := range []string{"prefill", "decode"} {
-				Eventually(func(g Gomega) {
-					// Check service is headless
-					output, err := kubectl.ServiceByRole(deploymentName, role).
-						JSONPath("{.items[0].spec.clusterIP}").Run()
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(strings.TrimSpace(output)).To(Equal("None"), "%s service should be headless", role)
-
-					// Check service has no ports
-					output, err = kubectl.ServiceByRole(deploymentName, role).
-						JSONPath("{.items[0].spec.ports}").Run()
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "%s service should have no ports", role)
-				}, 60*time.Second, time.Second).Should(Succeed())
-			}
-
-			By("verifying EndpointSlice is created with Ready pod endpoints")
-			for _, role := range []string{"prefill", "decode"} {
-				Eventually(func(g Gomega) {
-					// Check EndpointSlice exists
-					output, err := kubectl.EndpointSliceByRole(deploymentName, role).
-						Output("name").Run()
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(len(kubectl.GetNonEmptyLines(output))).To(BeNumerically(">=", 1),
-						"%s EndpointSlice should exist", role)
-
-					// Check has Ready endpoints
-					output, err = kubectl.EndpointSliceByRole(deploymentName, role).
-						JSONPath("{.items[0].endpoints[*].conditions.ready}").Run()
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(output).To(ContainSubstring("true"),
-						"%s EndpointSlice should have Ready endpoints", role)
-
-					// Check is portless
-					output, err = kubectl.EndpointSliceByRole(deploymentName, role).
-						JSONPath("{.items[0].ports}").Run()
-					g.Expect(err).NotTo(HaveOccurred())
-					trimmed := strings.TrimSpace(output)
-					g.Expect(trimmed == "" || trimmed == "null").To(BeTrue(),
-						"%s EndpointSlice should be portless, got: %q", role, trimmed)
-				}, 60*time.Second, time.Second).Should(Succeed())
-			}
-		})
-	})
-
 	Context("Labels and Annotations Propagation", func() {
 		const deploymentName = "test-labels"
 
@@ -468,16 +397,6 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("custom-annotation"))
 				g.Expect(output).To(ContainSubstring("decode-annotation"))
-			}, 60*time.Second, time.Second).Should(Succeed())
-
-			By("verifying Services have standard labels only")
-			Eventually(func(g Gomega) {
-				output, err := kubectl.ServiceByRole(deploymentName, "prefill").
-					JSONPath("{.items[0].metadata.labels}").Run()
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/name"))
-				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/role"))
-				g.Expect(output).To(ContainSubstring("disaggregatedset.x-k8s.io/revision"))
 			}, 60*time.Second, time.Second).Should(Succeed())
 		})
 
@@ -594,10 +513,6 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				runningPodCount, err := kubectl.CountRunningPods(deploymentName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(runningPodCount).To(Equal(2))
-
-				serviceCount, err := kubectl.CountService(deploymentName)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(serviceCount).To(Equal(2))
 			}, 90*time.Second, time.Second).Should(Succeed())
 
 			By("deleting the DisaggregatedSet")
@@ -606,13 +521,6 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 
 			By("verifying all LWS resources are garbage collected")
 			kubectl.ForLWSCount(deploymentName, 0)
-
-			By("verifying all Services are garbage collected")
-			Eventually(func(g Gomega) {
-				count, err := kubectl.CountService(deploymentName)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(count).To(Equal(0))
-			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying all pods are removed")
 			kubectl.ForPodCount(deploymentName, 0)

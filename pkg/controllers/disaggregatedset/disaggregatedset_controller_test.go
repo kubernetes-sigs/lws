@@ -114,11 +114,10 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -152,11 +151,10 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -212,11 +210,10 @@ func TestSlicesCreateOneSetPerSlice(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -261,11 +258,10 @@ func TestSlicesScaleDownDeletesRemovedSlice(t *testing.T) {
 		createSliceLWS(disaggregatedSet, 1, testControllerRoleDecode, revision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -302,11 +298,10 @@ func TestLegacyAdoptedInPlace(t *testing.T) {
 		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -347,11 +342,10 @@ func TestLegacyMigratesToSliceAwareOnRollout(t *testing.T) {
 		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -370,10 +364,12 @@ func TestLegacyMigratesToSliceAwareOnRollout(t *testing.T) {
 	assert.NotNil(t, legacy, "legacy prefill LWS should still exist while draining")
 }
 
-// TestSlicesIncreaseRecreatesLegacySlice0: increasing slices above 1 over a pre-slices
-// (label-less) slice-0 transfers its Service to the legacy LWS, deletes that LWS, and
-// waits for Kubernetes GC before creating slice-aware LWS objects.
-func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
+// TestSlicesIncreaseAdoptsLegacySlice0: increasing slices above 1 over a pre-slices
+// (label-less) slice-0 keeps that deployment running under its legacy name — it is
+// adopted in place as slice 0 — and creates the sibling slices right away. Nothing
+// about the legacy object has to be recreated: the placement affinity terms already
+// treat an unlabeled pod as slice 0.
+func TestSlicesIncreaseAdoptsLegacySlice0(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
 
@@ -384,228 +380,40 @@ func TestSlicesIncreaseRecreatesLegacySlice0(t *testing.T) {
 		Obj()
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
-	// The legacy slice-agnostic service that would otherwise select the new sibling's pods.
-	legacyPrefillSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
-			Namespace: disaggregatedSet.Namespace,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
-				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
-				disaggregatedsetv1.RevisionLabelKey: revision,
-			},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedsetv1.GroupVersion.String(),
-				Kind:       "DisaggregatedSet",
-				Name:       disaggregatedSet.Name,
-				UID:        disaggregatedSet.UID,
-				Controller: ptr.To(true),
-			}},
-		},
-		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
-	}
-
 	legacyPrefillLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision)
 	legacyDecodeLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		disaggregatedSet,
 		legacyPrefillLWS,
 		legacyDecodeLWS,
-		legacyPrefillSvc,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
-	assert.Positive(t, result.RequeueAfter, "Reconcile should wait for asynchronous Service GC")
+	assert.Zero(t, result.RequeueAfter, "no Service garbage collection to wait for")
 
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
 
-	// Legacy slice-0 LWS deleted for both roles.
-	legacyP, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill))
-	assert.Nil(t, legacyP, "legacy slice-0 prefill LWS should be deleted")
-	legacyD, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRoleDecode))
-	assert.Nil(t, legacyD, "legacy slice-0 decode LWS should be deleted")
+	// The legacy slice-0 objects survive untouched, so slice 0 is never restarted.
+	for _, role := range []string{testControllerRolePrefill, testControllerRoleDecode} {
+		legacy, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, role))
+		require.NotNil(t, legacy, "legacy slice-0 %s LWS should be adopted in place", role)
+		sliceAware, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, role))
+		assert.Nil(t, sliceAware, "slice 0 should not be duplicated under the slice-aware name")
 
-	// The fake client does not run GC, so the Service remains but is now owned by
-	// the deleted legacy LWS. No slice-aware sibling may be created yet.
-	remainingService := &corev1.Service{}
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: legacyPrefillSvc.Name, Namespace: disaggregatedSet.Namespace}, remainingService))
-	assert.True(t, metav1.IsControlledBy(remainingService, legacyPrefillLWS))
-	s0, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	assert.Nil(t, s0, "slice-aware slice 0 must wait for the legacy Service to disappear")
-	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	assert.Nil(t, s1, "sibling slice 1 must wait for the legacy Service to disappear")
-
-	// Simulate asynchronous Kubernetes GC, then reconcile again.
-	require.NoError(t, fakeClient.Delete(ctx, remainingService))
-	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err, "Reconcile after GC should succeed")
-	assert.Zero(t, result.RequeueAfter)
-
-	s0, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	require.NotNil(t, s0, "slice-aware slice 0 should be recreated after GC")
-	s1, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	require.NotNil(t, s1, "sibling slice 1 should be created after GC")
+		// The sibling slice is created immediately.
+		sibling, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, role))
+		require.NotNil(t, sibling, "sibling slice 1 %s LWS should be created", role)
+		assert.Equal(t, "1", sibling.Labels[disaggregatedsetv1.SliceLabelKey])
+	}
 }
 
-// TestSlicesIncreaseWaitsForOrphanedLegacyService: if the legacy LWS is already gone but
-// its Service is still owned by the DisaggregatedSet directly (ownership was never
-// transferred, e.g. the LWS was deleted out-of-band), deleteLegacySlice0 must wait for
-// the Service to reach NotFound before creating slice-aware siblings.
-func TestSlicesIncreaseWaitsForOrphanedLegacyService(t *testing.T) {
-	ctx := context.Background()
-	scheme := wrappers.DisaggregatedSetTestScheme()
-
-	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-orphan", "default").
-		Slices(2).
-		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
-		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
-		Obj()
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-
-	orphanService := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
-			Namespace:  disaggregatedSet.Namespace,
-			Finalizers: []string{"test.lws.x-k8s.io/hold-deletion"},
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
-				disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
-				disaggregatedsetv1.RevisionLabelKey: revision,
-			},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: disaggregatedsetv1.GroupVersion.String(),
-				Kind:       "DisaggregatedSet",
-				Name:       disaggregatedSet.Name,
-				UID:        disaggregatedSet.UID,
-				Controller: ptr.To(true),
-			}},
-		},
-		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
-	}
-
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		disaggregatedSet,
-		orphanService,
-	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
-	}
-
-	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err)
-	assert.Positive(t, result.RequeueAfter, "Reconcile should wait while the legacy Service is terminating")
-
-	remainingService := &corev1.Service{}
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: orphanService.Name, Namespace: orphanService.Namespace}, remainingService))
-	require.NotNil(t, remainingService.DeletionTimestamp)
-
-	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
-	s0, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	assert.Nil(t, s0, "slice-aware slice 0 must wait for the legacy Service to disappear")
-	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	assert.Nil(t, s1, "sibling slice 1 must wait for the legacy Service to disappear")
-
-	remainingService.Finalizers = nil
-	require.NoError(t, fakeClient.Update(ctx, remainingService))
-	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err)
-	assert.Zero(t, result.RequeueAfter)
-
-	s0, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
-	require.NotNil(t, s0, "slice-aware slice 0 should be created after the legacy Service disappears")
-	s1, _ = lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	require.NotNil(t, s1, "sibling slice 1 should be created after the legacy Service disappears")
-}
-
-func TestUpgradeDeletesOldRevisionOrphanService(t *testing.T) {
-	ctx := context.Background()
-	scheme := wrappers.DisaggregatedSetTestScheme()
-	disaggregatedSet := wrappers.BuildDisaggregatedSet("upgrade-orphan", "default").
-		WithRole(testControllerRolePrefill, 2, "nginx:2.0").
-		WithRole(testControllerRoleDecode, 2, "nginx:2.0").
-		Obj()
-
-	orphanService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
-		Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, "old12345", testControllerRolePrefill)),
-		Namespace: disaggregatedSet.Namespace,
-		Labels: map[string]string{
-			disaggregatedsetv1.SetNameLabelKey:  disaggregatedSet.Name,
-			disaggregatedsetv1.RoleLabelKey:     testControllerRolePrefill,
-			disaggregatedsetv1.RevisionLabelKey: "old12345",
-		},
-		OwnerReferences: []metav1.OwnerReference{{
-			APIVersion: disaggregatedsetv1.GroupVersion.String(),
-			Kind:       "DisaggregatedSet",
-			Name:       disaggregatedSet.Name,
-			UID:        disaggregatedSet.UID,
-			Controller: ptr.To(true),
-		}},
-	}}
-
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, orphanService).
-		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
-	}
-
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err)
-	getErr := fakeClient.Get(ctx, types.NamespacedName{Name: orphanService.Name, Namespace: orphanService.Namespace}, &corev1.Service{})
-	require.True(t, apierrors.IsNotFound(getErr), "old-revision orphan Service should be deleted during upgrade migration")
-}
-
-func TestSlicesIncreaseRejectsUncontrolledLegacyService(t *testing.T) {
-	ctx := context.Background()
-	scheme := wrappers.DisaggregatedSetTestScheme()
-	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-collision", "default").
-		Slices(2).
-		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
-		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
-		Obj()
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
-		Name:      disaggregatedsetutils.PrivateServiceName(disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)),
-		Namespace: disaggregatedSet.Namespace,
-	}}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, service).
-		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
-	}
-
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.ErrorContains(t, err, "not controlled by the expected LeaderWorkerSet")
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, &corev1.Service{}))
-
-	lws, _ := controller.NewLeaderWorkerSetManager(fakeClient).Get(ctx, disaggregatedSet,
-		disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
-	assert.Nil(t, lws, "a sibling slice must not be created while the legacy Service name is occupied")
-}
-
-// TestSlicesIncreaseWithRolloutNotBlocked: when slices increases at the same time as a
-// template change, the legacy slice-0 LWS is at the old revision (not the target), so no
-// same-revision migration runs and the sibling slice is created right away at the new
-// revision.
 // TestStatusPopulatedOnFreshDeployment: a fresh DisaggregatedSet has just created its
 // LWS objects, which have not yet reported any ready/updated replicas. Status should
 // reflect that with zero counts per role, not stay empty (#868).
@@ -621,11 +429,10 @@ func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -688,11 +495,10 @@ func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
 		readyLWS(testControllerRoleDecode),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -757,11 +563,10 @@ func TestStatusProgressingWhenUnderDesiredCount(t *testing.T) {
 		partialLWS(testControllerRoleDecode, 2),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -791,11 +596,10 @@ func TestStatusAvailableWhenPausedAtZero(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -828,11 +632,10 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -907,11 +710,10 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, foreignScaler).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -974,11 +776,10 @@ func TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -1030,11 +831,10 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 		createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -1096,11 +896,10 @@ func TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0(t *testing.T) {
 		foreignLegacyPrefill,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:         fakeClient,
-		Scheme:         scheme,
-		LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-		ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-		Record:         events.NewFakeRecorder(100),
+		Client:     fakeClient,
+		Scheme:     scheme,
+		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
+		Record:     events.NewFakeRecorder(100),
 	}
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
@@ -1123,65 +922,4 @@ func TestSlicesIncreaseIgnoresForeignOwnedLegacySlice0(t *testing.T) {
 	assert.NotNil(t, s0, "slice-aware slice-0 prefill should still be created")
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, revision, testControllerRolePrefill))
 	assert.NotNil(t, s1, "sibling slice 1 prefill should still be created")
-}
-
-func TestSlicesIncreaseRejectsForeignLegacyService(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		foreignLWS    bool
-		expectedError string
-	}{
-		{name: "foreign LWS owns the service", foreignLWS: true, expectedError: "controlled by foreign LeaderWorkerSet"},
-		{name: "owned LWS collides with a foreign service", expectedError: "is not controlled by DisaggregatedSet"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			scheme := wrappers.DisaggregatedSetTestScheme()
-			disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-foreign-service", "default").
-				Slices(2).
-				WithRole(testControllerRolePrefill, 2, "nginx:1.0").
-				WithRole(testControllerRoleDecode, 2, "nginx:1.0").
-				Obj()
-			revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-			legacyName := disaggregatedsetutils.GenerateLegacyName(disaggregatedSet.Name, revision, testControllerRolePrefill)
-			legacyLWS := createLegacyLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision)
-
-			serviceOwnerName := "foreign-lws"
-			serviceOwnerUID := types.UID("foreign-lws-uid")
-			if tc.foreignLWS {
-				legacyLWS.OwnerReferences[0].Name = "foreign-ds"
-				legacyLWS.OwnerReferences[0].UID = "foreign-ds-uid"
-				legacyLWS.UID = "foreign-lws-uid"
-				serviceOwnerName = legacyLWS.Name
-				serviceOwnerUID = legacyLWS.UID
-			}
-
-			service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
-				Name:      disaggregatedsetutils.PrivateServiceName(legacyName),
-				Namespace: disaggregatedSet.Namespace,
-				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion: leaderworkersetv1.GroupVersion.String(),
-					Kind:       "LeaderWorkerSet",
-					Name:       serviceOwnerName,
-					UID:        serviceOwnerUID,
-					Controller: ptr.To(true),
-				}},
-			}}
-
-			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, legacyLWS, service).
-				WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-			reconciler := &controller.DisaggregatedSetReconciler{
-				Client:         fakeClient,
-				Scheme:         scheme,
-				LWSManager:     controller.NewLeaderWorkerSetManager(fakeClient),
-				ServiceManager: controller.NewServiceManager(fakeClient, scheme),
-				Record:         events.NewFakeRecorder(100),
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-			require.ErrorContains(t, err, tc.expectedError)
-			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: legacyLWS.Name, Namespace: legacyLWS.Namespace}, &leaderworkersetv1.LeaderWorkerSet{}))
-			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, &corev1.Service{}))
-		})
-	}
 }

@@ -52,6 +52,9 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
+	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
+	// This field is immutable.
+	Scheduling *LeaderWorkerSetSchedulingApplyConfiguration `json:"scheduling,omitempty"`
 	// groupIdentity determines how group identities are assigned.
 	// Ordinal (default) manages leaders through a StatefulSet: groups are named
 	// <lws>-0..<lws>-N-1 and scale down always removes the highest ordinal.
@@ -60,6 +63,20 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// rollouts are paced by a group readiness gate on the leader pods.
 	// This field is immutable.
 	GroupIdentity *leaderworkersetv1.GroupIdentityType `json:"groupIdentity,omitempty"`
+	// groupReplacementPolicy controls when a replacement group may start
+	// scheduling after a group is deleted, whether by the restart policy
+	// recreating a failed group, by a rolling update or by a scale down that
+	// races a scale up.
+	// PostTermination (default) admits a replacement only once a previously
+	// deleted group has been fully removed, so the new group lands on the
+	// capacity the old one released instead of preempting other workloads.
+	// This matches the StatefulSet semantics of groupIdentity Ordinal, where a
+	// leader pod cannot be recreated until its predecessor is gone, and is the
+	// only supported value in that mode.
+	// Immediate admits replacement groups as soon as the leader Deployment
+	// creates them, overlapping with the teardown of the old group. Only
+	// supported with groupIdentity Hash.
+	GroupReplacementPolicy *leaderworkersetv1.GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -108,10 +125,26 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *Network
 	return b
 }
 
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithScheduling(value *LeaderWorkerSetSchedulingApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
+	b.Scheduling = value
+	return b
+}
+
 // WithGroupIdentity sets the GroupIdentity field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the GroupIdentity field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupIdentity(value leaderworkersetv1.GroupIdentityType) *LeaderWorkerSetSpecApplyConfiguration {
 	b.GroupIdentity = &value
+	return b
+}
+
+// WithGroupReplacementPolicy sets the GroupReplacementPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GroupReplacementPolicy field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupReplacementPolicy(value leaderworkersetv1.GroupReplacementPolicyType) *LeaderWorkerSetSpecApplyConfiguration {
+	b.GroupReplacementPolicy = &value
 	return b
 }

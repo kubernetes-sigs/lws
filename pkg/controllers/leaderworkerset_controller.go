@@ -18,13 +18,16 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -53,8 +57,9 @@ import (
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
 type LeaderWorkerSetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Record events.EventRecorder
+	Scheme            *runtime.Scheme
+	Record            events.EventRecorder
+	SchedulerProvider schedulerprovider.SchedulerProvider
 
 	revisionEqualityCache *lru.Cache
 }
@@ -76,6 +81,13 @@ const (
 	GroupsUpdating    = "GroupsUpdating"
 	CreatingRevision  = "CreatingRevision"
 	FailedUpdate      = "FailedUpdate"
+	// Group replacement event reasons, emitted by the pod controller when a
+	// gated hash-identity leader is held back or admitted for scheduling.
+	GroupReplacementDeferred = "GroupReplacementDeferred"
+	GroupReplacementAdmitted = "GroupReplacementAdmitted"
+
+	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
+	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
 
 	// Event actions
 	Create = "Create"
@@ -86,11 +98,16 @@ const (
 // maxRevisionEqualityCacheEntries is the cache size for semantic revision equality results.
 const maxRevisionEqualityCacheEntries = 10_000
 
-func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record events.EventRecorder) *LeaderWorkerSetReconciler {
+func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, record events.EventRecorder, providers ...schedulerprovider.SchedulerProvider) *LeaderWorkerSetReconciler {
+	var provider schedulerprovider.SchedulerProvider
+	if len(providers) > 0 {
+		provider = providers[0]
+	}
 	return &LeaderWorkerSetReconciler{
 		Client:                client,
 		Scheme:                scheme,
 		Record:                record,
+		SchedulerProvider:     provider,
 		revisionEqualityCache: lru.New(maxRevisionEqualityCacheEntries),
 	}
 }
@@ -109,6 +126,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/finalizers,verbs=update
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=workloads;podgroups,verbs=get;list;watch;create;update;patch;delete
 
 func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Get leaderworkerset object
@@ -177,6 +195,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	if err := r.reconcileWorkloadScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
+		return ctrl.Result{}, err
+	}
+
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
@@ -198,7 +221,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		} else {
 			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, updateMsg)
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, updateMsg, updateMsg)
 	}
 
 	// Create headless service if it does not exist.
@@ -235,16 +258,67 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 	return nil
 }
 
+// reconcileWorkloadScheduling creates the workload-aware scheduling
+// prerequisites of an opted-in LeaderWorkerSet and records the outcome on the
+// WorkloadSchedulingCreated condition. Both group identity modes run it before
+// the leader workload is applied, so no member pod is created before its
+// Workload and, for the levels the controller can enumerate, its PodGroups.
+func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revisionKey string) error {
+	if lws.Spec.Scheduling == nil {
+		return nil
+	}
+	if r.SchedulerProvider == nil {
+		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonUnsupportedProviderCapability,
+			fmt.Errorf("spec.scheduling requires a configured scheduler provider"))
+	}
+	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
+		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
+	}
+	return r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created")
+}
+
+func (r *LeaderWorkerSetReconciler) failWorkloadScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, reason string, reconcileErr error) error {
+	if r.Record != nil {
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, reason, "Reconcile", reconcileErr.Error())
+	}
+	statusErr := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionFalse, reason, reconcileErr.Error())
+	return errors.Join(reconcileErr, statusErr)
+}
+
+func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, status metav1.ConditionStatus, reason, message string) error {
+	changed := apimeta.SetStatusCondition(&lws.Status.Conditions, metav1.Condition{
+		Type:               string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated),
+		Status:             status,
+		ObservedGeneration: lws.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
+	if !changed {
+		return nil
+	}
+	if err := r.Status().Update(ctx, lws); err != nil {
+		return fmt.Errorf("update WorkloadSchedulingCreated condition: %w", err)
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&appsv1.StatefulSet{},
-			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests)).
-		Complete(r)
+			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests))
+	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
+	// Upstream Workload resources are watched only when that provider is active.
+	if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); ok {
+		builder = builder.
+			Owns(&schedulingv1beta1.Workload{}).
+			Owns(&schedulingv1beta1.PodGroup{})
+	}
+	return builder.Complete(r)
 }
 
 func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Request {
@@ -828,6 +902,10 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		podAnnotations[leaderworkerset.SubdomainPolicyAnnotationKey] = string(leaderworkerset.SubdomainUniquePerReplica)
 	}
+	if lws.Spec.Scheduling != nil {
+		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(lws)
+		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(lws)
+	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
@@ -941,7 +1019,13 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 func setConditions(lws *leaderworkerset.LeaderWorkerSet, conditions []metav1.Condition) bool {
 	shouldUpdate := false
 	for _, condition := range conditions {
-		shouldUpdate = shouldUpdate || setCondition(lws, condition)
+		// setCondition mutates the status, so it must run for every requested
+		// condition. Accumulating with `shouldUpdate || setCondition(...)` would
+		// short-circuit and silently drop every condition after the first one
+		// that changed.
+		if setCondition(lws, condition) {
+			shouldUpdate = true
+		}
 	}
 
 	for i := range lws.Status.Conditions {

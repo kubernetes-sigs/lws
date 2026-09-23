@@ -22,7 +22,11 @@ import (
 	"math"
 	"strconv"
 
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -32,15 +36,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 )
 
-type LeaderWorkerSetWebhook struct{}
+type LeaderWorkerSetWebhook struct {
+	SchedulerProvider schedulerprovider.ProviderType
+	RESTMapper        meta.RESTMapper
+}
 
 // SetupLeaderWorkerSetWebhook will setup the manager to manage the webhooks
-func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager) error {
+
+func SetupLeaderWorkerSetWebhook(mgr ctrl.Manager, options ...LeaderWorkerSetWebhook) error {
+	hook := &LeaderWorkerSetWebhook{}
+	if len(options) > 0 {
+		hook = &options[0]
+	}
+	if hook.RESTMapper == nil {
+		hook.RESTMapper = mgr.GetRESTMapper()
+	}
 	return ctrl.NewWebhookManagedBy(mgr, &v1.LeaderWorkerSet{}).
-		WithDefaulter(&LeaderWorkerSetWebhook{}).
-		WithValidator(&LeaderWorkerSetWebhook{}).
+		WithDefaulter(hook).
+		WithValidator(hook).
 		Complete()
 }
 
@@ -60,6 +77,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 
 	if lws.Spec.GroupIdentity == "" {
 		lws.Spec.GroupIdentity = v1.GroupIdentityOrdinal
+	}
+
+	if lws.Spec.GroupReplacementPolicy == "" {
+		lws.Spec.GroupReplacementPolicy = v1.GroupReplacementPostTermination
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
@@ -99,12 +120,14 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
+	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
 	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
+	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
 	specPath := field.NewPath("spec")
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
 	newSubGroupPolicy := newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
@@ -128,6 +151,99 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 
 	return nil, allErrs.ToAggregate()
+}
+
+func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
+	path := field.NewPath("spec", "scheduling")
+	if lws.Spec.Scheduling == nil {
+		if oldLws != nil && oldLws.Spec.Scheduling != nil {
+			return field.ErrorList{field.Forbidden(path, "cannot remove scheduling after creation")}
+		}
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	// Disabling the gate prevents new opt-ins, but existing scheduled objects
+	// must remain updateable so they can scale down and be deleted safely.
+	if !features.Enabled(features.WorkloadAwareScheduling) && (oldLws == nil || oldLws.Spec.Scheduling == nil) {
+		allErrs = append(allErrs, field.Forbidden(path, "requires the WorkloadAwareScheduling feature gate"))
+	}
+	if r.SchedulerProvider == "" {
+		allErrs = append(allErrs, field.Required(path, "requires a configured scheduler provider"))
+	} else if r.SchedulerProvider == schedulerprovider.Volcano {
+		allErrs = append(allErrs, validateVolcanoScheduling(lws, path)...)
+	} else if r.SchedulerProvider != schedulerprovider.Kubernetes {
+		allErrs = append(allErrs, field.NotSupported(path, r.SchedulerProvider, []string{string(schedulerprovider.Kubernetes), string(schedulerprovider.Volcano)}))
+	}
+	if r.SchedulerProvider == schedulerprovider.Kubernetes && r.RESTMapper != nil {
+		// Require scheduling.k8s.io/v1beta1 Workload and PodGroup APIs.
+		for _, resource := range []string{"Workload", "PodGroup"} {
+			if _, err := r.RESTMapper.RESTMapping(schema.GroupKind{Group: schedulingv1beta1.GroupName, Kind: resource}, schedulingv1beta1.SchemeGroupVersion.Version); err != nil {
+				allErrs = append(allErrs, field.Forbidden(path, fmt.Sprintf("scheduling.k8s.io/v1beta1 %s API is not available: %v", resource, err)))
+			}
+		}
+	}
+	if r.SchedulerProvider == schedulerprovider.Kubernetes {
+		// Users or a parent controller may set these KEP-6089 annotations; LWS does not.
+		// group-template-name names a template in a parent-owned Workload and requires
+		// a controller owner. parent-compositepodgroup is optional and requires the
+		// template annotation; Phase 1 stores it and does not Get a CompositePodGroup.
+		// Delegated scheduling is limited to whole-LWS or replica mode.
+		templateName, delegated := lws.Annotations[schedulerprovider.GroupTemplateNameAnnotation]
+		parentName, hasParent := lws.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation]
+		if hasParent && !delegated {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.ParentCompositePodGroupAnnotation), "requires the group-template-name delegation annotation"))
+		}
+		if delegated {
+			if templateName == "" {
+				allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "must name a parent Workload template"))
+			}
+			if metav1.GetControllerOf(lws) == nil {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "delegated scheduling requires a controller owner"))
+			}
+			if hasParent && parentName == "" {
+				allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(schedulerprovider.ParentCompositePodGroupAnnotation), "must name a parent CompositePodGroup"))
+			}
+			if mode, err := schedulerprovider.SchedulingModeFor(lws); err == nil && mode == schedulerprovider.SchedulingModeRole {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "annotations").Key(schedulerprovider.GroupTemplateNameAnnotation), "delegated scheduling supports only whole-LWS or replica mode"))
+			}
+		}
+	}
+	if oldLws != nil && oldLws.Spec.Scheduling == nil {
+		allErrs = append(allErrs, field.Forbidden(path, "cannot add scheduling after creation"))
+	}
+
+	allErrs = append(allErrs, schedulerprovider.ValidatePhaseOneWorkload(ctx, oldLws, lws)...)
+	return allErrs
+}
+
+func validateVolcanoScheduling(lws *v1.LeaderWorkerSet, path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	mode, err := schedulerprovider.SchedulingModeFor(lws)
+	if err == nil && mode != schedulerprovider.SchedulingModeReplica {
+		allErrs = append(allErrs, field.Forbidden(path, "the Volcano provider supports the typed API only at replica level"))
+		return allErrs
+	}
+	replica := lws.Spec.Scheduling.Replica
+	if replica == nil {
+		return allErrs
+	}
+	if replica.SchedulingPolicy != nil && replica.SchedulingPolicy.Basic != nil {
+		allErrs = append(allErrs, field.Forbidden(path.Child("replica", "schedulingPolicy"), "the Volcano provider does not support Basic policy"))
+	}
+	if replica.SchedulingConstraints != nil {
+		allErrs = append(allErrs, field.Forbidden(path.Child("replica", "schedulingConstraints"), "the Volcano provider does not support typed scheduling constraints"))
+	}
+	if replica.DisruptionMode != nil {
+		allErrs = append(allErrs, field.Forbidden(path.Child("replica", "disruptionMode"), "the Volcano provider does not support typed disruption mode"))
+	}
+	if replica.Leader != nil && len(replica.Leader.ResourceClaims) > 0 {
+		allErrs = append(allErrs, field.Forbidden(path.Child("replica", "leader", "resourceClaims"), "the Volcano provider does not support shared resource claims"))
+	}
+	if replica.Worker != nil && len(replica.Worker.ResourceClaims) > 0 {
+		allErrs = append(allErrs, field.Forbidden(path.Child("replica", "worker", "resourceClaims"), "the Volcano provider does not support shared resource claims"))
+	}
+	return allErrs
 }
 
 // ValidateDelete implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
@@ -210,16 +326,14 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 	return gi
 }
 
-// ValidateGroupIdentity rejects the parts of the API surface whose semantics
-// depend on stable StatefulSet identity and are not supported when leaders are
-// Deployment-managed. It is a no-op unless the spec asks for groupIdentity Hash.
-// Exported so the DisaggregatedSet webhook can run the same checks against each
-// role's inline LeaderWorkerSet spec at DisaggregatedSet admission time, where a
-// bad combination would otherwise only surface as LWS creation failures during
-// reconciliation.
+// ValidateGroupIdentity rejects unsupported groupIdentity combinations.
+// Exported for DisaggregatedSet webhook reuse.
 func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if normalizeGroupIdentity(spec.GroupIdentity) != v1.GroupIdentityHash {
+		if spec.GroupReplacementPolicy == v1.GroupReplacementImmediate {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("groupReplacementPolicy"), spec.GroupReplacementPolicy, "Immediate is only supported with groupIdentity Hash"))
+		}
 		return allErrs
 	}
 	giPath := specPath.Child("groupIdentity")
