@@ -78,7 +78,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
 
-	allLWS, err := r.LWSManager.List(ctx, disaggregatedSet, -1, "")
+	allLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -151,7 +151,7 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 	available := true
 
 	for _, role := range roleNames {
-		lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, -1, role)
+		lwsList, err := r.LWSManager.ListAll(ctx, disaggregatedSet, role)
 		if err != nil {
 			return fmt.Errorf("failed to list LWS for role %s status: %w", role, err)
 		}
@@ -313,7 +313,7 @@ func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggreg
 // zero (KEDA, HPA with the gate flipped) can still take the role down to 0
 // after attach.
 func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) (func(string) int32, error) {
-	all, err := r.LWSManager.List(ctx, ds, -1, "")
+	all, err := r.LWSManager.ListAll(ctx, ds, "")
 	if err != nil {
 		return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
 	}
@@ -348,7 +348,7 @@ func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	if len(scalers) == 0 {
 		return nil
 	}
-	all, err := r.LWSManager.List(ctx, ds, -1, "")
+	all, err := r.LWSManager.ListAll(ctx, ds, "")
 	if err != nil {
 		return fmt.Errorf("list LWS for scaler status: %w", err)
 	}
@@ -511,7 +511,7 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string) error {
 	log := logf.FromContext(ctx)
 
-	lwsList, err := r.LWSManager.List(ctx, disaggregatedSet, slice, "")
+	lwsList, err := r.LWSManager.ListForSlice(ctx, disaggregatedSet, slice, "")
 	if err != nil {
 		return fmt.Errorf("failed to list LWS for cleanup: %w", err)
 	}

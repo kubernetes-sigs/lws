@@ -774,19 +774,19 @@ func TestManagerListSliceBucketing(t *testing.T) {
 	}
 
 	t.Run("slice 0 excludes label-less and unowned objects", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, 0, "")
+		got, err := manager.ListForSlice(context.Background(), ds, 0, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s0"}, names(got))
 	})
 
 	t.Run("slice 1 excludes label-less objects", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, 1, "")
+		got, err := manager.ListForSlice(context.Background(), ds, 1, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s1"}, names(got))
 	})
 
 	t.Run("all slices excludes label-less and unowned objects", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, -1, "")
+		got, err := manager.ListAll(context.Background(), ds, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s0", "s1"}, names(got))
 	})
