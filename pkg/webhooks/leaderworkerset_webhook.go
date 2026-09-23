@@ -337,9 +337,6 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 		return allErrs
 	}
 	giPath := specPath.Child("groupIdentity")
-	if spec.Scheduling != nil {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("scheduling"), "is not supported with groupIdentity Hash"))
-	}
 	if len(spec.LeaderWorkerTemplate.VolumeClaimTemplates) > 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "volumeClaimTemplates are not supported with groupIdentity Hash"))
 	}
