@@ -27,7 +27,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -554,5 +556,55 @@ func ExpectRevisions(ctx context.Context, k8sClient client.Client, leaderWorkerS
 		}
 
 		return nil
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
+// ExpectWASPodGroupsScheduled verifies real scheduler placement and pod readiness,
+// using the pod references rather than reproducing the provider's naming logic.
+func ExpectWASPodGroupsScheduled(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, expectedPodCount int, expectedMinCounts ...int32) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		options := []client.ListOption{client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}}
+		pods := &corev1.PodList{}
+		g.Expect(k8sClient.List(ctx, pods, options...)).To(gomega.Succeed())
+		g.Expect(pods.Items).To(gomega.HaveLen(expectedPodCount))
+		members := make(map[string]int)
+		for _, pod := range pods.Items {
+			g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(pod.Spec.NodeName).NotTo(gomega.BeEmpty())
+			g.Expect(pod.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+			g.Expect(pod.Spec.SchedulingGroup.PodGroupName).NotTo(gomega.BeNil())
+			members[*pod.Spec.SchedulingGroup.PodGroupName]++
+			ready := false
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.PodReady {
+					ready = condition.Status == corev1.ConditionTrue
+				}
+			}
+			g.Expect(ready).To(gomega.BeTrue(), "Pod %s must be Ready", pod.Name)
+		}
+
+		workloads := &schedulingv1beta1.WorkloadList{}
+		g.Expect(k8sClient.List(ctx, workloads, options...)).To(gomega.Succeed())
+		g.Expect(workloads.Items).To(gomega.HaveLen(1))
+		workload := &workloads.Items[0]
+		g.Expect(metav1.IsControlledBy(workload, lws)).To(gomega.BeTrue())
+
+		podGroups := &schedulingv1beta1.PodGroupList{}
+		g.Expect(k8sClient.List(ctx, podGroups, options...)).To(gomega.Succeed())
+		g.Expect(podGroups.Items).To(gomega.HaveLen(len(expectedMinCounts)))
+		minCounts := make([]int32, 0, len(podGroups.Items))
+		for _, podGroup := range podGroups.Items {
+			g.Expect(podGroup.DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(metav1.IsControlledBy(&podGroup, lws)).To(gomega.BeTrue())
+			g.Expect(podGroup.Spec.WorkloadRef).NotTo(gomega.BeNil())
+			g.Expect(podGroup.Spec.WorkloadRef.WorkloadName).To(gomega.Equal(workload.Name))
+			g.Expect(podGroup.Spec.SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+			minCounts = append(minCounts, podGroup.Spec.SchedulingPolicy.Gang.MinCount)
+			g.Expect(members[podGroup.Name]).To(gomega.Equal(int(podGroup.Spec.SchedulingPolicy.Gang.MinCount)))
+			g.Expect(apimeta.IsStatusConditionTrue(podGroup.Status.Conditions, schedulingv1beta1.PodGroupInitiallyScheduled)).To(gomega.BeTrue())
+			delete(members, podGroup.Name)
+		}
+		g.Expect(minCounts).To(gomega.ConsistOf(expectedMinCounts))
+		g.Expect(members).To(gomega.BeEmpty(), "all pods must refer to existing PodGroups")
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
