@@ -295,10 +295,10 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	}, nil
 }
 
-// generatedServiceSnapshots records the identity of the per-revision Services the
-// old controller created. The upgraded controller no longer creates or manages
-// these, and must not touch the ones already in the cluster: their names and UIDs
-// surviving the upgrade is what proves they were left alone.
+// generatedServiceSnapshots records any per-revision Services left by the old
+// controller. Releases before v0.11.0 created them, while newer releases do not.
+// When present, their names and UIDs surviving the upgrade prove that the current
+// controller leaves them alone.
 func generatedServiceSnapshots() ([]serviceSnapshot, error) {
 	services, err := listDisaggregatedSetServices()
 	if err != nil {
@@ -321,9 +321,6 @@ func listDisaggregatedSetServices() (*corev1.ServiceList, error) {
 		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: existingDSName},
 	); err != nil {
 		return nil, err
-	}
-	if len(services.Items) != 2 {
-		return nil, fmt.Errorf("expected 2 DisaggregatedSet services, got %d", len(services.Items))
 	}
 	return services, nil
 }
