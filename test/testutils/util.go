@@ -445,7 +445,7 @@ func CheckLeaderWorkerSetHasCondition(ctx context.Context, k8sClient client.Clie
 	}
 	for _, c := range fetchedLWS.Status.Conditions {
 		if c.Type == condition.Type && c.Status == condition.Status {
-			if c.ObservedGeneration != 0 && c.ObservedGeneration != fetchedLWS.Generation {
+			if c.ObservedGeneration != fetchedLWS.Generation {
 				return false, nil
 			}
 			if condition.Message != "" {

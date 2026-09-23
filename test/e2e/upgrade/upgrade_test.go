@@ -26,6 +26,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -156,7 +157,11 @@ func createExistingWorkloads() {
 		testutils.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 		testutils.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
 	}
-	testutils.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "")
+	if legacyCRD {
+		expectLegacyLeaderWorkerSetAvailable(lws)
+	} else {
+		testutils.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "")
+	}
 	if !legacyCRD {
 		testutils.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 	}
@@ -169,6 +174,26 @@ func createExistingWorkloads() {
 	ds := newDisaggregatedSet(testNamespace, existingDSName)
 	gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
 	waitForDisaggregatedSet(existingDSName)
+}
+
+// expectLegacyLeaderWorkerSetAvailable accepts an unset observedGeneration
+// because v0.7.0 did not populate that field on status conditions.
+func expectLegacyLeaderWorkerSetAvailable(lws *leaderworkersetv1.LeaderWorkerSet) {
+	ginkgo.By("checking the legacy LeaderWorkerSet is available")
+	gomega.Eventually(func() (bool, error) {
+		fetched := &leaderworkersetv1.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			return false, err
+		}
+		for _, condition := range fetched.Status.Conditions {
+			if condition.Type == string(leaderworkersetv1.LeaderWorkerSetAvailable) &&
+				condition.Status == metav1.ConditionTrue &&
+				(condition.ObservedGeneration == 0 || condition.ObservedGeneration == fetched.Generation) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, testutils.Timeout, testutils.Interval).Should(gomega.BeTrue())
 }
 
 func createNewWorkloads() {

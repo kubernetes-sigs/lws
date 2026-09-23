@@ -206,7 +206,7 @@ test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-upgrade
-test-e2e-upgrade: test-e2e-upgrade-manifests test-e2e-upgrade-helm
+test-e2e-upgrade: test-e2e-upgrade-manifests test-e2e-upgrade-helm test-e2e-upgrade-helm-legacy
 
 .PHONY: test-e2e-upgrade-manifests
 test-e2e-upgrade-manifests: kustomize manifests fmt vet ginkgo kind-image-build
