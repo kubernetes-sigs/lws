@@ -195,18 +195,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if lws.Spec.Scheduling != nil {
-		if r.SchedulerProvider == nil {
-			err := fmt.Errorf("spec.scheduling requires a configured scheduler provider")
-			return ctrl.Result{}, r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonUnsupportedProviderCapability, err)
-		}
-		if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
-			log.Error(err, "Reconciling workload-aware scheduling prerequisites")
-			return ctrl.Result{}, r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
-		}
-		if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.reconcileWorkloadScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
+		return ctrl.Result{}, err
 	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
@@ -265,6 +256,25 @@ func (r *LeaderWorkerSetReconciler) reconcileHeadlessServices(ctx context.Contex
 		return nil
 	}
 	return nil
+}
+
+// reconcileWorkloadScheduling creates the workload-aware scheduling
+// prerequisites of an opted-in LeaderWorkerSet and records the outcome on the
+// WorkloadSchedulingCreated condition. Both group identity modes run it before
+// the leader workload is applied, so no member pod is created before its
+// Workload and, for the levels the controller can enumerate, its PodGroups.
+func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revisionKey string) error {
+	if lws.Spec.Scheduling == nil {
+		return nil
+	}
+	if r.SchedulerProvider == nil {
+		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonUnsupportedProviderCapability,
+			fmt.Errorf("spec.scheduling requires a configured scheduler provider"))
+	}
+	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
+		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
+	}
+	return r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created")
 }
 
 func (r *LeaderWorkerSetReconciler) failWorkloadScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, reason string, reconcileErr error) error {

@@ -136,6 +136,12 @@ func NewKubernetesProvider(c client.Client) *KubernetesProvider {
 //   - create or update one PodGroup per desired instance
 //   - require a parent CompositePodGroup to exist when that annotation is set
 //   - delete unused LWS-owned PodGroups that no longer have member pods
+//
+// With groupIdentity Hash the per-replica instances are not known here: a group
+// is identified by a key that admission draws for every leader pod, so those
+// PodGroups are materialized by CreatePodGroupIfNotExists while the leader is
+// still scheduling gated. Cleanup keeps every group that still has member pods,
+// so it stays safe even though those names are not in the desired set.
 func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
@@ -146,27 +152,44 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 		return err
 	}
 
-	materializer := workloadbuilder.NewBuilderFromExistingWorkload(persisted, workloadbuilder.BuildOptions{
-		Owner: metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")),
-	})
 	groups, err := desiredPodGroups(lws, replicas, revision)
 	if err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
+	desiredGroups := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		desiredGroups[group.name] = struct{}{}
+	}
+	if err := p.ensurePodGroups(ctx, lws, persisted, groups); err != nil {
+		return err
+	}
+
+	if err := p.cleanupUnusedPodGroups(ctx, lws, desiredGroups); err != nil {
+		return NewReconcileError(ReasonPodGroupCleanupBlocked, err)
+	}
+	return nil
+}
+
+// ensurePodGroups materializes the given PodGroups from the persisted Workload
+// templates and reconciles the mutable fields of the ones that already exist.
+func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, persisted *schedulingv1beta1.Workload, groups []desiredPodGroup) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	materializer := workloadbuilder.NewBuilderFromExistingWorkload(persisted, workloadbuilder.BuildOptions{
+		Owner: metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet")),
+	})
 	// TODO(phase2): honor ParentCompositePodGroupAnnotation by reading the named
 	// CompositePodGroup (API reader or dedicated RBAC, not the cached client)
 	// and setting PodGroup.Spec.ParentCompositePodGroupName. A cached Get
 	// without list/watch stalls the reconciler.
-	if templateName := lws.Annotations[GroupTemplateNameAnnotation]; templateName != "" {
-		for i := range groups {
-			groups[i].templateName = templateName
-		}
-	}
-	desiredGroups := make(map[string]struct{}, len(groups))
-	delegated := lws.Annotations[GroupTemplateNameAnnotation] != ""
+	parentTemplateName := lws.Annotations[GroupTemplateNameAnnotation]
+	delegated := parentTemplateName != ""
 	for _, group := range groups {
 		name := group.name
-		desiredGroups[name] = struct{}{}
+		if delegated {
+			group.templateName = parentTemplateName
+		}
 		podGroup, err := materializer.NewPodGroup(name, group.templateName)
 		if err != nil {
 			return NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("materialize PodGroup %q: %w", name, err))
@@ -205,10 +228,6 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 			}
 		}
 	}
-
-	if err := p.cleanupUnusedPodGroups(ctx, lws, desiredGroups); err != nil {
-		return NewReconcileError(ReasonPodGroupCleanupBlocked, err)
-	}
 	return nil
 }
 
@@ -224,13 +243,6 @@ func desiredPodGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32, revi
 	if err != nil {
 		return nil, err
 	}
-	baseLabels := func(level SchedulingMode) map[string]string {
-		return map[string]string{
-			leaderworkerset.SetNameLabelKey: lws.Name,
-			SchedulingLevelLabelKey:         string(level),
-		}
-	}
-	workloadName := KubernetesWorkloadName(lws)
 
 	switch mode {
 	case SchedulingModeLWS:
@@ -238,45 +250,68 @@ func desiredPodGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32, revi
 			return nil, nil
 		}
 		return []desiredPodGroup{{
-			name:                kubernetesRuntimeName(workloadName, "lws"),
+			name:                kubernetesRuntimeName(KubernetesWorkloadName(lws), "lws"),
 			templateName:        lwsWorkloadTemplateName,
-			labels:              baseLabels(mode),
+			labels:              basePodGroupLabels(lws, mode),
 			allowMinCountUpdate: true,
 		}}, nil
-	case SchedulingModeReplica:
-		groups := make([]desiredPodGroup, 0, replicas)
-		for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
-			index := strconv.FormatInt(int64(groupIndex), 10)
-			labels := baseLabels(mode)
-			labels[leaderworkerset.GroupIndexLabelKey] = index
-			labels[leaderworkerset.RevisionKey] = revision
-			groups = append(groups, desiredPodGroup{
-				name:         kubernetesRuntimeName(workloadName, index, revision),
-				templateName: replicaWorkloadTemplateName,
-				labels:       labels,
-			})
+	case SchedulingModeReplica, SchedulingModeRole:
+		// Hash group identity draws a group key per leader pod at admission
+		// time, so the LWS controller cannot enumerate the replica instances
+		// up front. CreatePodGroupIfNotExists materializes them instead.
+		if hashGroupIdentity(lws) {
+			return nil, nil
 		}
-		return groups, nil
-	case SchedulingModeRole:
 		groups := make([]desiredPodGroup, 0, replicas*2)
 		for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
-			index := strconv.FormatInt(int64(groupIndex), 10)
-			for _, role := range []string{leaderWorkloadTemplateName, workerWorkloadTemplateName} {
-				labels := baseLabels(mode)
-				labels[leaderworkerset.GroupIndexLabelKey] = index
-				labels[leaderworkerset.RevisionKey] = revision
-				labels[PodGroupRoleLabelKey] = role
-				groups = append(groups, desiredPodGroup{
-					name:         kubernetesRuntimeName(workloadName, index, role, revision),
-					templateName: role,
-					labels:       labels,
-				})
-			}
+			groups = append(groups, replicaPodGroups(lws, mode, strconv.FormatInt(int64(groupIndex), 10), revision)...)
 		}
 		return groups, nil
 	default:
 		return nil, fmt.Errorf("unsupported scheduling mode %q", mode)
 	}
+}
+
+func basePodGroupLabels(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode) map[string]string {
+	return map[string]string{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		SchedulingLevelLabelKey:         string(mode),
+	}
+}
+
+// replicaPodGroups returns the PodGroups of a single replica: one in replica
+// mode, a leader and a worker one in role mode. groupIndex is the value of the
+// group index label, an ordinal with groupIdentity Ordinal and the group key
+// with groupIdentity Hash.
+func replicaPodGroups(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode, groupIndex, revision string) []desiredPodGroup {
+	workloadName := KubernetesWorkloadName(lws)
+	if mode == SchedulingModeReplica {
+		labels := basePodGroupLabels(lws, mode)
+		labels[leaderworkerset.GroupIndexLabelKey] = groupIndex
+		labels[leaderworkerset.RevisionKey] = revision
+		return []desiredPodGroup{{
+			name:         kubernetesRuntimeName(workloadName, groupIndex, revision),
+			templateName: replicaWorkloadTemplateName,
+			labels:       labels,
+		}}
+	}
+	groups := make([]desiredPodGroup, 0, 2)
+	for _, role := range []string{leaderWorkloadTemplateName, workerWorkloadTemplateName} {
+		labels := basePodGroupLabels(lws, mode)
+		labels[leaderworkerset.GroupIndexLabelKey] = groupIndex
+		labels[leaderworkerset.RevisionKey] = revision
+		labels[PodGroupRoleLabelKey] = role
+		groups = append(groups, desiredPodGroup{
+			name:         kubernetesRuntimeName(workloadName, groupIndex, role, revision),
+			templateName: role,
+			labels:       labels,
+		})
+	}
+	return groups
+}
+
+func hashGroupIdentity(lws *leaderworkerset.LeaderWorkerSet) bool {
+	return lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash
 }
 
 func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.PodGroup, allowMinCountUpdate bool) error {
@@ -618,8 +653,77 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	return nil
 }
 
-func (p *KubernetesProvider) CreatePodGroupIfNotExists(context.Context, *leaderworkerset.LeaderWorkerSet, *corev1.Pod) error {
-	return nil
+// CreatePodGroupIfNotExists materializes the PodGroups of a single replica for
+// a groupIdentity Hash LeaderWorkerSet. With Ordinal identity every instance is
+// known up front and ReconcileScheduling has already created it, so this is a
+// no-op there.
+//
+// The pod controller calls this while the leader pod still carries the group
+// replacement scheduling gate, which keeps the KEP-666 ordering: the leaf
+// PodGroup exists before any member pod can be scheduled. The PodGroup is
+// controller-owned by the LeaderWorkerSet, never by the leader pod, so a leader
+// restart reuses it instead of racing garbage collection.
+func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
+	groups, err := leaderPodGroups(lws, leaderPod)
+	if err != nil {
+		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	persisted, err := p.findWorkload(ctx, lws)
+	if err != nil {
+		return err
+	}
+	return p.ensurePodGroups(ctx, lws, persisted, groups)
+}
+
+// leaderPodGroups returns the PodGroups that back the group of leaderPod, or
+// nothing when the LWS does not need pod-driven materialization.
+func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) ([]desiredPodGroup, error) {
+	if lws.Spec.Scheduling == nil || !hashGroupIdentity(lws) {
+		return nil, nil
+	}
+	mode, err := SchedulingModeFor(lws)
+	if err != nil {
+		return nil, err
+	}
+	// The whole-LWS PodGroup has a group independent name and is created by
+	// the LeaderWorkerSet controller in both identity modes.
+	if mode == SchedulingModeLWS {
+		return nil, nil
+	}
+	groupIndex := leaderPod.Labels[leaderworkerset.GroupIndexLabelKey]
+	if groupIndex == "" {
+		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.GroupIndexLabelKey)
+	}
+	revision := leaderPod.Labels[leaderworkerset.RevisionKey]
+	if revision == "" {
+		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.RevisionKey)
+	}
+	return replicaPodGroups(lws, mode, groupIndex, revision), nil
+}
+
+// findWorkload looks up the Workload that already backs the LeaderWorkerSet
+// without creating one: only the LeaderWorkerSet controller compiles and
+// creates it. Callers retry until it shows up.
+func (p *KubernetesProvider) findWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
+	if templateName := lws.Annotations[GroupTemplateNameAnnotation]; templateName != "" {
+		workload, err := p.findDelegatedWorkload(ctx, lws)
+		if err != nil {
+			return nil, NewReconcileError(ReasonParentWorkloadNotReady, err)
+		}
+		return workload, nil
+	}
+	persisted, err := p.findOwnedWorkload(ctx, lws)
+	if err != nil {
+		return nil, workloadAPIError(ReasonWorkloadCreateFailed, err)
+	}
+	if persisted == nil {
+		return nil, NewReconcileError(ReasonWorkloadCreateFailed,
+			fmt.Errorf("Workload %s/%s has not been created yet", lws.Namespace, KubernetesWorkloadName(lws)))
+	}
+	return persisted, nil
 }
 
 func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
