@@ -200,10 +200,12 @@ func TestUpdateStatusHash(t *testing.T) {
 			wantAvailable:       false,
 			wantReadyReplicas:   2,
 			wantUpdatedReplicas: 2,
-			// setConditions only applies the first changed condition per call, so
-			// Progressing is added on a subsequent reconcile. See
-			// TestSetConditionsAppliesOneConditionPerCall.
-			wantConditions: []string{string(leaderworkerset.LeaderWorkerSetUpdateInProgress)},
+			// updateStatusHash asks for both UpdateInProgress and Progressing
+			// here, and both land in the same reconcile.
+			wantConditions: []string{
+				string(leaderworkerset.LeaderWorkerSetProgressing),
+				string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
+			},
 		},
 		{
 			name: "deployment is scaling up, the set is only Progressing",

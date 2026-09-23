@@ -377,11 +377,10 @@ func TestUpdateConditions(t *testing.T) {
 			wantUpdateDone:      false,
 			wantReadyReplicas:   2,
 			wantUpdatedReplicas: 1,
-			// updateConditions asks for both UpdateInProgress and Progressing here,
-			// but setConditions only applies the first one that changes per call, so
-			// Progressing only appears on the next reconcile. See
-			// TestSetConditionsAppliesOneConditionPerCall.
+			// updateConditions asks for both UpdateInProgress and Progressing
+			// here, and both land in the same reconcile.
 			wantConditions: []string{
+				string(leaderworkerset.LeaderWorkerSetProgressing),
 				string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
 			},
 		},
@@ -522,13 +521,13 @@ func TestUpdateConditionsListError(t *testing.T) {
 	}
 }
 
-// TestSetConditionsAppliesOneConditionPerCall pins down a surprising behaviour of
-// setConditions: it accumulates its return value with
-// `shouldUpdate = shouldUpdate || setCondition(...)`, and Go short-circuits `||`
-// once shouldUpdate is true. Every condition after the first one that changes is
-// therefore silently dropped, and updateConditions/updateStatusHash need a second
-// reconcile before both UpdateInProgress and Progressing show up.
-func TestSetConditionsAppliesOneConditionPerCall(t *testing.T) {
+// TestSetConditionsAppliesEveryCondition guards against a regression where
+// setConditions accumulated its return value with
+// `shouldUpdate = shouldUpdate || setCondition(...)`. Go short-circuits `||`, so
+// every condition after the first one that changed was silently dropped and
+// updateConditions/updateStatusHash needed a second reconcile before both
+// UpdateInProgress and Progressing showed up.
+func TestSetConditionsAppliesEveryCondition(t *testing.T) {
 	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
 	requested := func() []metav1.Condition {
 		return []metav1.Condition{
@@ -540,24 +539,19 @@ func TestSetConditionsAppliesOneConditionPerCall(t *testing.T) {
 	if !setConditions(lws, requested()) {
 		t.Fatal("setConditions() = false, want true on the first call")
 	}
-	want := []string{string(leaderworkerset.LeaderWorkerSetUpdateInProgress)}
-	if diff := cmp.Diff(want, lwsStatusTrueConditionTypes(lws)); diff != "" {
-		t.Errorf("after one call, unexpected true conditions (-want +got):\n%s", diff)
-	}
-
-	if !setConditions(lws, requested()) {
-		t.Fatal("setConditions() = false, want true on the second call")
-	}
-	want = []string{
+	want := []string{
 		string(leaderworkerset.LeaderWorkerSetProgressing),
 		string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
 	}
 	if diff := cmp.Diff(want, lwsStatusTrueConditionTypes(lws)); diff != "" {
-		t.Errorf("after two calls, unexpected true conditions (-want +got):\n%s", diff)
+		t.Errorf("after one call, unexpected true conditions (-want +got):\n%s", diff)
 	}
 
 	if setConditions(lws, requested()) {
-		t.Error("setConditions() = true on the third call, want false once everything converged")
+		t.Error("setConditions() = true on the second call, want false once everything converged")
+	}
+	if diff := cmp.Diff(want, lwsStatusTrueConditionTypes(lws)); diff != "" {
+		t.Errorf("after two calls, unexpected true conditions (-want +got):\n%s", diff)
 	}
 }
 
