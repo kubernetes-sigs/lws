@@ -66,6 +66,12 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
 		}
 	}
+	// With groupIdentity Hash the group names are only known once admission
+	// stamps a leader pod, so the PodGroups are created by the pod controller
+	// through CreatePodGroupIfNotExists instead.
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return nil
+	}
 	minResources := utils.CalculatePGMinResources(lws)
 	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
 		index := strconv.FormatInt(int64(groupIndex), 10)

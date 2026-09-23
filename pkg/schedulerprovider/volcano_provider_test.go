@@ -510,3 +510,48 @@ func createTestLeaderPod(name, namespace, lwsName, groupIndex, revision string) 
 		},
 	}
 }
+
+// TestVolcanoProviderReconcileSchedulingGroupIdentity covers both identity
+// modes: Ordinal instances are named after contiguous indexes and can be
+// pre-created, while Hash group names only exist once admission stamps a
+// leader pod, so the pod-driven path owns them.
+func TestVolcanoProviderReconcileSchedulingGroupIdentity(t *testing.T) {
+	ctx := context.Background()
+	newLWS := func(identity leaderworkerset.GroupIdentityType) *leaderworkerset.LeaderWorkerSet {
+		return &leaderworkerset.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+			Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To[int32](2),
+				GroupIdentity: identity,
+				Scheduling:    &leaderworkerset.LeaderWorkerSetScheduling{},
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+					}},
+				},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		identity   leaderworkerset.GroupIdentityType
+		wantGroups int
+	}{
+		{name: "ordinal pre-creates one PodGroup per replica", identity: leaderworkerset.GroupIdentityOrdinal, wantGroups: 2},
+		{name: "hash defers PodGroups to the leader pods", identity: leaderworkerset.GroupIdentityHash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := newLWS(tc.identity)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+
+			err := NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "revision-1")
+			assert.NoError(t, err)
+
+			groups := &volcanov1beta1.PodGroupList{}
+			assert.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+			assert.Len(t, groups.Items, tc.wantGroups)
+		})
+	}
+}
