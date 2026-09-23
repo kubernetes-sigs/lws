@@ -66,9 +66,11 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
 		}
 	}
-	// With groupIdentity Hash the group names are only known once admission
-	// stamps a leader pod, so the PodGroups are created by the pod controller
-	// through CreatePodGroupIfNotExists instead.
+	// With groupIdentity Hash, group names are derived from the random group key
+	// drawn at leader pod admission time, so replica PodGroups cannot be pre-created
+	// from the replica count up front (identical to KubernetesProvider). Instead,
+	// CreatePodGroupIfNotExists creates the LWS-owned PodGroup when the leader pod
+	// is reconciled, before its scheduling gate is lifted.
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
 		return nil
 	}
@@ -105,16 +107,6 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 }
 
 func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
-	// spec.scheduling (typed API) mode is mutually exclusive with this pod-driven,
-	// annotation-based flow: ReconcileScheduling already pre-created and owns the
-	// PodGroup before this leader Pod existed, under the LeaderWorkerSet's own
-	// controller reference rather than the leader Pod's. Mirrors the same
-	// mutual-exclusion check ReconcileScheduling itself makes, and matches how
-	// KubernetesProvider.CreatePodGroupIfNotExists is a no-op for the same reason.
-	if lws.Spec.Scheduling != nil {
-		return nil
-	}
-
 	var pg volcanov1beta1.PodGroup
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
@@ -125,7 +117,20 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		}
 
 		owner := metav1.GetControllerOf(&pg)
-		// LWS-created PodGroups are always controlled by their leader Pod. This should not happen during
+		if lws.Spec.Scheduling != nil {
+			if owner == nil ||
+				owner.APIVersion != leaderworkerset.GroupVersion.String() ||
+				owner.Kind != "LeaderWorkerSet" ||
+				owner.Name != lws.Name {
+				return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected LeaderWorkerSet %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, lws.Name, lws.UID)
+			}
+			if owner.UID == lws.UID {
+				return nil
+			}
+			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
+		}
+
+		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
 		// normal reconciliation, so fail without modifying a same-name PodGroup with an unexpected owner.
 		if owner == nil ||
 			owner.APIVersion != corev1.SchemeGroupVersion.String() ||
@@ -175,7 +180,11 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		pg.Spec.Queue = queueName
 	}
 
-	err := ctrl.SetControllerReference(leaderPod, &pg, v.client.Scheme())
+	var controllerOwner metav1.Object = leaderPod
+	if lws.Spec.Scheduling != nil {
+		controllerOwner = lws
+	}
+	err := ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())
 	if err != nil {
 		return err
 	}

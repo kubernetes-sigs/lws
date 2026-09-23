@@ -555,3 +555,94 @@ func TestVolcanoProviderReconcileSchedulingGroupIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
+	ctx := context.Background()
+	newLWS := func(identity leaderworkerset.GroupIdentityType, typedScheduling bool) *leaderworkerset.LeaderWorkerSet {
+		lws := &leaderworkerset.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default", UID: "lws-uid-123"},
+			Spec: leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To[int32](2),
+				GroupIdentity: identity,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+					WorkerTemplate: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+					}},
+				},
+			},
+		}
+		if typedScheduling {
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		}
+		return lws
+	}
+
+	t.Run("hash identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityHash, true)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		leader := createTestLeaderPod("leader-hash", lws.Namespace, lws.Name, "hash123", "rev1")
+		err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.NoError(t, err)
+
+		pg := &volcanov1beta1.PodGroup{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: GetPodGroupName(lws.Name, "hash123", "rev1"), Namespace: lws.Namespace}, pg)
+		assert.NoError(t, err)
+
+		owner := metav1.GetControllerOf(pg)
+		assert.NotNil(t, owner)
+		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
+		assert.Equal(t, lws.Name, owner.Name)
+		assert.Equal(t, lws.UID, owner.UID)
+
+		// Subsequent call succeeds idempotently.
+		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.NoError(t, err)
+	})
+
+	t.Run("ordinal identity with typed scheduling validates pre-created LWS-owned PodGroup", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		// Pre-create PodGroups via ReconcileScheduling.
+		err := provider.ReconcileScheduling(ctx, lws, 2, "rev1")
+		assert.NoError(t, err)
+
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.NoError(t, err)
+
+		pg := &volcanov1beta1.PodGroup{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: GetPodGroupName(lws.Name, "0", "rev1"), Namespace: lws.Namespace}, pg)
+		assert.NoError(t, err)
+
+		owner := metav1.GetControllerOf(pg)
+		assert.NotNil(t, owner)
+		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
+		assert.Equal(t, lws.Name, owner.Name)
+		assert.Equal(t, lws.UID, owner.UID)
+	})
+
+	t.Run("legacy mode creates leader-pod-owned PodGroup", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, false)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.NoError(t, err)
+
+		pg := &volcanov1beta1.PodGroup{}
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: GetPodGroupName(lws.Name, "0", "rev1"), Namespace: lws.Namespace}, pg)
+		assert.NoError(t, err)
+
+		owner := metav1.GetControllerOf(pg)
+		assert.NotNil(t, owner)
+		assert.Equal(t, "Pod", owner.Kind)
+		assert.Equal(t, leader.Name, owner.Name)
+		assert.Equal(t, leader.UID, owner.UID)
+	})
+}
