@@ -245,4 +245,41 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			g.Expect(groups.Items).To(gomega.HaveLen(1))
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
+
+	ginkgo.It("compiles the Workload for groupIdentity Hash and defers replica PodGroups to leaders", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-hash").
+			Replica(2).
+			Size(3).
+			Obj()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			workload := &schedulingv1beta1.Workload{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesWorkloadName(lws)}, workload)).To(gomega.Succeed())
+			g.Expect(workload.Spec.PodGroupTemplates).To(gomega.HaveLen(1))
+			g.Expect(workload.Spec.PodGroupTemplates[0].Name).To(gomega.Equal("replica"))
+			g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+			g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(3)))
+
+			// Group keys only exist once admission stamps a leader pod, so the
+			// LWS controller must not guess ordinal replica instances here.
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.BeEmpty())
+
+			leaderDeployment := &appsv1.Deployment{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderDeployment)).To(gomega.Succeed())
+			g.Expect(leaderDeployment.Spec.Template.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey]).To(gomega.Equal(string(schedulerprovider.SchedulingModeReplica)))
+			g.Expect(leaderDeployment.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.Equal(schedulerprovider.KubernetesWorkloadName(lws)))
+
+			persistedLWS := &leaderworkerset.LeaderWorkerSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
+			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
 })

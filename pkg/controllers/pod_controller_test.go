@@ -52,14 +52,20 @@ import (
 type stubSchedulerProvider struct {
 	createErr error
 	calls     int
+	// onCreate observes the pod as the provider sees it, which lets a test
+	// assert the ordering against the group replacement scheduling gate.
+	onCreate func(*corev1.Pod)
 }
 
 func (*stubSchedulerProvider) ReconcileScheduling(context.Context, *leaderworkerset.LeaderWorkerSet, int32, string) error {
 	return nil
 }
 
-func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(context.Context, *leaderworkerset.LeaderWorkerSet, *corev1.Pod) error {
+func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(_ context.Context, _ *leaderworkerset.LeaderWorkerSet, pod *corev1.Pod) error {
 	s.calls++
+	if s.onCreate != nil {
+		s.onCreate(pod)
+	}
 	return s.createErr
 }
 
@@ -129,6 +135,108 @@ func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 				if tc.wantEvent {
 					t.Fatal("expected unexpected-owner warning event")
 				}
+			}
+		})
+	}
+}
+
+// TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader pins the ordering
+// that workload-aware scheduling depends on with groupIdentity Hash: the group
+// key is only known once the leader pod exists, so the PodGroup is created
+// while the leader still carries the group replacement gate and can therefore
+// not be scheduled yet.
+func TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+
+	newLWS := func(policy leaderworkerset.GroupReplacementPolicyType) *leaderworkerset.LeaderWorkerSet {
+		return &leaderworkerset.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "hash-lws", Namespace: "default"},
+			Spec: leaderworkerset.LeaderWorkerSetSpec{
+				GroupIdentity:          leaderworkerset.GroupIdentityHash,
+				GroupReplacementPolicy: policy,
+				Scheduling:             &leaderworkerset.LeaderWorkerSetScheduling{},
+				LeaderWorkerTemplate:   leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](1)},
+			},
+		}
+	}
+	newLeader := func(name string, gated, terminating bool) *corev1.Pod {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     "hash-lws",
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  "group-key-" + name,
+				},
+			},
+		}
+		if gated {
+			pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+		}
+		if terminating {
+			now := metav1.Now()
+			pod.DeletionTimestamp = &now
+			pod.Finalizers = []string{"test/hold"}
+		}
+		return pod
+	}
+
+	for _, tc := range []struct {
+		name        string
+		policy      leaderworkerset.GroupReplacementPolicyType
+		others      []client.Object
+		wantUngated bool
+	}{
+		{
+			name:        "gate is lifted after the PodGroup exists",
+			policy:      leaderworkerset.GroupReplacementImmediate,
+			wantUngated: true,
+		},
+		{
+			name:   "PodGroup is created even while the replacement waits",
+			policy: leaderworkerset.GroupReplacementPostTermination,
+			others: []client.Object{newLeader("old", false, true)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := newLWS(tc.policy)
+			leader := newLeader("new", true, false)
+			objs := append([]client.Object{lws, leader}, tc.others...)
+
+			var gatedAtCreate bool
+			provider := &stubSchedulerProvider{onCreate: func(pod *corev1.Pod) {
+				gatedAtCreate = podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate)
+			}}
+			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objs...).Build()
+			reconciler := &PodReconciler{
+				Client:            fakeClient,
+				Scheme:            testScheme,
+				SchedulerProvider: provider,
+				Record:            events.NewFakeRecorder(10),
+			}
+
+			if _, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+				t.Fatalf("reconcilePod() error = %v", err)
+			}
+			if provider.calls != 1 {
+				t.Fatalf("provider calls = %d, want 1", provider.calls)
+			}
+			if !gatedAtCreate {
+				t.Error("PodGroup was created after the leader had already been ungated")
+			}
+			var stored corev1.Pod
+			if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &stored); err != nil {
+				t.Fatalf("getting stored pod: %v", err)
+			}
+			if gated := podutils.HasSchedulingGate(&stored, leaderworkerset.GroupReplacementSchedulingGate); gated == tc.wantUngated {
+				t.Errorf("stored pod gated = %t, want %t", gated, !tc.wantUngated)
 			}
 		})
 	}
