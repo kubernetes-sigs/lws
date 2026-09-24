@@ -2350,4 +2350,3 @@ func TestBudgetFinalizedPodRequests(t *testing.T) {
 		t.Fatalf("budgetFinalizedPodRequests(deleting) returned %d requests, want 3: %v", len(reqsDeleting), reqsDeleting)
 	}
 }
-
