@@ -27,9 +27,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	configapi "sigs.k8s.io/lws/api/config/v1"
 )
 
 func fromFile(path string, scheme *runtime.Scheme, cfg *configapi.Configuration) error {
@@ -41,8 +43,19 @@ func fromFile(path string, scheme *runtime.Scheme, cfg *configapi.Configuration)
 	codecs := serializer.NewCodecFactory(scheme, serializer.EnableStrict)
 
 	// Regardless of if the bytes are of any external version,
-	// it will be read successfully and converted into the internal version
-	return runtime.DecodeInto(codecs.UniversalDecoder(), content, cfg)
+	// it will be read successfully and converted into the v1 version
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), content, cfg); err != nil {
+		return err
+	}
+
+	var typeMeta metav1.TypeMeta
+	if err := yaml.Unmarshal(content, &typeMeta); err == nil {
+		if typeMeta.APIVersion == "config.lws.x-k8s.io/v1alpha1" {
+			klog.Warning("The config.lws.x-k8s.io/v1alpha1 API version is deprecated and will be removed in a future release. Please migrate to config.lws.x-k8s.io/v1.")
+		}
+	}
+
+	return nil
 }
 
 // addTo applies the configuration from cfg to the controller-runtime Options o.
