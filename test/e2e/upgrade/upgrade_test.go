@@ -276,7 +276,7 @@ func captureSnapshot() (upgradeSnapshot, error) {
 		return generatedSnapshots[i].Name < generatedSnapshots[j].Name
 	})
 
-	services, err := generatedServiceSnapshots()
+	services, err := generatedServiceSnapshots(generated.Items)
 	if err != nil {
 		return upgradeSnapshot{}, err
 	}
@@ -295,37 +295,25 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	}, nil
 }
 
-// generatedServiceSnapshots records the identity of the per-revision Services the
-// old controller created. The upgraded controller no longer creates or manages
-// these, and must not touch the ones already in the cluster: their names and UIDs
-// surviving the upgrade is what proves they were left alone.
-func generatedServiceSnapshots() ([]serviceSnapshot, error) {
-	services, err := listDisaggregatedSetServices()
-	if err != nil {
-		return nil, err
-	}
-	snapshots := make([]serviceSnapshot, 0, len(services.Items))
-	for _, service := range services.Items {
+// generatedServiceSnapshots records the identity of the Services owned by the
+// generated LeaderWorkerSets. The upgraded controller must leave them untouched.
+func generatedServiceSnapshots(generated []leaderworkersetv1.LeaderWorkerSet) ([]serviceSnapshot, error) {
+	snapshots := make([]serviceSnapshot, 0, len(generated))
+	for i := range generated {
+		lws := &generated[i]
+		service := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
+			return nil, fmt.Errorf("get Service for generated LeaderWorkerSet %q: %w", lws.Name, err)
+		}
+		if !metav1.IsControlledBy(service, lws) {
+			return nil, fmt.Errorf("Service %q is not controlled by generated LeaderWorkerSet %q", service.Name, lws.Name)
+		}
 		snapshots = append(snapshots, serviceSnapshot{Name: service.Name, UID: service.UID})
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Name < snapshots[j].Name
 	})
 	return snapshots, nil
-}
-
-func listDisaggregatedSetServices() (*corev1.ServiceList, error) {
-	services := &corev1.ServiceList{}
-	if err := k8sClient.List(ctx, services,
-		client.InNamespace(testNamespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: existingDSName},
-	); err != nil {
-		return nil, err
-	}
-	if len(services.Items) != 2 {
-		return nil, fmt.Errorf("expected 2 DisaggregatedSet services, got %d", len(services.Items))
-	}
-	return services, nil
 }
 
 func workloadPodSnapshots() ([]podSnapshot, error) {
