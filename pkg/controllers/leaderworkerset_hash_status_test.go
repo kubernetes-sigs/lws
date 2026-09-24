@@ -607,6 +607,143 @@ func TestUpdateStatusHashDegraded(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusHashStaleDeploymentStatusDuringRollout(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 2
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"rev-1/hash-a":1}`,
+	}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			Generation: 2,
+			Labels: map[string]string{
+				leaderworkerset.RevisionKey: "rev-2",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           2,
+			ReadyReplicas:      2,
+			UpdatedReplicas:    2,
+		},
+	}
+	rev1PodA := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-a",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-a",
+				leaderworkerset.RevisionKey:         "rev-1",
+			},
+		},
+	}
+	rev1PodB := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-b",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-b",
+				leaderworkerset.RevisionKey:         "rev-1",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, rev1PodA, rev1PodB)
+	available, err := reconciler.updateStatusHash(ctx, lws)
+	if err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+	if available {
+		t.Fatal("updateStatusHash() = true, want false while Deployment status is stale or old-revision pods remain")
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	wantConditions := map[string]metav1.ConditionStatus{
+		string(leaderworkerset.LeaderWorkerSetUpdateInProgress): metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetProgressing):      metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetDegraded):         metav1.ConditionFalse,
+	}
+	for _, cond := range updated.Status.Conditions {
+		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
+			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
+		}
+	}
+}
+
+func TestUpdateStatusHashDegradedRolloutHalted(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 2
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			Generation: 2,
+			Labels: map[string]string{
+				leaderworkerset.RevisionKey: "rev-2",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 2,
+			Replicas:           3,
+			ReadyReplicas:      2,
+			UpdatedReplicas:    1,
+		},
+	}
+	exhaustedSurgeLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-exhausted-surge",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-surge",
+				leaderworkerset.RevisionKey:         "rev-2",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, exhaustedSurgeLeader)
+	available, err := reconciler.updateStatusHash(ctx, lws)
+	if err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+	if available {
+		t.Fatal("updateStatusHash() = true, want false when degraded during rollout")
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	wantConditions := map[string]metav1.ConditionStatus{
+		string(leaderworkerset.LeaderWorkerSetAvailable):        metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetProgressing):      metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetUpdateInProgress): metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetDegraded):         metav1.ConditionTrue,
+	}
+	for _, cond := range updated.Status.Conditions {
+		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
+			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
+		}
+	}
+}
+
 func TestPruneHashGroupRestartCounts(t *testing.T) {
 	ctx := context.Background()
 	lws := lwsStatusHashLWS(1)

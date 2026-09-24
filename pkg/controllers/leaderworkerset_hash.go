@@ -292,10 +292,20 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 		return false, err
 	}
 
+	deployRevision := revisionutils.GetRevisionKey(deploy)
 	degradedGroupCount := 0
 	degradedReadyCount := int32(0)
+	currentRevisionPodCount := 0
+	oldRevisionPodCount := 0
 	for i := range leaderPodList.Items {
 		pod := &leaderPodList.Items[i]
+		if deployRevision != "" {
+			if revisionutils.GetRevisionKey(pod) == deployRevision {
+				currentRevisionPodCount++
+			} else if pod.DeletionTimestamp == nil {
+				oldRevisionPodCount++
+			}
+		}
 		if pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 			degradedGroupCount++
 			if pod.DeletionTimestamp == nil && podutils.IsPodReady(pod) {
@@ -331,15 +341,25 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	lwsReplicas := *lws.Spec.Replicas
 	readyNonDegradedCount := max(int32(0), deploy.Status.ReadyReplicas-degradedReadyCount)
 	degraded := degradedGroupCount > 0
-	updateInProgress := deploy.Status.UpdatedReplicas < deploy.Status.Replicas
-	available := !degraded &&
+	deploymentCurrent := deploy.Status.ObservedGeneration >= deploy.Generation &&
+		(deployRevision == "" || (oldRevisionPodCount == 0 && (len(leaderPodList.Items) == 0 || currentRevisionPodCount >= int(lwsReplicas))))
+	updateInProgress := !deploymentCurrent || deploy.Status.UpdatedReplicas < deploy.Status.Replicas
+	available := deploymentCurrent && !degraded &&
 		deploy.Status.Replicas == lwsReplicas &&
 		readyNonDegradedCount == lwsReplicas &&
 		deploy.Status.UpdatedReplicas == lwsReplicas
-	progressing := updateInProgress || int(readyNonDegradedCount)+degradedGroupCount < int(lwsReplicas)
+	targetReplicas := max(int(lwsReplicas), int(deploy.Status.Replicas))
+	progressing := (updateInProgress && !degraded) || int(readyNonDegradedCount)+degradedGroupCount < targetReplicas
 	if updateInProgress {
+		if degraded {
+			conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetAvailable, lws, "ReplicaRestartBudgetExceeded", "Not all replicas are ready"))
+		}
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		if progressing {
+			conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		} else {
+			conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery is stopped for one or more replicas"))
+		}
 	} else if available {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
 	} else if degraded {
