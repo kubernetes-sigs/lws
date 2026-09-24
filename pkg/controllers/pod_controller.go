@@ -702,7 +702,7 @@ func (r *PodReconciler) groupLifecycleTeardownRequested(ctx context.Context, lws
 func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) (bool, error) {
 	var deploy appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
-		if !apierrors.IsNotFound(err) {
+		if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
 			return false, err
 		}
 	} else {
@@ -722,6 +722,7 @@ func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context,
 
 	leaderRevision := revisionutils.GetRevisionKey(leader)
 	admittedActive := 0
+	gatedCount := 0
 	var exhausted []corev1.Pod
 	for i := range leaderPods.Items {
 		p := leaderPods.Items[i]
@@ -732,7 +733,12 @@ func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context,
 			exhausted = append(exhausted, p)
 			continue
 		}
-		if p.DeletionTimestamp == nil && !podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		if podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
+			gatedCount++
+		} else {
 			admittedActive++
 		}
 	}
@@ -743,7 +749,12 @@ func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context,
 		return exhausted[i].Name < exhausted[j].Name
 	})
 
-	allowedExhausted := max(0, int(*lws.Spec.Replicas)-admittedActive)
+	// Each retained exhausted leader holds back at most one gated replacement in
+	// the ReplicaSet. Any additional gated leaders belong to active groups that
+	// are still waiting on GroupReplacementSchedulingGate (e.g. PostTermination).
+	nonExhaustedGated := max(0, gatedCount-len(exhausted))
+	activeGroups := admittedActive + nonExhaustedGated
+	allowedExhausted := max(0, int(*lws.Spec.Replicas)-activeGroups)
 	for i := range exhausted {
 		if exhausted[i].Name == leader.Name {
 			if i >= allowedExhausted {
@@ -755,7 +766,7 @@ func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context,
 			return false, nil
 		}
 	}
-	return int(*lws.Spec.Replicas) <= admittedActive, nil
+	return int(*lws.Spec.Replicas) <= activeGroups, nil
 }
 
 // mutateGroupRestartCounts performs a conflict-safe read-modify-write of the
@@ -921,6 +932,9 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 		if gate.Name != leaderworkerset.GroupReplacementSchedulingGate {
 			newPod.Spec.SchedulingGates = append(newPod.Spec.SchedulingGates, gate)
 		}
+	}
+	if newPod.Annotations[corev1.PodDeletionCost] == "-100" {
+		delete(newPod.Annotations, corev1.PodDeletionCost)
 	}
 	if err := r.Patch(ctx, newPod, client.MergeFrom(pod)); err != nil {
 		return false, err

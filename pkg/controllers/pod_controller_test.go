@@ -2203,6 +2203,34 @@ func TestHashGroupLifecycleTeardownRequested(t *testing.T) {
 	if got := updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]; got != "" {
 		t.Fatalf("expected scaled-down hash group restart count to be cleared, got %q", got)
 	}
+
+	// Verify scale-down teardown also succeeds when the surviving active group is still gated
+	// alongside the exhausted group's gated replacement (preventing circular deadlock).
+	lwsGated := lws.DeepCopy()
+	lwsGated.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/hash-exhausted":1}`,
+	}
+	gatedReplacementForExhausted := wrappers.MakePodWithLabels(lws.Name, "hash-gated-1", "0", lws.Namespace, 2)
+	gatedReplacementForExhausted.Name = "hash-teardown-gated-1"
+	gatedReplacementForExhausted.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	gatedReplacementForExhausted.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	gatedActiveLeader := wrappers.MakePodWithLabels(lws.Name, "hash-gated-2", "0", lws.Namespace, 2)
+	gatedActiveLeader.Name = "hash-teardown-gated-2"
+	gatedActiveLeader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	gatedActiveLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	fakeClientGated := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		lwsGated, deploy, exhaustedLeader, gatedReplacementForExhausted, gatedActiveLeader,
+	).Build()
+	rGated := &PodReconciler{Client: fakeClientGated}
+	teardown, err = rGated.groupLifecycleTeardownRequested(ctx, lwsGated, exhaustedLeader)
+	if err != nil {
+		t.Fatalf("groupLifecycleTeardownRequested(gated active) error = %v", err)
+	}
+	if !teardown {
+		t.Fatal("expected scaled-down hash exhausted group to request teardown when surviving active group is gated")
+	}
 }
 
 func TestReconcileGroupReplacementGateRejectsOutdatedRevisionAndExcessReplicas(t *testing.T) {
