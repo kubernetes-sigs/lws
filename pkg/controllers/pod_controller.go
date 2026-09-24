@@ -699,6 +699,16 @@ func (r *PodReconciler) groupLifecycleTeardownRequested(ctx context.Context, lws
 	return groupIndex >= int64(partition), nil
 }
 
+// hashGroupLifecycleTeardownRequested determines whether a retained budget-exhausted
+// leader should be torn down due to an active rollout or scale-down.
+//
+// For rollouts, if the leader Deployment's desired revision has advanced past the
+// leader's revision, teardown is approved immediately so new-revision replicas can proceed.
+// For scale-down, because hash-mode replicas lack ordinals, the function ranks exhausted
+// groups (oldest first) against remaining replica slots: activeGroups counts both admitted
+// leaders and in-flight non-exhausted gated replacements (preventing deadlock if a surviving
+// group is still recreating). Any exhausted group beyond allowedExhausted (replicas - activeGroups)
+// has its restart counter cleared and teardown approved.
 func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) (bool, error) {
 	var deploy appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
@@ -944,6 +954,17 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 	return true, nil
 }
 
+// claimGroupRestartCountForHashLeader transfers an existing restart counter to a
+// newly admitted replacement leader in Hash mode.
+//
+// Because hash-mode leader pods receive a fresh random group-index on recreation,
+// their restart history does not persist by ordinal. When a gated replacement leader
+// is admitted for scheduling, this function performs a conflict-safe mutation of the
+// LWS restart counts: it finds unclaimed counters on the same revision—excluding
+// keys owned by live leaders or retained budget-exhausted groups—and assigns the
+// highest counter (tie-broken lexicographically) to the new leader's key while
+// deleting the old entry. If no unclaimed counter exists (e.g., initial creation or
+// scale-up), the group starts with zero restarts.
 func (r *PodReconciler) claimGroupRestartCountForHashLeader(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) error {
 	revisionKey := revisionutils.GetRevisionKey(leader)
 	targetKey := groupRestartCountKey(leader)

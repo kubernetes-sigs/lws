@@ -135,6 +135,12 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	return ctrl.Result{}, nil
 }
 
+// pruneHashGroupRestartCounts removes stale unclaimed restart counters for the
+// current revision that exceed active replica slots (e.g., following scale-down).
+// Counters remain owned while their leader is alive or retained in the budget-exhausted
+// state. For unclaimed counters left by terminated leaders awaiting replacement, it
+// preserves enough entries to cover pending gated replacements up to replicas + maxSurge,
+// keeping the highest counts and pruning any excess.
 func (r *LeaderWorkerSetReconciler) pruneHashGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, currentRevisionKey string) error {
 	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
 		return nil
@@ -292,9 +298,14 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	return deploymentConfig, nil
 }
 
-// updateStatusHash computes LWS status from the leader Deployment. Because pod
-// readiness includes the group-ready gate, the Deployment's readyReplicas already
-// counts fully ready groups rather than bare leader pods.
+// updateStatusHash computes LWS status and conditions from the leader Deployment and
+// its leader pods. Because leader pod readiness includes the group-ready gate, the
+// Deployment's readyReplicas already counts fully ready groups. Retained budget-exhausted
+// groups are discounted from ready counts and reported via the Degraded condition.
+// To prevent premature Available status during rollouts, the function verifies that the
+// Deployment observed the current generation, all old-revision pods have terminated, and
+// all desired replicas are ready and non-degraded. Returns true (updateDone) once the
+// desired revision is fully rolled out and Available.
 func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	updateStatus := false
