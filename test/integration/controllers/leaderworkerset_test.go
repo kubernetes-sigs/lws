@@ -1058,7 +1058,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{{lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-				testCombinedScaleSurge(lws, false)
+				testCombinedScaleSurge(lws, combinedRolloutOptions{})
 			}}},
 		}),
 		ginkgo.Entry("replicas increases during rolling update", &testCase{
@@ -1066,7 +1066,15 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
 			},
 			updates: []*update{{lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-				testCombinedScaleSurge(lws, true)
+				testCombinedScaleSurge(lws, combinedRolloutOptions{duringUpdate: true})
+			}}},
+		}),
+		ginkgo.Entry("replicas increases after one whole group is updated and ready", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
+			},
+			updates: []*update{{lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+				testCombinedScaleSurge(lws, combinedRolloutOptions{duringUpdate: true, afterPartialUpdate: true})
 			}}},
 		}),
 		ginkgo.Entry("replicas decreases during rolling update", &testCase{
@@ -1467,12 +1475,12 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("rolling update with replicas scaled up and maxSurge set", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).Size(1).MaxSurge(2)
+				return wrappers.BuildLeaderWorkerSet(nsName).Size(2).MaxSurge(2)
 			},
 			updates: []*update{
 				{
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testCombinedScaleSurge(lws, false)
+						testCombinedScaleSurge(lws, combinedRolloutOptions{})
 					},
 				},
 			},
@@ -1615,10 +1623,10 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		}),
 		ginkgo.Entry("scale up and down during rolling update with maxSurge set", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).Size(1).MaxSurge(2)
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).Size(2).MaxSurge(2)
 			},
 			updates: []*update{{lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-				testCombinedScaleSurge(lws, true)
+				testCombinedScaleSurge(lws, combinedRolloutOptions{duringUpdate: true, downscale: true})
 			}}},
 		}),
 		ginkgo.Entry("multiple rolling update with maxSurge set", &testCase{
