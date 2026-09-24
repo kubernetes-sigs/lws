@@ -75,6 +75,9 @@ func TestCombinedRolloutAPIPreconditions(t *testing.T) {
 	t.Run("production regression fences and ownership", func(t *testing.T) {
 		testCombinedRegressions(t, c, scheme, ns.Name)
 	})
+	t.Run("upstream scheduling and restart prerequisites", func(t *testing.T) {
+		testCombinedUpstreamPrerequisites(t, c, scheme, ns.Name)
+	})
 
 	t.Run("SSA persists partition and reservations atomically and rejects stale plans", func(t *testing.T) {
 		sts := &appsv1.StatefulSet{

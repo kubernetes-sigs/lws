@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -368,12 +369,203 @@ func TestCombinedMixedSizeRestartUsesLeaderStamp(t *testing.T) {
 				restarting = worker
 			}
 			restarting.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "test", RestartCount: 1}}
-			c := fake.NewClientBuilder().WithObjects(leader, worker).Build()
+			c := fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).WithObjects(lws, leader, worker).Build()
 			r := NewPodReconciler(c, c.Scheme(), fakeEventRecorder{}, nil)
 			deleted, err := r.handleRestartPolicy(context.Background(), *restarting, *lws)
 			if err != nil || !deleted {
 				t.Fatalf("old size-two group suppressed under live size-one: deleted=%t err=%v", deleted, err)
 			}
 		})
+	}
+}
+
+// Called from the existing real-apiserver suite. Native controller status and
+// Pods are simulated by combinedAPIFixture, not by a running native controller.
+func testCombinedUpstreamPrerequisites(t *testing.T, c client.Client, scheme *runtime.Scheme, namespace string) {
+	ctx := context.Background()
+	t.Run("scheduling gates publication growth and reserved deletion across status writes", func(t *testing.T) {
+		f := newCombinedAPIFixture(t, c, scheme, namespace, "upstream-scheduling", 2)
+		unavailable := errors.New("scheduling prerequisites unavailable")
+		provider := &lwsSchedFakeProvider{reconcileErr: unavailable}
+		reconcile := func() error {
+			r := f.reconciler()
+			r.SchedulerProvider = provider
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
+			return err
+		}
+		leader := func() *corev1.Pod {
+			t.Helper()
+			p := &corev1.Pod{}
+			if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: f.key.Name + "-1"}, p); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+		original := leader()
+		unchanged := func(rv string) {
+			t.Helper()
+			if f.sts().ResourceVersion != rv {
+				t.Fatal("blocked pass changed StatefulSet template, replicas or reservations")
+			}
+			if p := leader(); p.UID != original.UID || p.DeletionTimestamp != nil {
+				t.Fatal("blocked pass deleted the reserved leader")
+			}
+		}
+		f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+			lws.Spec.Replicas = ptr.To[int32](3)
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "test.invalid/scheduled"
+		})
+		if err := reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		if provider.calls != 0 || f.state().Phase != combinedFreeze || *f.sts().Spec.Replicas != 2 {
+			t.Fatal("freeze must retain old template/replicas without scheduling live spec under old revision")
+		}
+		f.ack(false)
+		// Each stage starts on an acknowledged snapshot. Failed prerequisites and
+		// successful condition writes must both leave its authorization untouched.
+		for _, stage := range []string{"publication", "growth", "deletion"} {
+			before := f.sts()
+			provider.reconcileErr = unavailable
+			for range 2 {
+				if err := reconcile(); !errors.Is(err, unavailable) {
+					t.Fatalf("%s: want provider error, got %v", stage, err)
+				}
+				unchanged(before.ResourceVersion)
+			}
+			wantReplicas := int32(3)
+			if stage == "publication" {
+				wantReplicas = 2
+			}
+			if provider.gotRevision != f.state().Revision || provider.gotReplicas != wantReplicas {
+				t.Fatalf("%s: prerequisites for wrong target: revision=%s replicas=%d", stage, provider.gotRevision, provider.gotReplicas)
+			}
+			provider.reconcileErr = nil
+			oldLWS := f.lws()
+			if err := reconcile(); !apierrors.IsConflict(err) {
+				t.Fatalf("%s: condition RV write must conflict, got %v", stage, err)
+			}
+			unchanged(before.ResourceVersion)
+			if f.lws().ResourceVersion == oldLWS.ResourceVersion {
+				t.Fatal("success condition did not change the persisted RV")
+			}
+			if err := reconcile(); err != nil {
+				t.Fatalf("%s: fresh pass did not progress: %v", stage, err)
+			}
+			switch stage {
+			case "publication":
+				if f.state().Phase != combinedPublish || f.sts().Spec.Template.Spec.Containers[0].Image != "test.invalid/scheduled" {
+					t.Fatal("successful provider did not publish intended template")
+				}
+				f.ack(false)
+				if err := reconcile(); err != nil {
+					t.Fatal(err)
+				}
+			case "growth":
+				if *f.sts().Spec.Replicas != 3 || f.state().Reservations[1].UID != original.UID {
+					t.Fatal("successful provider did not grow with the original reservation")
+				}
+				f.ack(false)
+				f.leader(2, false) // native addition, no readiness credit
+			case "deletion":
+				if p := leader(); p.UID != original.UID || p.DeletionTimestamp == nil {
+					t.Fatal("fresh pass did not resume exactly the authorized deletion")
+				}
+			}
+			t.Logf("%s: provider failure blocked; condition write conflicted; fresh pass progressed", stage)
+		}
+	})
+
+	t.Run("restart count pruning cannot refresh away a deletion fence", func(t *testing.T) {
+		f := newCombinedAPIFixture(t, c, scheme, namespace, "upstream-pruning", 2)
+		f.grow(3)
+		f.leader(2, false)
+		state := f.state()
+		f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+			if lws.Annotations == nil {
+				lws.Annotations = map[string]string{}
+			}
+			lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = fmt.Sprintf(`{"%s/0":1,"%s/9":3}`, state.Revision, state.Revision)
+		})
+		before := f.sts()
+		_, err := f.reconciler().Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
+		if !apierrors.IsConflict(err) {
+			t.Fatalf("pruning RV write must conflict: %v", err)
+		}
+		if f.sts().ResourceVersion != before.ResourceVersion {
+			t.Fatal("pruning pass changed persisted reservations")
+		}
+		p := &corev1.Pod{}
+		key := client.ObjectKey{Namespace: namespace, Name: f.key.Name + "-1"}
+		if err := c.Get(ctx, key, p); err != nil {
+			t.Fatal(err)
+		}
+		if p.UID != state.Reservations[1].UID || p.DeletionTimestamp != nil {
+			t.Fatal("pruning bypassed the deletion fence")
+		}
+		counts, err := parseGroupRestartCounts(f.lws().Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+		if err != nil || len(counts) != 1 || counts[state.Revision+"/0"] != 1 {
+			t.Fatalf("pruning lost the live count or retained the scaled-down count: %v %v", counts, err)
+		}
+		f.reconcile()
+		if err := c.Get(ctx, key, p); err != nil || p.DeletionTimestamp == nil {
+			t.Fatalf("idempotent pruning wedged fresh authorized deletion: %v", err)
+		}
+	})
+
+	t.Run("invalid state runs neither scheduling nor restart count pruning", func(t *testing.T) {
+		f := newCombinedAPIFixture(t, c, scheme, namespace, "upstream-invalid", 2)
+		f.grow(3)
+		f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+			lws.Annotations = map[string]string{leaderworkerset.GroupRestartCountsAnnotationKey: `{"old/9":2}`}
+		})
+		sts := f.sts()
+		sts.Annotations[combinedRolloutAnnotation] = `{"v":`
+		if err := c.Update(ctx, sts); err != nil {
+			t.Fatal(err)
+		}
+		before := f.lws()
+		provider := &lwsSchedFakeProvider{}
+		for range 3 {
+			r := f.reconciler()
+			r.SchedulerProvider = provider
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key}); err == nil {
+				t.Fatal("invalid state accepted")
+			}
+			if provider.calls != 0 || f.lws().ResourceVersion != before.ResourceVersion || f.sts().ResourceVersion != sts.ResourceVersion {
+				t.Fatal("invalid state changed scheduling status, restart counts or StatefulSet")
+			}
+		}
+	})
+}
+
+func TestCombinedOrdinalPodMapping(t *testing.T) {
+	for _, identity := range []leaderworkerset.GroupIdentityType{"", leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		for _, worker := range []string{"0", "1"} {
+			t.Run(string(identity)+"/worker-"+worker, func(t *testing.T) {
+				lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+				lws.Spec.GroupIdentity = identity
+				scheme := lwsStatusScheme(t)
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+				r := NewLeaderWorkerSetReconciler(c, scheme, fakeEventRecorder{})
+				p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.WorkerIndexLabelKey: worker,
+				}}}
+				got := r.enqueueOrdinalPodRequests(context.Background(), p)
+				if identity == leaderworkerset.GroupIdentityHash {
+					if len(got) != 0 {
+						t.Fatal("ordinary Hash Pod updates must not broaden upstream watch")
+					}
+				} else if len(got) != 1 || got[0].NamespacedName != client.ObjectKeyFromObject(lws) {
+					t.Fatalf("ordinal whole-group health event not mapped: %v", got)
+				}
+				delete(p.Labels, leaderworkerset.SetNameLabelKey)
+				if len(r.enqueueOrdinalPodRequests(context.Background(), p)) != 0 {
+					t.Fatal("unlabeled pod mapped")
+				}
+			})
+		}
 	}
 }
