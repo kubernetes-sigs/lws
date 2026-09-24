@@ -107,8 +107,7 @@ func (executor *RollingUpdateExecutor) initRollingUpdate(
 			if roleLWS.Spec.Replicas != nil {
 				replicas = int(*roleLWS.Spec.Replicas)
 			}
-			// Address by the LWS's actual name so a legacy slice-0 object (whose name
-			// has no slice segment) is updated rather than missed.
+			// Address the listed LWS by its actual name.
 			if _, err := executor.LWSManager.SetInitialReplicas(ctx, disaggregatedSet.Namespace, roleLWS.Name, replicas); err != nil {
 				log.Error(err, "Failed to set initial-replicas annotation", "lws", roleLWS.Name)
 			}
@@ -422,7 +421,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			if replicas <= newReplicas[name] {
 				continue
 			}
-			// Address by the LWS's actual name so a legacy slice-0 object drains too.
+			// Address the listed LWS by its actual name.
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas[name])
 			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas[name]); err != nil {

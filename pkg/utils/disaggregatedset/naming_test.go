@@ -32,13 +32,6 @@ func TestGenerateName(t *testing.T) {
 	assert.Equal(t, "ds-3-abcd1234-decode", GenerateName("ds", 3, "abcd1234", testUtilsRoleDecode))
 }
 
-func TestGenerateLegacyName(t *testing.T) {
-	// The legacy name carries no slice segment; it identifies objects created
-	// before the slices feature, which are adopted as slice 0.
-	assert.Equal(t, "ds-abcd1234-prefill", GenerateLegacyName("ds", "abcd1234", testUtilsRolePrefill))
-	assert.NotEqual(t, GenerateName("ds", 0, "abcd1234", testUtilsRolePrefill), GenerateLegacyName("ds", "abcd1234", testUtilsRolePrefill))
-}
-
 func TestGenerateLabels(t *testing.T) {
 	labels := GenerateLabels("ds", 2, "abcd1234", testUtilsRoleDecode)
 
@@ -49,11 +42,6 @@ func TestGenerateLabels(t *testing.T) {
 		disaggregatedsetv1.SetNameLabelKey:  "ds",
 		disaggregatedsetv1.RevisionLabelKey: "abcd1234",
 	}, labels)
-
-	// Generated labels must satisfy the slice matcher used to adopt objects.
-	assert.True(t, SliceLabelMatches(labels, 2))
-	assert.False(t, SliceLabelMatches(labels, 1))
-	assert.True(t, HasSliceLabel(labels))
 }
 
 func roleSpec(name string, image string) disaggregatedsetv1.DisaggregatedRoleSpec {

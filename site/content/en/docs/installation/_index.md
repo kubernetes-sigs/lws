@@ -240,6 +240,26 @@ kubectl get validatingwebhookconfiguration lws-validating-webhook-configuration 
 
 ### Upgrade from an older version
 
+#### Migrate pre-slices DisaggregatedSets before v1.0.0
+
+DisaggregatedSet first shipped in v0.9.0, before the `slices` feature. If a
+DisaggregatedSet was originally created by v0.9.x and has not completed a rollout while
+running v0.10.x or v0.11.x, do not upgrade directly to v1.0.0. First install either
+v0.10.x or v0.11.x, then trigger and complete one template rollout for every affected
+DisaggregatedSet. For example, changing a container image in a role's pod template
+triggers a rollout.
+This replaces the generated LeaderWorkerSets and pods with objects that carry
+slice-aware names and labels. If the DisaggregatedSet has already completed such a
+rollout, no additional migration is required.
+
+Before upgrading to v1.0.0, verify that no pre-slices LeaderWorkerSets remain. The
+following command must produce no output:
+
+```shell
+kubectl get leaderworkersets -A \
+  -l 'disaggregatedset.x-k8s.io/name,!disaggregatedset.x-k8s.io/slice'
+```
+
 `helm upgrade` does not install newly added CRDs. DisaggregatedSet ships two:
 `disaggregatedsets` since v0.9.0 and `disaggregatedsetrolescalers` since v0.10.0. Apply only
 `disaggregatedsets` and the controller cannot create the `DisaggregatedSetRoleScaler` a role with
