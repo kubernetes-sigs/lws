@@ -54,8 +54,8 @@ type RollingUpdateExecutor struct {
 // revision, and then continues the rollout by computing and executing its next
 // scale step.
 //
-// desiredReplicasByRole contains the resolved target for each Static or External
-// role. If any role is missing, reconciliation waits without changing LWS objects.
+// desiredReplicasByRole must contain the resolved target for every role. The
+// controller establishes this invariant before reconciling any slice.
 //
 // complete is true only after all old Specs are zero and every target-revision
 // role has reached its target in both Spec and Ready replicas.
@@ -66,12 +66,7 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	revision string,
 	desiredReplicasByRole map[string]int,
 ) (ctrl.Result, bool, error) {
-	log := logf.FromContext(ctx)
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
-	if unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole); len(unresolvedRoles) > 0 {
-		log.Info("Waiting for replica targets before reconciling revision transition", "roles", unresolvedRoles)
-		return ctrl.Result{RequeueAfter: time.Second}, false, nil
-	}
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
@@ -81,7 +76,9 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if len(oldRevisions) == 0 {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
-	// Persist any missing old-revision baseline before planning can drain it.
+	// Guardrail: old LWS objects should already have their initial-replicas
+	// baseline. Recover it before planning if that annotation is unexpectedly
+	// missing or invalid.
 	if err := executor.ensureOldInitialReplicas(ctx, disaggregatedSet, oldRevisions); err != nil {
 		return ctrl.Result{}, false, err
 	}
@@ -90,6 +87,8 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if err != nil {
 		return ctrl.Result{}, false, err
 	}
+	// Plan only after the created LWS objects have been observed again through
+	// the Kubernetes client, rather than assuming their persisted state.
 	if created || newRevision == nil {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
@@ -615,10 +614,10 @@ func coordinateRevisionDrain(
 	return true
 }
 
-// ensureOldInitialReplicas is a safety net. The controller writes
-// initial-replicas while a revision is current, so an old LWS should already
-// have a valid value. If it does not, recover from its current Spec and emit a
-// warning. An existing valid value remains immutable once the revision is old.
+// ensureOldInitialReplicas is a guardrail for an unexpected missing or invalid
+// initial-replicas annotation. The controller normally writes it while the
+// revision is current. Recover from the current Spec and emit a warning without
+// changing an existing valid value.
 func (executor *RollingUpdateExecutor) ensureOldInitialReplicas(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
