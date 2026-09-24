@@ -49,7 +49,7 @@ func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	}
 }
 
-// ReconcileScheduling pre-creates LWS-owned PodGroups for spec.scheduling.
+// ReconcileScheduling pre-creates or validates LWS-owned PodGroups for spec.scheduling.
 func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
@@ -99,8 +99,17 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 		if err := ctrl.SetControllerReference(lws, pg, v.client.Scheme()); err != nil {
 			return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 		}
-		if err := v.client.Create(ctx, pg); err != nil && !apierrors.IsAlreadyExists(err) {
-			return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("create Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
+		if err := v.client.Create(ctx, pg); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("create Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
+			}
+			var existing volcanov1beta1.PodGroup
+			if err := v.client.Get(ctx, client.ObjectKeyFromObject(pg), &existing); err != nil {
+				return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("get existing Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
+			}
+			if err := validateLWSOwnedPodGroup(lws, &existing); err != nil {
+				return NewReconcileError(ReasonPodGroupCreateFailed, err)
+			}
 		}
 	}
 	return nil
@@ -112,24 +121,14 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
 	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
+		if lws.Spec.Scheduling != nil {
+			return validateLWSOwnedPodGroup(lws, &pg)
+		}
 		if pg.DeletionTimestamp != nil {
 			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
 		owner := metav1.GetControllerOf(&pg)
-		if lws.Spec.Scheduling != nil {
-			if owner == nil ||
-				owner.APIVersion != leaderworkerset.GroupVersion.String() ||
-				owner.Kind != "LeaderWorkerSet" ||
-				owner.Name != lws.Name {
-				return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected LeaderWorkerSet %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, lws.Name, lws.UID)
-			}
-			if owner.UID == lws.UID {
-				return nil
-			}
-			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
-		}
-
 		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
 		// normal reconciliation, so fail without modifying a same-name PodGroup with an unexpected owner.
 		if owner == nil ||
@@ -194,6 +193,23 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	}
 	log.V(2).Info("Created PodGroup for LeaderWorkerSet")
 
+	return nil
+}
+
+func validateLWSOwnedPodGroup(lws *leaderworkerset.LeaderWorkerSet, pg *volcanov1beta1.PodGroup) error {
+	if pg.DeletionTimestamp != nil {
+		return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pg.Name)
+	}
+	owner := metav1.GetControllerOf(pg)
+	if owner == nil ||
+		owner.APIVersion != leaderworkerset.GroupVersion.String() ||
+		owner.Kind != "LeaderWorkerSet" ||
+		owner.Name != lws.Name {
+		return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected LeaderWorkerSet %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pg.Name, owner, lws.Name, lws.UID)
+	}
+	if owner.UID != lws.UID {
+		return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pg.Name, owner.UID, lws.UID)
+	}
 	return nil
 }
 

@@ -18,6 +18,7 @@ package schedulerprovider
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -168,6 +169,68 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestVolcanoProvider_ReconcileSchedulingExistingPodGroupOwnership(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		owner      string
+		deleting   bool
+		wantError  bool
+		unexpected bool
+	}{
+		{name: "current LWS", owner: "current"},
+		{name: "previous LWS with the same name", owner: "previous", wantError: true},
+		{name: "other controller", owner: "other", wantError: true, unexpected: true},
+		{name: "no controller", wantError: true, unexpected: true},
+		{name: "deleting current LWS PodGroup", owner: "current", deleting: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := volcanoScheduledLWS()
+			pgName := GetPodGroupName(lws.Name, "0", "rev1")
+			pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Name: pgName, Namespace: lws.Namespace}}
+			switch tc.owner {
+			case "current":
+				pg.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}
+			case "previous":
+				previous := lws.DeepCopy()
+				previous.UID = "previous-lws-uid"
+				pg.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(previous, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}
+			case "other":
+				other := lws.DeepCopy()
+				other.Name = "other-lws"
+				pg.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(other, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}
+			}
+			if tc.deleting {
+				now := metav1.Now()
+				pg.DeletionTimestamp = &now
+				pg.Finalizers = []string{"volcano.sh/test"}
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+			provider := NewVolcanoProvider(fakeClient)
+			err := provider.ReconcileScheduling(ctx, lws, 2, "rev1")
+			if !tc.wantError {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, ReasonPodGroupCreateFailed, ReconcileErrorReason(err))
+			assert.Equal(t, tc.unexpected, errors.Is(err, ErrUnexpectedPodGroupOwner))
+			var remaining volcanov1beta1.PodGroupList
+			require.NoError(t, fakeClient.List(ctx, &remaining))
+			assert.Len(t, remaining.Items, 1)
+			if tc.owner == "previous" {
+				require.NoError(t, fakeClient.Delete(ctx, pg))
+				require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "rev1"))
+				var replacement volcanov1beta1.PodGroup
+				require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &replacement))
+				require.NotNil(t, metav1.GetControllerOf(&replacement))
+				assert.Equal(t, lws.UID, metav1.GetControllerOf(&replacement).UID)
+			}
+		})
+	}
 }
 
 func TestVolcanoProvider_InjectPodGroupMetadata(t *testing.T) {
