@@ -437,8 +437,7 @@ func TestPodCtrlReconcilePodEarlyReturns(t *testing.T) {
 			pod: withPod(lwsNoRestart, func(p *corev1.Pod) {
 				delete(p.Labels, leaderworkerset.SetNameLabelKey)
 			}),
-			deletedPodRequest: true,
-			wantErrContains:   "leaderworkerset.sigs.k8s.io/name label",
+			wantErrContains: "leaderworkerset.sigs.k8s.io/name label",
 		},
 		{
 			name: "missing worker index label is a hard error",
@@ -1054,7 +1053,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objects...)
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws).WithObjects(tc.objects...)
 			if tc.listErr != nil {
 				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
 					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
@@ -1373,7 +1372,7 @@ func TestPodCtrlStatefulSetEventHandlerIgnoresForeignOwners(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			queue := podCtrlNewQueue(t)
-			statefulSetEventHandler().Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: tc.object}, queue)
+			(&PodReconciler{}).statefulSetEventHandler().Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: tc.object}, queue)
 			if got := podCtrlDrainQueue(t, queue); len(got) != 0 {
 				t.Errorf("statefulSetEventHandler() enqueued %v, want nothing", got)
 			}

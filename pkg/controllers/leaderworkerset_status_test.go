@@ -618,6 +618,13 @@ func TestUpdateStatus(t *testing.T) {
 				Reason:             "AllGroupsReady",
 				Message:            "All replicas are ready",
 				LastTransitionTime: metav1.Now(),
+			}, {
+				Type:               string(leaderworkerset.LeaderWorkerSetDegraded),
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: 1,
+				Reason:             "AsExpected",
+				Message:            "No replica has exhausted its restart budget",
+				LastTransitionTime: metav1.Now(),
 			}},
 		}
 		leaderSts := &appsv1.StatefulSet{
