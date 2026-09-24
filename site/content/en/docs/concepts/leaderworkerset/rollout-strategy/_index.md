@@ -49,6 +49,10 @@ Status indicators:
 
 ## Combined Template Update and Scale-Up
 
+This section applies only to `spec.groupIdentity: Ordinal` (the default).
+`Hash` continues to use its existing Deployment rollout budgets and group
+readiness behavior; it does not use the Ordinal combined-rollout protocol below.
+
 When a template update accompanies scale-up, or desired replicas grow during an
 ongoing rollout, the controller uses whole-group availability instead of waiting
 for a continuous Ready suffix. Ordinary scaling and rollouts retain their existing
@@ -88,9 +92,20 @@ a lower unavailable old group would expose an unaffordable Ready old higher grou
 There is no universal liveness or DaemonSet-style independent selection guarantee.
 Reservation storage is bounded; a full window waits for replacements to recover.
 
+### Invalid Persisted State
+
+The controller fails closed if its persisted combined-rollout state is invalid:
+it returns an error and does not mutate the leader StatefulSet or authorize leader
+deletion. Repeated reconciliation or controller restarts do not repair that state.
+There is currently no dedicated invalid-state status condition or automatic reset.
+Do not blindly delete the state annotation: it preserves the original baseline
+and outstanding replacement reservations, which cannot safely be inferred from
+the current replica count or Pending groups. Recovery requires investigation of
+the persisted state and its outstanding obligations.
+
 ## MaxUnavailable Feature Gate
 
-The combined controller does not require the native StatefulSet
+The Ordinal combined controller does not require the native StatefulSet
 `MaxUnavailableStatefulSet` feature gate. It uses partition fencing and
 preconditioned leader deletion without increasing the supported-cluster requirement.
 Envtest does not run the native StatefulSet controller and is not older-cluster E2E
