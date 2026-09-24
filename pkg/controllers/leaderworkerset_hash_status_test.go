@@ -781,4 +781,46 @@ func TestPruneHashGroupRestartCounts(t *testing.T) {
 	if diff := cmp.Diff(want, counts); diff != "" {
 		t.Errorf("counts after pruning (-want +got):\n%s", diff)
 	}
+
+	// During a MaxSurge=1 rollout, a gated surge replacement leader waiting to claim an unclaimed
+	// counter must not have its counter pruned even when Replicas=1 is already occupied.
+	lwsSurge := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(lwsStatusHashGroupSize).MaxSurge(1).MaxUnavailable(0).Obj()
+	lwsSurge.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	lwsSurge.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"rev-a/hash-active":1,"rev-a/hash-surge-old":2,"rev-a/hash-extra-stale":1}`,
+	}
+	gatedSurgeReplacement := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-surge-gated",
+			Namespace: lwsSurge.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lwsSurge.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-surge-new",
+				leaderworkerset.RevisionKey:         "rev-a",
+			},
+		},
+		Spec: corev1.PodSpec{
+			SchedulingGates: []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}},
+		},
+	}
+
+	reconcilerSurge, k8sClientSurge := lwsStatusNewReconciler(t, lwsSurge, activeLeader, gatedSurgeReplacement)
+	if err := reconcilerSurge.pruneHashGroupRestartCounts(ctx, lwsSurge, "rev-a"); err != nil {
+		t.Fatalf("pruneHashGroupRestartCounts(surge) unexpected error: %v", err)
+	}
+	if err := k8sClientSurge.Get(ctx, client.ObjectKeyFromObject(lwsSurge), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err = parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSurge := map[string]int32{
+		"rev-a/hash-active":    1,
+		"rev-a/hash-surge-old": 2,
+	}
+	if diff := cmp.Diff(wantSurge, counts); diff != "" {
+		t.Errorf("counts after surge pruning (-want +got):\n%s", diff)
+	}
 }

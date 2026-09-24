@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -148,6 +149,8 @@ func (r *LeaderWorkerSetReconciler) pruneHashGroupRestartCounts(ctx context.Cont
 		}
 		ownedKeys := make(map[string]struct{}, len(leaderPods.Items))
 		occupiedSlots := 0
+		currentRevisionExhausted := 0
+		currentRevisionGated := 0
 		for i := range leaderPods.Items {
 			p := &leaderPods.Items[i]
 			exhausted := p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
@@ -157,11 +160,30 @@ func (r *LeaderWorkerSetReconciler) pruneHashGroupRestartCounts(ctx context.Cont
 			if revisionutils.GetRevisionKey(p) != currentRevisionKey {
 				continue
 			}
-			if exhausted || (p.DeletionTimestamp == nil && !podutils.HasSchedulingGate(p, leaderworkerset.GroupReplacementSchedulingGate)) {
+			if exhausted {
+				occupiedSlots++
+				currentRevisionExhausted++
+				continue
+			}
+			if p.DeletionTimestamp != nil {
+				continue
+			}
+			if podutils.HasSchedulingGate(p, leaderworkerset.GroupReplacementSchedulingGate) {
+				currentRevisionGated++
+			} else {
 				occupiedSlots++
 			}
 		}
-		maxUnclaimed := max(0, int(*latest.Spec.Replicas)-occupiedSlots)
+		replicas := int(*latest.Spec.Replicas)
+		maxSurge := 0
+		if latest.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+			if surge, err := intstr.GetScaledValueFromIntOrPercent(&latest.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, replicas, true); err == nil && surge > 0 {
+				maxSurge = min(surge, replicas)
+			}
+		}
+		pendingReplacements := max(0, currentRevisionGated-currentRevisionExhausted)
+		activeSlotLimit := max(replicas, min(replicas+maxSurge, occupiedSlots+pendingReplacements))
+		maxUnclaimed := max(0, activeSlotLimit-occupiedSlots)
 		prefix := currentRevisionKey + "/"
 		var unclaimedKeys []string
 		for k := range counts {
