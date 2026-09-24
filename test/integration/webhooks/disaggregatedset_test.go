@@ -196,12 +196,10 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("volumeClaimTemplates are not supported with groupIdentity Hash"))
 	})
 
-	ginkgo.It("rejects a Hash role with maxGroupRestarts at admission", func() {
+	ginkgo.It("accepts a Hash role with maxGroupRestarts at admission", func() {
 		disagg := buildDisaggregatedSet("gi-hash-restart-budget").Obj()
 		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To(int32(1))
-		err := k8sClient.Create(ctx, disagg)
-		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("maxGroupRestarts is not supported with groupIdentity Hash"))
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
 	})
 })

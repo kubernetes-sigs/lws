@@ -248,4 +248,148 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 			return k8sClient.Get(ctx, replacementKey, &sts) == nil
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 	})
+
+	ginkgo.It("enforces maxGroupRestarts in Hash mode, holds back gated replacements, sets Degraded, and recovers on recover=true", func() {
+		ctx := context.Background()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lws-ns-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Spec.GroupReplacementPolicy = leaderworkerset.GroupReplacementImmediate
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		var deploy appsv1.Deployment
+		gomega.Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		revisionKey := deploy.Labels[leaderworkerset.RevisionKey]
+
+		ginkgo.By("creating initial hash leader and triggering its first failure within budget")
+		leader1 := makeHashLeader(lws, "hash-leader-1", revisionKey, false)
+		gomega.Expect(k8sClient.Create(ctx, leader1)).To(gomega.Succeed())
+		leader1.Status.Phase = corev1.PodRunning
+		leader1.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+		gomega.Expect(k8sClient.Status().Update(ctx, leader1)).To(gomega.Succeed())
+
+		gomega.Eventually(func() bool {
+			var pod corev1.Pod
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: leader1.Name, Namespace: leader1.Namespace}, &pod)
+			if apierrors.IsNotFound(err) {
+				return true
+			}
+			if err == nil && pod.DeletionTimestamp != nil {
+				pod.Finalizers = nil
+				_ = k8sClient.Update(ctx, &pod)
+			}
+			return false
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		ginkgo.By("admitting replacement leader2 and verifying it claims the restart count")
+		leader2 := makeHashLeader(lws, "hash-leader-2", revisionKey, true)
+		gomega.Expect(k8sClient.Create(ctx, leader2)).To(gomega.Succeed())
+		leader2Key := types.NamespacedName{Name: leader2.Name, Namespace: leader2.Namespace}
+
+		gomega.Eventually(func() bool {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader2Key, &pod); err != nil {
+				return false
+			}
+			return !podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate)
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() string {
+			var currentLWS leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &currentLWS); err != nil {
+				return ""
+			}
+			return currentLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]
+		}, testing.Timeout, testing.Interval).Should(gomega.ContainSubstring(revisionKey + "/hash-leader-2"))
+
+		ginkgo.By("triggering a second failure on leader2 to exhaust the restart budget")
+		gomega.Eventually(func() error {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader2Key, &pod); err != nil {
+				return err
+			}
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+			return k8sClient.Status().Update(ctx, &pod)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		gomega.Eventually(func() bool {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader2Key, &pod); err != nil {
+				return false
+			}
+			return pod.DeletionTimestamp != nil &&
+				pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		ginkgo.By("keeping gated replacement leader3 held back and setting Degraded=True on LWS")
+		leader3 := makeHashLeader(lws, "hash-leader-3", revisionKey, true)
+		gomega.Expect(k8sClient.Create(ctx, leader3)).To(gomega.Succeed())
+		leader3Key := types.NamespacedName{Name: leader3.Name, Namespace: leader3.Namespace}
+
+		gomega.Consistently(func() bool {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader3Key, &pod); err != nil {
+				return false
+			}
+			return podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate)
+		}, 2*time.Second, testing.Interval).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() bool {
+			var currentLWS leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &currentLWS); err != nil {
+				return false
+			}
+			for _, c := range currentLWS.Status.Conditions {
+				if c.Type == string(leaderworkerset.LeaderWorkerSetDegraded) && c.Status == metav1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		ginkgo.By("setting recover=true on retained leader2 to clear the budget and admit leader3")
+		gomega.Eventually(func() error {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader2Key, &pod); err != nil {
+				return err
+			}
+			if pod.Annotations == nil {
+				pod.Annotations = map[string]string{}
+			}
+			pod.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+			return k8sClient.Update(ctx, &pod)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		gomega.Eventually(func() bool {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader2Key, &pod); apierrors.IsNotFound(err) {
+				return true
+			} else if err != nil {
+				return false
+			}
+			for _, f := range pod.Finalizers {
+				if f == leaderworkerset.GroupRestartBudgetCleanupFinalizer {
+					return false
+				}
+			}
+			// envtest does not run the garbage collector to remove foregroundDeletion.
+			pod.Finalizers = nil
+			_ = k8sClient.Update(ctx, &pod)
+			return false
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() bool {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, leader3Key, &pod); err != nil {
+				return false
+			}
+			return !podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate)
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+	})
 })

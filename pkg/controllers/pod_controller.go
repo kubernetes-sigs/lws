@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -653,6 +654,8 @@ func (r *PodReconciler) removePodGroupRestartBudgetFinalizer(ctx context.Context
 	}
 	patch := client.MergeFrom(pod.DeepCopy())
 	controllerutil.RemoveFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+	delete(pod.Annotations, leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey)
+	delete(pod.Annotations, leaderworkerset.GroupRestartBudgetRecoverAnnotationKey)
 	return r.Patch(ctx, pod, patch)
 }
 
@@ -668,6 +671,9 @@ func (r *PodReconciler) clearGroupRestartCount(ctx context.Context, lws *leaderw
 }
 
 func (r *PodReconciler) groupLifecycleTeardownRequested(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) (bool, error) {
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return r.hashGroupLifecycleTeardownRequested(ctx, lws, leader)
+	}
 	groupIndex, err := strconv.ParseInt(leader.Labels[leaderworkerset.GroupIndexLabelKey], 10, 32)
 	if err != nil {
 		return false, fmt.Errorf("parsing group index for pod %s: %w", leader.Name, err)
@@ -691,6 +697,65 @@ func (r *PodReconciler) groupLifecycleTeardownRequested(ctx context.Context, lws
 		partition = *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition
 	}
 	return groupIndex >= int64(partition), nil
+}
+
+func (r *PodReconciler) hashGroupLifecycleTeardownRequested(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) (bool, error) {
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	} else {
+		desiredRevision := revisionutils.GetRevisionKey(&deploy)
+		if desiredRevision != "" && desiredRevision != revisionutils.GetRevisionKey(leader) {
+			return true, nil
+		}
+	}
+
+	var leaderPods corev1.PodList
+	if err := r.List(ctx, &leaderPods, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	}); err != nil {
+		return false, err
+	}
+
+	leaderRevision := revisionutils.GetRevisionKey(leader)
+	admittedActive := 0
+	var exhausted []corev1.Pod
+	for i := range leaderPods.Items {
+		p := leaderPods.Items[i]
+		if revisionutils.GetRevisionKey(&p) != leaderRevision {
+			continue
+		}
+		if p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+			exhausted = append(exhausted, p)
+			continue
+		}
+		if p.DeletionTimestamp == nil && !podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
+			admittedActive++
+		}
+	}
+	sort.Slice(exhausted, func(i, j int) bool {
+		if !exhausted[i].CreationTimestamp.Equal(&exhausted[j].CreationTimestamp) {
+			return exhausted[i].CreationTimestamp.Before(&exhausted[j].CreationTimestamp)
+		}
+		return exhausted[i].Name < exhausted[j].Name
+	})
+
+	allowedExhausted := max(0, int(*lws.Spec.Replicas)-admittedActive)
+	for i := range exhausted {
+		if exhausted[i].Name == leader.Name {
+			if i >= allowedExhausted {
+				if err := r.clearGroupRestartCount(ctx, lws, leader); err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+			return false, nil
+		}
+	}
+	return int(*lws.Spec.Replicas) <= admittedActive, nil
 }
 
 // mutateGroupRestartCounts performs a conflict-safe read-modify-write of the
@@ -739,23 +804,21 @@ const groupReplacementRequeueDelay = 10 * time.Second
 // scheduling and lifts the gate if so. Under PostTermination every group that
 // is still tearing down holds back one gated leader, oldest first, so a
 // replacement group only competes for capacity once a previous group has been
-// fully removed. A group is tearing down while any of its pods still exists
-// but its leader is terminating or already gone. Counting pods rather than
-// only the leader object matters because the leader is not always deleted
-// with foreground propagation: the pod controller uses it for group restarts,
-// but a rolling update or scale down goes through the ReplicaSet, which
-// deletes in the background, and the leader object can vanish long before
-// the worker pods release their capacity. Returns true once the gate is gone.
+// fully removed. Under Immediate, only budget-exhausted retained groups hold
+// back their gated replacement leader. Returns true once the gate is gone.
 func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
-	if lws.Spec.GroupReplacementPolicy != leaderworkerset.GroupReplacementImmediate {
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(pod.Namespace), client.MatchingLabels{
-			leaderworkerset.SetNameLabelKey: lws.Name,
-		}); err != nil {
-			return false, err
-		}
-		terminating := countTearingDownGroups(pods.Items)
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(pod.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}); err != nil {
+		return false, err
+	}
+	blockingGroups := countTearingDownGroups(pods.Items)
+	if lws.Spec.GroupReplacementPolicy == leaderworkerset.GroupReplacementImmediate {
+		blockingGroups = countExhaustedGroups(pods.Items)
+	}
+	if blockingGroups > 0 {
 		var gated []corev1.Pod
 		for _, p := range pods.Items {
 			if podutils.LeaderPod(p) && p.DeletionTimestamp == nil && podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
@@ -775,10 +838,15 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 				break
 			}
 		}
-		if rank == -1 || rank >= len(gated)-terminating {
-			log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", terminating, "gatedLeaders", len(gated))
-			r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, terminating))
+		if rank == -1 || rank >= len(gated)-blockingGroups {
+			log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", blockingGroups, "gatedLeaders", len(gated))
+			r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, blockingGroups))
 			return false, nil
+		}
+	}
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+		if err := r.claimGroupRestartCountForHashLeader(ctx, lws, pod); err != nil {
+			return false, err
 		}
 	}
 	newPod := pod.DeepCopy()
@@ -794,6 +862,67 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 	*pod = *newPod
 	r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementAdmitted, Update, fmt.Sprintf("Leader pod %s admitted for scheduling", pod.Name))
 	return true, nil
+}
+
+func (r *PodReconciler) claimGroupRestartCountForHashLeader(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod) error {
+	revisionKey := revisionutils.GetRevisionKey(leader)
+	targetKey := groupRestartCountKey(leader)
+	if revisionKey == "" || leader.Labels[leaderworkerset.GroupIndexLabelKey] == "" {
+		return nil
+	}
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		if _, exists := counts[targetKey]; exists {
+			return false, nil
+		}
+		var leaderPods corev1.PodList
+		if err := r.List(ctx, &leaderPods, client.InNamespace(leader.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		}); err != nil {
+			return false, err
+		}
+		ownedKeys := make(map[string]struct{}, len(leaderPods.Items))
+		for i := range leaderPods.Items {
+			p := &leaderPods.Items[i]
+			// A counter key remains owned while its leader is alive or while its
+			// group is retained in the budget-exhausted state.
+			if p.DeletionTimestamp == nil || p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+				ownedKeys[groupRestartCountKey(p)] = struct{}{}
+			}
+		}
+		prefix := revisionKey + "/"
+		bestKey := ""
+		var bestCount int32
+		for k, count := range counts {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			if _, owned := ownedKeys[k]; owned {
+				continue
+			}
+			if bestKey == "" || count > bestCount || (count == bestCount && k < bestKey) {
+				bestKey = k
+				bestCount = count
+			}
+		}
+		if bestKey == "" {
+			return false, nil
+		}
+		counts[targetKey] = bestCount
+		delete(counts, bestKey)
+		return true, nil
+	})
+}
+
+func countExhaustedGroups(pods []corev1.Pod) int {
+	count := 0
+	for i := range pods {
+		p := &pods[i]
+		if podutils.LeaderPod(*p) && p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+			count++
+		}
+	}
+	return count
 }
 
 // countTearingDownGroups returns the number of groups in pods whose leader is
@@ -819,7 +948,7 @@ func countTearingDownGroups(pods []corev1.Pod) int {
 			state = &groupState{}
 			groups[key] = state
 		}
-		if podutils.LeaderPod(*p) && p.DeletionTimestamp == nil {
+		if podutils.LeaderPod(*p) && p.DeletionTimestamp == nil && p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" {
 			state.leaderAlive = true
 		}
 	}
@@ -1081,6 +1210,7 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			},
 		}).
 		Watches(&appsv1.StatefulSet{}, r.statefulSetEventHandler()).
+		Watches(&appsv1.Deployment{}, handler.TypedEnqueueRequestsFromMapFunc(r.budgetFinalizedPodRequests)).
 		Watches(&leaderworkerset.LeaderWorkerSet{}, handler.TypedEnqueueRequestsFromMapFunc(r.budgetFinalizedPodRequests),
 			builder.WithPredicates(predicate.Funcs{
 				CreateFunc: func(event.CreateEvent) bool { return true },
@@ -1098,6 +1228,10 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			if statefulSet, ok := object.(*appsv1.StatefulSet); ok {
 				_, exist := statefulSet.Labels[leaderworkerset.SetNameLabelKey]
+				return exist
+			}
+			if deployment, ok := object.(*appsv1.Deployment); ok {
+				_, exist := deployment.Labels[leaderworkerset.SetNameLabelKey]
 				return exist
 			}
 			if _, ok := object.(*leaderworkerset.LeaderWorkerSet); ok {

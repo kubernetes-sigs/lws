@@ -877,7 +877,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 			errorMsg:    "volumeClaimTemplates are not supported with groupIdentity Hash",
 		},
 		{
-			name: "hash role with maxGroupRestarts is rejected",
+			name: "hash role with maxGroupRestarts is accepted",
 			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
@@ -885,8 +885,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 					MaxGroupRestarts: ptr.To(int32(1)),
 				},
 			}),
-			expectError: true,
-			errorMsg:    "maxGroupRestarts is not supported with groupIdentity Hash",
+			expectError: false,
 		},
 		{
 			name: "hash role with scheduling is accepted",

@@ -355,9 +355,6 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
 	}
-	if spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
-		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "maxGroupRestarts is not supported with groupIdentity Hash"))
-	}
 	return allErrs
 }
 

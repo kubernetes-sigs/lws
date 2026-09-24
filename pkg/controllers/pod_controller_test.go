@@ -1986,3 +1986,221 @@ func TestReconcileGroupReplacementGate(t *testing.T) {
 		})
 	}
 }
+
+func TestHashGroupRestartBudgetHandoffAndExhaustion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, policy := range []leaderworkerset.GroupReplacementPolicyType{
+		leaderworkerset.GroupReplacementPostTermination,
+		leaderworkerset.GroupReplacementImmediate,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			ctx := context.Background()
+			lws := wrappers.BuildLeaderWorkerSet("default").Name("hash-budget").Replica(1).Size(2).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+			lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+			lws.Spec.GroupReplacementPolicy = policy
+
+			makeLeader := func(name, groupHash string, gated, restarted bool) *corev1.Pod {
+				p := wrappers.MakePodWithLabels(lws.Name, groupHash, "0", lws.Namespace, 2)
+				p.Name = name
+				p.UID = types.UID("uid-" + name)
+				p.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupHash
+				p.Labels[leaderworkerset.RevisionKey] = "revision-a"
+				p.Annotations[leaderworkerset.GroupIdentityAnnotationKey] = string(leaderworkerset.GroupIdentityHash)
+				if gated {
+					p.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+				}
+				if restarted {
+					p.Status.Phase = corev1.PodRunning
+					p.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+				}
+				return p
+			}
+
+			leader1 := makeLeader("hash-budget-l1", "hash-1", false, true)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader1).Build()
+			r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+			// 1. First failure consumes budget (0 -> 1) and deletes leader1.
+			deleted, err := r.handleRestartPolicy(ctx, *leader1, *lws)
+			if err != nil {
+				t.Fatalf("handleRestartPolicy(leader1) error = %v", err)
+			}
+			if !deleted {
+				t.Fatal("expected leader1 to be deleted for group recreation")
+			}
+
+			var updatedLWS leaderworkerset.LeaderWorkerSet
+			if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+				t.Fatal(err)
+			}
+			counts, err := parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if counts["revision-a/hash-1"] != 1 {
+				t.Fatalf("counts = %#v, want revision-a/hash-1 = 1", counts)
+			}
+
+			// 2. Replacement leader2 arrives gated and claims the counter (hash-1 -> hash-2) when admitted.
+			leader2 := makeLeader("hash-budget-l2", "hash-2", true, false)
+			if err := fakeClient.Create(ctx, leader2); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := r.reconcileGroupReplacementGate(ctx, leader2, &updatedLWS)
+			if err != nil {
+				t.Fatalf("reconcileGroupReplacementGate(leader2) error = %v", err)
+			}
+			if !admitted {
+				t.Fatal("expected leader2 to be admitted")
+			}
+
+			if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+				t.Fatal(err)
+			}
+			counts, err = parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if counts["revision-a/hash-2"] != 1 {
+				t.Fatalf("counts after handoff = %#v, want revision-a/hash-2 = 1", counts)
+			}
+			if _, found := counts["revision-a/hash-1"]; found {
+				t.Fatalf("stale counter key revision-a/hash-1 was not removed: %#v", counts)
+			}
+
+			// 3. Second failure on leader2 exhausts the budget (count 1 >= limit 1).
+			leader2.Status.Phase = corev1.PodRunning
+			leader2.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			if err := fakeClient.Status().Update(ctx, leader2); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.handleRestartPolicy(ctx, *leader2, updatedLWS); err != nil {
+				t.Fatalf("handleRestartPolicy(leader2) error = %v", err)
+			}
+
+			var exhaustedLeader corev1.Pod
+			if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(leader2), &exhaustedLeader); err != nil {
+				t.Fatalf("expected exhausted leader2 to be retained by finalizer: %v", err)
+			}
+			if exhaustedLeader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" {
+				t.Fatal("expected leader2 to be marked group-restart-budget-exhausted=true")
+			}
+			if !controllerutil.ContainsFinalizer(&exhaustedLeader, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+				t.Fatal("expected leader2 to carry group-restart-budget-cleanup finalizer")
+			}
+
+			// 4. ReplicaSet creates gated replacement leader3; it must be held back under both PostTermination and Immediate.
+			leader3 := makeLeader("hash-budget-l3", "hash-3", true, false)
+			if err := fakeClient.Create(ctx, leader3); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err = r.reconcileGroupReplacementGate(ctx, leader3, &updatedLWS)
+			if err != nil {
+				t.Fatalf("reconcileGroupReplacementGate(leader3) error = %v", err)
+			}
+			if admitted {
+				t.Fatalf("expected leader3 to remain gated while leader2 is budget-exhausted under policy %s", policy)
+			}
+
+			// 5. Operator sets recover=true on retained leader2; counter is cleared, finalizer removed, and leader3 is admitted with count 0.
+			exhaustedLeader.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+			if err := fakeClient.Update(ctx, &exhaustedLeader); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.reconcilePod(ctx, podReconcileRequestForPod(&exhaustedLeader, false)); err != nil {
+				t.Fatalf("reconcilePod(recover leader2) error = %v", err)
+			}
+			if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+				t.Fatal(err)
+			}
+			counts, err = parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(counts) != 0 {
+				t.Fatalf("expected counts to be cleared after recover=true, got %#v", counts)
+			}
+
+			if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(leader3), leader3); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err = r.reconcileGroupReplacementGate(ctx, leader3, &updatedLWS)
+			if err != nil {
+				t.Fatalf("reconcileGroupReplacementGate(leader3 after recovery) error = %v", err)
+			}
+			if !admitted {
+				t.Fatal("expected leader3 to be admitted after leader2 recovery")
+			}
+		})
+	}
+}
+
+func TestHashGroupLifecycleTeardownRequested(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	lws := wrappers.BuildLeaderWorkerSet("default").Name("hash-teardown").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/hash-exhausted":1}`,
+	}
+
+	activeLeader := wrappers.MakePodWithLabels(lws.Name, "hash-active", "0", lws.Namespace, 2)
+	activeLeader.Name = "hash-teardown-active"
+	activeLeader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+
+	exhaustedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-exhausted", "0", lws.Namespace, 2)
+	exhaustedLeader.Name = "hash-teardown-exhausted"
+	exhaustedLeader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	exhaustedLeader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name,
+			Namespace: lws.Namespace,
+			Labels:    map[string]string{leaderworkerset.RevisionKey: "revision-a"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, deploy, activeLeader, exhaustedLeader).Build()
+	r := &PodReconciler{Client: fakeClient}
+
+	// Because replicas=1 and activeLeader already occupies the 1 slot, exhaustedLeader is scaled down.
+	teardown, err := r.groupLifecycleTeardownRequested(ctx, lws, exhaustedLeader)
+	if err != nil {
+		t.Fatalf("groupLifecycleTeardownRequested() error = %v", err)
+	}
+	if !teardown {
+		t.Fatal("expected scaled-down hash exhausted group to request teardown")
+	}
+
+	var updatedLWS leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]; got != "" {
+		t.Fatalf("expected scaled-down hash group restart count to be cleared, got %q", got)
+	}
+}
