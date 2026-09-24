@@ -18,10 +18,10 @@ package webhooks
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -78,12 +78,13 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 		t.Errorf("expected UniquePerReplica subdomain policy to be accepted with groupIdentity Hash: %v", err)
 	}
 
+	// Workload-aware scheduling is supported with hash-named groups: the
+	// per-replica PodGroups are materialized from the group key that admission
+	// draws for every leader pod.
 	scheduled := hashLws("scheduled")
 	scheduled.Spec.Scheduling = &v1.LeaderWorkerSetScheduling{}
-	if _, err := webhook.ValidateCreate(context.TODO(), scheduled); err == nil {
-		t.Error("expected scheduling to be rejected with groupIdentity Hash")
-	} else if !strings.Contains(err.Error(), "is not supported with groupIdentity Hash") {
-		t.Errorf("expected hash+scheduling error, got: %v", err)
+	if errs := ValidateGroupIdentity(field.NewPath("spec"), &scheduled.Spec); len(errs) > 0 {
+		t.Errorf("expected scheduling to be accepted with groupIdentity Hash: %v", errs)
 	}
 }
 

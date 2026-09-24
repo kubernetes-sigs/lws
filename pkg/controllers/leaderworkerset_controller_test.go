@@ -1489,7 +1489,7 @@ func TestCleanupObsoleteGroupRestartCounts(t *testing.T) {
 	}
 }
 
-func TestSetConditionsAppliesEveryCondition(t *testing.T) {
+func TestSetConditionsAppliesMixedStatusConditions(t *testing.T) {
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Generation(1).Obj()
 	conditions := []metav1.Condition{
 		makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery stopped"),

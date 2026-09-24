@@ -182,8 +182,8 @@ disagree on membership, but both destinations have identical runtime configurati
 This affects only temporary request distribution.
 
 **Service-only clients cannot select a sub-role.** This proposal does not add
-sub-role-specific Services. Routers use the controller-managed Pod label; the existing
-parent-role `-prv` Services remain unchanged while they are deprecated.
+sub-role-specific Services. Routers use the controller-managed Pod label; the
+DisaggregatedSet no longer creates any Service of its own.
 
 ## Design Details
 
@@ -392,13 +392,13 @@ the broad decode pool or restarting llm-d. Existing requests may finish while ne
 requests observe the new label; no protocol-specific drain is required because the
 runtime configuration is identical.
 
-This proposal does not create sub-role-specific Services or change Service lifecycle.
-The existing parent-role `-prv` Service continues to select all groups in its parent
-role while that Service API is deprecated. Native llm-d routing watches Ready Pods and
-performs revision gating directly, as introduced by
-[llm-d-router PR 2141](https://github.com/llm-d/llm-d-router/pull/2141), so it does not
-depend on the `-prv` Service. Consumers that need sub-role routing must use Pod discovery
-and the sub-role label.
+This proposal does not create any Services. The parent-role `-prv` Services were
+removed from DisaggregatedSet (see
+[KEP-766](/keps/766-DisaggregatedSet#service-orchestration)). Native llm-d routing
+watches Ready Pods and performs revision gating directly, as introduced by
+[llm-d-router PR 2141](https://github.com/llm-d/llm-d-router/pull/2141), so it never
+depended on them. Consumers that need sub-role routing use Pod discovery and the
+sub-role label.
 
 ### Status, Slices, and Compatibility
 
@@ -410,9 +410,8 @@ Static sub-role replicas retain the existing per-slice meaning. Alpha rejects
 `spec.slices > 1` when any sub-role is External, following KEP-849. Assignment identity
 already includes the slice, allowing a later KEP to add aggregate or per-slice scaling.
 
-Omitting `subRoles` preserves existing names, labels, scaling, and status. Existing
-parent `-prv` Services keep their names, selectors, and lifecycle. Adding sub-roles does
-not create any additional Services or change the broad parent Service.
+Omitting `subRoles` preserves existing names, labels, scaling, and status. Adding
+sub-roles does not create any Services.
 Enabling it labels existing groups in place and does not change the revision hash.
 Disabling it removes the dynamic labels and returns replica ownership to the parent.
 Changing the minimum parent-role count from two to one is a backward-compatible schema
@@ -439,8 +438,6 @@ existing tests to make this code solid enough prior to implementation.
 - Pod recreation restores assignment; scale-down preserves the requested distribution.
 - Template rollout preserves sub-role availability and parent capacity limits.
 - llm-d observes label changes and filters subsequent endpoint candidates.
-- Existing parent `-prv` Services remain unchanged and no sub-role-specific Services are
-  created.
 - Static multi-slice behavior works; External multi-slice objects are rejected in alpha.
 
 ### Graduation Criteria

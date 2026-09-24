@@ -60,6 +60,10 @@ function cleanup {
             $KUBECTL logs -n volcano-system deployment/volcano-controllers > "$ARTIFACTS"/volcano-controller-manager.log || true
             $KUBECTL describe pods -n volcano-system > "$ARTIFACTS"/volcano-system-pods.log || true
         fi
+        if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
+            $KUBECTL get workloads.scheduling.k8s.io,podgroups.scheduling.k8s.io,pods -A -o yaml > "$ARTIFACTS"/was-objects.yaml || true
+            $KUBECTL get events -A --sort-by=.lastTimestamp > "$ARTIFACTS"/events.log || true
+        fi
 
         if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
             $KUBECTL get events -A --sort-by=.lastTimestamp > "$ARTIFACTS"/events.log 2>&1 || true
@@ -96,12 +100,16 @@ function startup {
             mkdir -p "$ARTIFACTS"
         fi
 
-        if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
+        if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || { [ "$SCHEDULER_PROVIDER" == "kubernetes" ] && [ -z "${KUBECONFIG:-}" ]; }; then
             KUBECONFIG_PATH="$(mktemp)"
             export KUBECONFIG="$KUBECONFIG_PATH"
         fi
 
-        $KIND create cluster --name $KIND_CLUSTER_NAME --image $E2E_KIND_VERSION --wait 1m
+        local kind_args=()
+        if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
+            kind_args+=(--kubeconfig "$KUBECONFIG" --config "${KIND_CONFIG:-$CWD/test/e2e/config/kind-was.yaml}")
+        fi
+        $KIND create cluster --name $KIND_CLUSTER_NAME --image $E2E_KIND_VERSION --wait 1m "${kind_args[@]}"
         $KUBECTL get nodes > $ARTIFACTS/kind-nodes.log || true
         $KUBECTL describe pods -n kube-system > $ARTIFACTS/kube-system-pods.log || true
     fi
@@ -273,6 +281,11 @@ internalCertManagement:
 gangSchedulingManagement:
   schedulerProvider: $SCHEDULER_PROVIDER"
     fi
+    if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
+        config_content="$config_content
+featureGates:
+  WorkloadAwareScheduling: true"
+    fi
     echo "$config_content" > controller_manager_config.yaml
     popd
     # Add Volcano clusterrole permissions
@@ -313,9 +326,11 @@ function run_tests() {
         return
     fi
 
-    if [ -n "$SCHEDULER_PROVIDER" ]; then
+    if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
+        $GINKGO --junit-report=junit.xml --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=WorkloadAwareScheduling "$CWD/test/e2e"
+    elif [ -n "$SCHEDULER_PROVIDER" ]; then
         # Run gang scheduling tests
-        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --focus="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
+        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --label-filter='!WorkloadAwareScheduling' --focus="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
     else
         # Run normal tests, skip gang scheduling tests
         $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...

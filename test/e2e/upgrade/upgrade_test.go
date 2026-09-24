@@ -34,7 +34,6 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	testutils "sigs.k8s.io/lws/test/testutils"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -95,7 +94,6 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 				g.Expect(err).NotTo(gomega.HaveOccurred())
 				g.Expect(current).To(gomega.Equal(expected))
 			}, 30*time.Second, time.Second).Should(gomega.Succeed())
-			expectServicesOwnedByLeaderWorkerSets()
 			createNewWorkloads()
 		}
 	})
@@ -250,16 +248,6 @@ func waitForDisaggregatedSet(name string) {
 			}
 		}
 
-		services := &corev1.ServiceList{}
-		if err := k8sClient.List(ctx, services,
-			client.InNamespace(testNamespace),
-			client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: name},
-		); err != nil {
-			return err
-		}
-		if len(services.Items) != 2 {
-			return fmt.Errorf("expected 2 DisaggregatedSet services, got %d", len(services.Items))
-		}
 		return nil
 	}, 3*time.Minute, time.Second).Should(gomega.Succeed())
 }
@@ -323,9 +311,10 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	}, nil
 }
 
-// generatedServiceSnapshots records the identity of the DisaggregatedSet's private
-// Services. Their UIDs surviving the upgrade is what proves they were migrated to
-// their LWS owner in place instead of being deleted and recreated.
+// generatedServiceSnapshots records the identity of the per-revision Services the
+// old controller created. The upgraded controller no longer creates or manages
+// these, and must not touch the ones already in the cluster: their names and UIDs
+// surviving the upgrade is what proves they were left alone.
 func generatedServiceSnapshots() ([]serviceSnapshot, error) {
 	services, err := listDisaggregatedSetServices()
 	if err != nil {
@@ -353,29 +342,6 @@ func listDisaggregatedSetServices() (*corev1.ServiceList, error) {
 		return nil, fmt.Errorf("expected 2 DisaggregatedSet services, got %d", len(services.Items))
 	}
 	return services, nil
-}
-
-// expectServicesOwnedByLeaderWorkerSets verifies the upgraded controller moved each
-// private Service from the DisaggregatedSet to its LeaderWorkerSet, so Kubernetes GC
-// removes it with the LWS.
-func expectServicesOwnedByLeaderWorkerSets() {
-	ginkgo.By("verifying the private Services are now owned by their LeaderWorkerSet")
-	gomega.Eventually(func(g gomega.Gomega) {
-		services, err := listDisaggregatedSetServices()
-		g.Expect(err).NotTo(gomega.HaveOccurred())
-		for _, service := range services.Items {
-			owner := metav1.GetControllerOf(&service)
-			g.Expect(owner).NotTo(gomega.BeNil(), "service %s has no controller owner", service.Name)
-			g.Expect(owner.APIVersion).To(gomega.Equal(leaderworkersetv1.GroupVersion.String()), "service %s owner", service.Name)
-			g.Expect(owner.Kind).To(gomega.Equal("LeaderWorkerSet"), "service %s owner", service.Name)
-			g.Expect(owner.BlockOwnerDeletion).To(gomega.HaveValue(gomega.BeTrue()), "service %s owner", service.Name)
-			g.Expect(service.Name).To(gomega.Equal(disaggregatedsetutils.PrivateServiceName(owner.Name)))
-
-			lws := &leaderworkersetv1.LeaderWorkerSet{}
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: owner.Name, Namespace: service.Namespace}, lws)).To(gomega.Succeed())
-			g.Expect(owner.UID).To(gomega.Equal(lws.UID), "service %s owner", service.Name)
-		}
-	}, 2*time.Minute, time.Second).Should(gomega.Succeed())
 }
 
 func workloadPodSnapshots() ([]podSnapshot, error) {

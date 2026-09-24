@@ -202,27 +202,20 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 
-	// Nothing of the group exists while its leader is gated: no worker
-	// statefulset, no per-replica service, no pod group. The requeue is a
-	// fallback for the leader deletion watch in SetupWithManager.
-	if podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate) {
-		admitted, err := r.reconcileGroupReplacementGate(ctx, &pod, &leaderWorkerSet)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !admitted {
-			return ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, nil
-		}
-	}
-
 	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		// The per-replica service is named after the leader's subdomain: the pod
-		// name in ordinal mode, a group key derived name in hash mode.
+		// name in ordinal mode, a group key derived name in hash mode. A stale or
+		// terminating service short-circuits the rest of the reconcile, so no
+		// group resources are created until the network identity is usable.
 		if err := controllerutils.CreateHeadlessServiceIfNotExists(ctx, r.Client, r.Scheme, &leaderWorkerSet, pod.Spec.Subdomain, map[string]string{leaderworkerset.SetNameLabelKey: leaderWorkerSet.Name, leaderworkerset.GroupIndexLabelKey: pod.Labels[leaderworkerset.GroupIndexLabelKey]}, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
+	// The leaf PodGroup has to exist before any member pod can be scheduled.
+	// With groupIdentity Hash the group key is only known once admission has
+	// stamped this leader pod, so its PodGroups are created here, ahead of the
+	// gate that keeps the leader unschedulable.
 	if r.SchedulerProvider != nil {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
@@ -232,6 +225,20 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			// Return transient errors too, so controller-runtime retries with backoff
 			// if garbage collection is delayed or blocked by a finalizer.
 			return ctrl.Result{}, err
+		}
+	}
+
+	// While the leader is gated, only the group's scheduling prerequisites exist:
+	// the per-replica service and the leaf PodGroup are in place before the gate
+	// is lifted, but the worker statefulset waits for the group to be admitted.
+	// The requeue is a fallback for the leader deletion watch in SetupWithManager.
+	if podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate) {
+		admitted, err := r.reconcileGroupReplacementGate(ctx, &pod, &leaderWorkerSet)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !admitted {
+			return ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, nil
 		}
 	}
 
@@ -441,9 +448,15 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	leader = freshLeader
 	var freshLWS leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, client.ObjectKeyFromObject(&leaderWorkerSet), &freshLWS); err != nil {
-		return false, client.IgnoreNotFound(err)
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		// The LWS disappeared after the caller read it; budget enforcement is
+		// moot while the workload is being torn down, so fall back to the
+		// caller's copy.
+	} else {
+		leaderWorkerSet = freshLWS
 	}
-	leaderWorkerSet = freshLWS
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, nil

@@ -889,14 +889,13 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 			errorMsg:    "maxGroupRestarts is not supported with groupIdentity Hash",
 		},
 		{
-			name: "hash role with scheduling is rejected",
+			name: "hash role with scheduling is accepted",
 			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 				Scheduling:    &leaderworkerset.LeaderWorkerSetScheduling{},
 			}),
-			expectError: true,
-			errorMsg:    "is not supported with groupIdentity Hash",
+			expectError: false,
 		},
 		{
 			name: "ordinal role with subGroupPolicy is accepted",

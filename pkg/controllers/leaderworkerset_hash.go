@@ -79,6 +79,16 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
+	// Scheduling prerequisites come before the leader Deployment so a leader pod
+	// is never created before its Workload exists. Per-replica PodGroups cannot
+	// be enumerated here because admission draws the group key of every leader
+	// pod; the pod controller materializes them while the leader is still
+	// scheduling gated.
+	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
+		return ctrl.Result{}, err
+	}
+
 	if err := r.SSAWithDeployment(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
 		if deploy == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader deployment %s: %v", lws.Name, err))

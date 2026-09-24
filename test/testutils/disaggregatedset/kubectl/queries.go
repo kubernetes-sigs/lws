@@ -70,30 +70,6 @@ func RunningPods(deploymentName string) *Builder {
 	return Pods(deploymentName).FieldSelector("status.phase=Running")
 }
 
-// --- Service Queries ---
-
-// Service returns a builder for querying services by deployment name.
-func Service(deploymentName string) *Builder {
-	return Get("svc").Label(labelName, deploymentName).Namespace(defaultNS)
-}
-
-// ServiceByRole returns a builder for querying services by deployment and role.
-func ServiceByRole(deploymentName, role string) *Builder {
-	return Service(deploymentName).Label(labelRole, role)
-}
-
-// --- EndpointSlice Queries ---
-
-// EndpointSlice returns a builder for querying endpoint slices by deployment.
-func EndpointSlice(deploymentName string) *Builder {
-	return Get("endpointslice").Label(labelName, deploymentName).Namespace(defaultNS)
-}
-
-// EndpointSliceByRole returns a builder for querying endpoint slices by deployment and role.
-func EndpointSliceByRole(deploymentName, role string) *Builder {
-	return EndpointSlice(deploymentName).Label(labelRole, role)
-}
-
 // --- Counting Helpers ---
 
 // CountPods returns the number of pods for a deployment.
@@ -135,18 +111,6 @@ func CountLWS(deploymentName string) (int, error) {
 // CountLWSByRole returns the number of LWS for a deployment and role.
 func CountLWSByRole(deploymentName, role string) (int, error) {
 	output, err := LWSByRole(deploymentName, role).
-		Output("name").
-		RequestTimeout("30s").
-		RunQuiet()
-	if err != nil {
-		return 0, err
-	}
-	return len(GetNonEmptyLines(output)), nil
-}
-
-// CountService returns the number of services for a deployment.
-func CountService(deploymentName string) (int, error) {
-	output, err := Service(deploymentName).
 		Output("name").
 		RequestTimeout("30s").
 		RunQuiet()

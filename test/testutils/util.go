@@ -351,6 +351,8 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		return k8sClient.Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 
+	deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
+
 	gomega.Eventually(func() error {
 		var leaderPod corev1.Pod
 		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &leaderPod); err != nil {
@@ -358,12 +360,20 @@ func SetLeaderPodToReady(ctx context.Context, k8sClient client.Client, podName s
 		}
 
 		leaderPod.Status.Phase = corev1.PodRunning
-		condition := corev1.PodCondition{
-			Type:   corev1.PodReady,
-			Status: corev1.ConditionTrue,
+		found := false
+		for i, c := range leaderPod.Status.Conditions {
+			if c.Type == corev1.PodReady {
+				leaderPod.Status.Conditions[i].Status = corev1.ConditionTrue
+				found = true
+				break
+			}
 		}
-		leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, condition)
-		deleteWorkerStatefulSetIfExists(ctx, k8sClient, podName, lws)
+		if !found {
+			leaderPod.Status.Conditions = append(leaderPod.Status.Conditions, corev1.PodCondition{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionTrue,
+			})
+		}
 		return k8sClient.Status().Update(ctx, &leaderPod)
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
@@ -393,10 +403,20 @@ func SetPodToPending(ctx context.Context, k8sClient client.Client, podName strin
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)
+	var leaderSts appsv1.StatefulSet
+	gomega.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts)).To(gomega.Succeed())
+	expectedRevision := revisionutils.GetRevisionKey(&leaderSts)
+
 	gomega.Eventually(func() error {
 		var sts appsv1.StatefulSet
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
 			return err
+		}
+		if sts.DeletionTimestamp != nil {
+			return fmt.Errorf("worker statefulset %s is being deleted", statefulsetName)
+		}
+		if expectedRevision != "" && revisionutils.GetRevisionKey(&sts) != expectedRevision {
+			return fmt.Errorf("worker statefulset %s has revision %s, waiting for revision %s", statefulsetName, revisionutils.GetRevisionKey(&sts), expectedRevision)
 		}
 
 		sts.Status.ReadyReplicas = *sts.Spec.Replicas
@@ -757,16 +777,21 @@ func SetLeaderPodsToReady(ctx context.Context, k8sClient client.Client, lws *lea
 
 func deleteWorkerStatefulSetIfExists(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	// in cases where size = 1, the workerstatefulset does not exist
-	gomega.Eventually(func() error {
-		var sts appsv1.StatefulSet
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
-			if client.IgnoreNotFound(err) != nil {
-				return err
-			}
-			return nil
-		}
-		return k8sClient.Delete(ctx, &sts)
-	}, Timeout, Interval).Should(gomega.Succeed())
+	var leaderSts appsv1.StatefulSet
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: lws.Name}, &leaderSts); err != nil {
+		return
+	}
+	expectedRevision := revisionutils.GetRevisionKey(&leaderSts)
+
+	var sts appsv1.StatefulSet
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: statefulsetName, Namespace: lws.Namespace}, &sts); err != nil {
+		return
+	}
+	if sts.DeletionTimestamp != nil || (expectedRevision != "" && revisionutils.GetRevisionKey(&sts) == expectedRevision) {
+		return
+	}
+
+	_ = k8sClient.Delete(ctx, &sts)
 }
 
 func DeleteLWSWithForground(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet) {
