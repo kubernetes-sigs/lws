@@ -49,7 +49,7 @@ func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	}
 }
 
-// ReconcileScheduling pre-creates LWS-owned PodGroups for spec.scheduling.
+// ReconcileScheduling manages LWS-owned PodGroups for spec.scheduling.
 func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
@@ -72,7 +72,7 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 	// CreatePodGroupIfNotExists creates the LWS-owned PodGroup when the leader pod
 	// is reconciled, before its scheduling gate is lifted.
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
-		return nil
+		return v.cleanupUnusedHashPodGroups(ctx, lws)
 	}
 	minResources := utils.CalculatePGMinResources(lws)
 	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
@@ -101,6 +101,42 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 		}
 		if err := v.client.Create(ctx, pg); err != nil && !apierrors.IsAlreadyExists(err) {
 			return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("create Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
+		}
+	}
+	return nil
+}
+
+func (v *VolcanoProvider) cleanupUnusedHashPodGroups(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	var groups volcanov1beta1.PodGroupList
+	if err := v.client.List(ctx, &groups, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}); err != nil {
+		return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("list Volcano PodGroups: %w", err))
+	}
+	var pods corev1.PodList
+	if err := v.client.List(ctx, &pods, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+	}); err != nil {
+		return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("list Pods before Volcano PodGroup cleanup: %w", err))
+	}
+	inUse := make(map[string]bool, len(pods.Items))
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if name := pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]; name != "" {
+			inUse[name] = true
+		}
+		groupIndex, revision := pod.Labels[leaderworkerset.GroupIndexLabelKey], pod.Labels[leaderworkerset.RevisionKey]
+		if groupIndex != "" && revision != "" {
+			inUse[GetPodGroupName(lws.Name, groupIndex, revision)] = true
+		}
+	}
+	for i := range groups.Items {
+		group := &groups.Items[i]
+		if !metav1.IsControlledBy(group, lws) || inUse[group.Name] || group.DeletionTimestamp != nil {
+			continue
+		}
+		if err := v.client.Delete(ctx, group); err != nil && !apierrors.IsNotFound(err) {
+			return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("delete unused Volcano PodGroup %s/%s: %w", group.Namespace, group.Name, err))
 		}
 	}
 	return nil

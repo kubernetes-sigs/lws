@@ -37,11 +37,13 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -318,7 +320,25 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.Workload{}).
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
+	if _, ok := r.SchedulerProvider.(*schedulerprovider.VolcanoProvider); ok {
+		builder = builder.Watches(&corev1.Pod{}, volcanoPodDeleteHandler())
+	}
 	return builder.Complete(r)
+}
+
+func volcanoPodDeleteHandler() handler.TypedEventHandler[client.Object, reconcile.Request] {
+	return handler.TypedFuncs[client.Object, reconcile.Request]{
+		DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			pod, ok := e.Object.(*corev1.Pod)
+			if !ok || pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] != string(leaderworkerset.GroupIdentityHash) ||
+				pod.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey] == "" {
+				return
+			}
+			for _, req := range enqueueLWSRequests(ctx, pod) {
+				q.Add(req)
+			}
+		},
+	}
 }
 
 func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Request {

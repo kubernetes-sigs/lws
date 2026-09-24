@@ -101,6 +101,7 @@ files:
               - podgroups
             verbs:
               - create
+              - delete
               - get
               - list
               - watch

@@ -30,12 +30,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -48,6 +51,35 @@ import (
 // lwsSchedConditionType is the condition failWorkloadScheduling and
 // updateWorkloadSchedulingCondition manage.
 const lwsSchedConditionType = string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated)
+
+func TestVolcanoHashPodDeletionEnqueuesLWS(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer queue.ShutDown()
+	handler := volcanoPodDeleteHandler()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "leader", Namespace: "default",
+		Labels: map[string]string{leaderworkerset.SetNameLabelKey: "example"},
+		Annotations: map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey:        string(leaderworkerset.GroupIdentityHash),
+			schedulerprovider.WorkloadSchedulingAnnotationKey: "replica",
+		},
+	}}
+	handler.Delete(context.Background(), event.TypedDeleteEvent[client.Object]{Object: pod}, queue)
+	if queue.Len() != 1 {
+		t.Fatalf("expected one LWS reconcile request, got %d", queue.Len())
+	}
+	got, _ := queue.Get()
+	queue.Done(got)
+	want := reconcile.Request{NamespacedName: types.NamespacedName{Name: "example", Namespace: "default"}}
+	if got != want {
+		t.Errorf("request = %v, want %v", got, want)
+	}
+	pod.Annotations = nil
+	handler.Delete(context.Background(), event.TypedDeleteEvent[client.Object]{Object: pod}, queue)
+	if queue.Len() != 0 {
+		t.Errorf("legacy pod deletion unexpectedly enqueued an LWS request")
+	}
+}
 
 // lwsSchedNewReconciler builds a reconciler backed by a fake client seeded with lws.
 // The returned recorder captures the events the reconciler emits.

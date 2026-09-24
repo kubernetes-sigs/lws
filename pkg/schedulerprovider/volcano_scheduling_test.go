@@ -18,16 +18,21 @@ package schedulerprovider
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -168,6 +173,107 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestVolcanoProviderHashCleanupAfterScaleDown(t *testing.T) {
+	ctx := context.Background()
+	lws := volcanoScheduledLWS()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+	provider := NewVolcanoProvider(fakeClient)
+
+	leaders := []*corev1.Pod{
+		createTestLeaderPod("leader-a", lws.Namespace, lws.Name, "hash-a", "rev1"),
+		createTestLeaderPod("leader-b", lws.Namespace, lws.Name, "hash-b", "rev1"),
+	}
+	for _, leader := range leaders {
+		leader.Labels[leaderworkerset.WorkerIndexLabelKey] = "0"
+		require.NoError(t, fakeClient.Create(ctx, leader))
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	}
+	worker := createTestLeaderPod("worker-a", lws.Namespace, lws.Name, "hash-a", "rev1")
+	worker.Labels[leaderworkerset.WorkerIndexLabelKey] = "1"
+	require.NoError(t, fakeClient.Create(ctx, worker))
+
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "rev1"))
+	for _, leader := range leaders {
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+			Name: leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey], Namespace: lws.Namespace,
+		}, &volcanov1beta1.PodGroup{}))
+		require.NoError(t, fakeClient.Delete(ctx, leader))
+	}
+	*lws.Spec.Replicas = 0
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 0, "rev1"))
+	groups := &volcanov1beta1.PodGroupList{}
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	require.Len(t, groups.Items, 1, "the group with a worker must survive leader deletion")
+	assert.Equal(t, "hash-a", groups.Items[0].Labels[leaderworkerset.GroupIndexLabelKey])
+
+	require.NoError(t, fakeClient.Delete(ctx, worker))
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 0, "rev1"))
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	assert.Empty(t, groups.Items, "no old PodGroups should remain after scale-down")
+
+	for i := range 4 {
+		leader := createTestLeaderPod(
+			fmt.Sprintf("new-leader-%d", i), lws.Namespace, lws.Name, fmt.Sprintf("new-hash-%d", i), "rev1")
+		require.NoError(t, fakeClient.Create(ctx, leader))
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	}
+	*lws.Spec.Replicas = 4
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 4, "rev1"))
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	assert.Len(t, groups.Items, 4, "only PodGroups for the new leaders should remain")
+}
+
+func TestVolcanoProviderHashCleanupOnlyDeletesOwnedPodGroups(t *testing.T) {
+	ctx := context.Background()
+	lws := volcanoScheduledLWS()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	oldOwner := lws.DeepCopy()
+	oldOwner.UID = types.UID("previous-lws")
+	leader := createTestLeaderPod("legacy-leader", lws.Namespace, lws.Name, "legacy", "rev1")
+	groups := []*volcanov1beta1.PodGroup{
+		{ObjectMeta: metav1.ObjectMeta{Name: "owned", Namespace: lws.Namespace,
+			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "previous", Namespace: lws.Namespace,
+			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(oldOwner, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: lws.Namespace,
+			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(groups[0], groups[1], groups[2]).Build()
+	require.NoError(t, NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 0, "rev1"))
+	for i, group := range groups {
+		err := fakeClient.Get(ctx, types.NamespacedName{Name: group.Name, Namespace: lws.Namespace}, &volcanov1beta1.PodGroup{})
+		if i == 0 {
+			assert.True(t, apierrors.IsNotFound(err), "expected owned group to be deleted, got %v", err)
+		} else {
+			require.NoError(t, err, "foreign and legacy PodGroups must remain untouched")
+		}
+	}
+}
+
+func TestVolcanoProviderHashCleanupReportsDeleteFailure(t *testing.T) {
+	ctx := context.Background()
+	lws := volcanoScheduledLWS()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	group := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+		Name: "stale", Namespace: lws.Namespace,
+		Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+	}}
+	deleteErr := errors.New("delete failed")
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+			return deleteErr
+		},
+	}).Build()
+	err := NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 0, "rev1")
+	require.ErrorIs(t, err, deleteErr)
+	assert.Equal(t, ReasonPodGroupCleanupBlocked, ReconcileErrorReason(err))
 }
 
 func TestVolcanoProvider_InjectPodGroupMetadata(t *testing.T) {
