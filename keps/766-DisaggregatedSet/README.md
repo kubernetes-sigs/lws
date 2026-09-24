@@ -164,6 +164,8 @@ type LeaderWorkerSetTemplateSpec struct {
 
 During a rolling update, the controller replaces one set of role replicas with another. The replicas being replaced form the old side. The replacement replicas form the new side. Each role is one dimension. The old side shrinks to zero while the new side grows to its target.
 
+When no old revision is serving, the controller reconciles the current revision directly. This does not imply that the workloads are already stable or Ready: the controller may still need to create or scale their LWS objects.
+
 Each managed LWS stores an `initial-replicas` annotation. The annotation records the baseline used by the controller if that revision becomes old. The revision selected by the current DisaggregatedSet template is the target revision. Replica-only changes and external-scaler changes keep its annotation aligned with its target replica count. After that revision's rollout completes, the annotation matches its replica count. That value becomes `initialOld` when a later rollout starts. If a new revision interrupts the rollout before completion, the annotation instead preserves the interrupted revision's intended replica count: the number of replicas it would have reached if its rollout had completed.
 
 Suppose a rollout from revision A to revision B is interrupted by revision C. Both A and B are old while C rolls out. B was created to replace A, so their `initial-replicas` values describe the same role capacity. For each role, `initialOld` is the larger value from A and B, rather than their sum.

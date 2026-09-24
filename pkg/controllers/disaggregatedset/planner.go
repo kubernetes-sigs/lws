@@ -492,7 +492,7 @@ func calculateReplicaChanges(
 		unclampedAvailabilityFloor := min(initialOld[i], targetNew[i]) - projectedUnavailableBudget
 		availabilityFloor := max(0, unclampedAvailabilityFloor)
 		if config[i].MaxSurge == 0 && config[i].MaxUnavailable == 0 {
-			// Without either budget, the steady-state ceiling leaves no room
+			// Without either budget, the zero-budget surge ceiling leaves no room
 			// for a replacement. Add one provisional slot to the Spec proposal;
 			// ComputeNextStep still applies the hard limits before returning it.
 			surgeCeiling++

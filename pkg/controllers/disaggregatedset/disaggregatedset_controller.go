@@ -74,7 +74,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// 1. Compute the target revision from the current spec.
 	// 2. Clean up fully-drained old revisions (all roles at 0 replicas).
 	// 3. Reconcile LWS objects — either a rolling update (if old revisions with
-	//    replicas exist) or steady-state reconciliation of the target revision.
+	//    replicas exist) or direct reconciliation of the current revision.
 
 	// Step 1: Compute the target revision hash from the spec's role templates.
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
@@ -383,9 +383,9 @@ func (r *DisaggregatedSetReconciler) updateScalerStatus(
 	return r.ScalerManager.WriteStatus(ctx, ds, scalers, observed)
 }
 
-// reconcileSlice reconciles a single slice independently: it rolls the slice's LWS
-// to the target revision (or reconciles their steady state when no old revision is
-// serving).
+// reconcileSlice reconciles a single slice independently: it rolls the slice's
+// LWS to the target revision, or reconciles the current revision directly when
+// no old revision is serving.
 func (r *DisaggregatedSetReconciler) reconcileSlice(
 	ctx context.Context,
 	executor *RollingUpdateExecutor,
@@ -416,7 +416,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 			}
 		}
 	} else {
-		result, err = r.reconcileSteadyState(ctx, disaggregatedSet, slice, revision, desiredReplicasByRole)
+		result, err = r.reconcileCurrentRevision(ctx, disaggregatedSet, slice, revision, desiredReplicasByRole)
 		if err != nil {
 			return result, err
 		}
@@ -462,11 +462,11 @@ func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdat
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileSteadyState(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
-		if err := r.reconcileSteadyStateRole(ctx, disaggregatedSet, slice, role, config, revision, desiredReplicasByRole); err != nil {
+		if err := r.reconcileCurrentRevisionRole(ctx, disaggregatedSet, slice, role, config, revision, desiredReplicasByRole); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
 	}
@@ -474,7 +474,7 @@ func (r *DisaggregatedSetReconciler) reconcileSteadyState(ctx context.Context, d
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileSteadyStateRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) error {
+func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) error {
 	log := logf.FromContext(ctx)
 
 	// GetForRole adopts a legacy slice-0 LWS in place, so we do not create a
@@ -490,7 +490,7 @@ func (r *DisaggregatedSetReconciler) reconcileSteadyStateRole(ctx context.Contex
 		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, int(desiredReplicas), int(desiredReplicas))
 	}
 
-	// This revision remains the active target on the steady-state path, so
+	// This revision remains the current target outside a revision transition, so
 	// replica-only changes (including external-scaler writes) update its durable
 	// initial count before Spec is changed. Once a revision becomes old, the
 	// rolling-update path freezes this value.

@@ -174,7 +174,7 @@ DisaggregatedSet shipped before this feature, so clusters already run Disaggrega
 
 ### Object Cardinality
 
-For a DisaggregatedSet with R roles, S slices, and revision hash H in steady state:
+For a DisaggregatedSet with R roles, S slices, and revision hash H when no revision transition is in progress:
 
 - LWS: exactly one per `(slice, revision, role)`; `S x R` total, all labeled revision H.
 - Pods: `replicas x size` per `(slice, role)`.
