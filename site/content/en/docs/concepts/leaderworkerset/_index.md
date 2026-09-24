@@ -48,6 +48,10 @@ LeaderWorkerSet (spec.replicas = 2, size = 4)
 
 StatefulSet was chosen as the underlying building block for both leader and worker pods due to several critical capabilities required by distributed AI/ML workloads:
 
+{{% alert title="Note" color="info" %}}
+The leader StatefulSet described here is the default `Ordinal` group identity. LWS also offers a `Hash` mode that manages leaders with a Deployment for workloads that do not need stable per-group identity. See [Group Identity](group-identity/).
+{{% /alert %}}
+
 ### 1. Deterministic Ordinal Identity and Predictable Networking
 Distributed training and inference frameworks (such as PyTorch DDP/FSDP, Megatron-LM, vLLM, TensorRT-LLM, and SGLang) rely on static rank assignment (`RANK 0..N-1`, `WORLD_SIZE`), peer identification, and deterministic rendezvous.
 - **Leader StatefulSet** assigns deterministic replica indices (`0, 1, ..., R-1`).
