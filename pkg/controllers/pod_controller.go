@@ -814,6 +814,65 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 	}); err != nil {
 		return false, err
 	}
+	var desiredRevision string
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		var deploy appsv1.Deployment
+		if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
+			if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
+				return false, err
+			}
+		} else {
+			desiredRevision = revisionutils.GetRevisionKey(&deploy)
+		}
+		podRevision := revisionutils.GetRevisionKey(pod)
+		if desiredRevision != "" && podRevision != "" && podRevision != desiredRevision {
+			log.V(2).Info("Deferring gated leader from outdated revision", "podRevision", podRevision, "desiredRevision", desiredRevision)
+			return false, nil
+		}
+
+		admittedOnRevision := 0
+		exhaustedOnRevision := 0
+		var gatedOnRevision []corev1.Pod
+		for _, p := range pods.Items {
+			if !podutils.LeaderPod(p) || revisionutils.GetRevisionKey(&p) != podRevision {
+				continue
+			}
+			if p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+				exhaustedOnRevision++
+				continue
+			}
+			if p.DeletionTimestamp != nil {
+				continue
+			}
+			if podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
+				gatedOnRevision = append(gatedOnRevision, p)
+			} else {
+				admittedOnRevision++
+			}
+		}
+		sort.Slice(gatedOnRevision, func(i, j int) bool {
+			if !gatedOnRevision[i].CreationTimestamp.Equal(&gatedOnRevision[j].CreationTimestamp) {
+				return gatedOnRevision[i].CreationTimestamp.Before(&gatedOnRevision[j].CreationTimestamp)
+			}
+			return gatedOnRevision[i].Name < gatedOnRevision[j].Name
+		})
+		revisionRank := -1
+		for i := range gatedOnRevision {
+			if gatedOnRevision[i].Name == pod.Name {
+				revisionRank = i
+				break
+			}
+		}
+		lwsReplicas := 1
+		if lws.Spec.Replicas != nil {
+			lwsReplicas = int(*lws.Spec.Replicas)
+		}
+		if revisionRank == -1 || admittedOnRevision+exhaustedOnRevision+revisionRank >= lwsReplicas {
+			log.V(2).Info("Deferring gated leader exceeding desired replica slots", "admittedOnRevision", admittedOnRevision, "exhaustedOnRevision", exhaustedOnRevision, "revisionRank", revisionRank, "replicas", lwsReplicas)
+			return false, nil
+		}
+	}
+
 	blockingGroups := countTearingDownGroups(pods.Items)
 	if lws.Spec.GroupReplacementPolicy == leaderworkerset.GroupReplacementImmediate {
 		blockingGroups = countExhaustedGroups(pods.Items)
@@ -826,6 +885,13 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 			}
 		}
 		sort.Slice(gated, func(i, j int) bool {
+			if desiredRevision != "" {
+				iDesired := revisionutils.GetRevisionKey(&gated[i]) == desiredRevision
+				jDesired := revisionutils.GetRevisionKey(&gated[j]) == desiredRevision
+				if iDesired != jDesired {
+					return iDesired
+				}
+			}
 			if !gated[i].CreationTimestamp.Equal(&gated[j].CreationTimestamp) {
 				return gated[i].CreationTimestamp.Before(&gated[j].CreationTimestamp)
 			}

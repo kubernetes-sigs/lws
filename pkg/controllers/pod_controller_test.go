@@ -2204,3 +2204,79 @@ func TestHashGroupLifecycleTeardownRequested(t *testing.T) {
 		t.Fatalf("expected scaled-down hash group restart count to be cleared, got %q", got)
 	}
 }
+
+func TestReconcileGroupReplacementGateRejectsOutdatedRevisionAndExcessReplicas(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	lws := wrappers.BuildLeaderWorkerSet("default").Name("hash-gate-rollout").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name,
+			Namespace: lws.Namespace,
+			Labels:    map[string]string{leaderworkerset.RevisionKey: "revision-b"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)},
+	}
+
+	now := metav1.Now()
+	oldGatedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-old", "0", lws.Namespace, 2)
+	oldGatedLeader.Name = "hash-gate-rollout-old"
+	oldGatedLeader.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Second))
+	oldGatedLeader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	oldGatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	newGatedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-new", "0", lws.Namespace, 2)
+	newGatedLeader.Name = "hash-gate-rollout-new"
+	newGatedLeader.CreationTimestamp = now
+	newGatedLeader.Labels[leaderworkerset.RevisionKey] = "revision-b"
+	newGatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	excessGatedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-excess", "0", lws.Namespace, 2)
+	excessGatedLeader.Name = "hash-gate-rollout-excess"
+	excessGatedLeader.CreationTimestamp = metav1.NewTime(now.Add(10 * time.Second))
+	excessGatedLeader.Labels[leaderworkerset.RevisionKey] = "revision-b"
+	excessGatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, deploy, oldGatedLeader, newGatedLeader, excessGatedLeader).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+
+	// Outdated-revision gated leader must remain gated after rollout advances deploy to revision-b.
+	admitted, err := r.reconcileGroupReplacementGate(ctx, oldGatedLeader, lws)
+	if err != nil {
+		t.Fatalf("reconcileGroupReplacementGate(oldGatedLeader) error = %v", err)
+	}
+	if admitted {
+		t.Fatal("expected outdated-revision gated leader to remain gated")
+	}
+
+	// Current-revision gated leader filling the 1 desired slot should be admitted.
+	admitted, err = r.reconcileGroupReplacementGate(ctx, newGatedLeader, lws)
+	if err != nil {
+		t.Fatalf("reconcileGroupReplacementGate(newGatedLeader) error = %v", err)
+	}
+	if !admitted {
+		t.Fatal("expected current-revision gated leader to be admitted")
+	}
+
+	// Once newGatedLeader is admitted, excessGatedLeader exceeds lws.Spec.Replicas=1 and must remain gated.
+	admitted, err = r.reconcileGroupReplacementGate(ctx, excessGatedLeader, lws)
+	if err != nil {
+		t.Fatalf("reconcileGroupReplacementGate(excessGatedLeader) error = %v", err)
+	}
+	if admitted {
+		t.Fatal("expected excess gated leader beyond Spec.Replicas to remain gated")
+	}
+}
