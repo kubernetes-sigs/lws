@@ -1053,7 +1053,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objects...)
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws).WithObjects(tc.objects...)
 			if tc.listErr != nil {
 				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
 					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {

@@ -451,12 +451,14 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		if !apierrors.IsNotFound(err) {
 			return false, err
 		}
-		// The LWS disappeared after the caller read it; budget enforcement is
-		// moot while the workload is being torn down, so fall back to the
-		// caller's copy.
-	} else {
-		leaderWorkerSet = freshLWS
+		// The LWS disappeared after the caller read it. Release any retained
+		// Pods and stop here; the stale LWS must not trigger group recreation.
+		if podutils.LeaderPod(pod) {
+			return true, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &leader)
+		}
+		return true, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
+	leaderWorkerSet = freshLWS
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, nil
