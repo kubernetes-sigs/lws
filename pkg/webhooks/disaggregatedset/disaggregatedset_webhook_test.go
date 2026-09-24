@@ -888,6 +888,19 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "hash role with maxGroupRestarts and NoneRestartPolicy is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					MaxGroupRestarts: ptr.To(int32(1)),
+					RestartPolicy:    leaderworkerset.NoneRestartPolicy,
+				},
+			}),
+			expectError: true,
+			errorMsg:    "maxGroupRestarts is only supported when restartPolicy recreates the group",
+		},
+		{
 			name: "hash role with scheduling is accepted",
 			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
 				Replicas:      ptr.To(int32(2)),
