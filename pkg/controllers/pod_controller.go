@@ -1290,7 +1290,17 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			},
 		}).
 		Watches(&appsv1.StatefulSet{}, r.statefulSetEventHandler()).
-		Watches(&appsv1.Deployment{}, handler.TypedEnqueueRequestsFromMapFunc(r.budgetFinalizedPodRequests)).
+		Watches(&appsv1.Deployment{}, handler.TypedEnqueueRequestsFromMapFunc(r.budgetFinalizedPodRequests),
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(event.CreateEvent) bool { return true },
+				DeleteFunc: func(event.DeleteEvent) bool { return true },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
+						(e.ObjectOld.GetDeletionTimestamp() == nil) != (e.ObjectNew.GetDeletionTimestamp() == nil) ||
+						e.ObjectOld.GetLabels()[leaderworkerset.RevisionKey] != e.ObjectNew.GetLabels()[leaderworkerset.RevisionKey]
+				},
+				GenericFunc: func(event.GenericEvent) bool { return false },
+			})).
 		Watches(&leaderworkerset.LeaderWorkerSet{}, handler.TypedEnqueueRequestsFromMapFunc(r.budgetFinalizedPodRequests),
 			builder.WithPredicates(predicate.Funcs{
 				CreateFunc: func(event.CreateEvent) bool { return true },
@@ -1377,6 +1387,7 @@ func (r *PodReconciler) budgetFinalizedPodRequests(ctx context.Context, object c
 	if lwsName == "" {
 		return nil
 	}
+	includeWorkers := object.GetDeletionTimestamp() != nil
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(object.GetNamespace()), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lwsName}); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "listing restart-budget finalized Pods", "leaderworkerset", lwsName)
@@ -1385,7 +1396,14 @@ func (r *PodReconciler) budgetFinalizedPodRequests(ctx context.Context, object c
 	requests := make([]podReconcileRequest, 0)
 	for i := range pods.Items {
 		pod := &pods.Items[i]
+		if podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate) {
+			requests = append(requests, podReconcileRequestForPod(pod, false))
+			continue
+		}
 		if !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			continue
+		}
+		if !includeWorkers && !podutils.LeaderPod(*pod) {
 			continue
 		}
 		requests = append(requests, podReconcileRequestForPod(pod, false))

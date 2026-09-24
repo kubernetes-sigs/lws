@@ -2308,3 +2308,46 @@ func TestReconcileGroupReplacementGateRejectsOutdatedRevisionAndExcessReplicas(t
 		t.Fatal("expected excess gated leader beyond Spec.Replicas to remain gated")
 	}
 }
+
+func TestBudgetFinalizedPodRequests(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(corev1) error = %v", err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(leaderworkerset) error = %v", err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Name("test-lws").Replica(1).Size(2).Obj()
+	finalizedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-a", "0", lws.Namespace, 2)
+	finalizedLeader.Name = "finalized-leader"
+	finalizedLeader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+
+	finalizedWorker := wrappers.MakePodWithLabels(lws.Name, "hash-a", "1", lws.Namespace, 2)
+	finalizedWorker.Name = "finalized-worker"
+	finalizedWorker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+
+	gatedLeader := wrappers.MakePodWithLabels(lws.Name, "hash-b", "0", lws.Namespace, 2)
+	gatedLeader.Name = "gated-leader"
+	gatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, finalizedLeader, finalizedWorker, gatedLeader).Build()
+	r := &PodReconciler{Client: fakeClient}
+
+	// Non-deleting LWS update should enqueue finalized leader and gated leader, but NOT finalized worker.
+	reqs := r.budgetFinalizedPodRequests(ctx, lws)
+	if len(reqs) != 2 {
+		t.Fatalf("budgetFinalizedPodRequests(non-deleting) returned %d requests, want 2: %v", len(reqs), reqs)
+	}
+
+	// Deleting LWS update should also include finalized worker pods for finalizer cleanup.
+	deletingLws := lws.DeepCopy()
+	now := metav1.Now()
+	deletingLws.DeletionTimestamp = &now
+	reqsDeleting := r.budgetFinalizedPodRequests(ctx, deletingLws)
+	if len(reqsDeleting) != 3 {
+		t.Fatalf("budgetFinalizedPodRequests(deleting) returned %d requests, want 3: %v", len(reqsDeleting), reqsDeleting)
+	}
+}
+
