@@ -961,11 +961,11 @@ func TestScaleDownOld(t *testing.T) {
 			target := RoleReplicaState{current[0] - tc.prefillBudget, current[1] - tc.decodeBudget}
 			state := rolloutSnapshot{
 				{
-					InitialOldReplicas: current[0], OldSpecReplicas: current[0], OldReadyReplicas: current[0], NewTargetReplicas: current[0],
+					InitialOldReplicas: current[0], ActiveOldSpecReplicas: current[0], OldSpecReplicas: current[0], OldReadyReplicas: current[0], NewTargetReplicas: current[0],
 					Config: RollingUpdateConfig{MaxUnavailable: tc.prefillBudget},
 				},
 				{
-					InitialOldReplicas: current[1], OldSpecReplicas: current[1], OldReadyReplicas: current[1], NewTargetReplicas: current[1],
+					InitialOldReplicas: current[1], ActiveOldSpecReplicas: current[1], OldSpecReplicas: current[1], OldReadyReplicas: current[1], NewTargetReplicas: current[1],
 					Config: RollingUpdateConfig{MaxUnavailable: tc.decodeBudget},
 				},
 			}
@@ -994,7 +994,16 @@ func TestCoordinateRevisionDrain(t *testing.T) {
 		}
 	}
 	state := func(initial, old, ready, newSpec, newReady, target, surge, unavailable int) roleRolloutSnapshot {
-		return roleRolloutSnapshot{initial, old, ready, newSpec, newReady, target, RollingUpdateConfig{surge, unavailable}}
+		return roleRolloutSnapshot{
+			InitialOldReplicas:    initial,
+			ActiveOldSpecReplicas: old,
+			OldSpecReplicas:       old,
+			OldReadyReplicas:      ready,
+			NewSpecReplicas:       newSpec,
+			NewReadyReplicas:      newReady,
+			NewTargetReplicas:     target,
+			Config:                RollingUpdateConfig{surge, unavailable},
+		}
 	}
 	tests := []struct {
 		name                                string
@@ -1159,15 +1168,15 @@ func TestScaleDownOldWithMissingRole(t *testing.T) {
 			}
 			state := rolloutSnapshot{
 				{
-					InitialOldReplicas: current[0], OldSpecReplicas: current[0], OldReadyReplicas: current[0], NewTargetReplicas: current[0],
+					InitialOldReplicas: current[0], ActiveOldSpecReplicas: current[0], OldSpecReplicas: current[0], OldReadyReplicas: current[0], NewTargetReplicas: current[0],
 					Config: RollingUpdateConfig{MaxUnavailable: tc.prefillBudget},
 				},
 				{
-					InitialOldReplicas: current[1], OldSpecReplicas: current[1], OldReadyReplicas: current[1], NewTargetReplicas: current[1],
+					InitialOldReplicas: current[1], ActiveOldSpecReplicas: current[1], OldSpecReplicas: current[1], OldReadyReplicas: current[1], NewTargetReplicas: current[1],
 					Config: RollingUpdateConfig{MaxUnavailable: tc.decodeBudget},
 				},
 				{
-					InitialOldReplicas: current[2], OldSpecReplicas: current[2], OldReadyReplicas: current[2], NewTargetReplicas: current[2],
+					InitialOldReplicas: current[2], ActiveOldSpecReplicas: current[2], OldSpecReplicas: current[2], OldReadyReplicas: current[2], NewTargetReplicas: current[2],
 					Config: RollingUpdateConfig{MaxUnavailable: tc.encodeBudget},
 				},
 			}
@@ -1407,8 +1416,11 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 	old, current, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, targetRevision)
 	require.NoError(t, err)
 	require.NotNil(t, current)
-	assert.Equal(t, 6, old.GetMaxInitialReplicasPerRole(testRolePrefill))
-	assert.Equal(t, 3, old.GetMaxInitialReplicasPerRole(testRoleDecode))
+	require.Len(t, old, 2)
+	for _, revision := range old {
+		assert.Equal(t, 6, revision.GetInitialReplicasPerRole(testRolePrefill))
+		assert.Equal(t, 3, revision.GetInitialReplicasPerRole(testRoleDecode))
+	}
 	assert.Equal(t, 8, old.GetTotalReplicasPerRole(testRolePrefill), "physical occupancy still sums A and B")
 	assert.Equal(t, 4, old.GetTotalReplicasPerRole(testRoleDecode))
 
@@ -1432,10 +1444,73 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 
 	old, _, err = executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, targetRevision)
 	require.NoError(t, err)
-	assert.Equal(t, 6, old.GetMaxInitialReplicasPerRole(testRolePrefill), "removing partial B must not reduce the baseline to A's current 5")
-	assert.Equal(t, 3, old.GetMaxInitialReplicasPerRole(testRoleDecode), "removing partial B must not reduce the baseline to A's current 2")
+	require.Len(t, old, 1)
+	assert.Equal(t, 6, old[0].GetInitialReplicasPerRole(testRolePrefill), "A preserves its intended baseline despite its current Spec of 5")
+	assert.Equal(t, 3, old[0].GetInitialReplicasPerRole(testRoleDecode), "A preserves its intended baseline despite its current Spec of 2")
 	assert.Equal(t, 5, old.GetTotalReplicasPerRole(testRolePrefill))
 	assert.Equal(t, 2, old.GetTotalReplicasPerRole(testRoleDecode))
+}
+
+func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) {
+	ctx := context.Background()
+	one, zero := intstr.FromInt(1), intstr.FromInt(0)
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespace, UID: "uid"},
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
+			makeRoleSpec(testRolePrefill, 8, corev1.PodSpec{}, one, zero),
+			makeRoleSpec(testRoleDecode, 4, corev1.PodSpec{}, one, zero),
+		}},
+	}
+	createdAt := time.Now()
+	objects := []client.Object{ds}
+	objects = append(objects,
+		revisionLWSObjects("hashA", [2]int32{2, 2}, [2]int32{2, 2}, [2]int32{2, 2}, createdAt)...)
+	objects = append(objects,
+		revisionLWSObjects("hashB", [2]int32{0, 0}, [2]int32{0, 0}, [2]int32{10, 10}, createdAt.Add(time.Hour))...)
+	objects = append(objects,
+		revisionLWSObjects("hashC", [2]int32{0, 0}, [2]int32{0, 0}, [2]int32{8, 4}, createdAt.Add(2*time.Hour))...)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithObjects(objects...).
+		WithStatusSubresource(&leaderworkersetv1.LeaderWorkerSet{}).
+		Build()
+	executor := newTestExecutor(fakeClient)
+	desiredReplicasByRole := resolveDesiredReplicasByRole(ds, nil)
+	oldRevisions, targetRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, "hashC")
+	require.NoError(t, err)
+	require.NotNil(t, targetRevision)
+
+	activeRevision, found, _ := selectRevisionToDrain(oldRevisions)
+	require.True(t, found)
+	assert.Equal(t, "hashA", activeRevision.Revision, "the drained hashB revision must not become the planning baseline")
+	roleNames := testRoleNames()
+	snapshot := buildRolloutSnapshot(
+		ds,
+		roleNames,
+		sets.New(roleNames...),
+		oldRevisions,
+		*targetRevision,
+		desiredReplicasByRole,
+		extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole),
+	)
+	parkedReady := planningStateForRevision(snapshot, roleNames, activeRevision)
+	assert.Equal(t, RoleReplicaState{2, 2}, RoleReplicaState{snapshot[0].InitialOldReplicas, snapshot[1].InitialOldReplicas})
+	assert.Equal(t, RoleReplicaState{2, 2}, RoleReplicaState{snapshot[0].ActiveOldSpecReplicas, snapshot[1].ActiveOldSpecReplicas})
+	assert.Equal(t, RoleReplicaState{2, 2}, RoleReplicaState{snapshot[0].OldSpecReplicas, snapshot[1].OldSpecReplicas})
+	assert.Equal(t, RoleReplicaState{0, 0}, parkedReady)
+
+	for _, roleName := range roleNames {
+		require.NoError(t, executor.LWSManager.Scale(ctx, ds, activeRevision.Roles[roleName].Name, 0))
+	}
+	oldRevisions, targetRevision, err = executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, "hashC")
+	require.NoError(t, err)
+	require.NotNil(t, targetRevision)
+	result, complete, err := executor.reconcileExistingRollout(ctx, ds, oldRevisions, *targetRevision, desiredReplicasByRole)
+	require.NoError(t, err)
+	assert.False(t, complete)
+	assert.NotZero(t, result.RequeueAfter)
+	assert.Equal(t, int32(8), getTestLWSReplicas(fakeClient, testNamespace, "test-0-hashC-prefill"))
+	assert.Equal(t, int32(4), getTestLWSReplicas(fakeClient, testNamespace, "test-0-hashC-decode"))
 }
 
 type abcExecutorScenario struct {

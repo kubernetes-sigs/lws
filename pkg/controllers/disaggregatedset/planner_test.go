@@ -43,13 +43,14 @@ func readySnapshot(
 	snapshot := make(rolloutSnapshot, len(initialOld))
 	for i := range initialOld {
 		snapshot[i] = roleRolloutSnapshot{
-			InitialOldReplicas: initialOld[i],
-			OldSpecReplicas:    currentOld[i],
-			OldReadyReplicas:   currentOld[i],
-			NewSpecReplicas:    currentNew[i],
-			NewReadyReplicas:   currentNew[i],
-			NewTargetReplicas:  targetNew[i],
-			Config:             config[i],
+			InitialOldReplicas:    initialOld[i],
+			ActiveOldSpecReplicas: currentOld[i],
+			OldSpecReplicas:       currentOld[i],
+			OldReadyReplicas:      currentOld[i],
+			NewSpecReplicas:       currentNew[i],
+			NewReadyReplicas:      currentNew[i],
+			NewTargetReplicas:     targetNew[i],
+			Config:                config[i],
 		}
 	}
 	return snapshot
@@ -109,7 +110,7 @@ func TestComputeNextStep(t *testing.T) {
 
 	t.Run("phase target does not lower the global availability floor", func(t *testing.T) {
 		snapshot := rolloutSnapshot{{
-			InitialOldReplicas: 6, OldSpecReplicas: 3, OldReadyReplicas: 2,
+			InitialOldReplicas: 6, ActiveOldSpecReplicas: 3, OldSpecReplicas: 3, OldReadyReplicas: 2,
 			NewSpecReplicas: 4, NewReadyReplicas: 4, NewTargetReplicas: 6,
 			Config: RollingUpdateConfig{MaxSurge: 1},
 		}}
@@ -318,11 +319,11 @@ func TestHardNewReplicaLimits(t *testing.T) {
 	plannerTargets := []int{8, 4}
 	snapshot := rolloutSnapshot{
 		{
-			InitialOldReplicas: 8, OldSpecReplicas: 6, NewSpecReplicas: 3, NewReadyReplicas: 0, NewTargetReplicas: 8,
+			InitialOldReplicas: 8, ActiveOldSpecReplicas: 6, OldSpecReplicas: 6, NewSpecReplicas: 3, NewReadyReplicas: 0, NewTargetReplicas: 8,
 			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
 		},
 		{
-			InitialOldReplicas: 4, OldSpecReplicas: 3, NewSpecReplicas: 2, NewReadyReplicas: 0, NewTargetReplicas: 4,
+			InitialOldReplicas: 4, ActiveOldSpecReplicas: 3, OldSpecReplicas: 3, NewSpecReplicas: 2, NewReadyReplicas: 0, NewTargetReplicas: 4,
 			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
 		},
 	}
@@ -345,9 +346,9 @@ func TestHardNewReplicaLimits(t *testing.T) {
 
 func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
 	snapshot := rolloutSnapshot{
-		{InitialOldReplicas: 4, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 4, NewReadyReplicas: 2, NewTargetReplicas: 4,
+		{InitialOldReplicas: 4, ActiveOldSpecReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 4, NewReadyReplicas: 2, NewTargetReplicas: 4,
 			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
-		{InitialOldReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 1,
+		{InitialOldReplicas: 1, ActiveOldSpecReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 1,
 			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
 	}
 	step := ComputeNextStep(snapshot, nil)
@@ -357,11 +358,12 @@ func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
 
 func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
 	snapshot := rolloutSnapshot{{
-		InitialOldReplicas: 4,
-		OldSpecReplicas:    4,
-		OldReadyReplicas:   4,
-		NewTargetReplicas:  4,
-		Config:             RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1},
+		InitialOldReplicas:    4,
+		ActiveOldSpecReplicas: 4,
+		OldSpecReplicas:       4,
+		OldReadyReplicas:      4,
+		NewTargetReplicas:     4,
+		Config:                RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1},
 	}}
 	step := ComputeNextStep(snapshot, nil)
 	require.NotNil(t, step)
@@ -399,11 +401,12 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 						state := make(rolloutSnapshot, len(initial))
 						for i := range initial {
 							state[i] = roleRolloutSnapshot{
-								InitialOldReplicas: initial[i],
-								OldSpecReplicas:    initial[i],
-								OldReadyReplicas:   initial[i],
-								NewTargetReplicas:  target[i],
-								Config:             config[i],
+								InitialOldReplicas:    initial[i],
+								ActiveOldSpecReplicas: initial[i],
+								OldSpecReplicas:       initial[i],
+								OldReadyReplicas:      initial[i],
+								NewTargetReplicas:     target[i],
+								Config:                config[i],
 							}
 						}
 
@@ -431,8 +434,9 @@ func TestExecutorStateTransitionsExhaustive(t *testing.T) {
 
 							changed := false
 							for i, roleState := range state {
-								drain := min(max(0, roleState.OldSpecReplicas-step.Past[i]), maxSafeDrain(roleState))
+								drain := min(max(0, roleState.ActiveOldSpecReplicas-step.Past[i]), maxSafeDrain(roleState))
 								if drain > 0 {
+									roleState.ActiveOldSpecReplicas -= drain
 									roleState.OldSpecReplicas -= drain
 									roleState.OldReadyReplicas = min(roleState.OldReadyReplicas, roleState.OldSpecReplicas)
 									changed = true

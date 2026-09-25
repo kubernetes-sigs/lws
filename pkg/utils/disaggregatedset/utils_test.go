@@ -444,11 +444,17 @@ func TestRevisionRolesListTotals(t *testing.T) {
 		assert.Equal(t, 0, revisions.GetTotalReplicasPerRole("unknown"))
 	})
 
-	t.Run("initial replicas use the maximum revision target and fall back to spec replicas", func(t *testing.T) {
-		// max(rev-a annotation 5, rev-b nil→1, rev-c invalid annotation→spec 4)
-		assert.Equal(t, 5, revisions.GetMaxInitialReplicasPerRole(testUtilsRolePrefill))
-		// decode has no annotation anywhere, so its Spec is the only target.
-		assert.Equal(t, 3, revisions.GetMaxInitialReplicasPerRole(testUtilsRoleDecode))
+	t.Run("initial replicas are read from one revision and fall back to spec replicas", func(t *testing.T) {
+		byRevision := make(map[string]RevisionRoles, len(revisions))
+		for _, revision := range revisions {
+			byRevision[revision.Revision] = revision
+		}
+
+		assert.Equal(t, 5, byRevision["rev-a"].GetInitialReplicasPerRole(testUtilsRolePrefill))
+		assert.Equal(t, 1, byRevision["rev-b"].GetInitialReplicasPerRole(testUtilsRolePrefill), "nil Spec defaults to one")
+		assert.Equal(t, 4, byRevision["rev-c"].GetInitialReplicasPerRole(testUtilsRolePrefill), "invalid annotation falls back to Spec")
+		assert.Equal(t, 3, byRevision["rev-a"].GetInitialReplicasPerRole(testUtilsRoleDecode))
+		assert.Equal(t, 0, byRevision["rev-a"].GetInitialReplicasPerRole("unknown"))
 	})
 }
 

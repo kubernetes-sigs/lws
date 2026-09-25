@@ -174,19 +174,23 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, true, nil
 	}
 	activeRevision, hasActiveRevision, fullyUnready := selectRevisionToDrain(oldRevisions)
-	var parkedReadyReplicas RoleReplicaState
-	activeSpecs := make(RoleReplicaState, len(snapshot))
-	revisionsToDrain := oldRevisions
-	if hasActiveRevision {
-		parkedReadyReplicas, activeSpecs = planningStateForRevision(snapshot, allRoleNames, activeRevision)
-		revisionsToDrain = disaggregatedsetutils.RevisionRolesList{activeRevision}
+	if !hasActiveRevision {
+		targetNew := make(RoleReplicaState, len(specRoleNames))
+		for i, roleName := range specRoleNames {
+			targetNew[i] = desiredReplicasByRole[roleName]
+		}
+		if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, targetNew); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+	parkedReadyReplicas := planningStateForRevision(snapshot, allRoleNames, activeRevision)
+	revisionsToDrain := disaggregatedsetutils.RevisionRolesList{activeRevision}
 
 	var nextStep *UpdateStep
 	if fullyUnready {
 		nextStep = &UpdateStep{Past: make(RoleReplicaState, len(snapshot)), New: make(RoleReplicaState, len(snapshot))}
 		for i := range snapshot {
-			nextStep.Past[i] = snapshot[i].OldSpecReplicas - activeSpecs[i]
 			nextStep.New[i] = snapshot[i].NewSpecReplicas
 		}
 	} else {
@@ -271,25 +275,26 @@ func revisionIsFullyUnready(revision disaggregatedsetutils.RevisionRoles) bool {
 	return true
 }
 
-// planningStateForRevision returns the Ready capacity parked outside the active
-// revision and the active revision's current Specs.
+// planningStateForRevision sets the fractional-planning baseline and current
+// Spec from the active old revision. It returns the Ready capacity parked in
+// every other old revision; that capacity reduces the target for this phase.
 func planningStateForRevision(
 	snapshot rolloutSnapshot,
 	roleNames []string,
 	active disaggregatedsetutils.RevisionRoles,
-) (RoleReplicaState, RoleReplicaState) {
+) RoleReplicaState {
 	parkedReadyReplicas := make(RoleReplicaState, len(snapshot))
-	activeSpecs := make(RoleReplicaState, len(snapshot))
 	for i, roleName := range roleNames {
 		lws := active.Roles[roleName]
 		activeReady := 0
 		if lws != nil {
-			activeSpecs[i] = int(getLWSReplicas(lws))
+			snapshot[i].InitialOldReplicas = active.GetInitialReplicasPerRole(roleName)
+			snapshot[i].ActiveOldSpecReplicas = int(getLWSReplicas(lws))
 			activeReady = committedReadyReplicas(lws)
 		}
 		parkedReadyReplicas[i] = snapshot[i].OldReadyReplicas - activeReady
 	}
-	return parkedReadyReplicas, activeSpecs
+	return parkedReadyReplicas
 }
 
 // committedReadyReplicas returns the Ready capacity that can authorize another
@@ -319,9 +324,8 @@ func buildRolloutSnapshot(
 
 	for i, roleName := range allRoleNames {
 		roleState := roleRolloutSnapshot{
-			InitialOldReplicas: oldRevisions.GetMaxInitialReplicasPerRole(roleName),
-			OldSpecReplicas:    oldRevisions.GetTotalReplicasPerRole(roleName),
-			Config:             config[i],
+			OldSpecReplicas: oldRevisions.GetTotalReplicasPerRole(roleName),
+			Config:          config[i],
 		}
 		for _, revision := range oldRevisions {
 			if lws := revision.Roles[roleName]; lws != nil {
@@ -454,7 +458,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 	budget := make(RoleReplicaState, len(roleNames))
 	for i := range roleNames {
 		roleState := snapshot[i]
-		budget[i] = max(0, min(roleState.OldSpecReplicas-targetOld[i], maxSafeDrain(roleState)))
+		budget[i] = max(0, min(roleState.ActiveOldSpecReplicas-targetOld[i], maxSafeDrain(roleState)))
 	}
 
 	log := logf.FromContext(ctx)

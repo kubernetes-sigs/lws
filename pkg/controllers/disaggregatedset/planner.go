@@ -57,18 +57,21 @@ type RollingUpdateConfig struct {
 // roleRolloutSnapshot contains all observed state needed to plan one role. It
 // is rebuilt on every reconciliation and is never persisted by the controller.
 //
-// InitialOldReplicas is the old-side baseline from the initial-replicas
-// annotation. Spec counts replicas already requested from the LWS, including
-// replicas that are still starting. Ready counts serving capacity and excludes
-// replicas already committed to termination.
+// InitialOldReplicas and ActiveOldSpecReplicas describe the one old revision
+// currently being replaced. OldSpecReplicas and OldReadyReplicas cover every
+// old revision because parked revisions still consume capacity and serve
+// traffic. New Spec counts replicas already requested from the target LWS,
+// including replicas that are still starting. Ready excludes replicas already
+// committed to termination.
 type roleRolloutSnapshot struct {
-	InitialOldReplicas int
-	OldSpecReplicas    int
-	OldReadyReplicas   int
-	NewSpecReplicas    int
-	NewReadyReplicas   int
-	NewTargetReplicas  int
-	Config             RollingUpdateConfig
+	InitialOldReplicas    int                 // Durable replica baseline of the old revision currently being drained.
+	ActiveOldSpecReplicas int                 // Current Spec replicas of the old revision currently being drained.
+	OldSpecReplicas       int                 // Current Spec replicas summed across all old revisions, including parked ones.
+	OldReadyReplicas      int                 // Ready replicas summed across all old revisions, excluding terminating replicas.
+	NewSpecReplicas       int                 // Current Spec replicas of the target revision.
+	NewReadyReplicas      int                 // Ready replicas of the target revision, excluding terminating replicas.
+	NewTargetReplicas     int                 // Desired replica count of the target revision after the rollout.
+	Config                RollingUpdateConfig // Surge and availability limits configured for this role.
 }
 
 // rolloutSnapshot is index-aligned with the role-name slice used by the
@@ -161,7 +164,7 @@ func plannerInputs(snapshot rolloutSnapshot) (
 	config = make([]RollingUpdateConfig, len(snapshot))
 	for i, role := range snapshot {
 		initialOld[i] = role.InitialOldReplicas
-		currentOld[i] = role.OldSpecReplicas
+		currentOld[i] = role.ActiveOldSpecReplicas
 		currentNew[i] = role.NewSpecReplicas
 		targetNew[i] = role.NewTargetReplicas
 		config[i] = role.Config
@@ -227,9 +230,9 @@ func boundOldReplicaTargetsByAvailability(
 ) RoleReplicaState {
 	boundedTargets := make(RoleReplicaState, len(snapshot))
 	for i, role := range snapshot {
-		requestedDrain := max(0, role.OldSpecReplicas-plannerTargets[i])
+		requestedDrain := max(0, role.ActiveOldSpecReplicas-plannerTargets[i])
 		safeDrain := min(requestedDrain, maxSafeDrain(role))
-		boundedTargets[i] = role.OldSpecReplicas - safeDrain
+		boundedTargets[i] = role.ActiveOldSpecReplicas - safeDrain
 	}
 	return boundedTargets
 }
@@ -571,11 +574,12 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 	snapshot := make(rolloutSnapshot, len(initialOld))
 	for i := range initialOld {
 		snapshot[i] = roleRolloutSnapshot{
-			InitialOldReplicas: initialOld[i],
-			OldSpecReplicas:    initialOld[i],
-			OldReadyReplicas:   initialOld[i],
-			NewTargetReplicas:  target[i],
-			Config:             config[i],
+			InitialOldReplicas:    initialOld[i],
+			ActiveOldSpecReplicas: initialOld[i],
+			OldSpecReplicas:       initialOld[i],
+			OldReadyReplicas:      initialOld[i],
+			NewTargetReplicas:     target[i],
+			Config:                config[i],
 		}
 	}
 	steps := []UpdateStep{{Past: append(RoleReplicaState(nil), initialOld...), New: make(RoleReplicaState, len(initialOld))}}
@@ -587,6 +591,7 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 		}
 		steps = append(steps, *next)
 		for i := range snapshot {
+			snapshot[i].ActiveOldSpecReplicas = next.Past[i]
 			snapshot[i].OldSpecReplicas = next.Past[i]
 			snapshot[i].OldReadyReplicas = next.Past[i]
 			snapshot[i].NewSpecReplicas = next.New[i]

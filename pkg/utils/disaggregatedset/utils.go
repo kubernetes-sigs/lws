@@ -203,19 +203,15 @@ func (revisions RevisionRolesList) GetTotalReplicasPerRole(role string) int {
 	return total
 }
 
-func (revisions RevisionRolesList) GetMaxInitialReplicasPerRole(role string) int {
-	initial := 0
-	for _, rev := range revisions {
-		if lws := rev.Roles[role]; lws != nil {
-			initialReplicas, ok := GetInitialReplicas(lws)
-			if ok {
-				initial = max(initial, int(initialReplicas))
-			} else {
-				initial = max(initial, getLWSReplicas(lws))
-			}
-		}
+func (revision RevisionRoles) GetInitialReplicasPerRole(role string) int {
+	lws := revision.Roles[role]
+	if lws == nil {
+		return 0
 	}
-	return initial
+	if initialReplicas, ok := GetInitialReplicas(lws); ok {
+		return int(initialReplicas)
+	}
+	return getLWSReplicas(lws)
 }
 
 func GroupByRevision(lwsList []*leaderworkersetv1.LeaderWorkerSet) RevisionRolesList {
