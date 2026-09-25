@@ -162,21 +162,23 @@ type LeaderWorkerSetTemplateSpec struct {
 
 ### N-Dimensional Rolling Update Algorithm
 
-During a rolling update, the controller replaces one set of role replicas with another. The replicas being replaced form the old side. The replacement replicas form the new side. Each role is one dimension. The old side shrinks to zero while the new side grows to its target.
+During a rolling update, the controller replaces one revision with the target revision. The revision currently being replaced is the active old revision. Its replicas form the old side of the fractional plan, and the target revision's replicas form the new side. Each role is one dimension. The active old revision shrinks to zero while the target revision grows.
 
 When no old revision is serving, the controller reconciles the current revision directly. This does not imply that the workloads are already stable or Ready: the controller may still need to create or scale their LWS objects.
 
-Each managed LWS stores an `initial-replicas` annotation. The annotation records the baseline used by the controller if that revision becomes old. The revision selected by the current DisaggregatedSet template is the target revision. Replica-only changes and external-scaler changes keep its annotation aligned with its target replica count. After that revision's rollout completes, the annotation matches its replica count. That value becomes `initialOld` when a later rollout starts. If a new revision interrupts the rollout before completion, the annotation instead preserves the interrupted revision's intended replica count: the number of replicas it would have reached if its rollout had completed.
+Each managed LWS stores an `initial-replicas` annotation. While a revision is current, replica-only changes and external-scaler changes keep this value aligned with the revision's target replica count. When a newer revision makes it old, the value freezes and becomes that revision's `initialOld` baseline while the controller drains it. The LWS is deleted after it reaches zero and the target revision is Ready. If another revision interrupts its rollout, the annotation preserves the replica count it was intended to reach rather than its partially created Spec.
 
-Suppose a rollout from revision A to revision B is interrupted by revision C. Both A and B are old while C rolls out. B was created to replace A, so their `initial-replicas` values describe the same role capacity. For each role, `initialOld` is the larger value from A and B, rather than their sum.
+If an old LWS does not have a valid `initial-replicas` annotation, the controller stores its current Spec as the best available fallback before draining it. An explicit annotation value of `0` is valid and is not treated as missing.
 
-`oldSpec` is the total number of old replicas that are currently requested. It adds the current Specs across A and B because all of those replicas use cluster capacity until they are drained.
+Suppose a rollout from revision A to revision B is interrupted by revision C. Both A and B are now old. The controller processes only one of them at a time. A revision with no Ready replicas is selected first because removing it cannot reduce serving capacity. Otherwise, the newest old revision is selected, so B is drained before A.
 
-If an old LWS does not have a valid `initial-replicas` annotation, the controller stores its current Spec as the best available fallback before draining it.
+While B is active, A is parked and remains unchanged. Fractional planning uses B's own `initial-replicas` value as `initialOld` and B's current Spec as `activeOldSpec`. Ready replicas in A reduce how much of C is needed during this phase. After B reaches zero, A becomes active and the controller plans the A to C phase. The controller never combines the `initial-replicas` values from A and B.
+
+Parking does not remove A from safety accounting. `oldSpec` and `oldReady` sum the observed values across A and B because both revisions still occupy capacity and may serve traffic. Surge and availability limits use those aggregate values and C's full desired target.
 
 Within each side, the planner uses discrete linear interpolation. Every role uses the same progress fraction. The resulting replica counts are rounded up to whole numbers.
 
-Each side measures progress on its own fractional scale. For one side, `roleReplicaCounts` is the list of replica counts for its roles. `positiveRoleReplicaCounts` is the same list without roles whose replica count is zero.
+Each side measures progress on its own fractional scale. For one side, `roleReplicaCounts` is the list of replica counts for its roles. A count can be zero when the whole DisaggregatedSet is scaled to zero, or when a role exists on only one side of the rollout because it was added or removed. `positiveRoleReplicaCounts` excludes those zero counts because they do not define a fractional window.
 
 ```
 fractionalStepCount      = max(roleReplicaCounts)
@@ -212,9 +214,9 @@ Decode remaining   4 ---  4  ---  3  ---  3  ---  2  --- [2*  ---  1  ---  1 ] -
 
 The distance between adjacent columns is `1/8`, the `smallestReplicaFraction`. The window is two columns wide, or `2/8 = 1/4`, the `largestReplicaFraction`. Decode=2 maps to step 5 and defines the window. Prefill is at step 6, so it may advance to step 7 but no further until Decode advances. The window is then recalculated.
 
-This moving window is the fractional-lockstep guarantee. Roles can move by different replica counts, and they do not have to occupy the same fractional step. A planner step starting inside the window remains inside it. If observed state is already outside the window, the planner does not reverse applied work; it stops the leading roles and lets lagging roles catch up. Per-role limits can trim different parts of a candidate step, so the planner reapplies the window after those limits rather than cancelling every drain when one role cannot move.
+This moving window is the fractional-lockstep guarantee. Roles can move by different replica counts, and they do not have to occupy the same fractional step. A planner step starting inside the window remains inside it. If observed state is already outside the window, the planner does not reverse applied work. It keeps the leading role at its current replica count and advances only lagging roles until they return to the window. For example, on a new `8P/4D` side, `6P/1D` represents 75% Prefill progress and 25% Decode progress. The gap exceeds the `1/4` window. The planner does not reduce Prefill from 6. It holds Prefill at 6 and allows Decode to grow to 2, bringing Decode to 50% and the gap back to `1/4`.
 
-The planner also applies readiness-based limits before returning the step. If no mutation is currently safe, the controller waits for observed state to change. `MaxSurge` and `MaxUnavailable` are enforced independently for each role. They do not provide an atomic availability guarantee across roles.
+The fractional window does not replace rollout budgets. `MaxSurge` and `MaxUnavailable` remain hard limits for each role and may permit less movement than the window. Per-role limits can trim different parts of a candidate step, so the planner reapplies the window after applying those limits. If no mutation is currently safe, the controller waits for observed state to change. The per-role budgets do not provide an atomic availability guarantee across roles.
 
 #### Issued work and available capacity
 
@@ -265,9 +267,11 @@ This bounded window is what permits pipelining across slow pod starts. It does n
 
 #### Reconcile ordering and completion
 
-One plan may contain both an old-side drain and new-side growth. Before returning the step, the planner limits old targets using committed Ready capacity and limits new targets using the surge and pending-readiness ceilings. It reapplies the coordination window after independent limits trim role targets. The executor then applies the floor-safe old drain before growing the new revision, so the two API updates cannot create a transient surge violation. If the bounded plan is a no-op, the controller requeues rather than mistaking the no-op for completion.
+One plan may contain both an old-side drain and new-side growth. Before returning the step, the planner limits old targets using committed Ready capacity and limits new targets using the surge and pending-readiness ceilings. It reapplies the coordination window after independent limits trim role targets. The executor then applies the floor-safe old drain before growing the new revision, so the two API updates cannot create a transient surge violation.
 
-Interrupted rollouts process one old revision at a time and leave the others unchanged. A revision with no committed Ready replicas is removed first because it contributes no serving capacity. Otherwise, the newest old revision is selected, so the oldest revision is replaced last. Ready replicas in the parked revisions reduce the current revision's temporary planning target. The full desired target and every revision's observed Spec and Ready counts still enforce surge and availability limits. A revision is retired as soon as all of its role Specs are zero; stale status from its terminating pods neither blocks the next revision nor contributes availability.
+The safety limits may reduce both proposed targets back to their current Spec values. In that case, the plan contains no mutation. This means the rollout is temporarily blocked, not complete. The controller requeues and waits for readiness, capacity, or a configuration change. Completion is checked separately from the absence of a safe next step.
+
+Interrupted rollouts process one old revision at a time and leave the others unchanged. A revision with no Ready replicas is removed first because it contributes no serving capacity. Otherwise, the newest old revision is selected, so the oldest revision is replaced last. A revision is retired as soon as all of its role Specs are zero. Stale status from its terminating pods neither blocks the next revision nor contributes availability.
 
 The controller does not intentionally remove the last replica of one role while another role in the same old revision remains. It retires all roles together when safe. Otherwise, it first tries a partial drain that leaves at least one replica of every role, then replacement growth within the hard limits. If neither is possible, it requeues and emits an event.
 
@@ -298,7 +302,11 @@ If every issued replica becomes Ready before the next observation, the Spec traj
 
 The observations are planner fractional steps, not a promise that every cluster will expose exactly this sequence. Readiness, API observations, and interrupted updates may introduce additional reconciles.
 
-The pending window changes the slow-start case materially. After observation 1, suppose the new `2P/1D` is still unready. The next reconcile may still issue up to `4P/2D` because that is the proportional pending allowance. It may drain only availability that is actually committed; it cannot count those unready replicas, or stale Ready status above an already-reduced Spec, toward the floor. Once Ready advances, pending capacity opens and the pipeline continues.
+The pending window changes the slow-start case materially. After observation 1, suppose the new `2P/1D` has `Ready=0P/0D`. Its pending work is therefore `2P/1D`, below the `4P/2D` pending allowance derived from `MaxSurge + MaxUnavailable`. The controller may issue another `2P/1D`, reaching a new Spec of `4P/2D` without waiting for the first batch to become Ready.
+
+`MaxUnavailable` independently sets availability floors of `6P/2D`. If the remaining old revision has `Ready=6P/3D` while the new revision is still unready, no old Prefill may drain because Prefill is already at its floor. At most one old Decode may drain because Decode has one Ready replica above its floor. As new replicas become Ready, the Ready totals rise and permit further old replicas to drain.
+
+A narrow coordination window still permits pipelining when roles advance together. For example, two roles of 20 replicas produce a window width of `1/20`. With `MaxSurge=2` and `MaxUnavailable=2`, a second `2/2` batch can still be issued while the first `2/2` batch is unready. The window prevents one role from moving too far ahead of the other; it does not require every issued batch to become Ready before more work is issued.
 
 ### Service Orchestration
 
@@ -362,8 +370,7 @@ to implement this enhancement.
 - 2026-03-05: Initial KEP draft
 - 2026-03-22: Updated to reflect N-dimensional roles API
 - 2026-03-23: Renamed "phase" to "role" throughout for semantic clarity
-- 2026-09-14: Updated the rolling-update contract to cover fractional lockstep, readiness and availability bounds, how old revisions are removed, and how an interrupted rollout remembers the replica counts it was meant to reach.
-- 2026-09-21: Updated interrupted rollouts to process one old revision at a time, removing revisions with no Ready replicas first and parking the remaining revisions.
+- 2026-09-25: Updated the rolling-update contract to cover fractional lockstep, readiness and availability bounds, staged interrupted rollouts, and durable intended replica counts.
 
 ## Drawbacks
 
