@@ -1445,6 +1445,7 @@ type abcExecutorScenario struct {
 	bPrefill, bDecode               int32
 	cPrefill, cDecode               int32
 	aUnready                        bool
+	bPrefillUnready                 bool
 	expectedA, expectedB, expectedC [2]int32 // [prefill, decode]
 }
 
@@ -1482,6 +1483,11 @@ func TestReconcileExistingRolloutABCScenario(t *testing.T) {
 			aPrefill: 1, aDecode: 1, bPrefill: 1, bDecode: 1, cPrefill: 2, cDecode: 2, aUnready: true,
 			expectedA: [2]int32{0, 0}, expectedB: [2]int32{1, 1}, expectedC: [2]int32{2, 2},
 		},
+		{
+			name: "retires mixed-ready B to release its occupied surge slot", targetPrefill: 4, targetDecode: 4,
+			aPrefill: 3, aDecode: 3, bPrefill: 1, bDecode: 1, cPrefill: 1, cDecode: 1, bPrefillUnready: true,
+			expectedA: [2]int32{3, 3}, expectedB: [2]int32{0, 0}, expectedC: [2]int32{1, 1},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1499,8 +1505,12 @@ func TestReconcileExistingRolloutABCScenario(t *testing.T) {
 			bTime := baseTime.Add(1 * time.Hour)
 			cTime := baseTime.Add(2 * time.Hour)
 			initial := [2]int32{tc.targetPrefill, tc.targetDecode}
+			bReadyPrefill := tc.bPrefill
+			if tc.bPrefillUnready {
+				bReadyPrefill = 0
+			}
 			objects = append(objects,
-				revisionLWSObjects("hashB", [2]int32{tc.bPrefill, tc.bDecode}, [2]int32{tc.bPrefill, tc.bDecode}, initial, bTime)...)
+				revisionLWSObjects("hashB", [2]int32{tc.bPrefill, tc.bDecode}, [2]int32{bReadyPrefill, tc.bDecode}, initial, bTime)...)
 			objects = append(objects,
 				revisionLWSObjects("hashC", [2]int32{tc.cPrefill, tc.cDecode}, [2]int32{tc.cPrefill, tc.cDecode}, initial, cTime)...)
 

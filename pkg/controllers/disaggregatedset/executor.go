@@ -546,7 +546,9 @@ func coordinateRevisionDrain(
 		replicas := int(getLWSReplicas(lws))
 		anyAliveAfter = anyAliveAfter || replicas > drain[i]
 		anyRetired = anyRetired || drain[i] == replicas
-		canRetire = canRetire && replicas <= maxSafeDrain(snapshot[i])
+		// Availability is spent only by Ready replicas; unready Spec replicas
+		// can retire without consuming the Ready-based drain budget.
+		canRetire = canRetire && committedReadyReplicas(lws) <= maxSafeDrain(snapshot[i])
 	}
 	if !anyAliveAfter || !anyRetired {
 		return false
@@ -594,7 +596,7 @@ func coordinateRevisionDrain(
 		if lws == nil || getLWSReplicas(lws) == 0 {
 			continue
 		}
-		neededForRetirement := int(getLWSReplicas(lws)) - maxSafeDrain(snapshot[i])
+		neededForRetirement := committedReadyReplicas(lws) - maxSafeDrain(snapshot[i])
 		if neededForRetirement > 0 {
 			phaseTarget := snapshot[i].NewTargetReplicas
 			if i < len(parkedReadyReplicas) {
