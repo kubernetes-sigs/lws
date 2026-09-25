@@ -303,7 +303,7 @@ func TestLeastAdvancedStep(t *testing.T) {
 	}
 }
 
-func TestWantReplicas(t *testing.T) {
+func TestReplicasAtFractionalStep(t *testing.T) {
 	for _, tc := range []struct {
 		roleReplicaCount, step, stepCount int
 		draining                          bool
@@ -315,7 +315,7 @@ func TestWantReplicas(t *testing.T) {
 		{8, 1, 6, false, 2}, {8, 2, 6, false, 3},
 		{8, 0, 0, false, 0}, {8, 0, 0, true, 8},
 	} {
-		assert.Equal(t, tc.want, wantReplicas(tc.roleReplicaCount, tc.step, tc.stepCount, tc.draining))
+		assert.Equal(t, tc.want, replicasAtFractionalStep(tc.roleReplicaCount, tc.step, tc.stepCount, tc.draining))
 	}
 }
 

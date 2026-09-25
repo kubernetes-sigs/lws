@@ -298,8 +298,8 @@ func leastAdvancedStep(current, roleReplicaCounts RoleReplicaState, stepCount in
 	return progress
 }
 
-// wantReplicas projects one fractional step onto a role's replica count.
-func wantReplicas(roleReplicaCount, step, stepCount int, draining bool) int {
+// replicasAtFractionalStep projects one fractional step onto a role's replica count.
+func replicasAtFractionalStep(roleReplicaCount, step, stepCount int, draining bool) int {
 	if stepCount == 0 {
 		if draining {
 			return roleReplicaCount
@@ -502,8 +502,8 @@ func calculateReplicaChanges(
 		}
 
 		total := currentOld[i] + currentNew[i]
-		wantedNew := wantReplicas(targetNew[i], steps.newStep, steps.newStepCount, false)
-		wantedOld := wantReplicas(initialOld[i], steps.oldStep, steps.oldStepCount, true)
+		wantedNew := replicasAtFractionalStep(targetNew[i], steps.newStep, steps.newStepCount, false)
+		wantedOld := replicasAtFractionalStep(initialOld[i], steps.oldStep, steps.oldStepCount, true)
 		changes.growBy[i] = min(max(wantedNew-currentNew[i], 0), max(0, surgeCeiling-total))
 		changes.drainBy[i] = min(max(0, currentOld[i]-wantedOld), max(0, total-availabilityFloor))
 	}
