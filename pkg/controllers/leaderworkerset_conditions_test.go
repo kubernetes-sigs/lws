@@ -174,16 +174,19 @@ func TestSetConditions(t *testing.T) {
 		}
 	})
 
-	t.Run("a false condition is not added", func(t *testing.T) {
+	t.Run("a false condition is recorded", func(t *testing.T) {
 		lws := &leaderworkerset.LeaderWorkerSet{}
 		condition := makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
 		condition.Status = metav1.ConditionFalse
 
-		if setConditions(lws, []metav1.Condition{condition}) {
-			t.Error("setConditions() = true, want false for a condition that does not exist yet and is false")
+		// False conditions are recorded explicitly: the restart-budget feature
+		// surfaces Degraded=False on healthy workloads, so absence cannot be
+		// used to skip not-yet-present false conditions.
+		if !setConditions(lws, []metav1.Condition{condition}) {
+			t.Error("setConditions() = false, want true for a condition that does not exist yet")
 		}
-		if len(lws.Status.Conditions) != 0 {
-			t.Errorf("got %d conditions, want 0", len(lws.Status.Conditions))
+		if len(lws.Status.Conditions) != 1 || lws.Status.Conditions[0].Status != metav1.ConditionFalse {
+			t.Errorf("got conditions %v, want a single false condition", lws.Status.Conditions)
 		}
 	})
 }

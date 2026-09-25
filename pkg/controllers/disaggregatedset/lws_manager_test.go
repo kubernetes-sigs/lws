@@ -696,8 +696,8 @@ func TestComputeRevision(t *testing.T) {
 	})
 }
 
-// TestManagerListSliceBucketing verifies that List buckets a label-less (legacy) LWS
-// into slice 0 and excludes it from other slices.
+// TestManagerListSliceBucketing verifies that List only places explicitly labeled
+// LWS objects in a slice.
 func TestManagerListSliceBucketing(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
@@ -717,7 +717,7 @@ func TestManagerListSliceBucketing(t *testing.T) {
 			disaggregatedsetv1.SliceLabelKey:   slice,
 		}).OwnerReference(ownerRef).Obj()
 	}
-	legacy := wrappers.BuildBasicLeaderWorkerSet("legacy", "default").Labels(map[string]string{
+	unlabeled := wrappers.BuildBasicLeaderWorkerSet("unlabeled", "default").Labels(map[string]string{
 		disaggregatedsetv1.SetNameLabelKey: ds.Name,
 		disaggregatedsetv1.RoleLabelKey:    "prefill",
 	}).OwnerReference(ownerRef).Obj()
@@ -731,7 +731,7 @@ func TestManagerListSliceBucketing(t *testing.T) {
 	}).Obj()
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), legacy, unowned).Build()
+		WithRuntimeObjects(sliced("s0", "0"), sliced("s1", "1"), unlabeled, unowned).Build()
 	manager := NewLeaderWorkerSetManager(fakeClient)
 
 	names := func(list []*leaderworkersetv1.LeaderWorkerSet) []string {
@@ -742,30 +742,30 @@ func TestManagerListSliceBucketing(t *testing.T) {
 		return out
 	}
 
-	t.Run("slice 0 includes label-less legacy, excludes unowned", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, 0, "")
+	t.Run("slice 0 excludes label-less and unowned objects", func(t *testing.T) {
+		got, err := manager.ListForSlice(context.Background(), ds, 0, "")
 		require.NoError(t, err)
-		require.ElementsMatch(t, []string{"s0", "legacy"}, names(got))
+		require.ElementsMatch(t, []string{"s0"}, names(got))
 	})
 
-	t.Run("slice 1 excludes legacy", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, 1, "")
+	t.Run("slice 1 excludes label-less objects", func(t *testing.T) {
+		got, err := manager.ListForSlice(context.Background(), ds, 1, "")
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"s1"}, names(got))
 	})
 
-	t.Run("all slices returns everything owned, excludes unowned", func(t *testing.T) {
-		got, err := manager.List(context.Background(), ds, -1, "")
+	t.Run("all slices excludes label-less and unowned objects", func(t *testing.T) {
+		got, err := manager.ListAll(context.Background(), ds, "")
 		require.NoError(t, err)
-		require.ElementsMatch(t, []string{"s0", "s1", "legacy"}, names(got))
+		require.ElementsMatch(t, []string{"s0", "s1"}, names(got))
 	})
 }
 
 // TestManagerGetForRoleIgnoresForeignOwnedLWS is a regression test for #981:
-// GetForRole must treat a same-named LWS occupying either the slice-aware or
-// the legacy name as absent when it's owned by a different DisaggregatedSet
-// (e.g. left over from a same-named DisaggregatedSet that was deleted and
-// recreated before GC ran), rather than returning it for the caller to scale.
+// GetForRole must treat a same-named LWS as absent when it is owned by a different
+// DisaggregatedSet (e.g. left over from a same-named DisaggregatedSet that was
+// deleted and recreated before GC ran), rather than returning it for the caller
+// to scale.
 func TestManagerGetForRoleIgnoresForeignOwnedLWS(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
@@ -787,17 +787,17 @@ func TestManagerGetForRoleIgnoresForeignOwnedLWS(t *testing.T) {
 		assert.Nil(t, got, "a foreign-owned LWS at the generated name must not be returned")
 	})
 
-	t.Run("legacy name occupied by a foreign LWS reads as absent", func(t *testing.T) {
+	t.Run("pre-slices name is not consulted", func(t *testing.T) {
 		slice := 0
-		legacyName := disaggregatedsetutils.GenerateLegacyName(ds.Name, revision, role)
-		foreignLWS := buildOwnedManagerTestLWS(legacyName, 3, foreignDS)
+		oldName := ds.Name + "-" + revision + "-" + role
+		oldLWS := buildOwnedManagerTestLWS(oldName, 3, ds)
 
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(foreignLWS).Build()
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(oldLWS).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
 		got, err := manager.GetForRole(context.Background(), ds, slice, revision, role)
 		require.NoError(t, err)
-		assert.Nil(t, got, "a foreign-owned LWS at the legacy name must not be returned")
+		assert.Nil(t, got, "an LWS under the pre-slices name must not be returned")
 	})
 
 	t.Run("owned LWS at the generated name is still returned normally", func(t *testing.T) {

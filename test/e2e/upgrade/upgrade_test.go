@@ -27,6 +27,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -87,6 +88,7 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 		case "after":
 			expected := readSnapshot()
 			expectCurrentControllerReady()
+			expectLeaderWorkerSetDegradedFalse(existingLWSName)
 			gomega.Consistently(func(g gomega.Gomega) {
 				current, err := captureSnapshot()
 				g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -96,6 +98,20 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 		}
 	})
 })
+
+func expectLeaderWorkerSetDegradedFalse(name string) {
+	gomega.Eventually(func() (metav1.ConditionStatus, error) {
+		lws := &leaderworkersetv1.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: name}, lws); err != nil {
+			return metav1.ConditionUnknown, err
+		}
+		condition := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkersetv1.LeaderWorkerSetDegraded))
+		if condition == nil {
+			return metav1.ConditionUnknown, nil
+		}
+		return condition.Status, nil
+	}, 2*time.Minute, time.Second).Should(gomega.Equal(metav1.ConditionFalse))
+}
 
 func waitForWebhooks() {
 	ginkgo.By("waiting for the LeaderWorkerSet webhook")
@@ -276,7 +292,7 @@ func captureSnapshot() (upgradeSnapshot, error) {
 		return generatedSnapshots[i].Name < generatedSnapshots[j].Name
 	})
 
-	services, err := generatedServiceSnapshots()
+	services, err := generatedServiceSnapshots(generated.Items)
 	if err != nil {
 		return upgradeSnapshot{}, err
 	}
@@ -295,34 +311,25 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	}, nil
 }
 
-// generatedServiceSnapshots records any per-revision Services left by the old
-// controller. Releases before v0.11.0 created them, while newer releases do not.
-// When present, their names and UIDs surviving the upgrade prove that the current
-// controller leaves them alone.
-func generatedServiceSnapshots() ([]serviceSnapshot, error) {
-	services, err := listDisaggregatedSetServices()
-	if err != nil {
-		return nil, err
-	}
-	snapshots := make([]serviceSnapshot, 0, len(services.Items))
-	for _, service := range services.Items {
+// generatedServiceSnapshots records the identity of the Services owned by the
+// generated LeaderWorkerSets. The upgraded controller must leave them untouched.
+func generatedServiceSnapshots(generated []leaderworkersetv1.LeaderWorkerSet) ([]serviceSnapshot, error) {
+	snapshots := make([]serviceSnapshot, 0, len(generated))
+	for i := range generated {
+		lws := &generated[i]
+		service := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
+			return nil, fmt.Errorf("get Service for generated LeaderWorkerSet %q: %w", lws.Name, err)
+		}
+		if !metav1.IsControlledBy(service, lws) {
+			return nil, fmt.Errorf("Service %q is not controlled by generated LeaderWorkerSet %q", service.Name, lws.Name)
+		}
 		snapshots = append(snapshots, serviceSnapshot{Name: service.Name, UID: service.UID})
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Name < snapshots[j].Name
 	})
 	return snapshots, nil
-}
-
-func listDisaggregatedSetServices() (*corev1.ServiceList, error) {
-	services := &corev1.ServiceList{}
-	if err := k8sClient.List(ctx, services,
-		client.InNamespace(testNamespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: existingDSName},
-	); err != nil {
-		return nil, err
-	}
-	return services, nil
 }
 
 func workloadPodSnapshots() ([]podSnapshot, error) {

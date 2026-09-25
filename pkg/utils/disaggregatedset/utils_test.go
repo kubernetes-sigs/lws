@@ -342,29 +342,6 @@ func TestComputeInitialReplicaState(t *testing.T) {
 	})
 }
 
-func TestSliceLabelMatches(t *testing.T) {
-	cases := []struct {
-		name   string
-		labels map[string]string
-		slice  int
-		want   bool
-	}{
-		{"all slices matches label-less", nil, -1, true},
-		{"all slices matches labeled", map[string]string{disaggregatedsetv1.SliceLabelKey: "3"}, -1, true},
-		{"slice 0 matches legacy label-less", nil, 0, true},
-		{"slice 0 matches empty label", map[string]string{disaggregatedsetv1.SliceLabelKey: ""}, 0, true},
-		{"slice 0 matches slice 0", map[string]string{disaggregatedsetv1.SliceLabelKey: "0"}, 0, true},
-		{"slice 0 does not match slice 1", map[string]string{disaggregatedsetv1.SliceLabelKey: "1"}, 0, false},
-		{"slice 1 does not match legacy label-less", nil, 1, false},
-		{"slice 1 matches slice 1", map[string]string{disaggregatedsetv1.SliceLabelKey: "1"}, 1, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, SliceLabelMatches(tc.labels, tc.slice))
-		})
-	}
-}
-
 func revisionRoleLWS(revision, role string, replicas *int32, initialReplicas string) *leaderworkersetv1.LeaderWorkerSet {
 	lws := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -485,11 +462,4 @@ func TestGetSlices(t *testing.T) {
 		ds.Spec.Slices = ptr.To[int32](3)
 		assert.Equal(t, int32(3), GetSlices(ds))
 	})
-}
-
-func TestHasSliceLabel(t *testing.T) {
-	assert.False(t, HasSliceLabel(nil), "nil labels")
-	assert.False(t, HasSliceLabel(map[string]string{}), "no slice label")
-	assert.False(t, HasSliceLabel(map[string]string{disaggregatedsetv1.SliceLabelKey: ""}), "empty slice label is a legacy object")
-	assert.True(t, HasSliceLabel(map[string]string{disaggregatedsetv1.SliceLabelKey: "0"}), "slice 0 still counts as labelled")
 }

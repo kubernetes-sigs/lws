@@ -41,6 +41,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -660,6 +661,555 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 	}
 }
 
+func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
+	tests := []struct {
+		name              string
+		policy            leaderworkerset.RestartPolicyType
+		limit             *int32
+		count             int32
+		wantLeaderDeleted bool
+		wantCount         int32
+		wantExhausted     bool
+		initialExhausted  bool
+	}{
+		{name: "nil budget preserves unbounded recreation", wantLeaderDeleted: true},
+		{name: "zero budget terminates the first failed group", limit: ptr.To[int32](0), wantLeaderDeleted: true, wantExhausted: true},
+		{name: "one remaining restart consumes budget and deletes the leader", limit: ptr.To[int32](1), wantLeaderDeleted: true, wantCount: 1},
+		{name: "after-start policy consumes budget and deletes the leader", policy: leaderworkerset.RecreateGroupAfterStart, limit: ptr.To[int32](1), wantLeaderDeleted: true, wantCount: 1},
+		{name: "exhausted budget terminates the group without incrementing", limit: ptr.To[int32](1), count: 1, wantLeaderDeleted: true, wantCount: 1, wantExhausted: true},
+		{name: "increasing the limit keeps an already exhausted group terminating", limit: ptr.To[int32](2), count: 1, wantLeaderDeleted: true, wantCount: 1, wantExhausted: true, initialExhausted: true},
+		{name: "unsetting the limit keeps an already exhausted group terminating", wantLeaderDeleted: true, wantExhausted: true, initialExhausted: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			if err := corev1.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			if err := leaderworkerset.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			policy := tc.policy
+			if policy == "" {
+				policy = leaderworkerset.RecreateGroupOnPodRestart
+			}
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).
+				RestartPolicy(policy).Obj()
+			if tc.limit != nil {
+				lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = tc.limit
+			}
+			if tc.count > 0 {
+				lws.Annotations = map[string]string{
+					leaderworkerset.GroupRestartCountsAnnotationKey: fmt.Sprintf(`{"revision-a/0":%d}`, tc.count),
+				}
+			}
+			leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+			leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+			leader.Status.Phase = corev1.PodRunning
+			leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			if tc.initialExhausted {
+				leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+				leader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+			r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+			deleted, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+			if err != nil {
+				t.Fatalf("handleRestartPolicy() error = %v", err)
+			}
+			if deleted != tc.wantLeaderDeleted {
+				t.Fatalf("leaderDeleted = %t, want %t", deleted, tc.wantLeaderDeleted)
+			}
+
+			var updatedLWS leaderworkerset.LeaderWorkerSet
+			if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+				t.Fatal(err)
+			}
+			counts, err := parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := counts["revision-a/0"]; got != tc.wantCount {
+				t.Fatalf("restart count = %d, want %d", got, tc.wantCount)
+			}
+			if tc.wantExhausted {
+				var terminating corev1.Pod
+				if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &terminating); err != nil {
+					t.Fatal(err)
+				}
+				if terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" {
+					t.Fatal("terminating leader is missing the budget exhausted marker")
+				}
+				if !controllerutil.ContainsFinalizer(&terminating, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+					t.Fatal("terminating leader is missing the restart-budget cleanup finalizer")
+				}
+				if terminating.DeletionTimestamp == nil {
+					t.Fatal("exhausted leader was not placed into deletion")
+				}
+			}
+		})
+	}
+}
+
+func TestReconcilePodDuringLWSDeletionOnlyRemovesBudgetFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	now := metav1.Now()
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+	lws.DeletionTimestamp = &now
+	lws.Finalizers = []string{"test.lws/finalizer"}
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`,
+	}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	leader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+
+	var updatedLeader corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &updatedLeader); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&updatedLeader, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("restart-budget finalizer was not removed during LWS deletion")
+	}
+	var updatedWorker corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(worker), &updatedWorker); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&updatedWorker, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("worker restart-budget finalizer was not removed during LWS deletion")
+	}
+	var updatedLWS leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]; got != `{"revision-a/0":1}` {
+		t.Fatalf("restart counts changed during LWS deletion: %q", got)
+	}
+}
+
+func TestReconcilePodWithoutLWSRemovesGroupFinalizers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	leader := wrappers.MakePodWithLabels("missing-lws", "0", "0", "default", 2)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker := wrappers.MakePodWithLabels("missing-lws", "0", "1", "default", 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(leader, worker).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+
+	for _, pod := range []*corev1.Pod{leader, worker} {
+		var updated corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &updated); err != nil {
+			t.Fatal(err)
+		}
+		if controllerutil.ContainsFinalizer(&updated, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			t.Fatalf("restart-budget finalizer was not removed from %s", pod.Name)
+		}
+	}
+}
+
+func TestReconcilePodDuringLWSDeletionRemovesWorkerFinalizerWithoutLeaderFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	now := metav1.Now()
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).Obj()
+	lws.DeletionTimestamp = &now
+	lws.Finalizers = []string{"test.lws/finalizer"}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+
+	var updatedWorker corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(worker), &updatedWorker); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&updatedWorker, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("worker restart-budget finalizer was not removed")
+	}
+}
+
+func TestHandleRestartPolicyRefreshesBudgetState(t *testing.T) {
+	for _, deleting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("leaderDeleting=%t", deleting), func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, leaderworkerset.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+			staleLWS := lws.DeepCopy()
+			lws.Annotations = map[string]string{leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`}
+			leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+			leader.UID = "current-leader"
+			leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+			leader.Status.Phase = corev1.PodRunning
+			leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			leader.Finalizers = []string{"test.lws/retain"}
+			staleLeader := leader.DeepCopy()
+			if deleting {
+				now := metav1.Now()
+				leader.DeletionTimestamp = &now
+			}
+			cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+			r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
+			if _, err := r.handleRestartPolicy(context.Background(), *staleLeader, *staleLWS); err != nil {
+				t.Fatal(err)
+			}
+			var actual corev1.Pod
+			if err := cli.Get(context.Background(), client.ObjectKeyFromObject(leader), &actual); err != nil {
+				t.Fatal(err)
+			}
+			exhausted := actual.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+			if exhausted != !deleting {
+				t.Errorf("exhausted=%t, want %t; budget must use the current leader and count", exhausted, !deleting)
+			}
+		})
+	}
+}
+
+func TestReconcilePodIgnoresRecoveredLeaderDeletion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, leaderworkerset.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(2).Obj()
+	lws.Annotations = map[string]string{leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":2}`}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	leader.UID = "replacement-leader"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+	leader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+	oldLeader := leader.DeepCopy()
+	oldLeader.UID = "recovered-leader"
+	oldLeader.Finalizers = nil
+	oldLeader.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+	now := metav1.Now()
+	oldLeader.DeletionTimestamp = &now
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+	r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(oldLeader, true)); err != nil {
+		t.Fatal(err)
+	}
+	var updatedLWS leaderworkerset.LeaderWorkerSet
+	if err := cli.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]; got != lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] {
+		t.Errorf("old leader deletion changed replacement restart counts: %q", got)
+	}
+	var updatedWorker corev1.Pod
+	if err := cli.Get(context.Background(), client.ObjectKeyFromObject(worker), &updatedWorker); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&updatedWorker, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Error("old leader deletion released the replacement worker")
+	}
+}
+
+func TestExhaustedGroupFinalizesWorkersAndRecoversExplicitly(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Name("test-sample").Replica(2).Size(2).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1,"revision-a/1":1}`,
+	}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	leader.UID = "leader-uid"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.Annotations = map[string]string{leaderworkerset.GroupRestartBudgetRecoverAnnotationKey: "true"}
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.UID = "worker-uid"
+	worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+	worker.Status.Phase = corev1.PodRunning
+	worker.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+	otherLeader := wrappers.MakePodWithLabels(lws.Name, "1", "0", lws.Namespace, 2)
+	otherLeader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	otherLeader.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker, otherLeader).Build()
+	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+	deleted, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
+	if err != nil {
+		t.Fatalf("handleRestartPolicy() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("exhausted group leader was not deleted")
+	}
+
+	var terminatingLeader, terminatingWorker corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &terminatingLeader); err != nil {
+		t.Fatal(err)
+	}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(worker), &terminatingWorker); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range []*corev1.Pod{&terminatingLeader, &terminatingWorker} {
+		if !controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+			t.Fatalf("Pod %s is missing the restart-budget finalizer", pod.Name)
+		}
+	}
+	if terminatingLeader.DeletionTimestamp == nil {
+		t.Fatal("exhausted leader is not terminating")
+	}
+	if terminatingLeader.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] != "" {
+		t.Fatal("a recovery annotation set before exhaustion was not cleared")
+	}
+
+	// Deletion alone is not a recovery signal.
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(&terminatingLeader, false)); err != nil {
+		t.Fatalf("reconcilePod() without recovery annotation error = %v", err)
+	}
+	var stillTerminating corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &stillTerminating); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&stillTerminating, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("leader finalizer was removed without explicit recovery")
+	}
+
+	if stillTerminating.Annotations == nil {
+		stillTerminating.Annotations = map[string]string{}
+	}
+	stillTerminating.Annotations[leaderworkerset.GroupRestartBudgetRecoverAnnotationKey] = "true"
+	if err := fakeClient.Update(context.Background(), &stillTerminating); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(&stillTerminating, false)); err != nil {
+		t.Fatalf("reconcilePod() recovery error = %v", err)
+	}
+
+	var recoveredWorker corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(worker), &recoveredWorker); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&recoveredWorker, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("worker finalizer was not removed during recovery")
+	}
+	var untouchedLeader corev1.Pod
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(otherLeader), &untouchedLeader); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&untouchedLeader, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
+		t.Fatal("recovery removed another group's finalizer")
+	}
+	var updatedLWS leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := counts["revision-a/0"]; found || counts["revision-a/1"] != 1 {
+		t.Fatalf("recovery changed the wrong restart counts: %#v", counts)
+	}
+}
+
+func TestGroupLifecycleTeardownRequested(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		replicas    int32
+		stsReplicas int32
+		groupIndex  string
+		podRevision string
+		stsRevision string
+		partition   int32
+		want        bool
+	}{
+		{name: "scale down removes the exhausted ordinal", replicas: 1, stsReplicas: 1, groupIndex: "1", podRevision: "revision-a", want: true},
+		{name: "active surge ordinal is not scale down", replicas: 1, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-a"},
+		{name: "rollout removes an ordinal inside the partition", replicas: 2, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-b", partition: 1, want: true},
+		{name: "rollout preserves an ordinal below the partition", replicas: 2, stsReplicas: 2, groupIndex: "0", podRevision: "revision-a", stsRevision: "revision-b", partition: 1},
+		{name: "current revision is not teardown", replicas: 2, stsReplicas: 2, groupIndex: "1", podRevision: "revision-a", stsRevision: "revision-a", partition: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Name("test-sample").Replica(int(tc.replicas)).Obj()
+			leader := wrappers.MakePodWithLabels(lws.Name, tc.groupIndex, "0", lws.Namespace, 1)
+			leader.Labels[leaderworkerset.RevisionKey] = tc.podRevision
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      lws.Name,
+					Namespace: lws.Namespace,
+					Labels:    map[string]string{leaderworkerset.RevisionKey: tc.stsRevision},
+				},
+				Spec: appsv1.StatefulSetSpec{UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(tc.partition)},
+				}, Replicas: ptr.To(tc.stsReplicas)},
+			}
+			r := &PodReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build()}
+			got, err := r.groupLifecycleTeardownRequested(context.Background(), lws, leader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("groupLifecycleTeardownRequested() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClearGroupRestartCountResetsOnlyCurrentRevisionAndGroup(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1,"revision-a/1":2}`,
+	}
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+	r := &PodReconciler{Client: fakeClient}
+	if err := r.clearGroupRestartCount(context.Background(), lws, leader); err != nil {
+		t.Fatal(err)
+	}
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := counts["revision-a/0"]; found || counts["revision-a/1"] != 2 {
+		t.Fatalf("unexpected counts after reset: %#v", counts)
+	}
+}
+
+func TestPersistGroupRestartCountPreservesConcurrentGroupUpdates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	stored := wrappers.BuildLeaderWorkerSet("default").Obj()
+	stored.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/1":2}`,
+	}
+	stale := stored.DeepCopy()
+	stale.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = `{"revision-a/0":1}`
+	leader := wrappers.MakePodWithLabels(stored.Name, "0", "0", stored.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stored).Build()
+	r := &PodReconciler{Client: fakeClient}
+	if err := r.persistGroupRestartCount(context.Background(), stale, leader, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stored), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["revision-a/0"] != 1 || counts["revision-a/1"] != 2 {
+		t.Fatalf("concurrent group count was lost: %#v", counts)
+	}
+}
+
+func TestParseGroupRestartCountsRejectsNegativeCount(t *testing.T) {
+	if _, err := parseGroupRestartCounts(`{"revision-a/0":-1}`); err == nil {
+		t.Fatal("expected negative persisted count to be rejected")
+	}
+}
+
+func TestParseGroupRestartCountsRejectsNull(t *testing.T) {
+	if _, err := parseGroupRestartCounts(`null`); err == nil {
+		t.Fatal("null restart counts must be rejected before a map write can panic")
+	}
+}
+
 func TestSetNodeSelectorForWorkerPodsReturnsNotFoundWhenLeaderNodeIsMissing(t *testing.T) {
 	reconciler := PodReconciler{Client: fake.NewClientBuilder().Build()}
 	leaderPod := &corev1.Pod{
@@ -848,7 +1398,14 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeClient := fake.NewClientBuilder().WithObjects(tc.objects...).Build()
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, leaderworkerset.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+			objects := append([]client.Object{lws.DeepCopy()}, tc.objects...)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			reconciler := PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
 
 			leaderDeleted, err := reconciler.handleRestartPolicy(context.Background(), tc.reconciledPod, *lws.DeepCopy())
@@ -964,7 +1521,8 @@ func TestStatefulSetEventHandlerEnqueuesControllerPod(t *testing.T) {
 	)
 	defer queue.ShutDown()
 
-	statefulSetEventHandler().Create(
+	r := &PodReconciler{Client: fake.NewClientBuilder().Build()}
+	r.statefulSetEventHandler().Create(
 		context.Background(),
 		event.TypedCreateEvent[client.Object]{Object: statefulSet},
 		queue,

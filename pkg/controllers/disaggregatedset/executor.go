@@ -488,7 +488,7 @@ func (executor *RollingUpdateExecutor) scaleDownOld(
 			replicas := int(getLWSReplicas(lws))
 			drain := plannedDrain[i]
 			newReplicas := replicas - drain
-			// Address by the LWS's actual name so a legacy slice-0 object drains too.
+			// Address the discovered LWS by its actual name.
 			lwsName := lws.Name
 			log.Info("Scaling down", "lws", lwsName, "from", replicas, "to", newReplicas)
 			if err := executor.LWSManager.Scale(ctx, ds, lwsName, newReplicas); err != nil {

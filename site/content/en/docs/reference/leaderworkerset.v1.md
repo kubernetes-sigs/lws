@@ -499,6 +499,23 @@ The former named Default policy is deprecated, will be removed in the future,
 replace with None policy for the same behavior.</p>
 </td>
 </tr>
+<tr><td><code>maxGroupRestarts</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>maxGroupRestarts bounds how many times the controller can recreate a group
+under RecreateGroupOnPodRestart or RecreateGroupAfterStart. Once exhausted,
+the controller terminates the group, retains Pod API objects that can still
+receive finalizers, and stops automatic group recreation. Setting
+leaderworkerset.sigs.k8s.io/recover=true on the retained leader Pod resets
+that revision/group's budget and allows recovery. Changing this value does
+not resume an exhausted group. It is opt-in: when unset (nil), group
+recreation is unlimited. This field is not supported with groupIdentity=Hash.
+Budget exhaustion handling requires Kubernetes 1.27 or later because it
+relies on deleted Pods reaching a terminal phase while finalizers retain
+their API objects.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
