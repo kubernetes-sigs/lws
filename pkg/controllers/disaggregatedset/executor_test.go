@@ -1301,6 +1301,33 @@ func TestOldInitialReplicasAreBackfilledOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestOldInitialReplicasPreservesExplicitZero(t *testing.T) {
+	ctx := context.Background()
+	ds := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "test", Namespace: testNamespace, UID: "uid",
+	}}
+	lws := buildTestLWS("test-0-hashA-prefill", testNamespace, testRolePrefill, "hashA").
+		Replica(0).
+		Annotation(map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "0"}).
+		Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).WithObjects(lws).Build()
+	recorder := events.NewFakeRecorder(10)
+	executor := newTestExecutor(fakeClient)
+	executor.Record = recorder
+	old := disaggregatedsetutils.RevisionRolesList{{Revision: "hashA", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: lws,
+	}}}
+
+	require.NoError(t, executor.ensureOldInitialReplicas(ctx, ds, old))
+	stored, err := executor.LWSManager.Get(ctx, ds, lws.Name)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	initial, ok := disaggregatedsetutils.GetInitialReplicas(stored)
+	require.True(t, ok)
+	assert.Zero(t, initial)
+	assert.Empty(t, recorder.Events, "a valid zero baseline must not be repaired or warn")
+}
+
 func TestExternalTargetUpdatesCurrentRevisionInitialReplicas(t *testing.T) {
 	ctx := context.Background()
 	ds := &disaggregatedsetv1.DisaggregatedSet{

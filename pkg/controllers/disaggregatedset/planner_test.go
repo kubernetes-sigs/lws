@@ -116,6 +116,22 @@ func TestComputeNextStep(t *testing.T) {
 		}}
 		assert.Nil(t, ComputeNextStep(snapshot, RoleReplicaState{1}))
 	})
+
+	t.Run("pipelines through a narrow window while the first batch is unready", func(t *testing.T) {
+		snapshot := readySnapshot(
+			[]int{20, 20}, []int{18, 18}, []int{2, 2}, []int{20, 20},
+			configs([]int{2, 2}, []int{2, 2}),
+		)
+		for i := range snapshot {
+			snapshot[i].NewReadyReplicas = 0
+		}
+
+		result := ComputeNextStep(snapshot, nil)
+
+		require.NotNil(t, result)
+		assert.Equal(t, RoleReplicaState{18, 18}, result.Past, "availability floors prevent another old drain")
+		assert.Equal(t, RoleReplicaState{4, 4}, result.New, "a second batch is issued inside the 1/20 window")
+	})
 }
 
 func TestComputeAllSteps(t *testing.T) {
