@@ -37,12 +37,12 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
 
-	// InitialReplicasAnnotationKey records the baseline used by the controller as
-	// initialOld when the revision becomes old. After this revision's rollout
-	// completes, the value matches its replica count. If a new revision is created
-	// before this revision completes, the value instead represents its intended
-	// replica count: the number of replicas it would have reached if the rollout
-	// had completed.
+	// InitialReplicasAnnotationKey records this LWS revision's intended replica
+	// count. While the revision is current, the controller keeps it aligned with
+	// the target. When a newer revision makes it old, the value freezes and is
+	// used as its drain baseline. It can therefore differ from the current Spec
+	// after an interrupted rollout. The annotation is deleted with the LWS after
+	// the old revision finishes draining.
 	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
 )
 
