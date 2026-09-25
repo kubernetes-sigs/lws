@@ -378,6 +378,10 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 		return ctrl.Result{}, err
 	}
 
+	if err := r.syncGroupReplacementPolicies(ctx, disaggregatedSet, slice); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	oldRevisions, _, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -494,13 +498,30 @@ func (r *DisaggregatedSetReconciler) reconcileRoleSimple(ctx context.Context, di
 		}
 	}
 
-	// groupReplacementPolicy is not part of the revision, so a change on the
-	// role has to be pushed onto the existing LWS rather than waiting for a
-	// rollout that will never come.
-	if err := r.LWSManager.SyncGroupReplacementPolicy(ctx, existing, config.Spec.GroupReplacementPolicy); err != nil {
-		return fmt.Errorf("failed to sync groupReplacementPolicy on LWS %s: %w", existing.Name, err)
-	}
+	return nil
+}
 
+// syncGroupReplacementPolicies pushes each role's groupReplacementPolicy onto
+// its Hash LWS, old revisions included. DS rollouts never replace groups in
+// place, so the policy only affects recovery and applies mid-rollout too.
+func (r *DisaggregatedSetReconciler) syncGroupReplacementPolicies(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int) error {
+	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
+	lwsList, err := r.LWSManager.ListForSlice(ctx, disaggregatedSet, slice, "")
+	if err != nil {
+		return fmt.Errorf("failed to list LWS for groupReplacementPolicy sync: %w", err)
+	}
+	for _, lws := range lwsList {
+		if lws.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
+			continue
+		}
+		config, ok := roleConfigs[lws.Labels[disaggregatedsetv1.RoleLabelKey]]
+		if !ok {
+			continue
+		}
+		if err := r.LWSManager.SyncGroupReplacementPolicy(ctx, lws, config.Spec.GroupReplacementPolicy); err != nil {
+			return fmt.Errorf("failed to sync groupReplacementPolicy on LWS %s: %w", lws.Name, err)
+		}
+	}
 	return nil
 }
 
