@@ -203,7 +203,20 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 
-	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	// Old groups keep the size and subdomain policy of their own revision.
+	groupLws := &leaderWorkerSet
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		// The per-replica service is named after the leader's subdomain: the pod
 		// name in ordinal mode, a group key derived name in hash mode. A stale or
 		// terminating service short-circuits the rest of the reconcile, so no
@@ -244,7 +257,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	}
 
 	// Once size = 1, no need to create worker statefulSets.
-	if *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size == 1 {
+	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
 		return ctrl.Result{}, nil
 	}
 
@@ -263,11 +276,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 			return ctrl.Result{}, nil
 		}
-	}
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
-	if err != nil {
-		log.Error(err, "Getting lws revisions")
-		return ctrl.Result{}, err
 	}
 	if revision == nil {
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
@@ -323,7 +331,17 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	workerStsReady := false
 	var workerSts appsv1.StatefulSet
-	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
+	workerStsName := workerStatefulSetName(&pod, &leaderWorkerSet)
+	err = r.Get(ctx, types.NamespacedName{Name: workerStsName, Namespace: leaderWorkerSet.Namespace}, &workerSts)
+	if apierrors.IsNotFound(err) && workerStsName != pod.Name {
+		// Hash groups created before v0.12 named their workers after the leader pod.
+		err = r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts)
+	}
+	if err == nil && hashIdentity && !metav1.IsControlledBy(&workerSts, &pod) {
+		// Two groups whose keys share an 8 character prefix get the same host name.
+		return ctrl.Result{}, fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
+	}
+	if err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, err
 		}
@@ -387,7 +405,12 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size))
+	// Old groups keep their original size during a rollout that changes it.
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+		groupSize = size
+	}
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
 	if err != nil {
 		return false, err
 	}
@@ -1207,6 +1230,16 @@ func controllerOwnerReference(owner metav1.Object, scheme *runtime.Scheme) (*met
 		WithController(true), nil
 }
 
+// workerStatefulSetName names a group's worker StatefulSet. Hash mode uses the
+// leader's host name instead of its pod name, since admission knows the host
+// name before the pod is named and needs worker names for TPU variables.
+func workerStatefulSetName(leaderPod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) string {
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && leaderPod.Spec.Hostname != "" {
+		return leaderPod.Spec.Hostname
+	}
+	return leaderPod.Name
+}
+
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
 func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
@@ -1267,7 +1300,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
 	statefulSetLabels[leaderworkerset.RoleLabelKey] = leaderworkerset.RoleWorker
-	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
+	statefulSetConfig := appsapplyv1.StatefulSet(workerStatefulSetName(&leaderPod, &lws), leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
 			WithReplicas(*currentLws.Spec.LeaderWorkerTemplate.Size - 1).

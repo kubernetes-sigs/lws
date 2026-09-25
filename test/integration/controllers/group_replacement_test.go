@@ -109,7 +109,7 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 				return false
 			}
 			var sts appsv1.StatefulSet
-			return apierrors.IsNotFound(k8sClient.Get(ctx, replacementKey, &sts))
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Spec.Hostname}, &sts))
 		}, 3*time.Second, testing.Interval).Should(gomega.BeTrue())
 
 		ginkgo.By("releasing the old leader")
@@ -132,7 +132,7 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 				return false
 			}
 			var sts appsv1.StatefulSet
-			return k8sClient.Get(ctx, replacementKey, &sts) == nil
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Spec.Hostname}, &sts) == nil
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 	})
 
@@ -222,7 +222,7 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 				return false
 			}
 			var sts appsv1.StatefulSet
-			return apierrors.IsNotFound(k8sClient.Get(ctx, replacementKey, &sts))
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Spec.Hostname}, &sts))
 		}, 3*time.Second, testing.Interval).Should(gomega.BeTrue())
 
 		ginkgo.By("releasing the orphaned worker")
@@ -245,7 +245,7 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 				return false
 			}
 			var sts appsv1.StatefulSet
-			return k8sClient.Get(ctx, replacementKey, &sts) == nil
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Spec.Hostname}, &sts) == nil
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 	})
 

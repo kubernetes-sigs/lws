@@ -522,7 +522,8 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		gomega.Expect(leaderPods.Items).To(gomega.HaveLen(1))
 		oldLeaderKey := client.ObjectKeyFromObject(&leaderPods.Items[0])
 
-		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: oldLeaderKey.Name + "-1"}})).To(gomega.Succeed())
+		// Hash workers are named after the leader's host name.
+		gomega.Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: lws.Namespace, Name: leaderPods.Items[0].Spec.Hostname + "-1"}})).To(gomega.Succeed())
 
 		var replacementKey types.NamespacedName
 		ginkgo.By("waiting for the replacement leader to appear while the old leader is still terminating")
@@ -558,7 +559,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 				return false
 			}
 			var sts appsv1.StatefulSet
-			return apierrors.IsNotFound(k8sClient.Get(ctx, replacementKey, &sts))
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Spec.Hostname}, &sts))
 		}, 10*time.Second, interval).Should(gomega.BeTrue())
 
 		ginkgo.By("admitting the replacement once the old group is gone")
