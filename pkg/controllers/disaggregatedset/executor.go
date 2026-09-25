@@ -184,6 +184,11 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+	// Only activeRevision drains during this phase. Ready replicas in the other
+	// old revisions remain serving, so count them toward the desired capacity
+	// instead of asking the target revision to replace them yet. Once the active
+	// revision reaches zero, another old revision is selected and the target
+	// revision can grow further.
 	parkedReadyReplicas := planningStateForRevision(snapshot, allRoleNames, activeRevision)
 	revisionsToDrain := disaggregatedsetutils.RevisionRolesList{activeRevision}
 
