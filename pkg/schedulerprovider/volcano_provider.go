@@ -69,7 +69,7 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 	// With groupIdentity Hash, group names are derived from the random group key
 	// drawn at leader pod admission time, so replica PodGroups cannot be pre-created
 	// from the replica count up front (identical to KubernetesProvider). Instead,
-	// CreatePodGroupIfNotExists creates the LWS-owned PodGroup when the leader pod
+	// CreatePodGroupIfNotExists creates a leader-owned PodGroup when the leader pod
 	// is reconciled, before its scheduling gate is lifted.
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
 		return nil
@@ -111,13 +111,18 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
+	// Only PodGroups pre-created for Ordinal groups are owned by the LWS. Hash
+	// groups never reuse a name, so the leader owns them and they are garbage
+	// collected with it.
+	ownedByLWS := lws.Spec.Scheduling != nil && lws.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash
+
 	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
 		if pg.DeletionTimestamp != nil {
 			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
 		owner := metav1.GetControllerOf(&pg)
-		if lws.Spec.Scheduling != nil {
+		if ownedByLWS {
 			if owner == nil ||
 				owner.APIVersion != leaderworkerset.GroupVersion.String() ||
 				owner.Kind != "LeaderWorkerSet" ||
@@ -181,7 +186,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	}
 
 	var controllerOwner metav1.Object = leaderPod
-	if lws.Spec.Scheduling != nil {
+	if ownedByLWS {
 		controllerOwner = lws
 	}
 	err := ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())

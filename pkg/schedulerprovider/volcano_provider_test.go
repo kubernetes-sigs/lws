@@ -578,7 +578,9 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		return lws
 	}
 
-	t.Run("hash identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
+	// Hash groups never reuse a name, so an LWS-owned PodGroup would outlive its
+	// group. The leader owns it instead and it is garbage collected with it.
+	t.Run("hash identity with typed scheduling creates leader-owned PodGroup", func(t *testing.T) {
 		lws := newLWS(leaderworkerset.GroupIdentityHash, true)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 		provider := NewVolcanoProvider(fakeClient)
@@ -593,9 +595,9 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 
 		owner := metav1.GetControllerOf(pg)
 		assert.NotNil(t, owner)
-		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
-		assert.Equal(t, lws.Name, owner.Name)
-		assert.Equal(t, lws.UID, owner.UID)
+		assert.Equal(t, "Pod", owner.Kind)
+		assert.Equal(t, leader.Name, owner.Name)
+		assert.Equal(t, leader.UID, owner.UID)
 
 		// Subsequent call succeeds idempotently.
 		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
