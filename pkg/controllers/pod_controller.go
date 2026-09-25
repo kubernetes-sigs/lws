@@ -203,7 +203,20 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 
-	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	// Old groups keep the size and subdomain policy of their own revision.
+	groupLws := &leaderWorkerSet
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		// The per-replica service is named after the leader's subdomain: the pod
 		// name in ordinal mode, a group key derived name in hash mode. A stale or
 		// terminating service short-circuits the rest of the reconcile, so no
@@ -244,7 +257,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	}
 
 	// Once size = 1, no need to create worker statefulSets.
-	if *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size == 1 {
+	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
 		return ctrl.Result{}, nil
 	}
 
@@ -263,11 +276,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
 			return ctrl.Result{}, nil
 		}
-	}
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
-	if err != nil {
-		log.Error(err, "Getting lws revisions")
-		return ctrl.Result{}, err
 	}
 	if revision == nil {
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
@@ -387,7 +395,12 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size))
+	// Old groups keep their original size during a rollout that changes it.
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+		groupSize = size
+	}
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
 	if err != nil {
 		return false, err
 	}
