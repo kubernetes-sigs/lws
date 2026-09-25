@@ -2,6 +2,7 @@ package disaggregatedset
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -104,76 +105,6 @@ func TestGetInitialReplicas(t *testing.T) {
 	})
 }
 
-func TestSetInitialReplicas(t *testing.T) {
-	t.Run("sets annotation as string on LWS with nil annotations", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-lws",
-			},
-			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				Replicas: ptr.To(int32(3)),
-			},
-		}
-
-		SetInitialReplicas(leaderWorkerSet, 3)
-
-		require.NotNil(t, leaderWorkerSet.Annotations, "annotations should be initialized")
-		assert.Equal(t, "3", leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey], "annotation should be '3'")
-	})
-
-	t.Run("sets annotation as string on LWS with existing annotations", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-lws",
-				Annotations: map[string]string{
-					"other-key": "other-value",
-				},
-			},
-			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				Replicas: ptr.To(int32(5)),
-			},
-		}
-
-		SetInitialReplicas(leaderWorkerSet, 5)
-
-		assert.Equal(t, "5", leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey], "annotation should be '5'")
-		assert.Equal(t, "other-value", leaderWorkerSet.Annotations["other-key"], "other annotations should be preserved")
-	})
-
-	t.Run("overwrites existing annotation", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-lws",
-				Annotations: map[string]string{
-					disaggregatedsetv1.InitialReplicasAnnotationKey: "10",
-				},
-			},
-			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				Replicas: ptr.To(int32(7)),
-			},
-		}
-
-		SetInitialReplicas(leaderWorkerSet, 7)
-
-		assert.Equal(t, "7", leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey], "annotation should be '7'")
-	})
-
-	t.Run("handles zero replicas", func(t *testing.T) {
-		leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-lws",
-			},
-			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				Replicas: ptr.To(int32(0)),
-			},
-		}
-
-		SetInitialReplicas(leaderWorkerSet, 0)
-
-		assert.Equal(t, "0", leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey], "annotation should be '0'")
-	})
-}
-
 func TestComputeInitialReplicaState(t *testing.T) {
 	t.Run("returns empty map for empty list", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{}
@@ -184,7 +115,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0 for empty list")
 	})
 
-	t.Run("sums prefill annotations correctly", func(t *testing.T) {
+	t.Run("takes maximum prefill annotation", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -218,11 +149,11 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3+2)")
+		assert.Equal(t, 3, state[testUtilsRolePrefill], "replacement revisions must not be added together")
 		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0")
 	})
 
-	t.Run("sums decode annotations correctly", func(t *testing.T) {
+	t.Run("takes maximum decode annotation", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -257,10 +188,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		state := ComputeInitialReplicaState(lwsList)
 
 		assert.Equal(t, 0, state[testUtilsRolePrefill], "prefill should be 0")
-		assert.Equal(t, 10, state[testUtilsRoleDecode], "decode should be 10 (4+6)")
+		assert.Equal(t, 6, state[testUtilsRoleDecode], "replacement revisions must not be added together")
 	})
 
-	t.Run("sums mixed prefill and decode correctly", func(t *testing.T) {
+	t.Run("takes per-role maximum across mixed revisions", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -308,7 +239,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3+2)")
+		assert.Equal(t, 3, state[testUtilsRolePrefill])
 		assert.Equal(t, 6, state[testUtilsRoleDecode], "decode should be 6")
 	})
 
@@ -389,7 +320,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 5, state[testUtilsRolePrefill], "prefill should be 5 (3 from valid annotation + 2 from fallback)")
+		assert.Equal(t, 3, state[testUtilsRolePrefill], "the fallback is another revision target, not additive capacity")
 	})
 
 	t.Run("handles nil spec.Replicas with missing annotation", func(t *testing.T) {
@@ -464,6 +395,37 @@ func TestGroupByRevision(t *testing.T) {
 	})
 }
 
+func TestRevisionRolesListSortedByNewestTimestamp(t *testing.T) {
+	base := time.Date(2026, time.September, 17, 10, 0, 0, 0, time.UTC)
+	revision := func(name string, created ...time.Time) RevisionRoles {
+		roles := make(map[string]*leaderworkersetv1.LeaderWorkerSet, len(created))
+		for i, role := range []string{testUtilsRolePrefill, testUtilsRoleDecode} {
+			if i < len(created) {
+				roles[role] = &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(created[i])}}
+			}
+		}
+		return RevisionRoles{Revision: name, Roles: roles}
+	}
+	assert.Equal(t, base.Add(time.Minute), revision("multiple roles", base, base.Add(time.Minute)).LatestCreationTime())
+	assert.True(t, (RevisionRoles{}).LatestCreationTime().IsZero())
+
+	revisions := RevisionRolesList{
+		revision("tie-b", base.Add(2*time.Minute)),
+		revision("oldest", base),
+		revision("newest", base.Add(2*time.Minute)),
+		revision("tie-a", base.Add(2*time.Minute)),
+		revision("middle", base.Add(time.Minute)),
+	}
+
+	sorted := revisions.SortedByNewestTimestamp()
+
+	assert.Equal(t, []string{"newest", "tie-a", "tie-b", "middle", "oldest"},
+		[]string{sorted[0].Revision, sorted[1].Revision, sorted[2].Revision, sorted[3].Revision, sorted[4].Revision})
+	assert.Equal(t, []string{"tie-b", "oldest", "newest", "tie-a", "middle"},
+		[]string{revisions[0].Revision, revisions[1].Revision, revisions[2].Revision, revisions[3].Revision, revisions[4].Revision})
+	assert.Empty(t, (RevisionRolesList(nil)).SortedByNewestTimestamp())
+}
+
 func TestRevisionRolesListTotals(t *testing.T) {
 	revisions := GroupByRevision([]*leaderworkersetv1.LeaderWorkerSet{
 		revisionRoleLWS("rev-a", testUtilsRolePrefill, ptr.To[int32](2), "5"),
@@ -482,11 +444,17 @@ func TestRevisionRolesListTotals(t *testing.T) {
 		assert.Equal(t, 0, revisions.GetTotalReplicasPerRole("unknown"))
 	})
 
-	t.Run("initial replicas prefer the annotation and fall back to spec replicas", func(t *testing.T) {
-		// rev-a prefill annotation 5 + rev-b prefill nil→1 + rev-c prefill invalid annotation → spec 4
-		assert.Equal(t, 10, revisions.GetTotalInitialReplicasPerRole(testUtilsRolePrefill))
-		// decode has no annotation anywhere → spec replicas
-		assert.Equal(t, 3, revisions.GetTotalInitialReplicasPerRole(testUtilsRoleDecode))
+	t.Run("initial replicas are read from one revision and fall back to spec replicas", func(t *testing.T) {
+		byRevision := make(map[string]RevisionRoles, len(revisions))
+		for _, revision := range revisions {
+			byRevision[revision.Revision] = revision
+		}
+
+		assert.Equal(t, 5, byRevision["rev-a"].GetInitialReplicasPerRole(testUtilsRolePrefill))
+		assert.Equal(t, 1, byRevision["rev-b"].GetInitialReplicasPerRole(testUtilsRolePrefill), "nil Spec defaults to one")
+		assert.Equal(t, 4, byRevision["rev-c"].GetInitialReplicasPerRole(testUtilsRolePrefill), "invalid annotation falls back to Spec")
+		assert.Equal(t, 3, byRevision["rev-a"].GetInitialReplicasPerRole(testUtilsRoleDecode))
+		assert.Equal(t, 0, byRevision["rev-a"].GetInitialReplicasPerRole("unknown"))
 	})
 }
 

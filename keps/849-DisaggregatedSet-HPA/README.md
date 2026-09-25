@@ -340,7 +340,7 @@ The DS controller writes back to each scaler's status at the end of every reconc
 
 ### Rolling Update Interaction
 
-`scaler.spec.replicas` is the target for the role's post-rollout steady state. The DS controller feeds it as the new-revision LeaderWorkerSet's target; old revisions continue to drain on the schedule the planner set at rollout start (the pre-existing `initial-replicas` annotation mechanism), independent of the scaler.
+`scaler.spec.replicas` is the number of replicas the role should have after the rollout finishes. The DS controller uses it as the current revision's target and copies it to that revision's `initial-replicas` annotation. Once a revision becomes old, its annotation is frozen. Later scaler updates affect only the current revision. The [N-Dimensional Rolling Update Algorithm in KEP-766](/keps/766-DisaggregatedSet#n-dimensional-rolling-update-algorithm) defines how `initial-replicas` is used for interrupted rollouts and multiple old revisions.
 
 Because `status.selector` is leader-only and aggregate across revisions, HPA sees the serving fleet's leaders during a rolling update and its math stays self-consistent — the count HPA divides its metric by (`status.replicas`, LWS groups) matches the number of pods its selector matches (one leader per group), and the value it writes (`spec.replicas`, LWS groups) becomes the new-revision target as the old revision drains to zero.
 
@@ -364,7 +364,7 @@ This has three unresolved implications for scaler-driven roles:
    - **Per-slice scaler CR** — one scaler per (DS, role, slice). Explicit; combinatorial (`roles × slices` scalers per DS).
    - **Per-role, applied per-slice** — value is *per slice*, consistent with `spec.roles[].spec.replicas`. UX footgun: HPA sets N, gets N × slices pods.
 2. **`status.selector` across slices.** The leader-only selector used in the single-slice design (`disaggregatedset.x-k8s.io/name=<ds>,disaggregatedset.x-k8s.io/role=<role>,leaderworkerset.sigs.k8s.io/worker-index=0`) would match leaders across all slices too. That's the right shape if the scaler covers all slices (aggregate scope), but wrong if per-slice scalers are chosen — those would need to add a `disaggregatedset.x-k8s.io/slice=<slice>` filter.
-3. **Concurrent per-slice rollouts.** Each slice runs its own rolling update on its own clock (that's the point of the slices feature), so a single role can be mid-rollout in one slice and steady-state in another simultaneously. The current no-shrink guard (which prevents the new-revision target from falling below the current in-flight count) tracks state per role; with slices it would have to track state per `(slice, role)` pair, or an HPA scale-up seen against one slice's in-flight count could incorrectly clamp another slice.
+3. **Concurrent per-slice rollouts.** Each slice runs its own rolling update on its own clock (that's the point of the slices feature), so a single role can be mid-rollout in one slice while another slice has no revision transition in progress. The current no-shrink guard (which prevents the new-revision target from falling below the current in-flight count) tracks state per role; with slices it would have to track state per `(slice, role)` pair, or an HPA scale-up seen against one slice's in-flight count could incorrectly clamp another slice.
 
 **Alpha scope: `spec.slices` must be 1 (default).** The DS webhook rejects a `spec.slices > 1` value while any role has `scaling.mode: External`. Since the scaler is auto-created only after this validation passes, no scaler ever exists in the multi-slice case. This lets alpha ship the single-slice case cleanly (which is the most common shape today) without prejudging the multi-slice design.
 
@@ -424,6 +424,7 @@ to implement this enhancement.
 - 2026-07-03: Initial KEP draft (user-authored scaler CR shape).
 - 2026-07-04: Documented interaction with KEP-846 slices; scoped alpha to `spec.slices == 1`.
 - 2026-07-08: Redesigned around auto-created scalers.
+- 2026-09-14: Updated rolling-update behavior to preserve each revision's scaler target when a rollout is interrupted.
 
 ## Drawbacks
 
@@ -457,4 +458,3 @@ Skip the new CRD; instead embed autoscaling target/current fields on the role it
 Same CRD, but with an explicit `spec.targetRef {name, role}` field the user fills in. The DS controller reads whatever scaler the user created and attaches a non-controller ownerRef for GC.
 
 **Rejected because**: it makes users author `2N+1` manifests for `N` scalable roles instead of `N+1`, and forces the controller to use a non-standard ownerRef (`Controller=false`) since the user owns the object — breaking with the Kubernetes precedent that composite workloads own their subordinate objects (Deployment→ReplicaSet, DisaggregatedSet→LeaderWorkerSet). The autocreate design keeps the same CRD schema; the (DS, role) association just moves from an explicit spec field to the deterministic name + controller ownerRef.
-

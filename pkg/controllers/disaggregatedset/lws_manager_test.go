@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -214,6 +215,55 @@ func TestManagerDelete(t *testing.T) {
 	})
 }
 
+func TestTerminatingOldLWSIsIgnored(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
+	ds.UID = types.UID("test-uid")
+
+	terminatingOld := func(replicas int32) *leaderworkersetv1.LeaderWorkerSet {
+		lws := buildOwnedManagerTestLWS("old-prefill", replicas, ds)
+		lws.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, "old", "prefill")
+		now := metav1.Now()
+		lws.DeletionTimestamp = &now
+		lws.Finalizers = []string{"foregroundDeletion"}
+		return lws
+	}
+
+	t.Run("excluded from rollout discovery regardless of Spec", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(terminatingOld(3)).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		oldRevisions, newRevision, err := manager.GetRevisionRolesList(context.Background(), ds, 0, "target")
+
+		require.NoError(t, err)
+		assert.Empty(t, oldRevisions)
+		assert.Nil(t, newRevision)
+	})
+
+	t.Run("cleanup does not delete or emit an event again", func(t *testing.T) {
+		deleteCalls := 0
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(terminatingOld(0)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deleteCalls++
+					return c.Delete(ctx, obj, opts...)
+				},
+			}).Build()
+		recorder := events.NewFakeRecorder(10)
+		reconciler := &DisaggregatedSetReconciler{
+			LWSManager: NewLeaderWorkerSetManager(fakeClient),
+			Record:     recorder,
+		}
+
+		require.NoError(t, reconciler.cleanupDrainedLWS(context.Background(), ds, 0, "target"))
+		assert.Zero(t, deleteCalls)
+		assert.Empty(t, recorder.Events)
+	})
+}
+
 // TestManagerScale tests the manager's Scale method.
 func TestManagerScale(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -282,33 +332,33 @@ func TestManagerScale(t *testing.T) {
 	})
 }
 
-// TestManagerSetInitialReplicas tests the manager's disaggregatedsetutils.SetInitialReplicas method.
-func TestManagerSetInitialReplicas(t *testing.T) {
+func TestManagerUpdateInitialReplicas(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
 
-	t.Run("skips update when value already correct", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-		)
+	t.Run("synchronizes the supplied object when the stored value is already correct", func(t *testing.T) {
+		storedLWS := buildOwnedManagerTestLWS("test-lws", 3, ds)
+		storedLWS.Annotations = map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"}
+		observedLWS := storedLWS.DeepCopy()
+		observedLWS.Annotations = nil
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithRuntimeObjects(existingLWS).
+			WithRuntimeObjects(storedLWS).
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		oldValue, err := manager.SetInitialReplicas(context.Background(), "default", "test-lws", 5)
-
-		require.NoError(t, err)
-		require.NotNil(t, oldValue)
-		require.Equal(t, 5, *oldValue)
+		require.NoError(t, manager.UpdateInitialReplicas(context.Background(), ds, observedLWS, 5))
+		assert.Equal(t, "5", observedLWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
 	})
 
-	t.Run("updates when overwriting different value", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(
-			map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
-		)
+	t.Run("updates Kubernetes and the supplied object", func(t *testing.T) {
+		existingLWS := buildOwnedManagerTestLWS("test-lws", 3, ds)
+		existingLWS.Annotations = map[string]string{
+			disaggregatedsetv1.InitialReplicasAnnotationKey: "5",
+			"other-key": "other-value",
+		}
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -316,15 +366,18 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		oldValue, err := manager.SetInitialReplicas(context.Background(), "default", "test-lws", 10)
+		require.NoError(t, manager.UpdateInitialReplicas(context.Background(), ds, existingLWS, 10))
+		assert.Equal(t, "10", existingLWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+		assert.Equal(t, "other-value", existingLWS.Annotations["other-key"])
 
-		require.NoError(t, err)
-		require.NotNil(t, oldValue)
-		require.Equal(t, 5, *oldValue)
+		var stored leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-lws"}, &stored))
+		assert.Equal(t, "10", stored.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+		assert.Equal(t, "other-value", stored.Annotations["other-key"])
 	})
 
 	t.Run("sets annotation when not present", func(t *testing.T) {
-		existingLWS := buildManagerTestLWS(nil)
+		existingLWS := buildOwnedManagerTestLWS("test-lws", 3, ds)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -332,10 +385,22 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		oldValue, err := manager.SetInitialReplicas(context.Background(), "default", "test-lws", 5)
+		require.NoError(t, manager.UpdateInitialReplicas(context.Background(), ds, existingLWS, 5))
+		assert.Equal(t, "5", existingLWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
 
-		require.NoError(t, err)
-		require.Nil(t, oldValue)
+		var stored leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-lws"}, &stored))
+		assert.Equal(t, "5", stored.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+	})
+
+	t.Run("refuses a foreign-owned LWS", func(t *testing.T) {
+		foreignDS := testManagerDS("some-other-ds")
+		foreignLWS := buildOwnedManagerTestLWS("test-lws", 3, foreignDS)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(foreignLWS).Build()
+
+		manager := NewLeaderWorkerSetManager(fakeClient)
+		err := manager.UpdateInitialReplicas(context.Background(), ds, foreignLWS, 5)
+		require.Error(t, err)
 	})
 
 	t.Run("returns error when LWS not found", func(t *testing.T) {
@@ -344,7 +409,8 @@ func TestManagerSetInitialReplicas(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		_, err := manager.SetInitialReplicas(context.Background(), "default", "nonexistent", 5)
+		missing := &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "nonexistent", Namespace: "default"}}
+		err := manager.UpdateInitialReplicas(context.Background(), ds, missing, 5)
 
 		require.Error(t, err)
 	})
@@ -362,12 +428,21 @@ func TestManagerCreate(t *testing.T) {
 			Namespace: "default",
 			UID:       "test-uid",
 		},
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: "prefill",
+			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
+			}},
+		}}},
 	}
+	testRole := &testDeploy.Spec.Roles[0]
+	testRevision := disaggregatedsetutils.ComputeRevision(testDeploy.Spec.Roles)
+	testLWSName := disaggregatedsetutils.GenerateName(testDeploy.Name, 0, testRevision, testRole.Name)
 
 	t.Run("returns nil when LWS already exists and is owned by this DS (idempotent)", func(t *testing.T) {
 		// Represents a concurrent reconcile of this same DisaggregatedSet
 		// having already created it.
-		existingLWS := buildOwnedManagerTestLWS("test-deploy-0-abc123-prefill", 3, testDeploy)
+		existingLWS := buildOwnedManagerTestLWS(testLWSName, 3, testDeploy)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -375,26 +450,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		params := disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: testDeploy,
-			Role:             "prefill",
-			Revision:         "abc123",
-			Replicas:         3,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
-				disaggregatedsetv1.RoleLabelKey:     "prefill",
-				disaggregatedsetv1.RevisionLabelKey: "abc123",
-			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-						Size: ptr.To(int32(1)),
-					},
-				}},
-			},
-		}
-
-		err := manager.Create(context.Background(), params)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, 3, 3)
 		require.NoError(t, err) // Should not error, creation is idempotent
 	})
 
@@ -406,7 +462,7 @@ func TestManagerCreate(t *testing.T) {
 	// requeues instead.
 	t.Run("errors when the name is taken by a foreign-owned LWS", func(t *testing.T) {
 		foreignDS := testManagerDS("some-other-ds")
-		foreignLWS := buildOwnedManagerTestLWS("test-deploy-0-abc123-prefill", 3, foreignDS)
+		foreignLWS := buildOwnedManagerTestLWS(testLWSName, 3, foreignDS)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -414,26 +470,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		params := disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: testDeploy,
-			Role:             "prefill",
-			Revision:         "abc123",
-			Replicas:         3,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
-				disaggregatedsetv1.RoleLabelKey:     "prefill",
-				disaggregatedsetv1.RevisionLabelKey: "abc123",
-			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-						Size: ptr.To(int32(1)),
-					},
-				}},
-			},
-		}
-
-		err := manager.Create(context.Background(), params)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, 3, 3)
 		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
@@ -443,46 +480,26 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		params := disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-deploy",
-					Namespace: "default",
-					UID:       "test-uid",
-				},
-			},
-			Role:     "prefill",
-			Revision: "abc123",
-			Replicas: 3,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
-				disaggregatedsetv1.RoleLabelKey:     "prefill",
-				disaggregatedsetv1.RevisionLabelKey: "abc123",
-			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-						Size: ptr.To(int32(1)),
-					},
-				}},
-			},
-		}
-
-		err := manager.Create(context.Background(), params)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, 0, 3)
 		require.NoError(t, err)
+
+		var lws leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: testLWSName}, &lws))
+		require.NotNil(t, lws.Spec.Replicas)
+		assert.Zero(t, *lws.Spec.Replicas)
+		initial, ok := disaggregatedsetutils.GetInitialReplicas(&lws)
+		require.True(t, ok)
+		assert.EqualValues(t, 3, initial)
 	})
 
 	t.Run("merges user metadata with system labels taking precedence", func(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
-			},
-			Role: "prefill", Revision: "rev1", Replicas: 1,
-			Labels: map[string]string{disaggregatedsetv1.SetNameLabelKey: "test", disaggregatedsetv1.RoleLabelKey: "prefill", "app": "system-app"},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+		ds := &disaggregatedsetv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
+			Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
@@ -492,16 +509,20 @@ func TestManagerCreate(t *testing.T) {
 						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
 					},
 				},
-			},
-		})
+			}}},
+		}
+		role := &ds.Spec.Roles[0]
+		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+
+		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-0-rev1-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name), Namespace: ds.Namespace}, &lws))
 
 		require.Equal(t, "q1", lws.Labels["kueue.x-k8s.io/queue-name"]) // user label
-		require.Equal(t, "system-app", lws.Labels["app"])               // system wins
+		require.Equal(t, "test-0-prefill", lws.Labels["app"])           // generated system label wins
 		require.Equal(t, "val", lws.Annotations["note"])                // user annotation
 	})
 
@@ -509,37 +530,34 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
-				Spec: disaggregatedsetv1.DisaggregatedSetSpec{
-					PlacementPolicy: &disaggregatedsetv1.PlacementPolicy{
-						Type:     disaggregatedsetv1.PlacementExclusiveTopology,
-						Topology: "topology.example.com/rack",
-					},
+		ds := &disaggregatedsetv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
+			Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+				PlacementPolicy: &disaggregatedsetv1.PlacementPolicy{
+					Type:     disaggregatedsetv1.PlacementExclusiveTopology,
+					Topology: "topology.example.com/rack",
 				},
-			},
-			Role: "prefill", Slice: 1, Revision: "abc123", Replicas: 2,
-			Labels: map[string]string{
-				disaggregatedsetv1.SetNameLabelKey: "test-deploy",
-				disaggregatedsetv1.RoleLabelKey:    "prefill",
-				disaggregatedsetv1.SliceLabelKey:   "1",
-			},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(2)),
-						LeaderTemplate: &corev1.PodTemplateSpec{},
-						WorkerTemplate: corev1.PodTemplateSpec{},
-					},
+				Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+					Name: "prefill",
+					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+							Size:           ptr.To(int32(2)),
+							LeaderTemplate: &corev1.PodTemplateSpec{},
+							WorkerTemplate: corev1.PodTemplateSpec{},
+						},
+					}},
 				}},
 			},
-		})
+		}
+		role := &ds.Spec.Roles[0]
+		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+
+		err := manager.Create(context.Background(), ds, role, 1, 2, 2)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-deploy-1-abc123-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: disaggregatedsetutils.GenerateName(ds.Name, 1, revision, role.Name), Namespace: ds.Namespace}, &lws))
 
 		// Both the leader and worker templates must carry the injected placement terms.
 		for name, tmpl := range map[string]*corev1.PodTemplateSpec{
@@ -567,26 +585,27 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		err := manager.Create(context.Background(), disaggregatedsetutils.CreateParams{
-			DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
-			},
-			Role: "prefill", Slice: 0, Revision: "abc123", Replicas: 1,
-			Labels: map[string]string{disaggregatedsetv1.SetNameLabelKey: "test-deploy"},
-			Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+		ds := &disaggregatedsetv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
+			Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+				Name: "prefill",
 				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 						Size:           ptr.To(int32(2)),
 						LeaderTemplate: &corev1.PodTemplateSpec{},
 					},
 				}},
-			},
-		})
+			}}},
+		}
+		role := &ds.Spec.Roles[0]
+		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+
+		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
 		require.NoError(t, fakeClient.Get(context.Background(),
-			client.ObjectKey{Name: "test-deploy-0-abc123-prefill", Namespace: "default"}, &lws))
+			client.ObjectKey{Name: disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name), Namespace: ds.Namespace}, &lws))
 		require.Nil(t, lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Affinity, "worker affinity")
 		require.Nil(t, lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Affinity, "leader affinity")
 	})
@@ -854,36 +873,29 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	manager := NewLeaderWorkerSetManager(fakeClient)
 
-	params := disaggregatedsetutils.CreateParams{
-		DisaggregatedSet: &disaggregatedsetv1.DisaggregatedSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-deploy",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deploy",
+			Namespace: "default",
+			UID:       "test-uid",
 		},
-		Role:     "prefill",
-		Revision: "abc123",
-		Replicas: 2,
-		Labels: map[string]string{
-			disaggregatedsetv1.SetNameLabelKey:  "test-deploy",
-			disaggregatedsetv1.RoleLabelKey:     "prefill",
-			disaggregatedsetv1.RevisionLabelKey: "abc123",
-		},
-		Config: &disaggregatedsetv1.DisaggregatedRoleSpec{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: "prefill",
 			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 				GroupIdentity: leaderworkersetv1.GroupIdentityHash,
 				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 					Size: ptr.To(int32(2)),
 				},
 			}},
-		},
+		}}},
 	}
+	role := &ds.Spec.Roles[0]
+	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-	require.NoError(t, manager.Create(context.Background(), params))
+	require.NoError(t, manager.Create(context.Background(), ds, role, 0, 2, 2))
 
-	lwsName := disaggregatedsetutils.GenerateName("test-deploy", params.Slice, "abc123", "prefill")
-	lws, err := manager.Get(context.Background(), params.DisaggregatedSet, lwsName)
+	lwsName := disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name)
+	lws, err := manager.Get(context.Background(), ds, lwsName)
 	require.NoError(t, err)
 	require.NotNil(t, lws)
 	require.Equal(t, leaderworkersetv1.GroupIdentityHash, lws.Spec.GroupIdentity)

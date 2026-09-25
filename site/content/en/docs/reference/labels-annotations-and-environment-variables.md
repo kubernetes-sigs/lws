@@ -37,7 +37,7 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/group-restart-counts`        | Stores restart budget consumed by each revision and replica group.     | `{"abc123/0":3}`                 | LeaderWorkerSet (only if maxGroupRestarts is set)                                      |
 | `leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted` | Marks the retained leader after its group exhausts its restart budget. | true                             | Pod (only leader)                                                                      |
 | `leaderworkerset.sigs.k8s.io/recover`                     | Set to `true` on a retained leader to explicitly recover its exhausted group. | true                       | Pod (only an exhausted leader)                                                         |
-| `disaggregatedset.x-k8s.io/initial-replicas`              | Initial replica count captured when a DisaggregatedSet rollout starts. | 2                                | LeaderWorkerSet                                                                         |
+| `disaggregatedset.x-k8s.io/initial-replicas`              | Replica baseline used by the controller when the DisaggregatedSet revision becomes old. | 2                    | LeaderWorkerSet                                                                         |
 
 # Environment Variables
 

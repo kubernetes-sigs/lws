@@ -24,1045 +24,494 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// step is a helper to create UpdateStep instances for tests
 func step(past, new []int) UpdateStep {
-	return UpdateStep{
-		Past: past,
-		New:  new,
-	}
+	return UpdateStep{Past: past, New: new}
 }
 
-// completes checks if rollout completes correctly (old=0, new=target)
-func completes(steps []UpdateStep, target []int) bool {
+func configs(surge, unavailable []int) []RollingUpdateConfig {
+	result := make([]RollingUpdateConfig, len(surge))
+	for i := range surge {
+		result[i] = RollingUpdateConfig{MaxSurge: surge[i], MaxUnavailable: unavailable[i]}
+	}
+	return result
+}
+
+func readySnapshot(
+	initialOld, currentOld, currentNew, targetNew RoleReplicaState,
+	config []RollingUpdateConfig,
+) rolloutSnapshot {
+	snapshot := make(rolloutSnapshot, len(initialOld))
+	for i := range initialOld {
+		snapshot[i] = roleRolloutSnapshot{
+			InitialOldReplicas:    initialOld[i],
+			ActiveOldSpecReplicas: currentOld[i],
+			OldSpecReplicas:       currentOld[i],
+			OldReadyReplicas:      currentOld[i],
+			NewSpecReplicas:       currentNew[i],
+			NewReadyReplicas:      currentNew[i],
+			NewTargetReplicas:     targetNew[i],
+			Config:                config[i],
+		}
+	}
+	return snapshot
+}
+
+func rolloutCompletes(steps []UpdateStep, target []int) bool {
 	if len(steps) == 0 {
 		return false
 	}
 	last := steps[len(steps)-1]
-	// Check all old replicas are 0
-	for _, v := range last.Past {
-		if v != 0 {
-			return false
-		}
-	}
-	// Check new replicas match target
-	if len(last.New) != len(target) {
-		return false
-	}
-	for i, v := range last.New {
-		if v != target[i] {
+	for i := range target {
+		if last.Past[i] != 0 || last.New[i] < target[i] {
 			return false
 		}
 	}
 	return true
 }
 
-// totalAtStep returns total replica count at a step
-func totalAtStep(s UpdateStep) int {
-	total := 0
-	for _, v := range s.Past {
-		total += v
-	}
-	for _, v := range s.New {
-		total += v
-	}
-	return total
+func TestComputeNextStep(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
+		result := ComputeNextStep(readySnapshot(
+			[]int{3, 6}, []int{0, 0}, []int{4, 7}, []int{3, 6},
+			configs([]int{1, 1}, []int{0, 0}),
+		), nil)
+		assert.Nil(t, result)
+	})
+
+	t.Run("fresh rollout", func(t *testing.T) {
+		result := ComputeNextStep(readySnapshot(
+			[]int{4, 4}, []int{4, 4}, []int{0, 0}, []int{4, 4},
+			configs([]int{1, 1}, []int{0, 0}),
+		), nil)
+		require.NotNil(t, result)
+		assert.Positive(t, result.New[0])
+		assert.Positive(t, result.New[1])
+	})
+
+	t.Run("new side catches up to released capacity", func(t *testing.T) {
+		result := ComputeNextStep(readySnapshot(
+			[]int{5, 5}, []int{3, 3}, []int{0, 0}, []int{5, 5},
+			configs([]int{0, 0}, []int{2, 2}),
+		), nil)
+		require.NotNil(t, result)
+		assert.Equal(t, []int{2, 2}, result.New)
+	})
+
+	t.Run("allows progress up to the fractional window", func(t *testing.T) {
+		result := ComputeNextStep(readySnapshot(
+			[]int{2, 2}, []int{2, 2}, []int{0, 1}, []int{2, 2},
+			configs([]int{1, 1}, []int{0, 0}),
+		), nil)
+		require.NotNil(t, result)
+		assert.Equal(t, []int{2, 1}, result.Past,
+			"Decode may drain one replica while Prefill remains at the other edge of the window")
+		assert.Equal(t, []int{1, 1}, result.New)
+	})
+
+	t.Run("phase target does not lower the global availability floor", func(t *testing.T) {
+		snapshot := rolloutSnapshot{{
+			InitialOldReplicas: 6, ActiveOldSpecReplicas: 3, OldSpecReplicas: 3, OldReadyReplicas: 2,
+			NewSpecReplicas: 4, NewReadyReplicas: 4, NewTargetReplicas: 6,
+			Config: RollingUpdateConfig{MaxSurge: 1},
+		}}
+		assert.Nil(t, ComputeNextStep(snapshot, RoleReplicaState{1}))
+	})
+
+	t.Run("pipelines through a narrow window while the first batch is unready", func(t *testing.T) {
+		snapshot := readySnapshot(
+			[]int{20, 20}, []int{18, 18}, []int{2, 2}, []int{20, 20},
+			configs([]int{2, 2}, []int{2, 2}),
+		)
+		for i := range snapshot {
+			snapshot[i].NewReadyReplicas = 0
+		}
+
+		result := ComputeNextStep(snapshot, nil)
+
+		require.NotNil(t, result)
+		assert.Equal(t, RoleReplicaState{18, 18}, result.Past, "availability floors prevent another old drain")
+		assert.Equal(t, RoleReplicaState{4, 4}, result.New, "a second batch is issued inside the 1/20 window")
+	})
 }
 
-// stepsEqual compares two step slices for equality
-func stepsEqual(a, b []UpdateStep) bool {
-	if len(a) != len(b) {
-		return false
+func TestComputeAllSteps(t *testing.T) {
+	want := []UpdateStep{
+		step([]int{10, 2}, []int{0, 0}),
+		step([]int{9, 2}, []int{2, 2}),
+		step([]int{8, 2}, []int{3, 4}),
+		step([]int{7, 2}, []int{4, 6}),
+		step([]int{6, 2}, []int{5, 8}),
+		step([]int{5, 1}, []int{6, 8}),
+		step([]int{4, 1}, []int{6, 8}),
+		step([]int{3, 1}, []int{6, 8}),
+		step([]int{2, 1}, []int{6, 8}),
+		step([]int{1, 1}, []int{6, 8}),
+		step([]int{0, 0}, []int{6, 8}),
 	}
-	for i := range a {
-		if !stepEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
+	assert.Equal(t, want, ComputeAllSteps(
+		[]int{10, 2}, []int{6, 8}, configs([]int{2, 2}, []int{0, 0})))
 }
 
-// stepEqual compares two UpdateStep instances for equality
-func stepEqual(a, b UpdateStep) bool {
-	if len(a.Past) != len(b.Past) || len(a.New) != len(b.New) {
-		return false
-	}
-	for i := range a.Past {
-		if a.Past[i] != b.Past[i] {
-			return false
+func TestPlannerProgress(t *testing.T) {
+	t.Run("imbalanced zero surge does not wedge", func(t *testing.T) {
+		for _, initial := range [][]int{{1, 4}, {1, 5}} {
+			steps := ComputeAllSteps(initial, initial, configs([]int{0, 0}, []int{1, 1}))
+			assert.True(t, rolloutCompletes(steps, initial), "rollout stopped for %v", initial)
 		}
-	}
-	for i := range a.New {
-		if a.New[i] != b.New[i] {
-			return false
-		}
-	}
-	return true
+	})
+
+	t.Run("larger budgets reduce steps", func(t *testing.T) {
+		initial := []int{20, 4}
+		small := ComputeAllSteps(initial, initial, configs([]int{1, 1}, []int{0, 0}))
+		large := ComputeAllSteps(initial, initial, configs([]int{3, 3}, []int{2, 2}))
+		require.True(t, rolloutCompletes(small, initial))
+		require.True(t, rolloutCompletes(large, initial))
+		assert.Less(t, len(large), len(small))
+	})
+
+	t.Run("old and new use independent fractions", func(t *testing.T) {
+		initial, target := []int{4, 4}, []int{12, 3}
+		assert.Equal(t, 4, fractionalStepCount(initial))
+		assert.Equal(t, 12, fractionalStepCount(target))
+		assert.True(t, rolloutCompletes(
+			ComputeAllSteps(initial, target, configs([]int{2, 2}, []int{2, 2})), target))
+	})
 }
 
-// =============================================================================
-// Exact Step Sequence Tests
-// =============================================================================
-
-func TestComputeAllSteps_ExactSequence(t *testing.T) {
-	testCases := []struct {
-		name        string
-		sourceRole0 int
-		sourceRole1 int
-		targetRole0 int
-		targetRole1 int
-		config      []RollingUpdateConfig
-		expected    []UpdateStep
+func TestNRolePlannerInvariants(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		initial, target    []int
+		surge, unavailable []int
 	}{
-		// Small symmetric cases (decoupled: scale-up then scale-down alternately)
-		{
-			name:        "small_1_1_surge1",
-			sourceRole0: 1, sourceRole1: 1, targetRole0: 1, targetRole1: 1,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{1, 1}, []int{0, 0}),
-				step([]int{1, 1}, []int{1, 1}), // scale up
-				step([]int{0, 0}, []int{1, 1}), // scale down
-			},
-		},
-		{
-			name:        "small_2_2_surge1",
-			sourceRole0: 2, sourceRole1: 2, targetRole0: 2, targetRole1: 2,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{2, 2}, []int{0, 0}),
-				step([]int{2, 2}, []int{1, 1}), // scale up (surge: 2+1 <= 2+1)
-				step([]int{1, 1}, []int{1, 1}), // scale down
-				step([]int{1, 1}, []int{2, 2}), // scale up (surge: 1+2 <= 2+1)
-				step([]int{0, 0}, []int{2, 2}), // scale down
-			},
-		},
-		{
-			name:        "small_3_3_surge1",
-			sourceRole0: 3, sourceRole1: 3, targetRole0: 3, targetRole1: 3,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{3, 3}, []int{0, 0}),
-				step([]int{3, 3}, []int{1, 1}), // scale up
-				step([]int{2, 2}, []int{1, 1}), // scale down
-				step([]int{2, 2}, []int{2, 2}), // scale up
-				step([]int{1, 1}, []int{2, 2}), // scale down
-				step([]int{1, 1}, []int{3, 3}), // scale up
-				step([]int{0, 0}, []int{3, 3}), // scale down
-			},
-		},
-		// Medium asymmetric cases (decoupled steps)
-		{
-			name:        "medium_6_2_surge1",
-			sourceRole0: 6, sourceRole1: 2, targetRole0: 6, targetRole1: 2,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{6, 2}, []int{0, 0}),
-				step([]int{6, 2}, []int{1, 1}),
-				step([]int{5, 2}, []int{1, 1}),
-				step([]int{5, 2}, []int{2, 1}),
-				step([]int{4, 2}, []int{2, 1}),
-				step([]int{4, 2}, []int{3, 1}),
-				step([]int{3, 1}, []int{3, 1}),
-				step([]int{3, 1}, []int{4, 2}),
-				step([]int{2, 1}, []int{4, 2}),
-				step([]int{2, 1}, []int{5, 2}),
-				step([]int{1, 1}, []int{5, 2}),
-				step([]int{1, 1}, []int{6, 2}),
-				step([]int{0, 0}, []int{6, 2}),
-			},
-		},
-		{
-			name:        "medium_6_2_surge2",
-			sourceRole0: 6, sourceRole1: 2, targetRole0: 6, targetRole1: 2,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
-			expected: []UpdateStep{
-				step([]int{6, 2}, []int{0, 0}),
-				step([]int{6, 2}, []int{2, 1}),
-				step([]int{4, 2}, []int{2, 1}),
-				step([]int{4, 2}, []int{4, 2}),
-				step([]int{2, 1}, []int{4, 2}),
-				step([]int{2, 1}, []int{6, 2}),
-				step([]int{0, 0}, []int{6, 2}),
-			},
-		},
-		{
-			name:        "medium_6_4_surge2",
-			sourceRole0: 6, sourceRole1: 4, targetRole0: 6, targetRole1: 4,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
-			expected: []UpdateStep{
-				step([]int{6, 4}, []int{0, 0}),
-				step([]int{6, 4}, []int{2, 2}),
-				step([]int{4, 3}, []int{2, 2}),
-				step([]int{4, 3}, []int{4, 3}),
-				step([]int{2, 2}, []int{4, 3}),
-				step([]int{2, 2}, []int{6, 4}),
-				step([]int{0, 0}, []int{6, 4}),
-			},
-		},
-		// Asymmetric cases (gradual interleaved drain)
-		{
-			name:        "asymmetric_10_1_surge1",
-			sourceRole0: 10, sourceRole1: 1, targetRole0: 10, targetRole1: 1,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{10, 1}, []int{0, 0}),
-				step([]int{10, 1}, []int{1, 1}),
-				step([]int{9, 1}, []int{1, 1}),
-				step([]int{9, 1}, []int{2, 1}),
-				step([]int{8, 1}, []int{2, 1}),
-				step([]int{8, 1}, []int{3, 1}),
-				step([]int{7, 1}, []int{3, 1}),
-				step([]int{7, 1}, []int{4, 1}),
-				step([]int{6, 1}, []int{4, 1}),
-				step([]int{6, 1}, []int{5, 1}),
-				step([]int{5, 1}, []int{5, 1}),
-				step([]int{5, 1}, []int{6, 1}),
-				step([]int{4, 1}, []int{6, 1}),
-				step([]int{4, 1}, []int{7, 1}),
-				step([]int{3, 1}, []int{7, 1}),
-				step([]int{3, 1}, []int{8, 1}),
-				step([]int{2, 1}, []int{8, 1}),
-				step([]int{2, 1}, []int{9, 1}),
-				step([]int{1, 1}, []int{9, 1}),
-				step([]int{1, 1}, []int{10, 1}),
-				step([]int{0, 0}, []int{10, 1}),
-			},
-		},
-		{
-			name:        "asymmetric_1_10_surge1",
-			sourceRole0: 1, sourceRole1: 10, targetRole0: 1, targetRole1: 10,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{1, 10}, []int{0, 0}),
-				step([]int{1, 10}, []int{1, 1}),
-				step([]int{1, 9}, []int{1, 1}),
-				step([]int{1, 9}, []int{1, 2}),
-				step([]int{1, 8}, []int{1, 2}),
-				step([]int{1, 8}, []int{1, 3}),
-				step([]int{1, 7}, []int{1, 3}),
-				step([]int{1, 7}, []int{1, 4}),
-				step([]int{1, 6}, []int{1, 4}),
-				step([]int{1, 6}, []int{1, 5}),
-				step([]int{1, 5}, []int{1, 5}),
-				step([]int{1, 5}, []int{1, 6}),
-				step([]int{1, 4}, []int{1, 6}),
-				step([]int{1, 4}, []int{1, 7}),
-				step([]int{1, 3}, []int{1, 7}),
-				step([]int{1, 3}, []int{1, 8}),
-				step([]int{1, 2}, []int{1, 8}),
-				step([]int{1, 2}, []int{1, 9}),
-				step([]int{1, 1}, []int{1, 9}),
-				step([]int{1, 1}, []int{1, 10}),
-				step([]int{0, 0}, []int{1, 10}),
-			},
-		},
-		// Large symmetric cases (decoupled: alternating scale-up/scale-down)
-		{
-			name:        "large_10_10_surge1",
-			sourceRole0: 10, sourceRole1: 10, targetRole0: 10, targetRole1: 10,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{10, 10}, []int{0, 0}),
-				step([]int{10, 10}, []int{1, 1}), // scale up
-				step([]int{9, 9}, []int{1, 1}),   // scale down
-				step([]int{9, 9}, []int{2, 2}),   // scale up
-				step([]int{8, 8}, []int{2, 2}),   // scale down
-				step([]int{8, 8}, []int{3, 3}),
-				step([]int{7, 7}, []int{3, 3}),
-				step([]int{7, 7}, []int{4, 4}),
-				step([]int{6, 6}, []int{4, 4}),
-				step([]int{6, 6}, []int{5, 5}),
-				step([]int{5, 5}, []int{5, 5}),
-				step([]int{5, 5}, []int{6, 6}),
-				step([]int{4, 4}, []int{6, 6}),
-				step([]int{4, 4}, []int{7, 7}),
-				step([]int{3, 3}, []int{7, 7}),
-				step([]int{3, 3}, []int{8, 8}),
-				step([]int{2, 2}, []int{8, 8}),
-				step([]int{2, 2}, []int{9, 9}),
-				step([]int{1, 1}, []int{9, 9}),
-				step([]int{1, 1}, []int{10, 10}),
-				step([]int{0, 0}, []int{10, 10}),
-			},
-		},
-		{
-			// Surge constraint: old + new <= 10 + 3 = 13
-			// Interleaves scale-up and scale-down to respect surge
-			// When surge blocks scale-up, drain+scale-up are combined to avoid capacity dips
-			name:        "large_10_10_surge3",
-			sourceRole0: 10, sourceRole1: 10, targetRole0: 10, targetRole1: 10,
-			config: []RollingUpdateConfig{{MaxSurge: 3}, {MaxSurge: 3}},
-			expected: []UpdateStep{
-				step([]int{10, 10}, []int{0, 0}),
-				step([]int{10, 10}, []int{3, 3}), // scale up (10+3=13)
-				step([]int{8, 8}, []int{3, 3}),   // scale down
-				step([]int{8, 8}, []int{5, 5}),   // scale up (8+5=13)
-				step([]int{5, 5}, []int{8, 8}),   // drain+scale combined (5+8=13)
-				step([]int{3, 3}, []int{8, 8}),   // scale down (to allow 10)
-				step([]int{3, 3}, []int{10, 10}), // scale up (3+10=13)
-				step([]int{0, 0}, []int{10, 10}), // final drain
-			},
-		},
-		{
-			name:        "large_12_6_surge2",
-			sourceRole0: 12, sourceRole1: 6, targetRole0: 12, targetRole1: 6,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
-			expected: []UpdateStep{
-				step([]int{12, 6}, []int{0, 0}),
-				step([]int{12, 6}, []int{2, 1}),
-				step([]int{10, 5}, []int{2, 1}),
-				step([]int{10, 5}, []int{4, 2}),
-				step([]int{8, 4}, []int{4, 2}),
-				step([]int{8, 4}, []int{6, 3}),
-				step([]int{6, 3}, []int{6, 3}),
-				step([]int{6, 3}, []int{8, 4}),
-				step([]int{4, 2}, []int{8, 4}),
-				step([]int{4, 2}, []int{10, 5}),
-				step([]int{2, 1}, []int{10, 5}),
-				step([]int{2, 1}, []int{12, 6}),
-				step([]int{0, 0}, []int{12, 6}),
-			},
-		},
-		// Scale up/down scenarios (decoupled)
-		{
-			name:        "scale_up_1_1_to_3_3",
-			sourceRole0: 1, sourceRole1: 1, targetRole0: 3, targetRole1: 3,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{1, 1}, []int{0, 0}),
-				step([]int{1, 1}, []int{1, 1}), // scale up
-				step([]int{1, 1}, []int{2, 2}), // scale up (old still 1, new 2, surge ok: 1+2<=3+1)
-				step([]int{1, 1}, []int{3, 3}), // scale up (new at target)
-				step([]int{0, 0}, []int{3, 3}), // scale down
-			},
-		},
-		{
-			// Scale up 4→6 with surge=1: max total = 6+1 = 7
-			// Interleaves scale-up and scale-down to respect surge
-			// When surge blocks scale-up, drain+scale-up are combined to avoid capacity dips
-			name:        "scale_up_4_4_to_6_6",
-			sourceRole0: 4, sourceRole1: 4, targetRole0: 6, targetRole1: 6,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{4, 4}, []int{0, 0}),
-				step([]int{4, 4}, []int{1, 1}), // scale up (4+1=5)
-				step([]int{4, 4}, []int{2, 2}), // scale up (4+2=6)
-				step([]int{4, 4}, []int{3, 3}), // scale up (4+3=7)
-				step([]int{3, 3}, []int{4, 4}), // drain+scale combined (3+4=7)
-				step([]int{2, 2}, []int{5, 5}), // drain+scale combined (2+5=7)
-				step([]int{1, 1}, []int{6, 6}), // drain+scale combined (1+6=7)
-				step([]int{0, 0}, []int{6, 6}), // final drain
-			},
-		},
-		{
-			// Scale down 5→2: must drain to target+surge=3 before scale-up
-			name:        "scale_down_5_5_to_2_2",
-			sourceRole0: 5, sourceRole1: 5, targetRole0: 2, targetRole1: 2,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{5, 5}, []int{0, 0}),
-				step([]int{4, 4}, []int{0, 0}), // drain (5 > 2+1=3)
-				step([]int{3, 3}, []int{0, 0}), // drain
-				step([]int{2, 2}, []int{0, 0}), // drain to target
-				step([]int{2, 2}, []int{1, 1}), // scale up (2+1=3 <= 2+1=3)
-				step([]int{1, 1}, []int{1, 1}), // drain
-				step([]int{1, 1}, []int{2, 2}), // scale up (new at target)
-				step([]int{0, 0}, []int{2, 2}), // drain all old
-			},
-		},
-		{
-			// Mixed: role0 scales up (3→5), role1 scales down (5→3)
-			// Role1 must drain to 3+1=4 before scale-up can proceed
-			name:        "mixed_scale_3_5_to_5_3",
-			sourceRole0: 3, sourceRole1: 5, targetRole0: 5, targetRole1: 3,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 4}, []int{0, 0}), // drain role1 (5 > 3+1=4)
-				step([]int{2, 3}, []int{0, 0}), // drain both
-				step([]int{2, 3}, []int{1, 1}), // scale up (2+1<=6, 3+1=4 <= 3+1=4)
-				step([]int{2, 2}, []int{1, 1}), // drain role1
-				step([]int{2, 2}, []int{2, 2}), // scale up
-				step([]int{2, 2}, []int{3, 2}), // scale up
-				step([]int{1, 1}, []int{3, 2}), // drain
-				step([]int{1, 1}, []int{4, 3}), // scale up
-				step([]int{1, 1}, []int{5, 3}), // scale up (new at target)
-				step([]int{0, 0}, []int{5, 3}), // drain all old
-			},
-		},
-		{
-			// Asymmetric: role0 scales up (2→4), role1 scales down (4→2)
-			// Role1 must drain to 2+1=3 before scale-up
-			name:        "asymmetric_2_4_to_4_2",
-			sourceRole0: 2, sourceRole1: 4, targetRole0: 4, targetRole1: 2,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{2, 4}, []int{0, 0}),
-				step([]int{2, 3}, []int{0, 0}), // drain role1 (4 > 2+1=3)
-				step([]int{1, 2}, []int{0, 0}), // drain both
-				step([]int{1, 2}, []int{1, 1}), // scale up (1+1<=5, 2+1=3 <= 2+1=3)
-				step([]int{1, 2}, []int{2, 1}), // scale up
-				step([]int{1, 1}, []int{2, 1}), // drain role1
-				step([]int{1, 1}, []int{3, 2}), // scale up
-				step([]int{1, 1}, []int{4, 2}), // scale up (new at target)
-				step([]int{0, 0}, []int{4, 2}), // drain all old
-			},
-		},
-		{
-			// Proportional: role0 scales up (3→4), role1 scales down (5→2)
-			// Role1 must drain to 2+1=3 before scale-up
-			name:        "proportional_3_5_to_4_2",
-			sourceRole0: 3, sourceRole1: 5, targetRole0: 4, targetRole1: 2,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{3, 5}, []int{0, 0}),
-				step([]int{3, 4}, []int{0, 0}), // drain role1 (5 > 2+1=3)
-				step([]int{2, 3}, []int{0, 0}), // drain both
-				step([]int{2, 2}, []int{0, 0}), // drain role1 to target
-				step([]int{2, 2}, []int{1, 1}), // scale up (2+1<=5, 2+1=3 <= 2+1=3)
-				step([]int{2, 2}, []int{2, 1}), // scale up
-				step([]int{1, 1}, []int{2, 1}), // drain
-				step([]int{1, 1}, []int{3, 2}), // scale up
-				step([]int{1, 1}, []int{4, 2}), // scale up (new at target)
-				step([]int{0, 0}, []int{4, 2}), // drain all old
-			},
-		},
-		{
-			name:        "medium_4_4_surge2",
-			sourceRole0: 4, sourceRole1: 4, targetRole0: 4, targetRole1: 4,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
-			expected: []UpdateStep{
-				step([]int{4, 4}, []int{0, 0}),
-				step([]int{4, 4}, []int{2, 2}), // scale up (surge: 4+2<=4+2)
-				step([]int{2, 2}, []int{2, 2}), // scale down
-				step([]int{2, 2}, []int{4, 4}), // scale up (new at target)
-				step([]int{0, 0}, []int{4, 4}), // scale down
-			},
-		},
-		{
-			name:        "asymmetric_surge_4_6",
-			sourceRole0: 4, sourceRole1: 6, targetRole0: 4, targetRole1: 6,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 3}},
-			expected: []UpdateStep{
-				step([]int{4, 6}, []int{0, 0}),
-				step([]int{4, 6}, []int{2, 3}),
-				step([]int{2, 3}, []int{2, 3}),
-				step([]int{2, 3}, []int{4, 6}),
-				step([]int{0, 0}, []int{4, 6}),
-			},
-		},
-		{
-			name:        "asymmetric_5_3_surge2",
-			sourceRole0: 5, sourceRole1: 3, targetRole0: 5, targetRole1: 3,
-			config: []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}},
-			expected: []UpdateStep{
-				step([]int{5, 3}, []int{0, 0}),
-				step([]int{5, 3}, []int{2, 1}),
-				step([]int{4, 2}, []int{2, 1}),
-				step([]int{3, 2}, []int{2, 1}),
-				step([]int{3, 2}, []int{4, 2}),
-				step([]int{2, 1}, []int{4, 2}),
-				step([]int{2, 1}, []int{5, 3}),
-				step([]int{0, 0}, []int{5, 3}),
-			},
-		},
-		// Edge cases
-		{
-			name:        "fresh_deploy_0_0_to_3_3",
-			sourceRole0: 0, sourceRole1: 0, targetRole0: 3, targetRole1: 3,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{0, 0}, []int{0, 0}),
-				step([]int{0, 0}, []int{1, 1}),
-				step([]int{0, 0}, []int{2, 2}),
-				step([]int{0, 0}, []int{3, 3}),
-			},
-		},
-		{
-			name:        "empty_0_0_to_0_0",
-			sourceRole0: 0, sourceRole1: 0, targetRole0: 0, targetRole1: 0,
-			config: DefaultRollingUpdateConfig(2),
-			expected: []UpdateStep{
-				step([]int{0, 0}, []int{0, 0}),
-			},
-		},
-	}
-
-	for _, tc := range testCases {
+		{"three roles symmetric", []int{6, 3, 2}, []int{6, 3, 2}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"three roles mixed scaling and budgets", []int{3, 8, 2}, []int{7, 3, 5}, []int{2, 1, 1}, []int{0, 1, 1}},
+		{"add a third role", []int{4, 4, 0}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
+		{"remove a fourth role", []int{4, 4, 4, 4}, []int{4, 4, 4, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"replace one of four roles", []int{4, 4, 0, 3}, []int{4, 4, 3, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
+		{"five roles with extreme imbalance", []int{1, 2, 10, 50, 100}, []int{1, 2, 10, 50, 100}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
+		{"five roles scale up", []int{1, 2, 3, 4, 5}, []int{5, 6, 7, 8, 9}, []int{1, 2, 1, 2, 1}, []int{0, 0, 0, 0, 0}},
+		{"five roles scale down", []int{9, 8, 7, 6, 5}, []int{5, 4, 3, 2, 1}, []int{1, 1, 1, 1, 1}, []int{1, 2, 1, 2, 1}},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := ComputeAllSteps(
-				[]int{tc.sourceRole0, tc.sourceRole1},
-				[]int{tc.targetRole0, tc.targetRole1},
-				tc.config,
-			)
-			assert.True(t, stepsEqual(actual, tc.expected), "ComputeAllSteps mismatch:\ngot:  %v\nwant: %v", actual, tc.expected)
+			assertPlannerRolloutInvariants(t, tc.initial, tc.target, configs(tc.surge, tc.unavailable))
 		})
 	}
 }
 
-// =============================================================================
-// Unavailable Strategy Tests
-// =============================================================================
+func assertPlannerRolloutInvariants(
+	t *testing.T,
+	initial, target []int,
+	config []RollingUpdateConfig,
+) {
+	t.Helper()
+	require.Len(t, target, len(initial))
+	require.Len(t, config, len(initial))
 
-func TestUnavailableBasic_Symmetric4_4(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
-	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
+	steps := ComputeAllSteps(initial, target, config)
+	require.NotEmpty(t, steps)
+	assert.Equal(t, initial, steps[0].Past)
+	assert.Equal(t, make([]int, len(initial)), steps[0].New)
+	require.True(t, rolloutCompletes(steps, target), "rollout stopped at %+v", steps[len(steps)-1])
+	assert.Equal(t, make([]int, len(initial)), steps[len(steps)-1].Past)
+	assert.Equal(t, target, steps[len(steps)-1].New)
 
-	// Verify total drops below 8 (unavailable pattern)
-	minTotal := 100
-	for _, s := range steps {
-		if total := totalAtStep(s); total < minTotal {
-			minTotal = total
-		}
-	}
-	assert.Less(t, minTotal, 8, "total should drop below 8 for unavailable pattern")
-}
+	for stepIndex, state := range steps {
+		require.Len(t, state.Past, len(initial))
+		require.Len(t, state.New, len(initial))
+		for roleIndex := range initial {
+			assert.GreaterOrEqual(t, state.Past[roleIndex], 0, "step %d role %d has negative old replicas", stepIndex, roleIndex)
+			assert.GreaterOrEqual(t, state.New[roleIndex], 0, "step %d role %d has negative new replicas", stepIndex, roleIndex)
+			assert.LessOrEqual(t, state.Past[roleIndex], initial[roleIndex], "step %d role %d grows the old side", stepIndex, roleIndex)
+			assert.LessOrEqual(t, state.New[roleIndex], target[roleIndex], "step %d role %d exceeds its target", stepIndex, roleIndex)
 
-func TestUnavailableBasic_StepSequence(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
+			total := state.Past[roleIndex] + state.New[roleIndex]
+			ceiling := max(initial[roleIndex], target[roleIndex]) + config[roleIndex].MaxSurge
+			floor := max(0, min(initial[roleIndex], target[roleIndex])-config[roleIndex].MaxUnavailable)
+			assert.LessOrEqual(t, total, ceiling, "step %d role %d exceeds its surge ceiling", stepIndex, roleIndex)
+			assert.GreaterOrEqual(t, total, floor, "step %d role %d crosses its availability floor", stepIndex, roleIndex)
 
-	// Verify unavailable pattern: old decreases faster than new increases
-	foundUnavailablePattern := false
-	for i := 1; i < len(steps); i++ {
-		prev := steps[i-1]
-		curr := steps[i]
-		oldDecreased := curr.Past[0] < prev.Past[0] || curr.Past[1] < prev.Past[1]
-		newIncrease := (curr.New[0] - prev.New[0]) + (curr.New[1] - prev.New[1])
-		oldDecrease := (prev.Past[0] - curr.Past[0]) + (prev.Past[1] - curr.Past[1])
-		if oldDecreased && oldDecrease > newIncrease {
-			foundUnavailablePattern = true
-			break
-		}
-	}
-	if !foundUnavailablePattern {
-		t.Error("No unavailable pattern found")
-	}
-}
-
-func TestSurgePriority_SurgeTakesPriorityOverUnavailable(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxSurge: 1, MaxUnavailable: 1}, {MaxSurge: 1, MaxUnavailable: 1}}
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
-	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
-
-	// With surge > 0, total should never drop below target (8)
-	for _, s := range steps {
-		total := totalAtStep(s)
-		assert.GreaterOrEqual(t, total, 8, "total should never drop below 8 when surge > 0")
-	}
-}
-
-func TestSurgePriority_UnavailableWhenSurgeZero(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}}
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
-	require.True(t, completes(steps, []int{4, 4}), "rollout should complete")
-
-	// With surge=0, total should drop below target (8)
-	minTotal := 100
-	for _, s := range steps {
-		if total := totalAtStep(s); total < minTotal {
-			minTotal = total
-		}
-	}
-	assert.Less(t, minTotal, 8, "total should drop below 8 when surge=0")
-}
-
-func TestSurgePriority_Surge2Behavior(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}}
-	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
-	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
-
-	// With surge=2, total should never drop below target (12)
-	for _, s := range steps {
-		total := totalAtStep(s)
-		assert.GreaterOrEqual(t, total, 12, "surge should not drop below target")
-	}
-}
-
-func TestSurgePriority_Unavailable2Behavior(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxUnavailable: 2}, {MaxUnavailable: 2}}
-	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
-	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
-
-	// With unavailable=2, total should drop below target (12)
-	minTotal := 100
-	for _, s := range steps {
-		if total := totalAtStep(s); total < minTotal {
-			minTotal = total
-		}
-	}
-	assert.Less(t, minTotal, 12, "unavailable should drop below target")
-}
-
-func TestSurgePriority_BothSurgeAndUnavailableUsesSurge(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxSurge: 2, MaxUnavailable: 2}, {MaxSurge: 2, MaxUnavailable: 2}}
-	steps := ComputeAllSteps([]int{6, 6}, []int{6, 6}, cfg)
-	require.True(t, completes(steps, []int{6, 6}), "rollout should complete")
-
-	// With both set, surge takes priority (total >= 12)
-	for _, s := range steps {
-		total := totalAtStep(s)
-		assert.GreaterOrEqual(t, total, 12, "surge should take priority")
-	}
-}
-
-func TestMixedSurgeUnavailable_Role0SurgeRole1Unavailable(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxSurge: 1}, {MaxUnavailable: 1}}
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
-	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
-}
-
-func TestMixedSurgeUnavailable_Role0UnavailableRole1Surge(t *testing.T) {
-	cfg := []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxSurge: 1}}
-	steps := ComputeAllSteps([]int{4, 4}, []int{4, 4}, cfg)
-	assert.True(t, completes(steps, []int{4, 4}), "rollout should complete")
-}
-
-func TestMixedSurgeUnavailable_Asymmetric(t *testing.T) {
-	testCases := []struct {
-		sp, sd int
-	}{
-		{6, 2}, {2, 6}, {8, 4},
-	}
-
-	cfg := []RollingUpdateConfig{{MaxSurge: 1}, {MaxUnavailable: 1}}
-
-	for _, tc := range testCases {
-		steps := ComputeAllSteps([]int{tc.sp, tc.sd}, []int{tc.sp, tc.sd}, cfg)
-		assert.True(t, completes(steps, []int{tc.sp, tc.sd}), "sp=%d, sd=%d: rollout should complete", tc.sp, tc.sd)
-	}
-}
-
-func TestUnavailableEdgeCases_ScaleUpWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{2, 2}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
-	if !completes(steps, []int{4, 4}) {
-		t.Error("Scale-up with unavailable did not complete")
-	}
-}
-
-func TestUnavailableEdgeCases_ScaleDownWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{4, 4}, []int{2, 2}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
-	if !completes(steps, []int{2, 2}) {
-		t.Error("Scale-down with unavailable did not complete")
-	}
-}
-
-func TestUnavailableEdgeCases_FreshDeployWithUnavailable(t *testing.T) {
-	steps := ComputeAllSteps([]int{0, 0}, []int{4, 4}, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxUnavailable: 1}})
-	if !completes(steps, []int{4, 4}) {
-		t.Error("Fresh deploy with unavailable did not complete")
-	}
-}
-
-func TestUnavailableEdgeCases_NoInfiniteLoop(t *testing.T) {
-	testCases := []struct {
-		size, unavailable int
-	}{
-		{4, 1}, {6, 2}, {10, 5},
-	}
-
-	for _, tc := range testCases {
-		steps := ComputeAllSteps([]int{tc.size, tc.size}, []int{tc.size, tc.size}, []RollingUpdateConfig{{MaxUnavailable: tc.unavailable}, {MaxUnavailable: tc.unavailable}})
-		assert.LessOrEqual(t, len(steps), tc.size*4, "size=%d, unavailable=%d: too many steps (%d)", tc.size, tc.unavailable, len(steps))
-		assert.True(t, completes(steps, []int{tc.size, tc.size}), "size=%d, unavailable=%d: rollout should complete", tc.size, tc.unavailable)
-	}
-}
-
-// =============================================================================
-// Helper Function Tests
-// =============================================================================
-
-func TestBatchSize(t *testing.T) {
-	testCases := []struct {
-		maxSurge, maxUnavailable, expected int
-	}{
-		{1, 0, 1},
-		{2, 0, 2},
-		{0, 1, 1},
-		{0, 2, 2},
-		{0, 0, 1}, // minimum is 1
-		{3, 2, 3}, // surge takes priority
-	}
-
-	for _, tc := range testCases {
-		result := batchSize(tc.maxSurge, tc.maxUnavailable)
-		assert.Equal(t, tc.expected, result, "batchSize(%d, %d)", tc.maxSurge, tc.maxUnavailable)
-	}
-}
-
-func TestComputeTotalSteps(t *testing.T) {
-	testCases := []struct {
-		initialOld, target RoleReplicaState
-		config             []RollingUpdateConfig
-		expected           int
-	}{
-		{
-			RoleReplicaState{4, 4}, RoleReplicaState{4, 4},
-			DefaultRollingUpdateConfig(2), 4,
-		},
-		{
-			RoleReplicaState{6, 2}, RoleReplicaState{6, 2},
-			DefaultRollingUpdateConfig(2), 6,
-		},
-		{
-			RoleReplicaState{4, 4}, RoleReplicaState{4, 4},
-			[]RollingUpdateConfig{{MaxSurge: 2}, {MaxSurge: 2}}, 2,
-		},
-		{
-			RoleReplicaState{0, 0}, RoleReplicaState{3, 3},
-			DefaultRollingUpdateConfig(2), 3,
-		},
-	}
-
-	for _, tc := range testCases {
-		result := computeTotalSteps(tc.initialOld, tc.target, tc.config)
-		assert.Equal(t, tc.expected, result, "computeTotalSteps(%v, %v, %v)", tc.initialOld, tc.target, tc.config)
-	}
-}
-
-func TestCorrectAbnormalState_Normal(t *testing.T) {
-	// Normal state should return nil
-	currentOld := RoleReplicaState{2, 2}
-	currentNew := RoleReplicaState{2, 2}
-	initialOld := RoleReplicaState{4, 4}
-
-	result := correctAbnormalState(currentOld, currentNew, initialOld)
-	assert.Nil(t, result, "normal state should return nil")
-}
-
-func TestCorrectAbnormalState_Abnormal(t *testing.T) {
-	// Abnormal state: old > initialOld
-	currentOld := RoleReplicaState{5, 5}
-	currentNew := RoleReplicaState{2, 2}
-	initialOld := RoleReplicaState{4, 4}
-
-	result := correctAbnormalState(currentOld, currentNew, initialOld)
-	require.NotNil(t, result, "abnormal state should return correction step")
-	assert.Equal(t, 4, result.Past[0], "old role0 should be clamped to initialOld")
-	assert.Equal(t, 4, result.Past[1], "old role1 should be clamped to initialOld")
-	assert.Equal(t, 2, result.New[0], "new role0 should be unchanged")
-	assert.Equal(t, 2, result.New[1], "new role1 should be unchanged")
-}
-
-func TestComputeNextStep_ReturnsNilWhenDone(t *testing.T) {
-	cfg := DefaultRollingUpdateConfig(2)
-
-	testCases := []struct {
-		name       string
-		initialOld RoleReplicaState
-		currentOld RoleReplicaState
-		currentNew RoleReplicaState
-		targetNew  RoleReplicaState
-	}{
-		{
-			name:       "exactly at target",
-			initialOld: RoleReplicaState{3, 6},
-			currentOld: RoleReplicaState{0, 0},
-			currentNew: RoleReplicaState{3, 6},
-			targetNew:  RoleReplicaState{3, 6},
-		},
-		{
-			name:       "new exceeds target",
-			initialOld: RoleReplicaState{3, 6},
-			currentOld: RoleReplicaState{0, 0},
-			currentNew: RoleReplicaState{4, 7},
-			targetNew:  RoleReplicaState{3, 6},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := ComputeNextStep(tc.initialOld, tc.currentOld, tc.currentNew, tc.targetNew, cfg)
-			assert.Nil(t, result, "should return nil when rollout is complete")
-		})
-	}
-}
-
-func TestComputeNextStep_FreshStart(t *testing.T) {
-	cfg := DefaultRollingUpdateConfig(2)
-
-	initialOld := RoleReplicaState{4, 4}
-	currentOld := RoleReplicaState{4, 4}
-	currentNew := RoleReplicaState{0, 0}
-	targetNew := RoleReplicaState{4, 4}
-
-	result := ComputeNextStep(initialOld, currentOld, currentNew, targetNew, cfg)
-	require.NotNil(t, result, "fresh start should return a step")
-
-	// First step should create some new replicas
-	assert.Greater(t, result.New[0], 0, "first step should create new role0 replicas")
-	assert.Greater(t, result.New[1], 0, "first step should create new role1 replicas")
-}
-
-// =============================================================================
-// Coverage Gap Tests - computeNextNewReplicas edge cases
-// =============================================================================
-
-func TestComputeNextNewReplicas_EdgeCases(t *testing.T) {
-	testCases := []struct {
-		name       string
-		target     RoleReplicaState
-		currentNew RoleReplicaState
-		totalSteps int
-		checkFunc  func(t *testing.T, result RoleReplicaState)
-	}{
-		{
-			name:       "target_role0_zero",
-			target:     RoleReplicaState{0, 4},
-			currentNew: RoleReplicaState{0, 2},
-			totalSteps: 4,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.Equal(t, 0, result[0], "role0 should remain 0 when target is 0")
-				assert.Greater(t, result[1], 2, "role1 should increase")
-			},
-		},
-		{
-			name:       "target_role1_zero",
-			target:     RoleReplicaState{4, 0},
-			currentNew: RoleReplicaState{2, 0},
-			totalSteps: 4,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.Greater(t, result[0], 2, "role0 should increase")
-				assert.Equal(t, 0, result[1], "role1 should remain 0 when target is 0")
-			},
-		},
-		{
-			name:       "total_steps_zero",
-			target:     RoleReplicaState{4, 4},
-			currentNew: RoleReplicaState{2, 2},
-			totalSteps: 0,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.Equal(t, 4, result[0], "should return target when totalSteps is 0")
-				assert.Equal(t, 4, result[1], "should return target when totalSteps is 0")
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := computeNextNewReplicas(tc.target, tc.currentNew, tc.totalSteps)
-			tc.checkFunc(t, result)
-		})
-	}
-}
-
-// =============================================================================
-// Coverage Gap Tests - computeNextOldReplicas edge cases
-// =============================================================================
-
-func TestComputeNextOldReplicas_EdgeCases(t *testing.T) {
-	testCases := []struct {
-		name       string
-		initialOld RoleReplicaState
-		currentOld RoleReplicaState
-		totalSteps int
-		checkFunc  func(t *testing.T, result RoleReplicaState)
-	}{
-		{
-			name:       "source_role0_zero",
-			initialOld: RoleReplicaState{0, 4},
-			currentOld: RoleReplicaState{0, 3},
-			totalSteps: 4,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.Equal(t, 0, result[0], "role0 should remain 0")
-				assert.LessOrEqual(t, result[1], 3, "role1 should decrease or stay same")
-			},
-		},
-		{
-			name:       "source_role1_zero",
-			initialOld: RoleReplicaState{4, 0},
-			currentOld: RoleReplicaState{3, 0},
-			totalSteps: 4,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.LessOrEqual(t, result[0], 3, "role0 should decrease or stay same")
-				assert.Equal(t, 0, result[1], "role1 should remain 0")
-			},
-		},
-		{
-			name:       "total_steps_zero",
-			initialOld: RoleReplicaState{4, 4},
-			currentOld: RoleReplicaState{2, 2},
-			totalSteps: 0,
-			checkFunc: func(t *testing.T, result RoleReplicaState) {
-				assert.Equal(t, 0, result[0], "should return zeros when totalSteps is 0")
-				assert.Equal(t, 0, result[1], "should return zeros when totalSteps is 0")
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := computeNextOldReplicas(tc.initialOld, tc.currentOld, tc.totalSteps)
-			tc.checkFunc(t, result)
-		})
-	}
-}
-
-// =============================================================================
-// N-Role Tests (3, 4, 5 roles)
-// =============================================================================
-
-func TestNRole_RolloutCompletes(t *testing.T) {
-	testCases := []struct {
-		name       string
-		initialOld []int
-		target     []int
-		surge      []int
-		unavail    []int
-	}{
-		// 3-role scenarios
-		{"3role_symmetric", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"3role_asymmetric", []int{6, 3, 2}, []int{6, 3, 2}, []int{2, 1, 1}, []int{0, 0, 0}},
-		{"3role_different_surge", []int{4, 4, 4}, []int{4, 4, 4}, []int{2, 1, 3}, []int{0, 0, 0}},
-		{"3role_scale_up", []int{2, 2, 2}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"3role_scale_down", []int{4, 4, 4}, []int{2, 2, 2}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"3role_fresh_deploy", []int{0, 0, 0}, []int{3, 3, 3}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"3role_unavailable", []int{4, 4, 4}, []int{4, 4, 4}, []int{0, 0, 0}, []int{1, 1, 1}},
-		{"3role_mixed_surge_unavail", []int{4, 4, 4}, []int{4, 4, 4}, []int{1, 0, 2}, []int{0, 1, 0}},
-
-		// 4-role scenarios
-		{"4role_symmetric", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-		{"4role_asymmetric", []int{8, 4, 2, 1}, []int{8, 4, 2, 1}, []int{2, 2, 1, 1}, []int{0, 0, 0, 0}},
-		{"4role_scale_up", []int{1, 1, 1, 1}, []int{3, 3, 3, 3}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-		{"4role_scale_down", []int{5, 5, 5, 5}, []int{2, 2, 2, 2}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-		{"4role_fresh_deploy", []int{0, 0, 0, 0}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-
-		// 5-role scenarios
-		{"5role_symmetric", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
-		{"5role_asymmetric", []int{10, 5, 3, 2, 1}, []int{10, 5, 3, 2, 1}, []int{2, 2, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
-		{"5role_scale_up", []int{1, 1, 1, 1, 1}, []int{2, 2, 2, 2, 2}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
-		{"5role_scale_down", []int{6, 6, 6, 6, 6}, []int{3, 3, 3, 3, 3}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
-		{"5role_fresh_deploy", []int{0, 0, 0, 0, 0}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0}},
-
-		// Role addition: 2 roles -> 3 roles (a,b -> a,b,c)
-		{"add_role_2to3", []int{4, 4, 0}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"add_role_3to4", []int{3, 3, 3, 0}, []int{3, 3, 3, 3}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-		{"add_role_5to6", []int{2, 2, 2, 2, 2, 0}, []int{2, 2, 2, 2, 2, 2}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
-
-		// Role removal: 3 roles -> 2 roles (a,b,c -> a,b)
-		{"remove_role_3to2", []int{4, 4, 4}, []int{4, 4, 0}, []int{1, 1, 1}, []int{0, 0, 0}},
-		{"remove_role_4to3", []int{3, 3, 3, 3}, []int{3, 3, 3, 0}, []int{1, 1, 1, 1}, []int{0, 0, 0, 0}},
-
-		// Role rename (simultaneous add + remove): a,b,c,d,i -> a,b,c,d,h
-		// Sorted order becomes [a,b,c,d,h,i] with initialOld h=0, target i=0
-		{"rename_role_5to5", []int{10, 10, 10, 10, 0, 10}, []int{10, 10, 10, 10, 10, 0}, []int{1, 1, 1, 1, 1, 1}, []int{0, 0, 0, 0, 0, 0}},
-
-		// Scale-down scenarios (maxSurge constraint regression tests)
-		{"scale_down_prefill_up_decode", []int{10, 2}, []int{6, 8}, []int{2, 2}, []int{0, 0}},
-		{"scale_down_both", []int{10, 10}, []int{4, 4}, []int{2, 2}, []int{0, 0}},
-		{"scale_down_asymmetric", []int{8, 4}, []int{3, 2}, []int{1, 1}, []int{0, 0}},
-
-		// maxUnavailable constraint regression test (asymmetric roles)
-		{"unavail_asymmetric_5_2", []int{5, 2}, []int{5, 2}, []int{0, 0}, []int{1, 1}},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
-			for i := range cfg {
-				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i], MaxUnavailable: tc.unavail[i]}
+			if stepIndex > 0 {
+				previous := steps[stepIndex-1]
+				assert.LessOrEqual(t, state.Past[roleIndex], previous.Past[roleIndex], "step %d role %d reverses old-side progress", stepIndex, roleIndex)
+				assert.GreaterOrEqual(t, state.New[roleIndex], previous.New[roleIndex], "step %d role %d reverses new-side progress", stepIndex, roleIndex)
 			}
-			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
-			require.True(t, completes(steps, tc.target), "rollout should complete")
+		}
+		if stepIndex > 0 {
+			previous := steps[stepIndex-1]
+			assert.NotEqual(t, previous, state, "step %d makes no progress", stepIndex)
+		}
+
+		oldProgress := make(RoleReplicaState, len(initial))
+		for i := range initial {
+			oldProgress[i] = max(0, initial[i]-min(state.Past[i], initial[i]))
+		}
+		assertProgressWithinFractionalWindow(t, initial, oldProgress, stepIndex, "old")
+		assertProgressWithinFractionalWindow(t, target, state.New, stepIndex, "new")
+	}
+}
+
+func assertProgressWithinFractionalWindow(
+	t *testing.T,
+	roleReplicaCounts, progress RoleReplicaState,
+	stepIndex int,
+	side string,
+) {
+	t.Helper()
+	minProgress, maxProgress := 1.0, 0.0
+	minPositiveRoleReplicaCount := 0
+	for i, roleReplicaCount := range roleReplicaCounts {
+		if roleReplicaCount <= 0 {
+			continue
+		}
+		roleProgress := float64(progress[i]) / float64(roleReplicaCount)
+		minProgress = min(minProgress, roleProgress)
+		maxProgress = max(maxProgress, roleProgress)
+		if minPositiveRoleReplicaCount == 0 || roleReplicaCount < minPositiveRoleReplicaCount {
+			minPositiveRoleReplicaCount = roleReplicaCount
+		}
+	}
+	if minPositiveRoleReplicaCount == 0 {
+		return
+	}
+	assert.LessOrEqual(t,
+		maxProgress-minProgress,
+		1.0/float64(minPositiveRoleReplicaCount)+1e-9,
+		"step %d exceeds the %s-side fractional window", stepIndex, side,
+	)
+}
+
+func TestLeastAdvancedStep(t *testing.T) {
+	roleReplicaCounts := []int{8, 4}
+	for _, tc := range []struct {
+		name     string
+		current  []int
+		draining bool
+		step     int
+	}{
+		{"new at zero", []int{0, 0}, false, 0},
+		{"new at 25%", []int{2, 1}, false, 1},
+		{"new limited by slow role", []int{6, 1}, false, 1},
+		{"old at zero", []int{8, 4}, true, 0},
+		{"old at 25%", []int{6, 3}, true, 1},
+		{"old limited by slow role", []int{4, 3}, true, 1},
+		{"old fully drained", []int{0, 0}, true, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.step, leastAdvancedStep(tc.current, roleReplicaCounts, 4, tc.draining))
 		})
 	}
 }
 
-func TestNRole_SurgeConstraint(t *testing.T) {
-	testCases := []struct {
-		name       string
-		initialOld []int
-		target     []int
-		surge      []int
+func TestReplicasAtFractionalStep(t *testing.T) {
+	for _, tc := range []struct {
+		roleReplicaCount, step, stepCount int
+		draining                          bool
+		want                              int
 	}{
-		{"3role", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}},
-		{"4role", []int{4, 4, 4, 4}, []int{4, 4, 4, 4}, []int{1, 1, 1, 1}},
-		{"5role", []int{5, 5, 5, 5, 5}, []int{5, 5, 5, 5, 5}, []int{1, 1, 1, 1, 1}},
-		// Scale-down scenarios (maxSurge constraint regression tests)
-		{"scale_down_prefill_up_decode", []int{10, 2}, []int{6, 8}, []int{2, 2}},
-		{"scale_down_both", []int{10, 10}, []int{4, 4}, []int{2, 2}},
-		{"scale_down_asymmetric", []int{8, 4}, []int{3, 2}, []int{1, 1}},
+		{8, 0, 4, false, 0}, {8, 1, 4, false, 2}, {8, 4, 4, false, 8},
+		{8, 0, 4, true, 8}, {8, 1, 4, true, 6}, {8, 4, 4, true, 0},
+		{11, 1, 3, false, 4}, {11, 2, 3, false, 8},
+		{8, 1, 6, false, 2}, {8, 2, 6, false, 3},
+		{8, 0, 0, false, 0}, {8, 0, 0, true, 8},
+	} {
+		assert.Equal(t, tc.want, replicasAtFractionalStep(tc.roleReplicaCount, tc.step, tc.stepCount, tc.draining))
+	}
+}
+
+func TestFractionalWindowBounds(t *testing.T) {
+	counts := RoleReplicaState{8, 4}
+	assert.Equal(t, RoleReplicaState{4, 1},
+		boundGrowingRoleTargetsToWindow(RoleReplicaState{0, 1}, counts, RoleReplicaState{8, 1}))
+	assert.Equal(t, RoleReplicaState{8, 3},
+		boundDrainingRoleTargetsToWindow(counts, counts, RoleReplicaState{8, 2}))
+	assert.Equal(t, RoleReplicaState{6, 1},
+		boundGrowingRoleTargetsToWindow(RoleReplicaState{6, 1}, counts, RoleReplicaState{8, 1}), "must not reverse existing growth")
+	assert.Equal(t, RoleReplicaState{2, 3},
+		boundDrainingRoleTargetsToWindow(RoleReplicaState{2, 3}, counts, RoleReplicaState{0, 3}), "must not reverse existing drain")
+}
+
+func TestHardNewReplicaLimits(t *testing.T) {
+	plannerTargets := []int{8, 4}
+	snapshot := rolloutSnapshot{
+		{
+			InitialOldReplicas: 8, ActiveOldSpecReplicas: 6, OldSpecReplicas: 6, NewSpecReplicas: 3, NewReadyReplicas: 0, NewTargetReplicas: 8,
+			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
+		},
+		{
+			InitialOldReplicas: 4, ActiveOldSpecReplicas: 3, OldSpecReplicas: 3, NewSpecReplicas: 2, NewReadyReplicas: 0, NewTargetReplicas: 4,
+			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
+		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
-			for i := range cfg {
-				cfg[i] = RollingUpdateConfig{MaxSurge: tc.surge[i]}
-			}
-			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
+	bounded := boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
+	assert.Equal(t, 4, bounded[0],
+		"prefill is capped by both pending allowance and remaining surge")
+	assert.Equal(t, 2, bounded[1],
+		"decode cannot grow while its pending allowance is fully consumed")
 
-			// Verify per-role maxSurge constraint: old[i] + new[i] <= target[i] + surge[i]
-			// Only check when new[i] > 0 (scale-up has started for this role).
-			// Drain-only steps (new=0) may exceed constraint while removing old pods.
-			for stepIdx, s := range steps {
-				for roleIdx := range tc.target {
-					if s.New[roleIdx] == 0 {
-						continue // Drain-only step, surge constraint doesn't apply
+	snapshot[0].OldSpecReplicas = 5
+	snapshot[0].NewReadyReplicas = 1
+	snapshot[1].OldSpecReplicas = 2
+	snapshot[1].NewReadyReplicas = 1
+	bounded = boundNewReplicaTargetsByHardLimits(snapshot, plannerTargets)
+	assert.Equal(t, 5, bounded[0],
+		"readiness plus released surge headroom opens the next shared fraction")
+	assert.Equal(t, 3, bounded[1])
+}
+
+func TestComputeNextStepUsesReadySafeDrain(t *testing.T) {
+	snapshot := rolloutSnapshot{
+		{InitialOldReplicas: 4, ActiveOldSpecReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 4, NewReadyReplicas: 2, NewTargetReplicas: 4,
+			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
+		{InitialOldReplicas: 1, ActiveOldSpecReplicas: 1, OldSpecReplicas: 1, OldReadyReplicas: 1, NewSpecReplicas: 1, NewReadyReplicas: 1, NewTargetReplicas: 1,
+			Config: RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}},
+	}
+	step := ComputeNextStep(snapshot, nil)
+	require.NotNil(t, step)
+	assert.Equal(t, []int{1, 0}, step.Past)
+}
+
+func TestComputeNextStepZeroSurgeUsesAvailableSlot(t *testing.T) {
+	snapshot := rolloutSnapshot{{
+		InitialOldReplicas:    4,
+		ActiveOldSpecReplicas: 4,
+		OldSpecReplicas:       4,
+		OldReadyReplicas:      4,
+		NewTargetReplicas:     4,
+		Config:                RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1},
+	}}
+	step := ComputeNextStep(snapshot, nil)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{3}, step.Past,
+		"one availability slot is used to make room for a replacement")
+
+	// The same configured budget is no longer usable while one old replica is
+	// unavailable. Readiness, rather than another forced drain, must unblock it.
+	snapshot[0].OldReadyReplicas = 3
+	assert.Nil(t, ComputeNextStep(snapshot, nil))
+
+	snapshot[0].OldReadyReplicas = 4
+	step = ComputeNextStep(snapshot, nil)
+	require.NotNil(t, step, "the slot becomes available again when the old replica recovers")
+	assert.Equal(t, RoleReplicaState{3}, step.Past)
+}
+
+func TestExecutorStateTransitionsExhaustive(t *testing.T) {
+	configCases := [][]RollingUpdateConfig{
+		configs([]int{1, 1}, []int{0, 0}),
+		configs([]int{0, 0}, []int{1, 1}),
+		configs([]int{1, 1}, []int{1, 1}),
+		configs([]int{2, 2}, []int{1, 1}),
+		configs([]int{2, 1}, []int{1, 2}),
+	}
+
+	for initialP := 0; initialP <= 5; initialP++ {
+		for initialD := 0; initialD <= 5; initialD++ {
+			for targetP := 0; targetP <= 5; targetP++ {
+				for targetD := 0; targetD <= 5; targetD++ {
+					initial := []int{initialP, initialD}
+					target := []int{targetP, targetD}
+					for configIndex, config := range configCases {
+						scenario := fmt.Sprintf("initial=%v target=%v config=%d", initial, target, configIndex)
+						state := make(rolloutSnapshot, len(initial))
+						for i := range initial {
+							state[i] = roleRolloutSnapshot{
+								InitialOldReplicas:    initial[i],
+								ActiveOldSpecReplicas: initial[i],
+								OldSpecReplicas:       initial[i],
+								OldReadyReplicas:      initial[i],
+								NewTargetReplicas:     target[i],
+								Config:                config[i],
+							}
+						}
+
+						completed := false
+						for iteration := 0; iteration < 100; iteration++ {
+							assertRolloutSnapshotInvariants(t, state, scenario, iteration)
+							if isRolloutSpecComplete(state) {
+								if isRolloutReady(state) {
+									completed = true
+									break
+								}
+								if !makeOneNewReplicaReady(state) {
+									t.Fatalf("complete Spec state cannot become Ready: %s", scenario)
+								}
+								continue
+							}
+
+							step := ComputeNextStep(state, nil)
+							if step == nil {
+								if !makeOneNewReplicaReady(state) {
+									t.Fatalf("blocked without pending work: %s state=%+v", scenario, state)
+								}
+								continue
+							}
+
+							changed := false
+							for i, roleState := range state {
+								drain := min(max(0, roleState.ActiveOldSpecReplicas-step.Past[i]), maxSafeDrain(roleState))
+								if drain > 0 {
+									roleState.ActiveOldSpecReplicas -= drain
+									roleState.OldSpecReplicas -= drain
+									roleState.OldReadyReplicas = min(roleState.OldReadyReplicas, roleState.OldSpecReplicas)
+									changed = true
+								}
+								if step.New[i] > roleState.NewSpecReplicas {
+									roleState.NewSpecReplicas = step.New[i]
+									changed = true
+								}
+								state[i] = roleState
+							}
+							if !changed && !makeOneNewReplicaReady(state) {
+								t.Fatalf("progress plan made no mutation and has no pending work: %s state=%+v", scenario, state)
+							}
+						}
+						if !completed {
+							t.Fatalf("rollout did not complete within transition bound: %s state=%+v", scenario, state)
+						}
 					}
-					maxAllowed := tc.target[roleIdx] + tc.surge[roleIdx]
-					actual := s.Past[roleIdx] + s.New[roleIdx]
-					assert.LessOrEqual(t, actual, maxAllowed,
-						"step %d, role %d: old(%d) + new(%d) = %d exceeds target(%d) + surge(%d) = %d",
-						stepIdx, roleIdx, s.Past[roleIdx], s.New[roleIdx], actual,
-						tc.target[roleIdx], tc.surge[roleIdx], maxAllowed)
 				}
 			}
-		})
+		}
 	}
 }
 
-func TestNRole_UnavailableConstraint(t *testing.T) {
-	testCases := []struct {
-		name       string
-		initialOld []int
-		target     []int
-		unavail    []int
-	}{
-		{"symmetric_4_4", []int{4, 4}, []int{4, 4}, []int{1, 1}},
-		{"asymmetric_5_2", []int{5, 2}, []int{5, 2}, []int{1, 1}},
-		{"asymmetric_2_5", []int{2, 5}, []int{2, 5}, []int{1, 1}},
-		{"3role_symmetric", []int{3, 3, 3}, []int{3, 3, 3}, []int{1, 1, 1}},
+func makeOneNewReplicaReady(state rolloutSnapshot) bool {
+	for i, roleState := range state {
+		if roleState.NewReadyReplicas < roleState.NewSpecReplicas {
+			roleState.NewReadyReplicas++
+			state[i] = roleState
+			return true
+		}
 	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := make([]RollingUpdateConfig, len(tc.initialOld))
-			for i := range cfg {
-				cfg[i] = RollingUpdateConfig{MaxUnavailable: tc.unavail[i]}
-			}
-			steps := ComputeAllSteps(tc.initialOld, tc.target, cfg)
-
-			// Verify rollout completes
-			require.True(t, completes(steps, tc.target), "rollout should complete")
-
-			// Verify per-role maxUnavailable constraint: old[i] + new[i] >= target[i] - unavail[i]
-			// Only enforced when initialOld[i] >= target[i] (system had enough replicas)
-			for stepIdx, s := range steps {
-				for roleIdx := range tc.target {
-					if tc.initialOld[roleIdx] < tc.target[roleIdx] {
-						continue // Scale-up scenario, maxUnavailable not enforced
-					}
-					minRequired := tc.target[roleIdx] - tc.unavail[roleIdx]
-					actual := s.Past[roleIdx] + s.New[roleIdx]
-					assert.GreaterOrEqual(t, actual, minRequired,
-						"step %d, role %d: old(%d) + new(%d) = %d below target(%d) - unavail(%d) = %d",
-						stepIdx, roleIdx, s.Past[roleIdx], s.New[roleIdx], actual,
-						tc.target[roleIdx], tc.unavail[roleIdx], minRequired)
-				}
-			}
-		})
-	}
+	return false
 }
 
-func TestNRole_DefaultConfig(t *testing.T) {
-	for _, numRoles := range []int{3, 4, 5} {
-		t.Run(fmt.Sprintf("%d_roles", numRoles), func(t *testing.T) {
-			cfg := DefaultRollingUpdateConfig(numRoles)
-			assert.Equal(t, numRoles, len(cfg))
-			for i := 0; i < numRoles; i++ {
-				assert.Equal(t, 1, cfg[i].MaxSurge, "default surge should be 1")
-				assert.Equal(t, 0, cfg[i].MaxUnavailable, "default unavailable should be 0")
-			}
-		})
+func assertRolloutSnapshotInvariants(t *testing.T, state rolloutSnapshot, scenario string, iteration int) {
+	t.Helper()
+	targets := make(RoleReplicaState, len(state))
+	newReplicas := make(RoleReplicaState, len(state))
+	budgetSteps := 0
+	for _, roleState := range state {
+		budgetSteps = max(budgetSteps, roleState.InitialOldReplicas, roleState.NewTargetReplicas)
 	}
+	for i, roleState := range state {
+		targets[i] = roleState.NewTargetReplicas
+		newReplicas[i] = roleState.NewSpecReplicas
+		roleReplicaCount := max(roleState.InitialOldReplicas, roleState.NewTargetReplicas)
+		ceiling := roleReplicaCount + roleState.Config.MaxSurge
+		floor := max(0, min(roleState.InitialOldReplicas, roleState.NewTargetReplicas)-roleState.Config.MaxUnavailable)
+		if roleState.OldSpecReplicas+roleState.NewSpecReplicas > ceiling {
+			t.Fatalf("surge ceiling violated at iteration %d for %s role=%d: state=%+v", iteration, scenario, i, roleState)
+		}
+		if roleState.OldReadyReplicas+roleState.NewReadyReplicas < floor {
+			t.Fatalf("availability floor violated at iteration %d for %s role=%d: state=%+v", iteration, scenario, i, roleState)
+		}
+		pendingAllowance := projectBudget(roleReplicaCount, roleState.Config.MaxSurge+roleState.Config.MaxUnavailable, budgetSteps)
+		if roleState.NewSpecReplicas-roleState.NewReadyReplicas > pendingAllowance {
+			t.Fatalf("pending allowance violated at iteration %d for %s role=%d: state=%+v", iteration, scenario, i, roleState)
+		}
+	}
+	assertProgressWithinFractionalWindow(t, targets, newReplicas, iteration, scenario+" new")
 }
