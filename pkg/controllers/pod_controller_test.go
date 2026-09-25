@@ -56,14 +56,16 @@ type stubSchedulerProvider struct {
 	// onCreate observes the pod as the provider sees it, which lets a test
 	// assert the ordering against the group replacement scheduling gate.
 	onCreate func(*corev1.Pod)
+	lws      *leaderworkerset.LeaderWorkerSet
 }
 
 func (*stubSchedulerProvider) ReconcileScheduling(context.Context, *leaderworkerset.LeaderWorkerSet, int32, string) error {
 	return nil
 }
 
-func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(_ context.Context, _ *leaderworkerset.LeaderWorkerSet, pod *corev1.Pod) error {
+func (s *stubSchedulerProvider) CreatePodGroupIfNotExists(_ context.Context, lws *leaderworkerset.LeaderWorkerSet, pod *corev1.Pod) error {
 	s.calls++
+	s.lws = lws
 	if s.onCreate != nil {
 		s.onCreate(pod)
 	}
@@ -670,7 +672,7 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 			tc.pod.Labels[leaderworkerset.RevisionKey] = revisionKey
 			tc.wantStatefulSetConfig.Labels[leaderworkerset.RevisionKey] = revisionKey
 			tc.wantStatefulSetConfig.Spec.Template.Labels[leaderworkerset.RevisionKey] = revisionKey
-			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws, revision)
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(*tc.pod, *tc.lws)
 			if err != nil {
 				t.Errorf("failed with error %s", err.Error())
 			}
@@ -1311,7 +1313,7 @@ func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 		},
 	}
 
-	statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws, revision)
+	statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
 	if err != nil {
 		t.Fatalf("failed with error %s", err.Error())
 	}
@@ -1841,7 +1843,7 @@ func TestConstructWorkerStatefulSetServiceNameHashUniquePerReplica(t *testing.T)
 		},
 	}
 
-	cfg, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws, revision)
+	cfg, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
 	if err != nil {
 		t.Fatal(err)
 	}

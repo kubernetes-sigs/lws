@@ -203,7 +203,20 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 
-	if leaderWorkerSet.Spec.NetworkConfig != nil && *leaderWorkerSet.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	// Old groups keep the size and subdomain policy of their own revision.
+	groupLws := &leaderWorkerSet
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		// The per-replica service is named after the leader's subdomain: the pod
 		// name in ordinal mode, a group key derived name in hash mode. A stale or
 		// terminating service short-circuits the rest of the reconcile, so no
@@ -218,7 +231,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// stamped this leader pod, so its PodGroups are created here, ahead of the
 	// gate that keeps the leader unschedulable.
 	if r.SchedulerProvider != nil {
-		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
+		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, groupLws, &pod)
 		if err != nil {
 			if errors.Is(err, schedulerprovider.ErrUnexpectedPodGroupOwner) {
 				r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, UnexpectedPodGroupOwner, Create, "%s", err.Error())
@@ -244,7 +257,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	}
 
 	// Once size = 1, no need to create worker statefulSets.
-	if *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size == 1 {
+	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
 		return ctrl.Result{}, nil
 	}
 
@@ -264,11 +277,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			return ctrl.Result{}, nil
 		}
 	}
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
-	if err != nil {
-		log.Error(err, "Getting lws revisions")
-		return ctrl.Result{}, err
-	}
 	if revision == nil {
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
 		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
@@ -279,7 +287,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if pod.Spec.Hostname == "" || pod.Spec.Subdomain == "" {
 		return ctrl.Result{}, fmt.Errorf("leader pod %s/%s has no hostname or subdomain", pod.Namespace, pod.Name)
 	}
-	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
+	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, *groupLws)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -394,7 +402,12 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size))
+	// Old groups keep their original size during a rollout that changes it.
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+		groupSize = size
+	}
+	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
 	if err != nil {
 		return false, err
 	}
@@ -1240,12 +1253,10 @@ func workerStatefulSetName(leaderPod *corev1.Pod) string {
 	return leaderPod.Name
 }
 
-// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the worker StatefulSet
-func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
-	if err != nil {
-		return nil, err
-	}
+// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the worker StatefulSet.
+// lws must already have the group's revision applied.
+func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+	currentLws := &lws
 	podTemplateSpec := *currentLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
