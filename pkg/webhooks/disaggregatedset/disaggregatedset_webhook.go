@@ -147,6 +147,10 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 		// <lwsName>-<groupIndex>-<hash>
 		// Which translates to: lwsNameLen + 1 (dash) + groupIndexDigits + statefulSetRevisionLabelSuffixLen
 		maxSuffixLen := 1 + groupIndexDigits + statefulSetRevisionLabelSuffixLen
+		if role.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+			// Hash roles derive names from the leader host name instead.
+			maxSuffixLen = webhooks.HashNameSuffixLen(&role.Spec)
+		}
 
 		maxNameLen := lwsNameLen + maxSuffixLen
 

@@ -316,6 +316,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 
 	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
+	if normalizeGroupIdentity(lws.Spec.GroupIdentity) == v1.GroupIdentityHash {
+		if maxLen := utilvalidation.DNS1035LabelMaxLength - HashNameSuffixLen(&lws.Spec); len(lws.Name) > maxLen {
+			allErrs = append(allErrs, field.Invalid(metadataPath.Child("name"), lws.Name, fmt.Sprintf("must be no more than %d characters with groupIdentity Hash", maxLen)))
+		}
+	}
 
 	return allErrs
 }
@@ -369,6 +374,18 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
 	}
 	return allErrs
+}
+
+// HashNameSuffixLen is how many characters hash mode adds to the LWS name in
+// the longest name it derives. The leader host name adds "-" plus 8 characters
+// of the group key. The worker StatefulSet is named after it, and its pods get
+// a controller-revision-hash label that adds another "-" plus up to 10.
+func HashNameSuffixLen(spec *v1.LeaderWorkerSetSpec) int {
+	const hostnameSuffixLen, revisionLabelSuffixLen = 9, 11
+	if spec.LeaderWorkerTemplate.Size != nil && *spec.LeaderWorkerTemplate.Size > 1 {
+		return hostnameSuffixLen + revisionLabelSuffixLen
+	}
+	return hostnameSuffixLen
 }
 
 // This is mostly inspired by https://github.com/kubernetes/kubernetes/blob/be4b7176dc131ea842cab6882cd4a06dbfeed12a/pkg/apis/apps/validation/validation.go#L460,
