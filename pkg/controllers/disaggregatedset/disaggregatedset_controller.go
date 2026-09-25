@@ -86,27 +86,33 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Step 2: Delete LWS for slices beyond the desired count (slice scale-down).
-	// Per-revision drained cleanup runs per slice in reconcileSlice.
+	// Do this before reconciling retained slices so removed slices cannot
+	// participate in subsequent rollout work. Per-revision drained cleanup runs
+	// per retained slice in reconcileSlice.
 	if err := r.cleanupRemovedSlices(ctx, disaggregatedSet, allLWS, sliceCount); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Auto-create / clean up per-role scalers so replica resolution below sees
-	// a settled scaler map. Missing scalers are created; scalers whose role is
-	// no longer External are deleted (in the same pass). New scalers are seeded
-	// with the role's current aggregate replica count so a Static→External flip
-	// on a running role does not drain to zero.
+	// SetupWithManager initializes this helper in production. The fallback also
+	// supports tests and other callers that construct the reconciler directly.
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(r.Client, r.Record)
 	}
+	// Seed a new scaler for a running role from its current aggregate replicas,
+	// preventing a Static→External change from accidentally requesting zero.
 	seedFor, err := r.seedForRole(ctx, disaggregatedSet)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaler seeds: %w", err)
 	}
+	// External roles get generated scalers; scalers for roles that are no longer
+	// External are deleted. Static roles do not need a scaler.
 	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, seedFor)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile scalers: %w", err)
 	}
+	// Resolve every role to an integer target: Static roles use their template,
+	// while External roles use their scaler. Rollout code receives only these
+	// values and does not need to know where they came from.
 	desiredReplicasByRole := resolveDesiredReplicasByRole(disaggregatedSet, scalers)
 
 	// Step 3: Reconcile LWS objects.
@@ -486,6 +492,8 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 
 	desiredReplicas := int32(desiredReplicasByRole[role])
 
+	// With no old revision to replace, create a missing LWS directly at its
+	// desired size; no rolling update is needed.
 	if existing == nil {
 		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, int(desiredReplicas), int(desiredReplicas))
 	}

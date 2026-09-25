@@ -99,6 +99,11 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	return executor.reconcileExistingRollout(ctx, disaggregatedSet, oldRevisions, *newRevision, desiredReplicasByRole)
 }
 
+// ensureDesiredRevision makes the target revision structurally complete before
+// planning. Each missing role gets an LWS at 0 replicas so the planner controls
+// its growth. The desired replica count is stored in initial-replicas so it
+// remains the role's intended baseline if a later revision interrupts it.
+// The returned boolean reports whether any LWS was created.
 func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
@@ -116,13 +121,6 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 			"Update", "Started rolling update to revision %s", revision)
 	}
 
-	// Ensure one LWS exists per role for the target revision:
-	//  1. Start the LWS at 0 replicas. The executor grows it on later reconciles.
-	//  2. Store the role's final target in initial-replicas.
-	//
-	// If another rollout interrupts this one, the stored target becomes this
-	// revision's contribution to the old-side baseline. Its partially scaled
-	// Spec does not replace that target.
 	created := false
 	for _, roleName := range roleNames {
 		if newRevision != nil && newRevision.Roles[roleName] != nil {
