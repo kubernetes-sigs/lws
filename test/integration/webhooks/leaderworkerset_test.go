@@ -601,15 +601,15 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: true,
 		}),
-		ginkgo.Entry("creation with maxGroupRestarts and Hash group identity should fail", &testValidationCase{
+		ginkgo.Entry("creation with maxGroupRestarts and Hash group identity should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1)
 				lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 				return lws
 			},
-			lwsCreationShouldFail: true,
+			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("adding maxGroupRestarts to a Hash LeaderWorkerSet should fail", &testValidationCase{
+		ginkgo.Entry("adding maxGroupRestarts to a Hash LeaderWorkerSet should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
 				lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
@@ -618,7 +618,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](1)
 			},
-			updateShouldFail: true,
+			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update keeping maxGroupRestarts while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {

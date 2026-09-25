@@ -81,8 +81,6 @@ while leaving healthy replicas and unrelated rollouts active.
 2. Guarantee retention of native kubelet or CRI logs after Pod termination.
 3. Add preflight-specific phases, images, scripts, or environment variables.
 4. Roll back or repair the workload automatically.
-5. Track restart budgets across the unstable identities used by
-   `groupIdentity: Hash`.
 
 ## Proposal
 
@@ -186,9 +184,14 @@ controller uses `leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup` as
 an internal Pod finalizer while an exhausted group is retained.
 
 `maxGroupRestarts` is valid with `restartPolicy: RecreateGroupOnPodRestart` or
-`RecreateGroupAfterStart`. The validating webhook rejects other restart
-policies. It also rejects `groupIdentity: Hash` because a recreated Hash group
-receives a new identity and cannot use an ordinal-based restart counter safely.
+`RecreateGroupAfterStart` for both `groupIdentity: Ordinal` and
+`groupIdentity: Hash`. The validating webhook rejects other restart policies.
+In `Hash` mode, when a gated replacement leader is admitted after a group
+recreation, it claims the recreating group's restart counter so the budget is
+preserved across group hash changes; when a group's budget is exhausted, its
+retained leader holds back the gated replacement leader (under both
+`PostTermination` and `Immediate` replacement policies) until explicit recovery
+or workload teardown.
 
 No per-group phase or preflight-specific status is added. `Degraded=True` is an
 LWS-level aggregate condition with reason `ReplicaRestartBudgetExceeded`.
@@ -339,9 +342,9 @@ changes necessary to implement this enhancement.
 
 #### Integration tests
 
-- Webhook acceptance with both group-recreating restart policies and rejection
-  with other restart policies.
-- Webhook rejection of `groupIdentity: Hash` with `maxGroupRestarts`.
+- Webhook acceptance with both group-recreating restart policies (in both
+  `Ordinal` and `Hash` group identity modes) and rejection with other restart
+  policies.
 - The controller behavior table above, including exhaustion-triggered group
   deletion, explicit annotation recovery, and LWS deletion.
 - Spec updates that change restart policy only after clearing the limit.

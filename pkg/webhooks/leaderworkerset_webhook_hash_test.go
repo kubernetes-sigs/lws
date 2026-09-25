@@ -67,8 +67,15 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 
 	boundedRecovery := hashLws("bounded-recovery")
 	boundedRecovery.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](1)
-	if _, err := webhook.ValidateCreate(context.TODO(), boundedRecovery); err == nil {
-		t.Error("expected maxGroupRestarts to be rejected with groupIdentity Hash")
+	if _, err := webhook.ValidateCreate(context.TODO(), boundedRecovery); err != nil {
+		t.Errorf("expected maxGroupRestarts to be accepted with groupIdentity Hash: %v", err)
+	}
+
+	boundedRecoveryNone := hashLws("bounded-recovery-none")
+	boundedRecoveryNone.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
+	boundedRecoveryNone.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](1)
+	if _, err := webhook.ValidateCreate(context.TODO(), boundedRecoveryNone); err == nil {
+		t.Error("expected maxGroupRestarts with NoneRestartPolicy to be rejected with groupIdentity Hash")
 	}
 
 	uniqueSubdomain := hashLws("subdomain")

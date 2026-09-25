@@ -120,6 +120,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			// changing the policy does not roll the leaders.
 			if !podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate) {
 				pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: leaderworkerset.GroupReplacementSchedulingGate})
+				if _, exists := pod.Annotations[corev1.PodDeletionCost]; !exists {
+					pod.Annotations[corev1.PodDeletionCost] = "-100"
+				}
 			}
 		} else {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)

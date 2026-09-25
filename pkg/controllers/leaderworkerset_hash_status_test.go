@@ -299,6 +299,13 @@ func TestUpdateStatusHashNoWriteWhenUnchanged(t *testing.T) {
 			Reason:             "AllGroupsReady",
 			Message:            "All replicas are ready",
 			LastTransitionTime: metav1.Now(),
+		}, {
+			Type:               string(leaderworkerset.LeaderWorkerSetDegraded),
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: 1,
+			Reason:             "AsExpected",
+			Message:            "No replica has exhausted its restart budget",
+			LastTransitionTime: metav1.Now(),
 		}},
 	}
 	deploy := &appsv1.Deployment{
@@ -546,4 +553,274 @@ func TestReconcileHash(t *testing.T) {
 			t.Fatal("reconcileHash() error = nil, want the apply error")
 		}
 	})
+}
+
+func TestUpdateStatusHashDegraded(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 1
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: lws.Name, Namespace: lws.Namespace},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			Replicas: 2, ReadyReplicas: 1, UpdatedReplicas: 2,
+		},
+	}
+	exhaustedLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-exhausted",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-1",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, exhaustedLeader)
+	available, err := reconciler.updateStatusHash(ctx, lws)
+	if err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+	if available {
+		t.Fatal("updateStatusHash() = true, want false when degraded")
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	wantConditions := map[string]metav1.ConditionStatus{
+		string(leaderworkerset.LeaderWorkerSetAvailable):        metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetProgressing):      metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetUpdateInProgress): metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetDegraded):         metav1.ConditionTrue,
+	}
+	for _, cond := range updated.Status.Conditions {
+		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
+			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
+		}
+	}
+}
+
+func TestUpdateStatusHashStaleDeploymentStatusDuringRollout(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 2
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"rev-1/hash-a":1}`,
+	}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			Generation: 2,
+			Labels: map[string]string{
+				leaderworkerset.RevisionKey: "rev-2",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           2,
+			ReadyReplicas:      2,
+			UpdatedReplicas:    2,
+		},
+	}
+	rev1PodA := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-a",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-a",
+				leaderworkerset.RevisionKey:         "rev-1",
+			},
+		},
+	}
+	rev1PodB := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-b",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-b",
+				leaderworkerset.RevisionKey:         "rev-1",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, rev1PodA, rev1PodB)
+	available, err := reconciler.updateStatusHash(ctx, lws)
+	if err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+	if available {
+		t.Fatal("updateStatusHash() = true, want false while Deployment status is stale or old-revision pods remain")
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	wantConditions := map[string]metav1.ConditionStatus{
+		string(leaderworkerset.LeaderWorkerSetUpdateInProgress): metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetProgressing):      metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetDegraded):         metav1.ConditionFalse,
+	}
+	for _, cond := range updated.Status.Conditions {
+		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
+			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
+		}
+	}
+}
+
+func TestUpdateStatusHashDegradedRolloutHalted(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 2
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			Generation: 2,
+			Labels: map[string]string{
+				leaderworkerset.RevisionKey: "rev-2",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 2,
+			Replicas:           3,
+			ReadyReplicas:      2,
+			UpdatedReplicas:    1,
+		},
+	}
+	exhaustedSurgeLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-exhausted-surge",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-surge",
+				leaderworkerset.RevisionKey:         "rev-2",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, exhaustedSurgeLeader)
+	available, err := reconciler.updateStatusHash(ctx, lws)
+	if err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+	if available {
+		t.Fatal("updateStatusHash() = true, want false when degraded during rollout")
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	wantConditions := map[string]metav1.ConditionStatus{
+		string(leaderworkerset.LeaderWorkerSetAvailable):        metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetProgressing):      metav1.ConditionFalse,
+		string(leaderworkerset.LeaderWorkerSetUpdateInProgress): metav1.ConditionTrue,
+		string(leaderworkerset.LeaderWorkerSetDegraded):         metav1.ConditionTrue,
+	}
+	for _, cond := range updated.Status.Conditions {
+		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
+			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
+		}
+	}
+}
+
+func TestPruneHashGroupRestartCounts(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(1)
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"rev-a/hash-active":1,"rev-a/hash-stale-1":1,"rev-a/hash-stale-2":2}`,
+	}
+	activeLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-active",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-active",
+				leaderworkerset.RevisionKey:         "rev-a",
+			},
+		},
+	}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, activeLeader)
+	if err := reconciler.pruneHashGroupRestartCounts(ctx, lws, "rev-a"); err != nil {
+		t.Fatalf("pruneHashGroupRestartCounts() unexpected error: %v", err)
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With Replicas=1 and 1 active leader on rev-a, allowedUnclaimed is 0, so both stale entries are pruned.
+	want := map[string]int32{"rev-a/hash-active": 1}
+	if diff := cmp.Diff(want, counts); diff != "" {
+		t.Errorf("counts after pruning (-want +got):\n%s", diff)
+	}
+
+	// During a MaxSurge=1 rollout, a gated surge replacement leader waiting to claim an unclaimed
+	// counter must not have its counter pruned even when Replicas=1 is already occupied.
+	lwsSurge := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(lwsStatusHashGroupSize).MaxSurge(1).MaxUnavailable(0).Obj()
+	lwsSurge.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	lwsSurge.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey: `{"rev-a/hash-active":1,"rev-a/hash-surge-old":2,"rev-a/hash-extra-stale":1}`,
+	}
+	gatedSurgeReplacement := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "leader-surge-gated",
+			Namespace: lwsSurge.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lwsSurge.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "hash-surge-new",
+				leaderworkerset.RevisionKey:         "rev-a",
+			},
+		},
+		Spec: corev1.PodSpec{
+			SchedulingGates: []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}},
+		},
+	}
+
+	reconcilerSurge, k8sClientSurge := lwsStatusNewReconciler(t, lwsSurge, activeLeader, gatedSurgeReplacement)
+	if err := reconcilerSurge.pruneHashGroupRestartCounts(ctx, lwsSurge, "rev-a"); err != nil {
+		t.Fatalf("pruneHashGroupRestartCounts(surge) unexpected error: %v", err)
+	}
+	if err := k8sClientSurge.Get(ctx, client.ObjectKeyFromObject(lwsSurge), &updated); err != nil {
+		t.Fatal(err)
+	}
+	counts, err = parseGroupRestartCounts(updated.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSurge := map[string]int32{
+		"rev-a/hash-active":    1,
+		"rev-a/hash-surge-old": 2,
+	}
+	if diff := cmp.Diff(wantSurge, counts); diff != "" {
+		t.Errorf("counts after surge pruning (-want +got):\n%s", diff)
+	}
 }

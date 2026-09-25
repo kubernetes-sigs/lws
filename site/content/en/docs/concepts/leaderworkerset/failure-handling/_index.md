@@ -58,7 +58,7 @@ failure.
 
 The budget is tracked independently for each replica group and Pod template
 revision. It is consumed only when LWS initiates a group recreation. The field
-is not supported with `restartPolicy: None` or `groupIdentity: Hash`.
+is not supported with `restartPolicy: None`.
 
 When a group exhausts its budget, LWS:
 

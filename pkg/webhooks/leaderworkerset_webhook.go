@@ -314,20 +314,33 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 		}
 	}
 
+	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
+
+	return allErrs
+}
+
+// ValidateMaxGroupRestarts validates that maxGroupRestarts is only configured
+// with a restartPolicy that recreates the group.
+// Exported for DisaggregatedSet webhook reuse.
+func ValidateMaxGroupRestarts(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if spec.LeaderWorkerTemplate.MaxGroupRestarts == nil {
+		return allErrs
+	}
+	restartPolicy := spec.LeaderWorkerTemplate.RestartPolicy
+	if restartPolicy == "" {
+		restartPolicy = v1.RecreateGroupOnPodRestart
+	}
 	// maxGroupRestarts applies to the two policies that recreate an entire group.
 	// Reject it for policies that only rely on the kubelet to restart containers.
-	if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil &&
-		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupOnPodRestart &&
-		lws.Spec.LeaderWorkerTemplate.RestartPolicy != v1.RecreateGroupAfterStart {
+	if restartPolicy != v1.RecreateGroupOnPodRestart && restartPolicy != v1.RecreateGroupAfterStart {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("leaderWorkerTemplate", "maxGroupRestarts"),
-			*lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts,
+			*spec.LeaderWorkerTemplate.MaxGroupRestarts,
 			"maxGroupRestarts is only supported when restartPolicy recreates the group",
 		))
 	}
-
-	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
-
 	return allErrs
 }
 
@@ -354,9 +367,6 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 	}
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
-	}
-	if spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
-		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "maxGroupRestarts is not supported with groupIdentity Hash"))
 	}
 	return allErrs
 }

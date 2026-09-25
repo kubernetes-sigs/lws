@@ -19,6 +19,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,12 +28,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
 
@@ -79,6 +84,10 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
+	if err := r.pruneHashGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Scheduling prerequisites come before the leader Deployment so a leader pod
 	// is never created before its Workload exists. Per-replica PodGroups cannot
 	// be enumerated here because admission draws the group key of every leader
@@ -118,9 +127,93 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, revisionutils.GetRevisionKey(revision)); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	log.V(2).Info("Leader Reconcile (hash identity) completed.")
 	return ctrl.Result{}, nil
+}
+
+// pruneHashGroupRestartCounts removes stale unclaimed restart counters for the
+// current revision that exceed active replica slots (e.g., following scale-down).
+// Counters remain owned while their leader is alive or retained in the budget-exhausted
+// state. For unclaimed counters left by terminated leaders awaiting replacement, it
+// preserves enough entries to cover pending gated replacements up to replicas + maxSurge,
+// keeping the highest counts and pruning any excess.
+func (r *LeaderWorkerSetReconciler) pruneHashGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, currentRevisionKey string) error {
+	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
+		return nil
+	}
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+		var leaderPods corev1.PodList
+		if err := r.List(ctx, &leaderPods, client.InNamespace(lws.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		}); err != nil {
+			return false, err
+		}
+		ownedKeys := make(map[string]struct{}, len(leaderPods.Items))
+		occupiedSlots := 0
+		currentRevisionExhausted := 0
+		currentRevisionGated := 0
+		for i := range leaderPods.Items {
+			p := &leaderPods.Items[i]
+			exhausted := p.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
+			if p.DeletionTimestamp == nil || exhausted {
+				ownedKeys[groupRestartCountKey(p)] = struct{}{}
+			}
+			if revisionutils.GetRevisionKey(p) != currentRevisionKey {
+				continue
+			}
+			if exhausted {
+				occupiedSlots++
+				currentRevisionExhausted++
+				continue
+			}
+			if p.DeletionTimestamp != nil {
+				continue
+			}
+			if podutils.HasSchedulingGate(p, leaderworkerset.GroupReplacementSchedulingGate) {
+				currentRevisionGated++
+			} else {
+				occupiedSlots++
+			}
+		}
+		replicas := int(*latest.Spec.Replicas)
+		maxSurge := 0
+		if latest.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
+			if surge, err := intstr.GetScaledValueFromIntOrPercent(&latest.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, replicas, true); err == nil && surge > 0 {
+				maxSurge = min(surge, replicas)
+			}
+		}
+		pendingReplacements := max(0, currentRevisionGated-currentRevisionExhausted)
+		activeSlotLimit := max(replicas, min(replicas+maxSurge, occupiedSlots+pendingReplacements))
+		maxUnclaimed := max(0, activeSlotLimit-occupiedSlots)
+		prefix := currentRevisionKey + "/"
+		var unclaimedKeys []string
+		for k := range counts {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			if _, owned := ownedKeys[k]; !owned {
+				unclaimedKeys = append(unclaimedKeys, k)
+			}
+		}
+		if len(unclaimedKeys) <= maxUnclaimed {
+			return false, nil
+		}
+		sort.Slice(unclaimedKeys, func(i, j int) bool {
+			if counts[unclaimedKeys[i]] != counts[unclaimedKeys[j]] {
+				return counts[unclaimedKeys[i]] > counts[unclaimedKeys[j]]
+			}
+			return unclaimedKeys[i] < unclaimedKeys[j]
+		})
+		for _, k := range unclaimedKeys[maxUnclaimed:] {
+			delete(counts, k)
+		}
+		return true, nil
+	})
 }
 
 func (r *LeaderWorkerSetReconciler) getLeaderDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.Deployment, error) {
@@ -205,9 +298,14 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	return deploymentConfig, nil
 }
 
-// updateStatusHash computes LWS status from the leader Deployment. Because pod
-// readiness includes the group-ready gate, the Deployment's readyReplicas already
-// counts fully ready groups rather than bare leader pods.
+// updateStatusHash computes LWS status and conditions from the leader Deployment and
+// its leader pods. Because leader pod readiness includes the group-ready gate, the
+// Deployment's readyReplicas already counts fully ready groups. Retained budget-exhausted
+// groups are discounted from ready counts and reported via the Degraded condition.
+// To prevent premature Available status during rollouts, the function verifies that the
+// Deployment observed the current generation, all old-revision pods have terminated, and
+// all desired replicas are ready and non-degraded. Returns true (updateDone) once the
+// desired revision is fully rolled out and Available.
 func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	updateStatus := false
@@ -216,6 +314,37 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, deploy); err != nil {
 		log.Error(err, "Error retrieving leader Deployment")
 		return false, err
+	}
+
+	leaderPodList := &corev1.PodList{}
+	if err := r.List(ctx, leaderPodList, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	}); err != nil {
+		log.Error(err, "Fetching leaderPods")
+		return false, err
+	}
+
+	deployRevision := revisionutils.GetRevisionKey(deploy)
+	degradedGroupCount := 0
+	degradedReadyCount := int32(0)
+	currentRevisionPodCount := 0
+	oldRevisionPodCount := 0
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		if deployRevision != "" {
+			if revisionutils.GetRevisionKey(pod) == deployRevision {
+				currentRevisionPodCount++
+			} else if pod.DeletionTimestamp == nil {
+				oldRevisionPodCount++
+			}
+		}
+		if pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+			degradedGroupCount++
+			if pod.DeletionTimestamp == nil && podutils.IsPodReady(pod) {
+				degradedReadyCount++
+			}
+		}
 	}
 
 	if lws.Status.Replicas != deploy.Status.Replicas {
@@ -243,22 +372,54 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 
 	var conditions []metav1.Condition
 	lwsReplicas := *lws.Spec.Replicas
-	updateInProgress := deploy.Status.UpdatedReplicas < deploy.Status.Replicas
-	available := deploy.Status.Replicas == lwsReplicas &&
-		deploy.Status.ReadyReplicas == lwsReplicas &&
+	readyNonDegradedCount := max(int32(0), deploy.Status.ReadyReplicas-degradedReadyCount)
+	degraded := degradedGroupCount > 0
+	deploymentCurrent := deploy.Status.ObservedGeneration >= deploy.Generation &&
+		(deployRevision == "" || (oldRevisionPodCount == 0 && (len(leaderPodList.Items) == 0 || currentRevisionPodCount >= int(lwsReplicas))))
+	updateInProgress := !deploymentCurrent || deploy.Status.UpdatedReplicas < deploy.Status.Replicas
+	available := deploymentCurrent && !degraded &&
+		deploy.Status.Replicas == lwsReplicas &&
+		readyNonDegradedCount == lwsReplicas &&
 		deploy.Status.UpdatedReplicas == lwsReplicas
+	targetReplicas := max(int(lwsReplicas), int(deploy.Status.Replicas))
+	progressing := (updateInProgress && !degraded) || int(readyNonDegradedCount)+degradedGroupCount < targetReplicas
 	if updateInProgress {
+		if degraded {
+			conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetAvailable, lws, "ReplicaRestartBudgetExceeded", "Not all replicas are ready"))
+		}
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws))
-		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		if progressing {
+			conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		} else {
+			conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery is stopped for one or more replicas"))
+		}
 	} else if available {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws))
+	} else if degraded {
+		conditions = append(conditions,
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetAvailable, lws, "ReplicaRestartBudgetExceeded", "Not all replicas are ready"),
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, "ReplicaRestartBudgetExceeded", "Automatic recovery is stopped for one or more replicas"),
+			makeFalseCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws, "ReplicaRestartBudgetExceeded", "No rolling update is in progress"),
+		)
+		if progressing {
+			conditions[len(conditions)-2] = makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+	}
+	if degraded {
+		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws))
+	} else {
+		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetDegraded, lws, "AsExpected", "No replica has exhausted its restart budget"))
 	}
 
 	updateCondition := setConditions(lws, conditions)
 	if updateCondition {
-		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, conditions[0].Reason, Update, conditions[0].Message+fmt.Sprintf(", with %d groups ready of total %d groups", deploy.Status.ReadyReplicas, lwsReplicas))
+		eventCondition := conditions[0]
+		if degraded {
+			eventCondition = conditions[len(conditions)-1]
+		}
+		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, eventCondition.Reason, Update, eventCondition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", deploy.Status.ReadyReplicas, lwsReplicas))
 	}
 	if updateStatus || updateCondition {
 		if err := r.Status().Update(ctx, lws); err != nil {
