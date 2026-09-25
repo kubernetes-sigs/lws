@@ -303,9 +303,14 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	for _, lws := range lwsList {
 		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
 			newLWS = append(newLWS, lws)
-		} else {
-			oldLWS = append(oldLWS, lws)
+			continue
 		}
+		// Deletion is irreversible. A terminating old LWS must not keep the
+		// rollout path active or be treated as capacity the planner can control.
+		if !lws.DeletionTimestamp.IsZero() {
+			continue
+		}
+		oldLWS = append(oldLWS, lws)
 	}
 
 	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWS)

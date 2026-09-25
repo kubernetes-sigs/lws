@@ -535,7 +535,7 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 	revisionLWS := make(map[string]map[string]*leaderworkersetv1.LeaderWorkerSet)
 	for _, lws := range lwsList {
 		lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
-		if lwsRevision == revision {
+		if lwsRevision == revision || !lws.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if revisionLWS[lwsRevision] == nil {

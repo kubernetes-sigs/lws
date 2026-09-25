@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -211,6 +212,55 @@ func TestManagerDelete(t *testing.T) {
 		})
 
 		require.NoError(t, err) // Should not error, deletion is idempotent
+	})
+}
+
+func TestTerminatingOldLWSIsIgnored(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
+	ds.UID = types.UID("test-uid")
+
+	terminatingOld := func(replicas int32) *leaderworkersetv1.LeaderWorkerSet {
+		lws := buildOwnedManagerTestLWS("old-prefill", replicas, ds)
+		lws.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, "old", "prefill")
+		now := metav1.Now()
+		lws.DeletionTimestamp = &now
+		lws.Finalizers = []string{"foregroundDeletion"}
+		return lws
+	}
+
+	t.Run("excluded from rollout discovery regardless of Spec", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(terminatingOld(3)).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		oldRevisions, newRevision, err := manager.GetRevisionRolesList(context.Background(), ds, 0, "target")
+
+		require.NoError(t, err)
+		assert.Empty(t, oldRevisions)
+		assert.Nil(t, newRevision)
+	})
+
+	t.Run("cleanup does not delete or emit an event again", func(t *testing.T) {
+		deleteCalls := 0
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(terminatingOld(0)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deleteCalls++
+					return c.Delete(ctx, obj, opts...)
+				},
+			}).Build()
+		recorder := events.NewFakeRecorder(10)
+		reconciler := &DisaggregatedSetReconciler{
+			LWSManager: NewLeaderWorkerSetManager(fakeClient),
+			Record:     recorder,
+		}
+
+		require.NoError(t, reconciler.cleanupDrainedLWS(context.Background(), ds, 0, "target"))
+		assert.Zero(t, deleteCalls)
+		assert.Empty(t, recorder.Events)
 	})
 }
 
