@@ -126,6 +126,7 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessPort:      "8476",
 		},
 		{
+			// At admission a hash leader has a host name but no pod name yet.
 			name: "Hash identity, leader pod with assigned host name",
 			pod: &corev1.Pod{
 				Spec: func() corev1.PodSpec {
@@ -134,8 +135,8 @@ func TestAddTPUVariables(t *testing.T) {
 					return spec
 				}(),
 				ObjectMeta: v1.ObjectMeta{
-					Name:      "test-sample-7d9f8b6c4-x2kkp",
-					Namespace: "default",
+					GenerateName: "test-sample-7d9f8b6c4-",
+					Namespace:    "default",
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey: "0",
 					},
@@ -144,14 +145,38 @@ func TestAddTPUVariables(t *testing.T) {
 					},
 				},
 			},
-			size:                        2,
+			size:                        3,
 			expectedTpuWorkerId:         "0",
-			expectedTpuWorkerHostNames:  "test-sample-9f2ac71b.default,test-sample-7d9f8b6c4-x2kkp-1.default",
-			expectedTpuName:             "test-sample-7d9f8b6c4-x2kkp",
-			expectedTpuProcessAddresses: "test-sample-9f2ac71b.default:8476,test-sample-7d9f8b6c4-x2kkp-1.default:8476",
+			expectedTpuWorkerHostNames:  "test-sample-9f2ac71b.default,test-sample-9f2ac71b-1.default,test-sample-9f2ac71b-2.default",
+			expectedTpuName:             "test-sample-9f2ac71b",
+			expectedTpuProcessAddresses: "test-sample-9f2ac71b.default:8476,test-sample-9f2ac71b-1.default:8476,test-sample-9f2ac71b-2.default:8476",
 			expectedTpuProcessPort:      "8476",
 		},
 		{
+			name: "Hash identity, worker pod named after the leader host name",
+			pod: &corev1.Pod{
+				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-sample-9f2ac71b-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey: "1",
+					},
+					Annotations: map[string]string{
+						LeaderRequestsTPUsAnnotationKey:            "true",
+						leaderworkerset.LeaderAddressAnnotationKey: "test-sample-9f2ac71b.default.default",
+					},
+				},
+			},
+			size:                        3,
+			expectedTpuWorkerId:         "1",
+			expectedTpuWorkerHostNames:  "test-sample-9f2ac71b.default,test-sample-9f2ac71b-1.default,test-sample-9f2ac71b-2.default",
+			expectedTpuName:             "test-sample-9f2ac71b",
+			expectedTpuProcessAddresses: "test-sample-9f2ac71b.default:8476,test-sample-9f2ac71b-1.default:8476,test-sample-9f2ac71b-2.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			// Hash groups created before v0.12 named their workers after the leader pod.
 			name: "Hash identity, worker pod with leader address annotation",
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
@@ -425,6 +450,32 @@ func TestAddTPUVariablesSubGroup(t *testing.T) {
 			expectedTpuWorkerHostNames:  "test-sample-0.default",
 			expectedTpuName:             "test-sample-0",
 			expectedTpuProcessAddresses: "test-sample-0.default:8476",
+			expectedTpuProcessPort:      "8476",
+		},
+		{
+			name: "Hash identity, leader pod with assigned host name, size=2",
+			pod: &corev1.Pod{
+				Spec: func() corev1.PodSpec {
+					spec := wrappers.MakeLeaderPodSpecWithTPUResource()
+					spec.Hostname = "test-sample-9f2ac71b"
+					return spec
+				}(),
+				ObjectMeta: v1.ObjectMeta{
+					GenerateName: "test-sample-7d9f8b6c4-",
+					Namespace:    "default",
+					Labels: map[string]string{
+						leaderworkerset.WorkerIndexLabelKey:   "0",
+						leaderworkerset.SubGroupIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupSizeAnnotationKey: "2",
+					},
+				},
+			},
+			expectedTpuWorkerId:         "0",
+			expectedTpuWorkerHostNames:  "test-sample-9f2ac71b.default,test-sample-9f2ac71b-1.default",
+			expectedTpuName:             "test-sample-9f2ac71b",
+			expectedTpuProcessAddresses: "test-sample-9f2ac71b.default:8476,test-sample-9f2ac71b-1.default:8476",
 			expectedTpuProcessPort:      "8476",
 		},
 		{
