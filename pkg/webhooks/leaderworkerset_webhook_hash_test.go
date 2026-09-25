@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -144,5 +145,32 @@ func TestGroupReplacementPolicyDefaultAndValidation(t *testing.T) {
 	postTerminationOrdinal.Spec.GroupReplacementPolicy = v1.GroupReplacementPostTermination
 	if _, err := webhook.ValidateCreate(context.TODO(), postTerminationOrdinal); err != nil {
 		t.Errorf("expected PostTermination to be accepted with groupIdentity Ordinal: %v", err)
+	}
+}
+
+func TestValidateHashNameLength(t *testing.T) {
+	webhook := &LeaderWorkerSetWebhook{}
+	tests := []struct {
+		name    string
+		nameLen int
+		size    int32
+		wantErr bool
+	}{
+		// Worker pods get a label of the leader host name plus 11 characters.
+		{name: "size 2 at the limit", nameLen: 43, size: 2},
+		{name: "size 2 over the limit", nameLen: 44, size: 2, wantErr: true},
+		// Groups of size 1 only derive the leader host name.
+		{name: "size 1 at the limit", nameLen: 54, size: 1},
+		{name: "size 1 over the limit", nameLen: 55, size: 1, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := hashLws(strings.Repeat("a", tc.nameLen))
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To(tc.size)
+			_, err := webhook.ValidateCreate(context.TODO(), lws)
+			if gotErr := err != nil; gotErr != tc.wantErr {
+				t.Errorf("ValidateCreate() error = %v, wantErr %t", err, tc.wantErr)
+			}
+		})
 	}
 }
