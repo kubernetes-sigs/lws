@@ -93,11 +93,6 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// SetupWithManager initializes this helper in production. The fallback also
-	// supports tests and other callers that construct the reconciler directly.
-	if r.ScalerManager == nil {
-		r.ScalerManager = NewScalerManager(r.Client, r.Record)
-	}
 	// Seed a new scaler for a running role from its current aggregate replicas,
 	// preventing a Static→External change from accidentally requesting zero.
 	seedFor, err := r.seedForRole(ctx, disaggregatedSet)
