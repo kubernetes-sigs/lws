@@ -73,11 +73,12 @@ type podSnapshot struct {
 }
 
 type upgradeSnapshot struct {
-	LeaderWorkerSet  objectSnapshot         `json:"leaderWorkerSet"`
-	DisaggregatedSet objectSnapshot         `json:"disaggregatedSet"`
-	GeneratedLWS     []generatedLWSSnapshot `json:"generatedLWS"`
-	GeneratedService []serviceSnapshot      `json:"generatedService"`
-	WorkloadPods     []podSnapshot          `json:"workloadPods"`
+	LeaderWorkerSet   objectSnapshot         `json:"leaderWorkerSet"`
+	StandaloneService serviceSnapshot        `json:"standaloneService"`
+	DisaggregatedSet  objectSnapshot         `json:"disaggregatedSet"`
+	GeneratedLWS      []generatedLWSSnapshot `json:"generatedLWS"`
+	GeneratedService  []serviceSnapshot      `json:"generatedService"`
+	WorkloadPods      []podSnapshot          `json:"workloadPods"`
 }
 
 var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
@@ -135,7 +136,7 @@ func waitForWebhooks() {
 		return k8sClient.Create(ctx, probe, client.DryRunAll)
 	}, 2*time.Minute, 2*time.Second).Should(gomega.Succeed())
 
-	if legacyCRD {
+	if legacyCRD && upgradePhase == "before" {
 		return
 	}
 	ginkgo.By("waiting for the DisaggregatedSet webhook")
@@ -203,9 +204,6 @@ func createNewWorkloads() {
 	testutils.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "")
 	testutils.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
 
-	if legacyCRD {
-		return
-	}
 	ginkgo.By("creating a new DisaggregatedSet with the upgraded controller")
 	ds := newDisaggregatedSet(testNamespace, newDSName)
 	gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
@@ -314,12 +312,17 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	if err != nil {
 		return upgradeSnapshot{}, err
 	}
+	standaloneService, err := serviceSnapshotForLeaderWorkerSet(lws)
+	if err != nil {
+		return upgradeSnapshot{}, err
+	}
 	if legacyCRD {
 		// Releases before v0.9.0 have no DisaggregatedSet; the standalone LWS and
-		// its pods are the whole story.
+		// its resources are the whole pre-upgrade story.
 		return upgradeSnapshot{
-			LeaderWorkerSet: objectSnapshot{UID: lws.UID, Generation: lws.Generation},
-			WorkloadPods:    pods,
+			LeaderWorkerSet:   objectSnapshot{UID: lws.UID, Generation: lws.Generation},
+			StandaloneService: standaloneService,
+			WorkloadPods:      pods,
 		}, nil
 	}
 
@@ -363,12 +366,24 @@ func captureSnapshot() (upgradeSnapshot, error) {
 	}
 
 	return upgradeSnapshot{
-		LeaderWorkerSet:  objectSnapshot{UID: lws.UID, Generation: lws.Generation},
-		DisaggregatedSet: objectSnapshot{UID: ds.UID, Generation: ds.Generation},
-		GeneratedLWS:     generatedSnapshots,
-		GeneratedService: services,
-		WorkloadPods:     pods,
+		LeaderWorkerSet:   objectSnapshot{UID: lws.UID, Generation: lws.Generation},
+		StandaloneService: standaloneService,
+		DisaggregatedSet:  objectSnapshot{UID: ds.UID, Generation: ds.Generation},
+		GeneratedLWS:      generatedSnapshots,
+		GeneratedService:  services,
+		WorkloadPods:      pods,
 	}, nil
+}
+
+func serviceSnapshotForLeaderWorkerSet(lws *leaderworkersetv1.LeaderWorkerSet) (serviceSnapshot, error) {
+	service := &corev1.Service{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
+		return serviceSnapshot{}, fmt.Errorf("get Service for LeaderWorkerSet %q: %w", lws.Name, err)
+	}
+	if !metav1.IsControlledBy(service, lws) {
+		return serviceSnapshot{}, fmt.Errorf("Service %q is not controlled by LeaderWorkerSet %q", service.Name, lws.Name)
+	}
+	return serviceSnapshot{Name: service.Name, UID: service.UID}, nil
 }
 
 // generatedServiceSnapshots records the identity of the Services owned by the
@@ -377,14 +392,11 @@ func generatedServiceSnapshots(generated []leaderworkersetv1.LeaderWorkerSet) ([
 	snapshots := make([]serviceSnapshot, 0, len(generated))
 	for i := range generated {
 		lws := &generated[i]
-		service := &corev1.Service{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
-			return nil, fmt.Errorf("get Service for generated LeaderWorkerSet %q: %w", lws.Name, err)
+		snapshot, err := serviceSnapshotForLeaderWorkerSet(lws)
+		if err != nil {
+			return nil, err
 		}
-		if !metav1.IsControlledBy(service, lws) {
-			return nil, fmt.Errorf("Service %q is not controlled by generated LeaderWorkerSet %q", service.Name, lws.Name)
-		}
-		snapshots = append(snapshots, serviceSnapshot{Name: service.Name, UID: service.UID})
+		snapshots = append(snapshots, snapshot)
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Name < snapshots[j].Name
@@ -421,6 +433,9 @@ func workloadPodSnapshots() ([]podSnapshot, error) {
 	snapshots := make([]podSnapshot, 0, len(allPods))
 	for i := range allPods {
 		pod := &allPods[i]
+		if !isPodReady(pod) {
+			return nil, fmt.Errorf("pod %q is not ready", pod.Name)
+		}
 		snapshots = append(snapshots, podSnapshot{
 			Name:                  pod.Name,
 			UID:                   pod.UID,

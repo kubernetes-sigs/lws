@@ -26,8 +26,8 @@ LWS_UPGRADE_METHOD=${LWS_UPGRADE_METHOD:-"manifests"}
 # LWS_UPGRADE_LEGACY_CRD=true runs the documented one-time migration for releases
 # up to v0.7.0, whose chart rendered the LeaderWorkerSet CRD from templates/crds/.
 # Without it the first helm upgrade across the v0.8.0 boundary deletes the CRD
-# (#880). It also skips the DisaggregatedSet parts of the upgrade spec, since that
-# CRD only exists from v0.9.0.
+# (#880). It skips the pre-upgrade DisaggregatedSet checks, since that CRD only
+# exists from v0.9.0.
 LWS_UPGRADE_LEGACY_CRD=${LWS_UPGRADE_LEGACY_CRD:-"false"}
 HELM=${HELM:-"./bin/helm"}
 HELM_CHART_REPO=${HELM_CHART_REPO:-"registry.k8s.io/lws/charts"}
@@ -74,7 +74,7 @@ function cleanup {
         if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
             $KUBECTL get events -A --sort-by=.lastTimestamp > "$ARTIFACTS"/events.log 2>&1 || true
             local workload_types="leaderworkersets,pods,statefulsets,services"
-            if [ "$LWS_UPGRADE_LEGACY_CRD" != "true" ]; then
+            if $KUBECTL get crd disaggregatedsets.disaggregatedset.x-k8s.io > /dev/null 2>&1; then
                 workload_types="leaderworkersets,disaggregatedsets,pods,statefulsets,services"
             fi
             $KUBECTL get $workload_types \
