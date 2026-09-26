@@ -40,7 +40,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
-	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	configapi "sigs.k8s.io/lws/api/config/v1"
+	configapiv1alpha1 "sigs.k8s.io/lws/api/config/v1alpha1"
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
@@ -69,6 +70,7 @@ func init() {
 	utilruntime.Must(leaderworkersetv1.AddToScheme(scheme))
 	utilruntime.Must(disaggregatedsetv1.AddToScheme(scheme))
 	utilruntime.Must(configapi.AddToScheme(scheme))
+	utilruntime.Must(configapiv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1alpha3.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1beta1.AddToScheme(scheme))

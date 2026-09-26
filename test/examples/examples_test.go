@@ -35,6 +35,7 @@ import (
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
+	configv1 "sigs.k8s.io/lws/api/config/v1"
 	configv1alpha1 "sigs.k8s.io/lws/api/config/v1alpha1"
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -62,6 +63,7 @@ func newScheme(t *testing.T) *runtime.Scheme {
 		clientgoscheme.AddToScheme,
 		lwsv1.AddToScheme,
 		disaggv1.AddToScheme,
+		configv1.AddToScheme,
 		configv1alpha1.AddToScheme,
 	} {
 		if err := add(scheme); err != nil {

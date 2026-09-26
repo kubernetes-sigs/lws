@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
-	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	configapi "sigs.k8s.io/lws/api/config/v1"
 )
 
 func TestValidate(t *testing.T) {
