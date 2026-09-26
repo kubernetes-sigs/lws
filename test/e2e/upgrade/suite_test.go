@@ -25,6 +25,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -42,6 +43,9 @@ var (
 	upgradePhase    string
 	snapshotPath    string
 	currentImageTag string
+	// legacyCRD is set when the old release predates the DisaggregatedSet CRD
+	// (v0.9.0) and shipped the LeaderWorkerSet CRD inside the Helm release.
+	legacyCRD bool
 )
 
 func TestUpgrade(t *testing.T) {
@@ -58,6 +62,8 @@ var _ = ginkgo.BeforeSuite(func() {
 		ginkgo.Fail("LWS_UPGRADE_PHASE must be either before or after")
 	}
 
+	legacyCRD = os.Getenv("LWS_UPGRADE_LEGACY_CRD") == "true"
+
 	snapshotPath = os.Getenv("LWS_UPGRADE_SNAPSHOT_PATH")
 	gomega.Expect(snapshotPath).NotTo(gomega.BeEmpty())
 
@@ -67,6 +73,7 @@ var _ = ginkgo.BeforeSuite(func() {
 	testScheme := runtime.NewScheme()
 	gomega.Expect(corev1.AddToScheme(testScheme)).To(gomega.Succeed())
 	gomega.Expect(appsv1.AddToScheme(testScheme)).To(gomega.Succeed())
+	gomega.Expect(apiextensionsv1.AddToScheme(testScheme)).To(gomega.Succeed())
 	gomega.Expect(leaderworkersetv1.AddToScheme(testScheme)).To(gomega.Succeed())
 	gomega.Expect(disaggregatedsetv1.AddToScheme(testScheme)).To(gomega.Succeed())
 

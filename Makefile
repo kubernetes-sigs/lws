@@ -206,15 +206,22 @@ test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
 .PHONY: test-e2e-upgrade
-test-e2e-upgrade: test-e2e-upgrade-manifests test-e2e-upgrade-helm
+test-e2e-upgrade: test-e2e-upgrade-manifests
 
 .PHONY: test-e2e-upgrade-manifests
 test-e2e-upgrade-manifests: kustomize manifests fmt vet ginkgo kind-image-build
-	LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+	LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS)/upgrade-manifests ./hack/e2e-test.sh
 
 .PHONY: test-e2e-upgrade-helm
-test-e2e-upgrade-helm: kustomize manifests fmt vet ginkgo helm kind-image-build
-	LWS_UPGRADE_METHOD=helm LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) HELM=$(HELM) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
+test-e2e-upgrade-helm: test-e2e-upgrade-helm-current test-e2e-upgrade-helm-legacy
+
+.PHONY: test-e2e-upgrade-helm-current
+test-e2e-upgrade-helm-current: kustomize manifests fmt vet ginkgo helm kind-image-build
+	LWS_UPGRADE_METHOD=helm LWS_UPGRADE_FROM_VERSION=$(LWS_UPGRADE_FROM_VERSION) E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) HELM=$(HELM) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS)/upgrade-helm ./hack/e2e-test.sh
+
+.PHONY: test-e2e-upgrade-helm-legacy
+test-e2e-upgrade-helm-legacy: kustomize manifests fmt vet ginkgo helm kind-image-build ## Helm upgrade from the last chart that shipped the CRD inside the release (v0.7.0).
+	LWS_UPGRADE_METHOD=helm LWS_UPGRADE_LEGACY_CRD=true LWS_UPGRADE_FROM_VERSION=v0.7.0 E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(UPGRADE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) HELM=$(HELM) USE_EXISTING_CLUSTER=false IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS)/upgrade-helm-legacy ./hack/e2e-test.sh
 
 .PHONY: test-e2e-cert-manager
 test-e2e-cert-manager: kustomize manifests fmt vet envtest ginkgo kind-image-build

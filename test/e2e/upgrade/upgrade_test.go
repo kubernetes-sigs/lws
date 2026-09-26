@@ -27,6 +27,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -72,11 +73,12 @@ type podSnapshot struct {
 }
 
 type upgradeSnapshot struct {
-	LeaderWorkerSet  objectSnapshot         `json:"leaderWorkerSet"`
-	DisaggregatedSet objectSnapshot         `json:"disaggregatedSet"`
-	GeneratedLWS     []generatedLWSSnapshot `json:"generatedLWS"`
-	GeneratedService []serviceSnapshot      `json:"generatedService"`
-	WorkloadPods     []podSnapshot          `json:"workloadPods"`
+	LeaderWorkerSet   objectSnapshot         `json:"leaderWorkerSet"`
+	StandaloneService serviceSnapshot        `json:"standaloneService"`
+	DisaggregatedSet  objectSnapshot         `json:"disaggregatedSet"`
+	GeneratedLWS      []generatedLWSSnapshot `json:"generatedLWS"`
+	GeneratedService  []serviceSnapshot      `json:"generatedService"`
+	WorkloadPods      []podSnapshot          `json:"workloadPods"`
 }
 
 var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
@@ -94,6 +96,9 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 				g.Expect(err).NotTo(gomega.HaveOccurred())
 				g.Expect(current).To(gomega.Equal(expected))
 			}, 30*time.Second, time.Second).Should(gomega.Succeed())
+			if legacyCRD {
+				expectLeaderWorkerSetCRDKept()
+			}
 			createNewWorkloads()
 		}
 	})
@@ -113,6 +118,17 @@ func expectLeaderWorkerSetDegradedFalse(name string) {
 	}, 2*time.Minute, time.Second).Should(gomega.Equal(metav1.ConditionFalse))
 }
 
+// expectLeaderWorkerSetCRDKept verifies the migration documented in
+// charts/lws/README.md: after the release stops rendering the CRD, Helm left it
+// in place because of the resource-policy annotation.
+func expectLeaderWorkerSetCRDKept() {
+	ginkgo.By("verifying the LeaderWorkerSet CRD survived the Helm upgrade")
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "leaderworkersets.leaderworkerset.x-k8s.io"}, crd)).To(gomega.Succeed())
+	gomega.Expect(crd.DeletionTimestamp).To(gomega.BeNil())
+	gomega.Expect(crd.Annotations).To(gomega.HaveKeyWithValue("helm.sh/resource-policy", "keep"))
+}
+
 func waitForWebhooks() {
 	ginkgo.By("waiting for the LeaderWorkerSet webhook")
 	gomega.Eventually(func() error {
@@ -120,6 +136,9 @@ func waitForWebhooks() {
 		return k8sClient.Create(ctx, probe, client.DryRunAll)
 	}, 2*time.Minute, 2*time.Second).Should(gomega.Succeed())
 
+	if legacyCRD && upgradePhase == "before" {
+		return
+	}
 	ginkgo.By("waiting for the DisaggregatedSet webhook")
 	gomega.Eventually(func() error {
 		probe := newDisaggregatedSet("default", "upgrade-ds-webhook-probe")
@@ -135,16 +154,47 @@ func createExistingWorkloads() {
 	ginkgo.By("creating a LeaderWorkerSet with the old controller")
 	lws := newLeaderWorkerSet(testNamespace, existingLWSName, 2, 2)
 	testutils.MustCreateLws(ctx, k8sClient, lws)
-	testutils.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
-	testutils.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
-	testutils.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "")
-	testutils.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+	if !legacyCRD {
+		testutils.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+		testutils.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+	}
+	if legacyCRD {
+		expectLegacyLeaderWorkerSetAvailable(lws)
+	} else {
+		testutils.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "")
+	}
+	if !legacyCRD {
+		testutils.ExpectValidPods(ctx, k8sClient, lws, &corev1.PodList{})
+	}
 	testutils.ExpectValidServices(ctx, k8sClient, lws, 1)
 
+	if legacyCRD {
+		return
+	}
 	ginkgo.By("creating a DisaggregatedSet with the old controller")
 	ds := newDisaggregatedSet(testNamespace, existingDSName)
 	gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
 	waitForDisaggregatedSet(existingDSName)
+}
+
+// expectLegacyLeaderWorkerSetAvailable accepts an unset observedGeneration
+// because v0.7.0 did not populate that field on status conditions.
+func expectLegacyLeaderWorkerSetAvailable(lws *leaderworkersetv1.LeaderWorkerSet) {
+	ginkgo.By("checking the legacy LeaderWorkerSet is available")
+	gomega.Eventually(func() (bool, error) {
+		fetched := &leaderworkersetv1.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			return false, err
+		}
+		for _, condition := range fetched.Status.Conditions {
+			if condition.Type == string(leaderworkersetv1.LeaderWorkerSetAvailable) &&
+				condition.Status == metav1.ConditionTrue &&
+				(condition.ObservedGeneration == 0 || condition.ObservedGeneration == fetched.Generation) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, testutils.Timeout, testutils.Interval).Should(gomega.BeTrue())
 }
 
 func createNewWorkloads() {
@@ -258,6 +308,24 @@ func captureSnapshot() (upgradeSnapshot, error) {
 		return upgradeSnapshot{}, err
 	}
 
+	pods, err := workloadPodSnapshots()
+	if err != nil {
+		return upgradeSnapshot{}, err
+	}
+	standaloneService, err := serviceSnapshotForLeaderWorkerSet(lws)
+	if err != nil {
+		return upgradeSnapshot{}, err
+	}
+	if legacyCRD {
+		// Releases before v0.9.0 have no DisaggregatedSet; the standalone LWS and
+		// its resources are the whole pre-upgrade story.
+		return upgradeSnapshot{
+			LeaderWorkerSet:   objectSnapshot{UID: lws.UID, Generation: lws.Generation},
+			StandaloneService: standaloneService,
+			WorkloadPods:      pods,
+		}, nil
+	}
+
 	ds := &disaggregatedsetv1.DisaggregatedSet{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: existingDSName}, ds); err != nil {
 		return upgradeSnapshot{}, err
@@ -297,18 +365,25 @@ func captureSnapshot() (upgradeSnapshot, error) {
 		return upgradeSnapshot{}, err
 	}
 
-	pods, err := workloadPodSnapshots()
-	if err != nil {
-		return upgradeSnapshot{}, err
-	}
-
 	return upgradeSnapshot{
-		LeaderWorkerSet:  objectSnapshot{UID: lws.UID, Generation: lws.Generation},
-		DisaggregatedSet: objectSnapshot{UID: ds.UID, Generation: ds.Generation},
-		GeneratedLWS:     generatedSnapshots,
-		GeneratedService: services,
-		WorkloadPods:     pods,
+		LeaderWorkerSet:   objectSnapshot{UID: lws.UID, Generation: lws.Generation},
+		StandaloneService: standaloneService,
+		DisaggregatedSet:  objectSnapshot{UID: ds.UID, Generation: ds.Generation},
+		GeneratedLWS:      generatedSnapshots,
+		GeneratedService:  services,
+		WorkloadPods:      pods,
 	}, nil
+}
+
+func serviceSnapshotForLeaderWorkerSet(lws *leaderworkersetv1.LeaderWorkerSet) (serviceSnapshot, error) {
+	service := &corev1.Service{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
+		return serviceSnapshot{}, fmt.Errorf("get Service for LeaderWorkerSet %q: %w", lws.Name, err)
+	}
+	if !metav1.IsControlledBy(service, lws) {
+		return serviceSnapshot{}, fmt.Errorf("Service %q is not controlled by LeaderWorkerSet %q", service.Name, lws.Name)
+	}
+	return serviceSnapshot{Name: service.Name, UID: service.UID}, nil
 }
 
 // generatedServiceSnapshots records the identity of the Services owned by the
@@ -317,14 +392,11 @@ func generatedServiceSnapshots(generated []leaderworkersetv1.LeaderWorkerSet) ([
 	snapshots := make([]serviceSnapshot, 0, len(generated))
 	for i := range generated {
 		lws := &generated[i]
-		service := &corev1.Service{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: lws.Name}, service); err != nil {
-			return nil, fmt.Errorf("get Service for generated LeaderWorkerSet %q: %w", lws.Name, err)
+		snapshot, err := serviceSnapshotForLeaderWorkerSet(lws)
+		if err != nil {
+			return nil, err
 		}
-		if !metav1.IsControlledBy(service, lws) {
-			return nil, fmt.Errorf("Service %q is not controlled by generated LeaderWorkerSet %q", service.Name, lws.Name)
-		}
-		snapshots = append(snapshots, serviceSnapshot{Name: service.Name, UID: service.UID})
+		snapshots = append(snapshots, snapshot)
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Name < snapshots[j].Name
@@ -344,21 +416,26 @@ func workloadPodSnapshots() ([]podSnapshot, error) {
 		return nil, fmt.Errorf("expected 4 standalone LeaderWorkerSet pods, got %d", len(standalonePods.Items))
 	}
 
-	dsPods := &corev1.PodList{}
-	if err := k8sClient.List(ctx, dsPods,
-		client.InNamespace(testNamespace),
-		client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: existingDSName},
-	); err != nil {
-		return nil, err
+	allPods := standalonePods.Items
+	if !legacyCRD {
+		dsPods := &corev1.PodList{}
+		if err := k8sClient.List(ctx, dsPods,
+			client.InNamespace(testNamespace),
+			client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: existingDSName},
+		); err != nil {
+			return nil, err
+		}
+		if len(dsPods.Items) != 2 {
+			return nil, fmt.Errorf("expected 2 DisaggregatedSet pods, got %d", len(dsPods.Items))
+		}
+		allPods = append(allPods, dsPods.Items...)
 	}
-	if len(dsPods.Items) != 2 {
-		return nil, fmt.Errorf("expected 2 DisaggregatedSet pods, got %d", len(dsPods.Items))
-	}
-
-	allPods := append(standalonePods.Items, dsPods.Items...)
 	snapshots := make([]podSnapshot, 0, len(allPods))
 	for i := range allPods {
 		pod := &allPods[i]
+		if !isPodReady(pod) {
+			return nil, fmt.Errorf("pod %q is not ready", pod.Name)
+		}
 		snapshots = append(snapshots, podSnapshot{
 			Name:                  pod.Name,
 			UID:                   pod.UID,
