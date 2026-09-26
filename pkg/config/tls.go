@@ -23,7 +23,7 @@ import (
 
 	cliflag "k8s.io/component-base/cli/flag"
 
-	configapi "sigs.k8s.io/lws/api/config/v1alpha1"
+	configapi "sigs.k8s.io/lws/api/config/v1"
 )
 
 // TLS holds the parsed TLS configuration
