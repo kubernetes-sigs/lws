@@ -61,6 +61,9 @@ import (
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
 type LeaderWorkerSetReconciler struct {
 	client.Client
+	// APIReader fences combined-rollout decisions against uncached identities.
+	// SetupWithManager supplies it without changing existing constructors.
+	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
@@ -138,6 +141,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, lws); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Typed direct clients may omit TypeMeta; revision owner references require
+	// the known GVK independently of whether this read came from a cache.
+	lws.SetGroupVersionKind(leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
 
 	if lws.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
@@ -185,12 +191,19 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	lwsUpdated := updatedRevision != nil
 	if lwsUpdated {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+		// Freeze deliberately leaves the StatefulSet's old label in place.
+		// Reuse an equivalent target (also on rollback/restart), rather than
+		// allocating a new numbered revision on every acknowledgement wait.
+		revision, err = r.reuseOrCreateRevision(ctx, lws, updatedRevision)
 		if err != nil {
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
 		}
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
+	}
+
+	if handled, result, err := r.reconcileCombinedRollout(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated); handled {
+		return result, err
 	}
 
 	partition, replicas, err := r.rollingUpdateParameters(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated)
@@ -356,6 +369,7 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
@@ -389,6 +403,9 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
 				},
 			})).
+		// Whole-group health also depends on ordinary leader and worker updates.
+		// Keep this watch separate from Hash's exhaustion-only update predicate.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.enqueueOrdinalPodRequests)).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests))
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
@@ -399,6 +416,21 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
 	return builder.Complete(r)
+}
+
+func (r *LeaderWorkerSetReconciler) enqueueOrdinalPodRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	requests := enqueueLWSRequests(ctx, obj)
+	if len(requests) == 0 {
+		return nil
+	}
+	var lws leaderworkerset.LeaderWorkerSet
+	if err := r.Get(ctx, requests[0].NamespacedName, &lws); err != nil {
+		return nil
+	}
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return nil
+	}
+	return requests
 }
 
 func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Request {
@@ -517,11 +549,11 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if stsReplicas < lwsReplicas {
 		return partition, lwsReplicas, nil
 	}
-
 	states, err := r.getReplicaStates(ctx, lws, stsReplicas, revisionKey)
 	if err != nil {
 		return 0, 0, err
 	}
+
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 
 	originalLwsReplicas, err := strconv.Atoi(sts.Annotations[leaderworkerset.ReplicasAnnotationKey])
@@ -979,6 +1011,22 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws 
 	}
 
 	return nil, nil
+}
+
+func (r *LeaderWorkerSetReconciler) reuseOrCreateRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, proposed *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	var revisions appsv1.ControllerRevisionList
+	// A cached list can lag our last create across repeated reconciles.
+	if err := r.combinedReader().List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+		return nil, err
+	}
+	for i := range revisions.Items {
+		existing := &revisions.Items[i]
+		if combinedModelOwnedBy(existing, "LeaderWorkerSet", lws.UID) &&
+			(revisionutils.EqualRevision(proposed, existing) || revisionutils.SetMatchesRevision(lws, proposed, existing, r.revisionEqualityCache)) {
+			return existing, nil
+		}
+	}
+	return revisionutils.CreateRevision(ctx, r.Client, proposed)
 }
 
 // buildLeaderPodTemplateApplyConfiguration constructs the leader pod template
