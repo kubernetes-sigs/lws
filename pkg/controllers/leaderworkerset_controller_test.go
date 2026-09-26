@@ -1264,13 +1264,13 @@ func TestGetUpdatedRevision(t *testing.T) {
 
 func TestEnqueueLWSRequests(t *testing.T) {
 	tests := []struct {
-		name        string
-		statefulSet *appsv1.StatefulSet
-		want        []reconcile.Request
+		name   string
+		object client.Object
+		want   []reconcile.Request
 	}{
 		{
 			name: "unrelated statefulset without lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "unrelated-sts",
 					Namespace: "default",
@@ -1280,7 +1280,7 @@ func TestEnqueueLWSRequests(t *testing.T) {
 		},
 		{
 			name: "statefulset with empty lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "empty-label-sts",
 					Namespace: "default",
@@ -1293,9 +1293,39 @@ func TestEnqueueLWSRequests(t *testing.T) {
 		},
 		{
 			name: "lws-managed statefulset with valid lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "lws-sts",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey: "my-lws",
+					},
+				},
+			},
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      "my-lws",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+		{
+			name: "unrelated pod without lws label",
+			object: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unrelated-pod",
+					Namespace: "default",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "lws-managed pod with valid lws label",
+			object: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-lws-0-1",
 					Namespace: "default",
 					Labels: map[string]string{
 						leaderworkerset.SetNameLabelKey: "my-lws",
@@ -1315,7 +1345,7 @@ func TestEnqueueLWSRequests(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := enqueueLWSRequests(context.Background(), tc.statefulSet)
+			got := enqueueLWSRequests(context.Background(), tc.object)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("unexpected reconcile requests (-want +got):\n%s", diff)
 			}
