@@ -362,29 +362,19 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-				labels := a.GetLabels()
-				if labels == nil {
-					return nil
-				}
-				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
-					return nil
-				}
-				name := labels[leaderworkerset.SetNameLabelKey]
-				if name == "" {
-					return nil
-				}
-				return []reconcile.Request{{NamespacedName: types.NamespacedName{
-					Name:      name,
-					Namespace: a.GetNamespace(),
-				}}}
-			}),
+			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests),
 			// Reconcile status when an exhausted group appears or is removed. Ignore
-			// unrelated kubelet status updates on healthy leader pods.
+			// unrelated kubelet status updates on healthy leader pods. Member pod
+			// deletions trigger reconciliation so obsolete PodGroups can be cleaned up.
 			builder.WithPredicates(predicate.Funcs{
-				CreateFunc: func(e event.CreateEvent) bool { return true },
+				CreateFunc: func(e event.CreateEvent) bool {
+					return e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0"
+				},
 				DeleteFunc: func(e event.DeleteEvent) bool { return true },
 				UpdateFunc: func(e event.UpdateEvent) bool {
+					if e.ObjectNew.GetLabels()[leaderworkerset.WorkerIndexLabelKey] != "0" {
+						return false
+					}
 					return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
 						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
 				},
