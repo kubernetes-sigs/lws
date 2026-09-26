@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1 contains API Schema definitions for the lws v1 configuration API
 // +kubebuilder:object:generate=true
-// +groupName=lws.x-k8s.io
+// +groupName=config.lws.x-k8s.io
 package v1
 
 import (

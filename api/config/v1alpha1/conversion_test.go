@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
@@ -172,7 +173,7 @@ func TestRoundTrip_v1alpha1_v1_v1alpha1(t *testing.T) {
 				t.Fatalf("conversion v1 -> v1alpha1 failed: %v", err)
 			}
 
-			if diff := cmp.Diff(tc.original, roundTripped); diff != "" {
+			if diff := cmp.Diff(tc.original, roundTripped, cmpopts.IgnoreFields(Configuration{}, "TypeMeta")); diff != "" {
 				t.Errorf("round trip diff (-original +roundTripped):\n%s", diff)
 			}
 		})
@@ -218,7 +219,7 @@ func TestRoundTrip_v1_v1alpha1_v1(t *testing.T) {
 				t.Fatalf("conversion v1alpha1 -> v1 failed: %v", err)
 			}
 
-			if diff := cmp.Diff(tc.original, roundTripped); diff != "" {
+			if diff := cmp.Diff(tc.original, roundTripped, cmpopts.IgnoreFields(configv1.Configuration{}, "TypeMeta")); diff != "" {
 				t.Errorf("round trip diff (-original +roundTripped):\n%s", diff)
 			}
 		})
@@ -242,7 +243,7 @@ func TestScheme_Conversion(t *testing.T) {
 	}
 
 	expectedV1 := newFullV1Config()
-	if diff := cmp.Diff(expectedV1, convertedV1); diff != "" {
+	if diff := cmp.Diff(expectedV1, convertedV1, cmpopts.IgnoreFields(configv1.Configuration{}, "TypeMeta")); diff != "" {
 		t.Errorf("unexpected diff after scheme.Convert (-want +got):\n%s", diff)
 	}
 
@@ -251,7 +252,7 @@ func TestScheme_Conversion(t *testing.T) {
 		t.Fatalf("scheme.Convert v1 -> v1alpha1 failed: %v", err)
 	}
 
-	if diff := cmp.Diff(originalV1alpha1, roundTrippedV1alpha1); diff != "" {
+	if diff := cmp.Diff(originalV1alpha1, roundTrippedV1alpha1, cmpopts.IgnoreFields(Configuration{}, "TypeMeta")); diff != "" {
 		t.Errorf("unexpected diff after scheme round trip (-want +got):\n%s", diff)
 	}
 }

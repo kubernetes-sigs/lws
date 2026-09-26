@@ -31,7 +31,7 @@ type Configuration struct {
 	// ControllerManager returns the configurations for controllers
 	ControllerManager `json:",inline"`
 
-	// InternalCertManagerment is configuration for internalCertManagerment
+	// InternalCertManagement is configuration for internal certificate management.
 	InternalCertManagement *InternalCertManagement `json:"internalCertManagement,omitempty"`
 
 	// GangSchedulingManagement is configuration for gang scheduling management.
@@ -108,11 +108,11 @@ type ControllerHealth struct {
 	// +optional
 	HealthProbeBindAddress string `json:"healthProbeBindAddress,omitempty"`
 
-	// ReadinessEndpointName, defaults to "readyz"
+	// ReadinessEndpointName defaults to "/readyz".
 	// +optional
 	ReadinessEndpointName string `json:"readinessEndpointName,omitempty"`
 
-	// LivenessEndpointName, defaults to "healthz"
+	// LivenessEndpointName defaults to "/healthz".
 	// +optional
 	LivenessEndpointName string `json:"livenessEndpointName,omitempty"`
 }

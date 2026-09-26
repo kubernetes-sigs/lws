@@ -27,11 +27,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	configapi "sigs.k8s.io/lws/api/config/v1"
+	configapiv1alpha1 "sigs.k8s.io/lws/api/config/v1alpha1"
 )
 
 func fromFile(path string, scheme *runtime.Scheme, cfg *configapi.Configuration) error {
@@ -44,15 +43,13 @@ func fromFile(path string, scheme *runtime.Scheme, cfg *configapi.Configuration)
 
 	// Regardless of if the bytes are of any external version,
 	// it will be read successfully and converted into the v1 version
-	if err := runtime.DecodeInto(codecs.UniversalDecoder(), content, cfg); err != nil {
+	_, gvk, err := codecs.UniversalDecoder().Decode(content, nil, cfg)
+	if err != nil {
 		return err
 	}
 
-	var typeMeta metav1.TypeMeta
-	if err := yaml.Unmarshal(content, &typeMeta); err == nil {
-		if typeMeta.APIVersion == "config.lws.x-k8s.io/v1alpha1" {
-			klog.Warning("The config.lws.x-k8s.io/v1alpha1 API version is deprecated and will be removed in a future release. Please migrate to config.lws.x-k8s.io/v1.")
-		}
+	if gvk != nil && gvk.GroupVersion() == configapiv1alpha1.GroupVersion {
+		ctrl.Log.WithName("config").Info("The config.lws.x-k8s.io/v1alpha1 API version is deprecated and will be removed in a future release. Please migrate to config.lws.x-k8s.io/v1.")
 	}
 
 	return nil
@@ -160,23 +157,23 @@ func Encode(scheme *runtime.Scheme, cfg *configapi.Configuration) (string, error
 // Load returns a set of controller options and configuration from the given file, if the config file path is empty
 // it used the default configapi values.
 func Load(scheme *runtime.Scheme, configFile string) (ctrl.Options, configapi.Configuration, error) {
-	var err error
 	options := ctrl.Options{
 		Scheme: scheme,
 	}
 
 	cfg := configapi.Configuration{}
-	if configFile == "" {
-		scheme.Default(&cfg)
-	} else {
-		err := fromFile(configFile, scheme, &cfg)
-		if err != nil {
+	if configFile != "" {
+		if err := fromFile(configFile, scheme, &cfg); err != nil {
 			return options, cfg, err
 		}
 	}
+	// A decoder applies defaults to the source API version before conversion,
+	// but not to the converted object. Always default the canonical v1 object
+	// so future v1-only fields are initialized for older configuration files.
+	scheme.Default(&cfg)
 	if err := validate(&cfg).ToAggregate(); err != nil {
 		return options, cfg, err
 	}
 	addTo(&options, &cfg)
-	return options, cfg, err
+	return options, cfg, nil
 }

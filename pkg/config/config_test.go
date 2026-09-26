@@ -231,7 +231,7 @@ webhook:
 	// Ignore the controller manager section since it's side effect is checked against
 	// the content of  the resulting options
 	configCmpOpts := []cmp.Option{
-		cmpopts.IgnoreFields(configapi.Configuration{}, "ControllerManager"),
+		cmpopts.IgnoreFields(configapi.Configuration{}, "TypeMeta", "ControllerManager"),
 	}
 
 	defaultClientConnection := &configapi.ClientConnection{
@@ -427,6 +427,39 @@ webhook:
 				}
 			}
 		})
+	}
+}
+
+func TestLoadAppliesV1DefaultsAfterConversion(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	if err := configapi.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := configapiv1alpha1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+
+	const v1DefaultHost = "v1-default-applied"
+	testScheme.AddTypeDefaultingFunc(&configapi.Configuration{}, func(obj interface{}) {
+		cfg := obj.(*configapi.Configuration)
+		configapi.SetDefaults_Configuration(cfg)
+		cfg.Webhook.Host = v1DefaultHost
+	})
+
+	configFile := filepath.Join(t.TempDir(), "v1alpha1-config.yaml")
+	if err := os.WriteFile(configFile, []byte(`
+apiVersion: config.lws.x-k8s.io/v1alpha1
+kind: Configuration
+`), os.FileMode(0600)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cfg, err := Load(testScheme, configFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Webhook.Host != v1DefaultHost {
+		t.Errorf("Load() webhook host = %q, want v1 default %q", cfg.Webhook.Host, v1DefaultHost)
 	}
 }
 

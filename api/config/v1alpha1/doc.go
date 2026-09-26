@@ -15,5 +15,6 @@ limitations under the License.
 */
 
 // +k8s:defaulter-gen=TypeMeta
+// +k8s:conversion-gen=sigs.k8s.io/lws/api/config/v1
 
 package v1alpha1
