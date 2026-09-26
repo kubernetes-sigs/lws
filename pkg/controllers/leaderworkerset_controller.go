@@ -362,33 +362,11 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
-				labels := a.GetLabels()
-				if labels == nil {
-					return nil
-				}
-				if labels[leaderworkerset.WorkerIndexLabelKey] != "0" {
-					return nil
-				}
-				name := labels[leaderworkerset.SetNameLabelKey]
-				if name == "" {
-					return nil
-				}
-				return []reconcile.Request{{NamespacedName: types.NamespacedName{
-					Name:      name,
-					Namespace: a.GetNamespace(),
-				}}}
-			}),
+			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests),
 			// Reconcile status when an exhausted group appears or is removed. Ignore
-			// unrelated kubelet status updates on healthy leader pods.
-			builder.WithPredicates(predicate.Funcs{
-				CreateFunc: func(e event.CreateEvent) bool { return true },
-				DeleteFunc: func(e event.DeleteEvent) bool { return true },
-				UpdateFunc: func(e event.UpdateEvent) bool {
-					return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
-						e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
-				},
-			})).
+			// unrelated kubelet status updates on healthy leader pods. Member pod
+			// deletions trigger reconciliation so obsolete PodGroups can be cleaned up.
+			builder.WithPredicates(r.podWatchPredicate())).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests))
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
@@ -399,6 +377,41 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
 	return builder.Complete(r)
+}
+
+func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return e.Object != nil && e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0"
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			if e.Object == nil {
+				return false
+			}
+			if e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0" {
+				return true
+			}
+			if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); !ok {
+				return false
+			}
+			pod, ok := e.Object.(*corev1.Pod)
+			return (ok && pod.Spec.SchedulingGroup != nil && pod.Spec.SchedulingGroup.PodGroupName != nil) ||
+				e.Object.GetAnnotations()[schedulerprovider.WorkloadSchedulingAnnotationKey] != ""
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectNew == nil || e.ObjectNew.GetLabels()[leaderworkerset.WorkerIndexLabelKey] != "0" {
+				return false
+			}
+			if e.ObjectOld == nil {
+				return false
+			}
+			return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
+				e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return false
+		},
+	}
 }
 
 func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Request {
