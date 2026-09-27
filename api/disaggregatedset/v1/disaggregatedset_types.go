@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	// RevisionHashVersionV2 identifies the order-independent revision hash that
+	// RevisionHashVersion identifies the current revision hash algorithm, which
 	// covers all generated LeaderWorkerSet fields that require a rollout.
-	RevisionHashVersionV2 = "v2"
+	RevisionHashVersion = "v2"
 
 	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.

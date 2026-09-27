@@ -163,23 +163,24 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // resolveRevision selects the revision hash generation for a DisaggregatedSet.
 // Legacy objects are identified by an empty status.revisionHashVersion and an
 // existing owned LWS. They remain on v1 indefinitely, while a new object is
-// durably marked v2 before its first LWS is created. Persisting the marker first
-// ensures a later reconciliation cannot reinterpret a partially-created v2 set
-// as legacy if child creation or the final status update fails.
+// durably marked with the current version before its first LWS is created.
+// Persisting the marker first ensures a later reconciliation cannot reinterpret
+// a partially-created set as legacy if child creation or the final status update
+// fails.
 func (r *DisaggregatedSetReconciler) resolveRevision(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	existingLWS []*leaderworkersetv1.LeaderWorkerSet,
 ) (string, error) {
 	switch disaggregatedSet.Status.RevisionHashVersion {
-	case disaggregatedsetv1.RevisionHashVersionV2:
+	case disaggregatedsetv1.RevisionHashVersion:
 		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), nil
 	case "":
 		if len(existingLWS) > 0 {
 			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), nil
 		}
 
-		disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+		disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 		if err := r.Status().Update(ctx, disaggregatedSet); err != nil {
 			return "", fmt.Errorf("failed to initialize revision hash version: %w", err)
 		}

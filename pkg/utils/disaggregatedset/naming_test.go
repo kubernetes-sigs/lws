@@ -49,6 +49,8 @@ func roleSpec(name string, image string) disaggregatedsetv1.DisaggregatedRoleSpe
 		Name: name,
 		LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
 			Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+				StartupPolicy: leaderworkersetv1.LeaderCreatedStartupPolicy,
+				GroupIdentity: leaderworkersetv1.GroupIdentityOrdinal,
 				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
 					Size: ptr.To[int32](2),
 					WorkerTemplate: corev1.PodTemplateSpec{
@@ -132,19 +134,6 @@ func TestComputeRevision(t *testing.T) {
 		assert.Equal(t, revision, ComputeRevision(changed))
 	})
 
-	t.Run("an empty and a defaulted Ordinal groupIdentity hash the same", func(t *testing.T) {
-		// Objects persisted before the field existed must keep their revision
-		// once the API server starts defaulting it on reads.
-		defaulted := []disaggregatedsetv1.DisaggregatedRoleSpec{
-			roleSpec(testUtilsRolePrefill, "image:v1"),
-			roleSpec(testUtilsRoleDecode, "image:v1"),
-		}
-		for i := range defaulted {
-			defaulted[i].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityOrdinal
-		}
-		assert.Equal(t, revision, ComputeRevision(defaulted))
-	})
-
 	t.Run("hash groupIdentity produces a different revision", func(t *testing.T) {
 		hashed := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			roleSpec(testUtilsRolePrefill, "image:v1"),
@@ -170,6 +159,11 @@ func TestComputeRevisionV1Compatibility(t *testing.T) {
 	// This value was produced by the original revision algorithm. Pinning it
 	// protects the upgrade path: unversioned DisaggregatedSets must continue to
 	// resolve to the revision already stored on their existing LWS objects.
+	assert.Equal(t, "c51abc75", ComputeRevisionV1(roles))
+
+	for i := range roles {
+		roles[i].Spec.GroupIdentity = ""
+	}
 	assert.Equal(t, "c51abc75", ComputeRevisionV1(roles))
 }
 

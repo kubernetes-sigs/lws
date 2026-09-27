@@ -115,7 +115,7 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 
 	var got disaggregatedsetv1.DisaggregatedSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
-	assert.Equal(t, disaggregatedsetv1.RevisionHashVersionV2, got.Status.RevisionHashVersion)
+	assert.Equal(t, disaggregatedsetv1.RevisionHashVersion, got.Status.RevisionHashVersion)
 }
 
 func TestLegacyRevisionHashDoesNotTriggerRollout(t *testing.T) {
@@ -165,7 +165,7 @@ func TestVersionedRevisionHashRollsOutStartupPolicyChange(t *testing.T) {
 		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	oldRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	oldPrefill := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision, 2)
 	oldDecode := createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision, 2)
@@ -202,7 +202,7 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 		WithRole(testControllerRolePrefill, 5, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 4, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
 	prefillRS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 3)
@@ -298,7 +298,7 @@ func TestSlicesScaleDownDeletesRemovedSlice(t *testing.T) {
 		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
@@ -375,7 +375,7 @@ func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
 		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
 	readyLWS := func(role string) *leaderworkersetv1.LeaderWorkerSet {
@@ -438,7 +438,7 @@ func TestStatusProgressingWhenUnderDesiredCount(t *testing.T) {
 		WithRole(testControllerRolePrefill, 3, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 
 	// prefill wants 3 but only 1 has come up so far; decode is fully at its desired 2.
@@ -699,7 +699,7 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
-	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	targetRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	oldRevision := "oldrev01"
 	require.NotEqual(t, oldRevision, targetRevision)

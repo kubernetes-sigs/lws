@@ -134,8 +134,8 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 	return computeRevision(templates)
 }
 
-// ComputeRevision returns the current revision hash. Unlike the legacy v1
-// algorithm, v2 covers every generated LWS field that requires a coordinated
+// ComputeRevision returns the current revision hash. Unlike the legacy
+// algorithm, it covers every generated LWS field that requires a coordinated
 // rollout and treats the map-style role list as order independent.
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
@@ -147,7 +147,7 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 
 	templates := make([]roleTemplate, 0, len(roles))
 	for _, role := range roles {
-		spec := role.Spec.DeepCopy()
+		spec := role.Spec
 
 		// Replicas and rollout budgets are scaling inputs, not pod revisions.
 		spec.Replicas = nil
@@ -156,24 +156,11 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 		// groupReplacementPolicy is a live LWS knob reconciled in place.
 		spec.GroupReplacementPolicy = ""
 
-		// Normalize API defaults so explicitly setting the default does not cause
-		// a rollout. The generated LWS webhook materializes these values.
-		if spec.GroupIdentity == leaderworkersetv1.GroupIdentityOrdinal {
-			spec.GroupIdentity = ""
-		}
-		if spec.StartupPolicy == leaderworkersetv1.LeaderCreatedStartupPolicy {
-			spec.StartupPolicy = ""
-		}
-		if spec.NetworkConfig == nil || spec.NetworkConfig.SubdomainPolicy == nil ||
-			*spec.NetworkConfig.SubdomainPolicy == leaderworkersetv1.SubdomainShared {
-			spec.NetworkConfig = nil
-		}
-
 		templates = append(templates, roleTemplate{
 			Name:        role.Name,
 			Labels:      role.Labels,
 			Annotations: role.Annotations,
-			Spec:        *spec,
+			Spec:        spec,
 		})
 	}
 

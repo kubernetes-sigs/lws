@@ -926,8 +926,8 @@ func TestComputeRevisionGroupIdentity(t *testing.T) {
 		// Objects persisted before the field existed must keep their revision
 		// once the API server starts defaulting groupIdentity to Ordinal.
 		require.Equal(t,
-			disaggregatedsetutils.ComputeRevision(buildRoles("")),
-			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)))
+			disaggregatedsetutils.ComputeRevisionV1(buildRoles("")),
+			disaggregatedsetutils.ComputeRevisionV1(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)))
 	})
 
 	t.Run("Hash produces a different revision", func(t *testing.T) {
