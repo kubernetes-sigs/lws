@@ -41,7 +41,9 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -1264,13 +1266,13 @@ func TestGetUpdatedRevision(t *testing.T) {
 
 func TestEnqueueLWSRequests(t *testing.T) {
 	tests := []struct {
-		name        string
-		statefulSet *appsv1.StatefulSet
-		want        []reconcile.Request
+		name   string
+		object client.Object
+		want   []reconcile.Request
 	}{
 		{
 			name: "unrelated statefulset without lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "unrelated-sts",
 					Namespace: "default",
@@ -1280,7 +1282,7 @@ func TestEnqueueLWSRequests(t *testing.T) {
 		},
 		{
 			name: "statefulset with empty lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "empty-label-sts",
 					Namespace: "default",
@@ -1293,9 +1295,39 @@ func TestEnqueueLWSRequests(t *testing.T) {
 		},
 		{
 			name: "lws-managed statefulset with valid lws label",
-			statefulSet: &appsv1.StatefulSet{
+			object: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "lws-sts",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey: "my-lws",
+					},
+				},
+			},
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      "my-lws",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+		{
+			name: "unrelated pod without lws label",
+			object: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unrelated-pod",
+					Namespace: "default",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "lws-managed pod with valid lws label",
+			object: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-lws-0-1",
 					Namespace: "default",
 					Labels: map[string]string{
 						leaderworkerset.SetNameLabelKey: "my-lws",
@@ -1315,12 +1347,171 @@ func TestEnqueueLWSRequests(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := enqueueLWSRequests(context.Background(), tc.statefulSet)
+			got := enqueueLWSRequests(context.Background(), tc.object)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("unexpected reconcile requests (-want +got):\n%s", diff)
 			}
 		})
 	}
+}
+
+func TestLeaderWorkerSetPodWatchPredicate(t *testing.T) {
+	fakeClient := fake.NewClientBuilder().Build()
+	k8sProvider := schedulerprovider.NewKubernetesProvider(fakeClient)
+	volcanoProvider := schedulerprovider.NewVolcanoProvider(fakeClient)
+
+	leaderPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-lws",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+			},
+		},
+	}
+	workerPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-lws",
+				leaderworkerset.WorkerIndexLabelKey: "1",
+			},
+		},
+	}
+	scheduledWorkerPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-lws",
+				leaderworkerset.WorkerIndexLabelKey: "1",
+			},
+		},
+		Spec: corev1.PodSpec{
+			SchedulingGroup: &corev1.PodSchedulingGroup{
+				PodGroupName: ptr.To("test-lws-0-pg"),
+			},
+		},
+	}
+	annotatedWorkerPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-lws",
+				leaderworkerset.WorkerIndexLabelKey: "1",
+			},
+			Annotations: map[string]string{
+				schedulerprovider.WorkloadSchedulingAnnotationKey: "replica",
+			},
+		},
+	}
+
+	t.Run("CreateFunc", func(t *testing.T) {
+		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
+		pred := r.podWatchPredicate()
+
+		if !pred.Create(event.CreateEvent{Object: leaderPod}) {
+			t.Errorf("expected Create(leaderPod) to be true, got false")
+		}
+		if pred.Create(event.CreateEvent{Object: workerPod}) {
+			t.Errorf("expected Create(workerPod) to be false, got true")
+		}
+		if pred.Create(event.CreateEvent{Object: nil}) {
+			t.Errorf("expected Create(nil) to be false, got true")
+		}
+	})
+
+	t.Run("UpdateFunc", func(t *testing.T) {
+		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
+		pred := r.podWatchPredicate()
+
+		leaderWithAnnotation := leaderPod.DeepCopy()
+		leaderWithAnnotation.Annotations = map[string]string{
+			leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+		}
+		leaderWithUnrelatedAnnotation := leaderPod.DeepCopy()
+		leaderWithUnrelatedAnnotation.Annotations = map[string]string{
+			"unrelated": "true",
+		}
+
+		if !pred.Update(event.UpdateEvent{ObjectOld: leaderPod, ObjectNew: leaderWithAnnotation}) {
+			t.Errorf("expected Update(leaderPod -> leaderWithAnnotation) to be true, got false")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: leaderPod, ObjectNew: leaderWithUnrelatedAnnotation}) {
+			t.Errorf("expected Update(leaderPod -> leaderWithUnrelatedAnnotation) to be false, got true")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: leaderWithAnnotation, ObjectNew: leaderWithAnnotation.DeepCopy()}) {
+			t.Errorf("expected Update(leaderWithAnnotation -> leaderWithAnnotation) to be false, got true")
+		}
+		workerWithAnnotation := workerPod.DeepCopy()
+		workerWithAnnotation.Annotations = map[string]string{
+			leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: workerPod, ObjectNew: workerWithAnnotation}) {
+			t.Errorf("expected Update(workerPod -> workerWithAnnotation) to be false, got true")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: nil, ObjectNew: leaderPod}) {
+			t.Errorf("expected Update(nil, leaderPod) to be false, got true")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: leaderPod, ObjectNew: nil}) {
+			t.Errorf("expected Update(leaderPod, nil) to be false, got true")
+		}
+	})
+
+	t.Run("DeleteFunc", func(t *testing.T) {
+		rK8s := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
+		predK8s := rK8s.podWatchPredicate()
+
+		rVolcano := &LeaderWorkerSetReconciler{SchedulerProvider: volcanoProvider}
+		predVolcano := rVolcano.podWatchPredicate()
+
+		rNil := &LeaderWorkerSetReconciler{SchedulerProvider: nil}
+		predNil := rNil.podWatchPredicate()
+
+		if !predK8s.Delete(event.DeleteEvent{Object: leaderPod}) {
+			t.Errorf("expected Delete(leaderPod, k8sProvider) to be true, got false")
+		}
+		if !predVolcano.Delete(event.DeleteEvent{Object: leaderPod}) {
+			t.Errorf("expected Delete(leaderPod, volcanoProvider) to be true, got false")
+		}
+		if !predNil.Delete(event.DeleteEvent{Object: leaderPod}) {
+			t.Errorf("expected Delete(leaderPod, nilProvider) to be true, got false")
+		}
+
+		if !predK8s.Delete(event.DeleteEvent{Object: scheduledWorkerPod}) {
+			t.Errorf("expected Delete(scheduledWorkerPod, k8sProvider) to be true, got false")
+		}
+		if !predK8s.Delete(event.DeleteEvent{Object: annotatedWorkerPod}) {
+			t.Errorf("expected Delete(annotatedWorkerPod, k8sProvider) to be true, got false")
+		}
+		if predK8s.Delete(event.DeleteEvent{Object: workerPod}) {
+			t.Errorf("expected Delete(workerPod, k8sProvider) to be false, got true")
+		}
+		if predVolcano.Delete(event.DeleteEvent{Object: scheduledWorkerPod}) {
+			t.Errorf("expected Delete(scheduledWorkerPod, volcanoProvider) to be false, got true")
+		}
+		if predNil.Delete(event.DeleteEvent{Object: scheduledWorkerPod}) {
+			t.Errorf("expected Delete(scheduledWorkerPod, nilProvider) to be false, got true")
+		}
+		if predK8s.Delete(event.DeleteEvent{Object: nil}) {
+			t.Errorf("expected Delete(nil) to be false, got true")
+		}
+	})
+
+	t.Run("GenericFunc", func(t *testing.T) {
+		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
+		pred := r.podWatchPredicate()
+
+		if pred.Generic(event.GenericEvent{Object: leaderPod}) {
+			t.Errorf("expected Generic(leaderPod) to be false, got true")
+		}
+		if pred.Generic(event.GenericEvent{Object: workerPod}) {
+			t.Errorf("expected Generic(workerPod) to be false, got true")
+		}
+	})
 }
 
 func TestMakeConditionDegraded(t *testing.T) {

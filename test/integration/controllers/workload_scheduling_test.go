@@ -282,4 +282,122 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
+
+	ginkgo.It("cleans up replica PodGroup when the last member worker pod is deleted after scale-down", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-scale-cleanup").
+			Replica(1).
+			Size(2).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		var podGroupName string
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(1))
+			podGroupName = groups.Items[0].Name
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		leaderPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      lws.Name + "-0",
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  "0",
+				},
+				Annotations: map[string]string{
+					schedulerprovider.WorkloadSchedulingAnnotationKey: string(schedulerprovider.SchedulingModeReplica),
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:  "leader",
+					Image: "nginx",
+				}},
+				Hostname:  lws.Name + "-0",
+				Subdomain: lws.Name,
+				SchedulingGroup: &corev1.PodSchedulingGroup{
+					PodGroupName: ptr.To(podGroupName),
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, leaderPod)).To(gomega.Succeed())
+
+		workerPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      lws.Name + "-0-1",
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "1",
+					leaderworkerset.GroupIndexLabelKey:  "0",
+				},
+				Annotations: map[string]string{
+					schedulerprovider.WorkloadSchedulingAnnotationKey: string(schedulerprovider.SchedulingModeReplica),
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:  "worker",
+					Image: "nginx",
+				}},
+				Hostname:  lws.Name + "-0-1",
+				Subdomain: lws.Name,
+				SchedulingGroup: &corev1.PodSchedulingGroup{
+					PodGroupName: ptr.To(podGroupName),
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, workerPod)).To(gomega.Succeed())
+
+		// Scale replicas down to 0
+		gomega.Eventually(func() error {
+			persisted := &leaderworkerset.LeaderWorkerSet{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persisted); err != nil {
+				return err
+			}
+			persisted.Spec.Replicas = ptr.To[int32](0)
+			return k8sClient.Update(ctx, persisted)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// Delete the leader pod and worker StatefulSet first while keeping worker pod alive.
+		gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, leaderPod))).To(gomega.Succeed())
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      leaderPod.Name,
+				Namespace: ns.Name,
+			},
+		}
+		_ = client.IgnoreNotFound(k8sClient.Delete(ctx, workerSts))
+
+		// Verify the PodGroup is retained because the worker pod is still referencing it.
+		gomega.Consistently(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: podGroupName}, &schedulingv1beta1.PodGroup{})
+		}, "1s", "100ms").Should(gomega.Succeed())
+
+		// Delete the worker pod.
+		gomega.Expect(k8sClient.Delete(ctx, workerPod)).To(gomega.Succeed())
+
+		// The obsolete PodGroup should have deletion requested automatically.
+		deletingGroup := &schedulingv1beta1.PodGroup{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: podGroupName}, deletingGroup)).To(gomega.Succeed())
+			g.Expect(deletingGroup.DeletionTimestamp).NotTo(gomega.BeNil())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// envtest does not run the upstream PodGroup protection controller, so
+		// emulate its finalizer removal after LWS has requested deletion.
+		deletingGroup.Finalizers = nil
+		gomega.Expect(k8sClient.Update(ctx, deletingGroup)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: podGroupName}, &schedulingv1beta1.PodGroup{})
+			return apierrors.IsNotFound(err)
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+	})
 })
