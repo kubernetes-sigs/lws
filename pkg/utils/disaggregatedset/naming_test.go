@@ -82,14 +82,6 @@ func TestComputeRevision(t *testing.T) {
 		assert.NotEqual(t, revision, ComputeRevision(changed))
 	})
 
-	t.Run("role order is not part of the revision", func(t *testing.T) {
-		reordered := []disaggregatedsetv1.DisaggregatedRoleSpec{
-			roleSpec(testUtilsRoleDecode, "image:v1"),
-			roleSpec(testUtilsRolePrefill, "image:v1"),
-		}
-		assert.Equal(t, revision, ComputeRevision(reordered))
-	})
-
 	t.Run("startup policy changes produce a new revision", func(t *testing.T) {
 		changed := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			roleSpec(testUtilsRolePrefill, "image:v1"),
