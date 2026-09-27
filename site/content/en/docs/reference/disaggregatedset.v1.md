@@ -301,6 +301,18 @@ created, so changing it takes effect on the next rollout.</p>
    <p>observedGeneration is the most recent generation observed for this DisaggregatedSet.</p>
 </td>
 </tr>
+<tr><td><code>revisionHashVersion</code><br/>
+<code>string</code>
+</td>
+<td>
+   <p>RevisionHashVersion is the revision hash algorithm used for this
+DisaggregatedSet. An empty value identifies a legacy DisaggregatedSet whose
+existing LeaderWorkerSets continue to use the original hash, preventing a
+controller upgrade from triggering a rollout. The controller sets this to
+the current version before creating LeaderWorkerSets for a new
+DisaggregatedSet.</p>
+</td>
+</tr>
 <tr><td><code>roleStatuses</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>

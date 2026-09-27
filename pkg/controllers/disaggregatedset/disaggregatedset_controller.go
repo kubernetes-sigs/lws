@@ -77,14 +77,19 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// 3. Reconcile LWS objects — either a rolling update (if old revisions with
 	//    replicas exist) or direct reconciliation of the current revision.
 
-	// Step 1: Compute the target revision hash from the spec's role templates.
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
-
 	allLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Step 1: Compute the target revision with the hash generation selected for
+	// this DisaggregatedSet. Existing, unversioned objects retain the legacy hash
+	// so a controller upgrade cannot trigger an otherwise unnecessary rollout.
+	revision, err := r.resolveRevision(ctx, disaggregatedSet, allLWS)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
 
 	// Step 2: Delete LWS for slices beyond the desired count (slice scale-down).
 	// Do this before reconciling retained slices so removed slices cannot
@@ -153,6 +158,35 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return result, reconcileErr
+}
+
+// resolveRevision selects the revision hash generation for a DisaggregatedSet.
+// Legacy objects are identified by an empty status.revisionHashVersion and an
+// existing owned LWS. They remain on v1 indefinitely, while a new object is
+// durably marked v2 before its first LWS is created. Persisting the marker first
+// ensures a later reconciliation cannot reinterpret a partially-created v2 set
+// as legacy if child creation or the final status update fails.
+func (r *DisaggregatedSetReconciler) resolveRevision(
+	ctx context.Context,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	existingLWS []*leaderworkersetv1.LeaderWorkerSet,
+) (string, error) {
+	switch disaggregatedSet.Status.RevisionHashVersion {
+	case disaggregatedsetv1.RevisionHashVersionV2:
+		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), nil
+	case "":
+		if len(existingLWS) > 0 {
+			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), nil
+		}
+
+		disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersionV2
+		if err := r.Status().Update(ctx, disaggregatedSet); err != nil {
+			return "", fmt.Errorf("failed to initialize revision hash version: %w", err)
+		}
+		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), nil
+	default:
+		return "", fmt.Errorf("unsupported revision hash version %q", disaggregatedSet.Status.RevisionHashVersion)
+	}
 }
 
 // updateStatus recomputes per-role replica counts and the Available/Progressing

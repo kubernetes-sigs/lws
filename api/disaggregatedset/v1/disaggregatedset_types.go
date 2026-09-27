@@ -22,6 +22,10 @@ import (
 )
 
 const (
+	// RevisionHashVersionV2 identifies the order-independent revision hash that
+	// covers all generated LeaderWorkerSet fields that require a rollout.
+	RevisionHashVersionV2 = "v2"
+
 	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	SetNameLabelKey string = "disaggregatedset.x-k8s.io/name"
@@ -202,6 +206,15 @@ type DisaggregatedSetStatus struct {
 	// observedGeneration is the most recent generation observed for this DisaggregatedSet.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// RevisionHashVersion is the revision hash algorithm used for this
+	// DisaggregatedSet. An empty value identifies a legacy DisaggregatedSet whose
+	// existing LeaderWorkerSets continue to use the original hash, preventing a
+	// controller upgrade from triggering a rollout. The controller sets this to
+	// the current version before creating LeaderWorkerSets for a new
+	// DisaggregatedSet.
+	// +optional
+	RevisionHashVersion string `json:"revisionHashVersion,omitempty"`
 
 	// RoleStatuses contains the status for each role currently in spec.roles.
 	// The order matches spec.roles. A role removed from spec.roles has no entry

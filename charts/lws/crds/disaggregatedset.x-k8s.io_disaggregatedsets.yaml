@@ -18058,6 +18058,15 @@ spec:
                   description: observedGeneration is the most recent generation observed for this DisaggregatedSet.
                   format: int64
                   type: integer
+                revisionHashVersion:
+                  description: |-
+                    RevisionHashVersion is the revision hash algorithm used for this
+                    DisaggregatedSet. An empty value identifies a legacy DisaggregatedSet whose
+                    existing LeaderWorkerSets continue to use the original hash, preventing a
+                    controller upgrade from triggering a rollout. The controller sets this to
+                    the current version before creating LeaderWorkerSets for a new
+                    DisaggregatedSet.
+                  type: string
                 roleStatuses:
                   description: |-
                     RoleStatuses contains the status for each role currently in spec.roles.

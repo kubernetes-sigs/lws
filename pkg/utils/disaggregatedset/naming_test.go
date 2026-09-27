@@ -80,12 +80,56 @@ func TestComputeRevision(t *testing.T) {
 		assert.NotEqual(t, revision, ComputeRevision(changed))
 	})
 
-	t.Run("role order is part of the revision", func(t *testing.T) {
+	t.Run("role order is not part of the revision", func(t *testing.T) {
 		reordered := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			roleSpec(testUtilsRoleDecode, "image:v1"),
 			roleSpec(testUtilsRolePrefill, "image:v1"),
 		}
-		assert.NotEqual(t, revision, ComputeRevision(reordered))
+		assert.Equal(t, revision, ComputeRevision(reordered))
+	})
+
+	t.Run("startup policy changes produce a new revision", func(t *testing.T) {
+		changed := []disaggregatedsetv1.DisaggregatedRoleSpec{
+			roleSpec(testUtilsRolePrefill, "image:v1"),
+			roleSpec(testUtilsRoleDecode, "image:v1"),
+		}
+		changed[0].Spec.StartupPolicy = leaderworkersetv1.LeaderReadyStartupPolicy
+		assert.NotEqual(t, revision, ComputeRevision(changed))
+	})
+
+	t.Run("network configuration changes produce a new revision", func(t *testing.T) {
+		changed := []disaggregatedsetv1.DisaggregatedRoleSpec{
+			roleSpec(testUtilsRolePrefill, "image:v1"),
+			roleSpec(testUtilsRoleDecode, "image:v1"),
+		}
+		policy := leaderworkersetv1.SubdomainUniquePerReplica
+		changed[0].Spec.NetworkConfig = &leaderworkersetv1.NetworkConfig{SubdomainPolicy: &policy}
+		assert.NotEqual(t, revision, ComputeRevision(changed))
+	})
+
+	t.Run("LWS metadata changes produce a new revision", func(t *testing.T) {
+		withLabel := []disaggregatedsetv1.DisaggregatedRoleSpec{
+			roleSpec(testUtilsRolePrefill, "image:v1"),
+			roleSpec(testUtilsRoleDecode, "image:v1"),
+		}
+		withLabel[0].Labels = map[string]string{"queue": "gpu"}
+		assert.NotEqual(t, revision, ComputeRevision(withLabel))
+
+		withAnnotation := []disaggregatedsetv1.DisaggregatedRoleSpec{
+			roleSpec(testUtilsRolePrefill, "image:v1"),
+			roleSpec(testUtilsRoleDecode, "image:v1"),
+		}
+		withAnnotation[0].Annotations = map[string]string{"example.com/config": "enabled"}
+		assert.NotEqual(t, revision, ComputeRevision(withAnnotation))
+	})
+
+	t.Run("replicas remain outside the revision", func(t *testing.T) {
+		changed := []disaggregatedsetv1.DisaggregatedRoleSpec{
+			roleSpec(testUtilsRolePrefill, "image:v1"),
+			roleSpec(testUtilsRoleDecode, "image:v1"),
+		}
+		changed[0].Spec.Replicas = ptr.To[int32](10)
+		assert.Equal(t, revision, ComputeRevision(changed))
 	})
 
 	t.Run("an empty and a defaulted Ordinal groupIdentity hash the same", func(t *testing.T) {
@@ -115,6 +159,18 @@ func TestComputeRevision(t *testing.T) {
 	t.Run("no roles", func(t *testing.T) {
 		assert.Len(t, ComputeRevision(nil), revisionLength)
 	})
+}
+
+func TestComputeRevisionV1Compatibility(t *testing.T) {
+	roles := []disaggregatedsetv1.DisaggregatedRoleSpec{
+		roleSpec(testUtilsRolePrefill, "image:v1"),
+		roleSpec(testUtilsRoleDecode, "image:v1"),
+	}
+
+	// This value was produced by the original revision algorithm. Pinning it
+	// protects the upgrade path: unversioned DisaggregatedSets must continue to
+	// resolve to the revision already stored on their existing LWS objects.
+	assert.Equal(t, "c51abc75", ComputeRevisionV1(roles))
 }
 
 func TestGetRoleConfigs(t *testing.T) {

@@ -17,6 +17,7 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -103,7 +104,11 @@ func GetSlices(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) int32 {
 
 const revisionLength = 8
 
-func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
+// ComputeRevisionV1 implements the original DisaggregatedSet revision hash.
+// Keep this function stable: existing unversioned DisaggregatedSets continue to
+// use it so upgrading the controller does not replace otherwise unchanged LWS
+// objects.
+func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
 		Name string `json:"name"`
 		// GroupIdentity is normalized so "" and the CRD default Ordinal hash
@@ -126,7 +131,63 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 		})
 	}
 
-	jsonData, err := json.Marshal(templates)
+	return computeRevision(templates)
+}
+
+// ComputeRevision returns the current revision hash. Unlike the legacy v1
+// algorithm, v2 covers every generated LWS field that requires a coordinated
+// rollout and treats the map-style role list as order independent.
+func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
+	type roleTemplate struct {
+		Name        string                                `json:"name"`
+		Labels      map[string]string                     `json:"labels,omitempty"`
+		Annotations map[string]string                     `json:"annotations,omitempty"`
+		Spec        leaderworkersetv1.LeaderWorkerSetSpec `json:"spec"`
+	}
+
+	templates := make([]roleTemplate, 0, len(roles))
+	for _, role := range roles {
+		spec := role.Spec.DeepCopy()
+
+		// Replicas and rollout budgets are scaling inputs, not pod revisions.
+		spec.Replicas = nil
+		spec.RolloutStrategy = leaderworkersetv1.RolloutStrategy{}
+
+		// groupReplacementPolicy is a live LWS knob reconciled in place.
+		spec.GroupReplacementPolicy = ""
+
+		// Normalize API defaults so explicitly setting the default does not cause
+		// a rollout. The generated LWS webhook materializes these values.
+		if spec.GroupIdentity == leaderworkersetv1.GroupIdentityOrdinal {
+			spec.GroupIdentity = ""
+		}
+		if spec.StartupPolicy == leaderworkersetv1.LeaderCreatedStartupPolicy {
+			spec.StartupPolicy = ""
+		}
+		if spec.NetworkConfig == nil || spec.NetworkConfig.SubdomainPolicy == nil ||
+			*spec.NetworkConfig.SubdomainPolicy == leaderworkersetv1.SubdomainShared {
+			spec.NetworkConfig = nil
+		}
+
+		templates = append(templates, roleTemplate{
+			Name:        role.Name,
+			Labels:      role.Labels,
+			Annotations: role.Annotations,
+			Spec:        *spec,
+		})
+	}
+
+	// spec.roles is a map-style list keyed by name, so its order has no
+	// semantic meaning and must not trigger a rollout.
+	slices.SortFunc(templates, func(a, b roleTemplate) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	return computeRevision(templates)
+}
+
+func computeRevision(value any) string {
+	jsonData, err := json.Marshal(value)
 	if err != nil {
 		return ""
 	}

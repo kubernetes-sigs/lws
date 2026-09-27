@@ -352,6 +352,9 @@ func setupABCScenario(
 	deployment := &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
 		Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: rolesC},
+		Status: disaggregatedsetv1.DisaggregatedSetStatus{
+			RevisionHashVersion: disaggregatedsetv1.RevisionHashVersionV2,
+		},
 	}
 
 	objects := []client.Object{deployment}
@@ -488,6 +491,9 @@ func TestReconcilerIntegration(t *testing.T) {
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.deployName, Namespace: "default", UID: "uid"},
 				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
+				Status: disaggregatedsetv1.DisaggregatedSetStatus{
+					RevisionHashVersion: disaggregatedsetv1.RevisionHashVersionV2,
+				},
 			}
 			require.NoError(t, fakeClient.Create(context.TODO(), deployment))
 
