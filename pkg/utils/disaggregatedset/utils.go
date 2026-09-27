@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -138,39 +139,37 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 // algorithm, it covers every generated LWS field that requires a coordinated
 // rollout and treats the map-style role list as order independent.
 func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
-	type roleTemplate struct {
-		Name        string                                `json:"name"`
-		Labels      map[string]string                     `json:"labels,omitempty"`
-		Annotations map[string]string                     `json:"annotations,omitempty"`
-		Spec        leaderworkersetv1.LeaderWorkerSetSpec `json:"spec"`
-	}
+	revisionRoles := slices.Clone(roles)
+	for i := range revisionRoles {
+		role := &revisionRoles[i]
 
-	templates := make([]roleTemplate, 0, len(roles))
-	for _, role := range roles {
-		spec := role.Spec
+		// Scaling only selects where the desired replica count comes from.
+		role.Scaling = nil
 
-		// Replicas and rollout budgets are scaling inputs, not pod revisions.
-		spec.Replicas = nil
-		spec.RolloutStrategy = leaderworkersetv1.RolloutStrategy{}
-
-		// groupReplacementPolicy is a live LWS knob reconciled in place.
-		spec.GroupReplacementPolicy = ""
-
-		templates = append(templates, roleTemplate{
-			Name:        role.Name,
+		// The LWS manager propagates only labels and annotations from template
+		// metadata. Fields such as name, namespace, and finalizers are ignored.
+		role.ObjectMeta = metav1.ObjectMeta{
 			Labels:      role.Labels,
 			Annotations: role.Annotations,
-			Spec:        spec,
-		})
+		}
+
+		// Replicas is reconciled in place and does not identify a workload revision.
+		role.Spec.Replicas = nil
+		// RolloutStrategy is consumed by the DisaggregatedSet rollout planner; a
+		// policy change adjusts rollout pacing rather than workload identity.
+		role.Spec.RolloutStrategy = leaderworkersetv1.RolloutStrategy{}
+
+		// GroupReplacementPolicy is patched onto existing LWS objects in place.
+		role.Spec.GroupReplacementPolicy = ""
 	}
 
 	// spec.roles is a map-style list keyed by name, so its order has no
 	// semantic meaning and must not trigger a rollout.
-	slices.SortFunc(templates, func(a, b roleTemplate) int {
+	slices.SortFunc(revisionRoles, func(a, b disaggregatedsetv1.DisaggregatedRoleSpec) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	return computeRevision(templates)
+	return computeRevision(revisionRoles)
 }
 
 func computeRevision(value any) string {
