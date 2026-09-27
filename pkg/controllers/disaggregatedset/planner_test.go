@@ -72,69 +72,47 @@ func rolloutState(
 }
 
 func TestComputeNextStepIntersectsConstraints(t *testing.T) {
-	t.Run("complete rollout has no step", func(t *testing.T) {
-		state := rolloutState(
-			[]int{3, 6}, []int{0, 0}, []int{0, 0}, nil, nil,
-			[]int{4, 7}, []int{4, 7}, []int{3, 6},
-			configs([]int{1, 1}, []int{0, 0}),
-		)
-		assert.Nil(t, ComputeNextStep(state))
-	})
-
-	t.Run("fresh rollout grows within surge and pending bounds", func(t *testing.T) {
-		state := rolloutState(
-			[]int{4, 4}, []int{4, 4}, []int{4, 4}, nil, nil,
-			[]int{0, 0}, []int{0, 0}, []int{4, 4},
-			configs([]int{1, 1}, []int{0, 0}),
-		)
-		step := ComputeNextStep(state)
-		require.NotNil(t, step)
-		assert.Equal(t, RoleReplicaState{4, 4}, step.Past)
-		assert.Equal(t, RoleReplicaState{1, 1}, step.New)
-	})
-
-	t.Run("slow pods do not prevent another bounded batch", func(t *testing.T) {
-		state := rolloutState(
-			[]int{20, 20}, []int{18, 18}, []int{18, 18}, nil, nil,
-			[]int{2, 2}, []int{0, 0}, []int{20, 20},
-			configs([]int{2, 2}, []int{2, 2}),
-		)
-		step := ComputeNextStep(state)
-		require.NotNil(t, step)
-		assert.Equal(t, RoleReplicaState{18, 18}, step.Past)
-		assert.Equal(t, RoleReplicaState{4, 4}, step.New)
-	})
-
-	t.Run("fractional window holds a faster role", func(t *testing.T) {
-		state := rolloutState(
-			[]int{8, 4}, []int{8, 4}, []int{8, 4}, nil, nil,
-			[]int{0, 1}, []int{0, 1}, []int{8, 4},
-			configs([]int{8, 0}, []int{0, 0}),
-		)
-		step := ComputeNextStep(state)
-		require.NotNil(t, step)
-		assert.Equal(t, RoleReplicaState{4, 1}, step.New)
-	})
-
-	t.Run("complete parked capacity reduces this phase target", func(t *testing.T) {
-		state := rolloutState(
-			[]int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1},
-			[]int{0, 0}, []int{0, 0}, []int{2, 2},
-			configs([]int{1, 1}, []int{0, 0}),
-		)
-		step := ComputeNextStep(state)
-		require.NotNil(t, step)
-		assert.Equal(t, RoleReplicaState{1, 1}, step.New)
-	})
-
-	t.Run("zero budgets are genuinely blocked", func(t *testing.T) {
-		state := rolloutState(
-			[]int{1, 1}, []int{1, 1}, []int{1, 1}, nil, nil,
-			[]int{0, 0}, []int{0, 0}, []int{1, 1},
-			configs([]int{0, 0}, []int{0, 0}),
-		)
-		assert.Nil(t, ComputeNextStep(state))
-	})
+	tests := []struct {
+		name               string
+		state              RolloutState
+		wantPast, wantNew  RoleReplicaState
+		expectNoTransition bool
+	}{
+		{"complete rollout has no step", rolloutState(
+			[]int{3, 6}, []int{0, 0}, []int{0, 0}, nil, nil, []int{4, 7}, []int{4, 7}, []int{3, 6},
+			configs([]int{1, 1}, []int{0, 0})), nil, nil, true},
+		{"fresh rollout grows within surge and pending bounds", rolloutState(
+			[]int{4, 4}, []int{4, 4}, []int{4, 4}, nil, nil, []int{0, 0}, []int{0, 0}, []int{4, 4},
+			configs([]int{1, 1}, []int{0, 0})), RoleReplicaState{4, 4}, RoleReplicaState{1, 1}, false},
+		{"slow pods do not prevent another bounded batch", rolloutState(
+			[]int{20, 20}, []int{18, 18}, []int{18, 18}, nil, nil, []int{2, 2}, []int{0, 0}, []int{20, 20},
+			configs([]int{2, 2}, []int{2, 2})), RoleReplicaState{18, 18}, RoleReplicaState{4, 4}, false},
+		{"fractional window holds a faster role", rolloutState(
+			[]int{8, 4}, []int{8, 4}, []int{8, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{8, 4},
+			configs([]int{8, 0}, []int{0, 0})), nil, RoleReplicaState{4, 1}, false},
+		{"complete parked capacity reduces this phase target", rolloutState(
+			[]int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{0, 0}, []int{0, 0}, []int{2, 2},
+			configs([]int{1, 1}, []int{0, 0})), nil, RoleReplicaState{1, 1}, false},
+		{"zero budgets are genuinely blocked", rolloutState(
+			[]int{1, 1}, []int{1, 1}, []int{1, 1}, nil, nil, []int{0, 0}, []int{0, 0}, []int{1, 1},
+			configs([]int{0, 0}, []int{0, 0})), nil, nil, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			step := ComputeNextStep(tc.state)
+			if tc.expectNoTransition {
+				assert.Nil(t, step)
+				return
+			}
+			require.NotNil(t, step)
+			if tc.wantPast != nil {
+				assert.Equal(t, tc.wantPast, step.Past)
+			}
+			if tc.wantNew != nil {
+				assert.Equal(t, tc.wantNew, step.New)
+			}
+		})
+	}
 }
 
 func TestComputeNextStepUsesRevisionAwareReadiness(t *testing.T) {

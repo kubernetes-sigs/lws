@@ -1264,24 +1264,17 @@ func getCurrentRolloutObservation(deploymentName, oldRevision string) (rolloutOb
 		if len(parts) != 5 {
 			return rolloutObservation{}, fmt.Errorf("unexpected rollout observation %q", line)
 		}
-		spec, err := strconv.Atoi(parts[2])
-		if err != nil {
-			return rolloutObservation{}, fmt.Errorf("parse spec in rollout observation %q: %w", line, err)
-		}
-		statusReplicas := 0
-		if parts[3] != "" && parts[3] != "<no value>" {
-			statusReplicas, err = strconv.Atoi(parts[3])
+		var counts [3]int
+		for i, value := range parts[2:] {
+			if i > 0 && (value == "" || value == "<no value>") {
+				continue
+			}
+			counts[i], err = strconv.Atoi(value)
 			if err != nil {
-				return rolloutObservation{}, fmt.Errorf("parse status replicas in rollout observation %q: %w", line, err)
+				return rolloutObservation{}, fmt.Errorf("parse replica count in rollout observation %q: %w", line, err)
 			}
 		}
-		ready := 0
-		if parts[4] != "" && parts[4] != "<no value>" {
-			ready, err = strconv.Atoi(parts[4])
-			if err != nil {
-				return rolloutObservation{}, fmt.Errorf("parse ready count in rollout observation %q: %w", line, err)
-			}
-		}
+		spec, statusReplicas, ready := counts[0], counts[1], counts[2]
 		pendingDrain := max(0, statusReplicas-spec)
 		ready = min(spec, max(0, ready-pendingDrain))
 
