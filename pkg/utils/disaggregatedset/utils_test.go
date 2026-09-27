@@ -103,6 +103,17 @@ func TestGetInitialReplicas(t *testing.T) {
 		require.True(t, ok, "should return ok=true for zero value annotation")
 		assert.Equal(t, int32(0), replicas, "replicas should be 0")
 	})
+
+	for _, value := range []string{"-1", "-2147483648", "2147483648"} {
+		t.Run("rejects invalid replica baseline "+value, func(t *testing.T) {
+			leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: value},
+			}}
+			replicas, ok := GetInitialReplicas(leaderWorkerSet)
+			assert.False(t, ok)
+			assert.Zero(t, replicas)
+		})
+	}
 }
 
 func TestComputeInitialReplicaState(t *testing.T) {
@@ -115,7 +126,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0 for empty list")
 	})
 
-	t.Run("takes maximum prefill annotation", func(t *testing.T) {
+	t.Run("sums prefill annotations", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -149,11 +160,11 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 3, state[testUtilsRolePrefill], "replacement revisions must not be added together")
+		assert.Equal(t, 5, state[testUtilsRolePrefill])
 		assert.Equal(t, 0, state[testUtilsRoleDecode], "decode should be 0")
 	})
 
-	t.Run("takes maximum decode annotation", func(t *testing.T) {
+	t.Run("sums decode annotations", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -188,10 +199,10 @@ func TestComputeInitialReplicaState(t *testing.T) {
 		state := ComputeInitialReplicaState(lwsList)
 
 		assert.Equal(t, 0, state[testUtilsRolePrefill], "prefill should be 0")
-		assert.Equal(t, 6, state[testUtilsRoleDecode], "replacement revisions must not be added together")
+		assert.Equal(t, 10, state[testUtilsRoleDecode])
 	})
 
-	t.Run("takes per-role maximum across mixed revisions", func(t *testing.T) {
+	t.Run("sums each role across mixed revisions", func(t *testing.T) {
 		lwsList := []leaderworkersetv1.LeaderWorkerSet{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -239,7 +250,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 3, state[testUtilsRolePrefill])
+		assert.Equal(t, 5, state[testUtilsRolePrefill])
 		assert.Equal(t, 6, state[testUtilsRoleDecode], "decode should be 6")
 	})
 
@@ -320,7 +331,7 @@ func TestComputeInitialReplicaState(t *testing.T) {
 
 		state := ComputeInitialReplicaState(lwsList)
 
-		assert.Equal(t, 3, state[testUtilsRolePrefill], "the fallback is another revision target, not additive capacity")
+		assert.Equal(t, 5, state[testUtilsRolePrefill])
 	})
 
 	t.Run("handles nil spec.Replicas with missing annotation", func(t *testing.T) {

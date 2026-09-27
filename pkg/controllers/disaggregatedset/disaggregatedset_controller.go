@@ -405,10 +405,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 		if err != nil {
 			return result, err
 		}
-		if complete {
-			if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision); err != nil {
-				return result, err
-			}
+		if err := r.cleanupDrainedLWS(ctx, disaggregatedSet, slice, revision, complete); err != nil {
+			return result, err
 		}
 	} else {
 		result, err = r.reconcileCurrentRevision(ctx, disaggregatedSet, slice, revision, desiredReplicasByRole)
@@ -517,11 +515,16 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	return nil
 }
 
-// cleanupDrainedLWS deletes all LWS objects for old revisions where every role
-// has been drained to 0 replicas. This ensures coordinated cleanup: we only
-// delete a revision's LWS objects when ALL roles (prefill, decode, etc.) have
-// finished draining, preventing partial teardown during rolling updates.
-func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string) error {
+// cleanupDrainedLWS bounds retained rollout history without losing the marker
+// that keeps an unready target on the rollout path. A partially drained
+// revision is never deleted here.
+func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(
+	ctx context.Context,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	slice int,
+	revision string,
+	rolloutComplete bool,
+) error {
 	log := logf.FromContext(ctx)
 
 	lwsList, err := r.LWSManager.ListForSlice(ctx, disaggregatedSet, slice, "")
@@ -529,39 +532,44 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(ctx context.Context, disa
 		return fmt.Errorf("failed to list LWS for cleanup: %w", err)
 	}
 
-	// revisionLWS maps revision -> role -> LWS for old (non-target) revisions, so a
-	// revision's LWS can be deleted by their actual names once every role has drained
-	// to 0.
-	revisionLWS := make(map[string]map[string]*leaderworkersetv1.LeaderWorkerSet)
+	oldLWS := make([]*leaderworkersetv1.LeaderWorkerSet, 0, len(lwsList))
 	for _, lws := range lwsList {
 		lwsRevision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
 		if lwsRevision == revision || !lws.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if revisionLWS[lwsRevision] == nil {
-			revisionLWS[lwsRevision] = make(map[string]*leaderworkersetv1.LeaderWorkerSet)
-		}
-		lwsRole := lws.Labels[disaggregatedsetv1.RoleLabelKey]
-		if _, exists := revisionLWS[lwsRevision][lwsRole]; exists {
-			log.Info("WARNING: multiple LWS found for same role and revision",
-				"role", lwsRole, "revision", lwsRevision, "lws", lws.Name)
-		}
-		revisionLWS[lwsRevision][lwsRole] = lws
+		oldLWS = append(oldLWS, lws)
 	}
 
-	for _, roles := range revisionLWS {
+	oldRevisions := disaggregatedsetutils.GroupByRevision(oldLWS).SortedByNewestTimestamp()
+	hasNonDrainedRevision := false
+	drainedRevisions := make(disaggregatedsetutils.RevisionRolesList, 0, len(oldRevisions))
+	for _, oldRevision := range oldRevisions {
 		allDrained := true
-		for _, lws := range roles {
+		for _, lws := range oldRevision.Roles {
 			if getLWSReplicas(lws) != 0 {
 				allDrained = false
 				break
 			}
 		}
-		if !allDrained {
+		if allDrained {
+			drainedRevisions = append(drainedRevisions, oldRevision)
+		} else {
+			hasNonDrainedRevision = true
+		}
+	}
+
+	retainedRevision := ""
+	if !rolloutComplete && !hasNonDrainedRevision && len(drainedRevisions) > 0 {
+		retainedRevision = drainedRevisions[0].Revision
+		log.V(1).Info("Retaining newest drained revision until the target is ready", "revision", retainedRevision)
+	}
+
+	for _, drainedRevision := range drainedRevisions {
+		if drainedRevision.Revision == retainedRevision {
 			continue
 		}
-
-		for _, lws := range roles {
+		for _, lws := range drainedRevision.Roles {
 			log.Info("Deleting drained LWS", "name", lws.Name)
 			if err := r.LWSManager.deleteInForeground(ctx, lws); err != nil {
 				return fmt.Errorf("failed to delete LWS %s: %w", lws.Name, err)

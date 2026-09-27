@@ -42,7 +42,7 @@ func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int
 		return 0, false
 	}
 	parsed, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
+	if err != nil || parsed < 0 {
 		return 0, false
 	}
 	return int32(parsed), true
@@ -70,7 +70,7 @@ func ComputeInitialReplicaState(lwsList []leaderworkersetv1.LeaderWorkerSet) map
 			}
 		}
 
-		state[role] = max(state[role], replicas)
+		state[role] += replicas
 	}
 
 	return state

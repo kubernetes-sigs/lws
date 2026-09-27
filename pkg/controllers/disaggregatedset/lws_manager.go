@@ -301,13 +301,14 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	var oldLWS []*leaderworkersetv1.LeaderWorkerSet
 	var newLWS []*leaderworkersetv1.LeaderWorkerSet
 	for _, lws := range lwsList {
-		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
-			newLWS = append(newLWS, lws)
+		// Deletion is irreversible. A terminating LWS is neither controllable old
+		// capacity nor a usable target. If a target is terminating, reconciliation
+		// waits until its deterministic name can be created again.
+		if !lws.DeletionTimestamp.IsZero() {
 			continue
 		}
-		// Deletion is irreversible. A terminating old LWS must not keep the
-		// rollout path active or be treated as capacity the planner can control.
-		if !lws.DeletionTimestamp.IsZero() {
+		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+			newLWS = append(newLWS, lws)
 			continue
 		}
 		oldLWS = append(oldLWS, lws)

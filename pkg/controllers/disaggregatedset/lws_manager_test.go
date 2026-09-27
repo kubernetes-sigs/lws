@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -215,7 +216,7 @@ func TestManagerDelete(t *testing.T) {
 	})
 }
 
-func TestTerminatingOldLWSIsIgnored(t *testing.T) {
+func TestTerminatingLWSIsIgnored(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 	ds := testManagerDS("test-deployment")
@@ -242,6 +243,23 @@ func TestTerminatingOldLWSIsIgnored(t *testing.T) {
 		assert.Nil(t, newRevision)
 	})
 
+	t.Run("terminating target is not reported as usable capacity", func(t *testing.T) {
+		terminatingTarget := terminatingOld(3)
+		terminatingTarget.Name = "target-prefill"
+		terminatingTarget.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, "target", "prefill")
+		terminatingTarget.Status.Replicas = 3
+		terminatingTarget.Status.ReadyReplicas = 3
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(terminatingTarget).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		oldRevisions, newRevision, err := manager.GetRevisionRolesList(context.Background(), ds, 0, "target")
+
+		require.NoError(t, err)
+		assert.Empty(t, oldRevisions)
+		assert.Nil(t, newRevision)
+	})
+
 	t.Run("cleanup does not delete or emit an event again", func(t *testing.T) {
 		deleteCalls := 0
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -258,10 +276,64 @@ func TestTerminatingOldLWSIsIgnored(t *testing.T) {
 			Record:     recorder,
 		}
 
-		require.NoError(t, reconciler.cleanupDrainedLWS(context.Background(), ds, 0, "target"))
+		require.NoError(t, reconciler.cleanupDrainedLWS(context.Background(), ds, 0, "target", false))
 		assert.Zero(t, deleteCalls)
 		assert.Empty(t, recorder.Events)
 	})
+}
+
+func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
+	ds.UID = types.UID("test-uid")
+	createdAt := time.Now()
+	old := func(revision string, replicas int32, age time.Duration) *leaderworkersetv1.LeaderWorkerSet {
+		lws := buildOwnedManagerTestLWS(revision+"-prefill", replicas, ds)
+		lws.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, revision, "prefill")
+		lws.CreationTimestamp = metav1.NewTime(createdAt.Add(age))
+		return lws
+	}
+
+	for _, tc := range []struct {
+		name               string
+		objects            []client.Object
+		rolloutComplete    bool
+		remainingRevisions []string
+	}{
+		{
+			name:               "non-drained revision replaces every zero marker",
+			objects:            []client.Object{old("A", 0, 0), old("B", 0, time.Hour), old("C", 1, 2*time.Hour)},
+			remainingRevisions: []string{"C"},
+		},
+		{
+			name:               "newest zero revision is retained while target is unready",
+			objects:            []client.Object{old("A", 0, 0), old("B", 0, time.Hour)},
+			remainingRevisions: []string{"B"},
+		},
+		{
+			name:            "completion removes the final marker",
+			objects:         []client.Object{old("A", 0, 0), old("B", 0, time.Hour)},
+			rolloutComplete: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objects...).Build()
+			reconciler := &DisaggregatedSetReconciler{
+				LWSManager: NewLeaderWorkerSetManager(fakeClient),
+				Record:     events.NewFakeRecorder(20),
+			}
+
+			require.NoError(t, reconciler.cleanupDrainedLWS(context.Background(), ds, 0, "target", tc.rolloutComplete))
+			remaining, err := reconciler.LWSManager.ListForSlice(context.Background(), ds, 0, "")
+			require.NoError(t, err)
+			revisions := make([]string, 0, len(remaining))
+			for _, lws := range remaining {
+				revisions = append(revisions, lws.Labels[disaggregatedsetv1.RevisionLabelKey])
+			}
+			assert.ElementsMatch(t, tc.remainingRevisions, revisions)
+		})
+	}
 }
 
 // TestManagerScale tests the manager's Scale method.
