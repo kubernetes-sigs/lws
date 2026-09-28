@@ -32,6 +32,7 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 const (
@@ -40,9 +41,11 @@ const (
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
 	EventReasonBootstrapSurge         = "BootstrapSurge"
+	EventReasonAvailabilityFallback   = "AvailabilityFallback"
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
+	unschedulablePodGracePeriod       = time.Minute
 )
 
 type RollingUpdateExecutor struct {
@@ -160,7 +163,8 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 
-	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames(oldRoles, desiredRoles)...)
+	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
+	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames...)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
 	targetReplicas := rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, newRevision, desiredReplicasByRole)
 
@@ -185,8 +189,10 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	var selectedRevision disaggregatedsetutils.RevisionRoles
 	var selectedState RolloutState
 	var selectedStep *UpdateStep
-	for _, candidate := range candidates {
+	candidateStates := make([]RolloutState, len(candidates))
+	for i, candidate := range candidates {
 		state := rolloutStateForRevision(allRoleNames, oldRevisions, candidate, newRevision, targetReplicas, config)
+		candidateStates[i] = state
 		step := ComputeNextStep(state)
 		if step == nil {
 			continue
@@ -201,6 +207,22 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		}
 		selectedRevision, selectedState, selectedStep = candidate, state, step
 		break
+	}
+	if selectedStep == nil {
+		unschedulableRoles, err := executor.targetUnschedulableRoles(ctx, newRevision, allRoleNames)
+		if err != nil {
+			return ctrl.Result{}, false, err
+		}
+		for i, candidate := range candidates {
+			state := candidateStates[i]
+			state.Target.UnschedulableRoles = slices.Clone(unschedulableRoles)
+			step := ComputeNextStep(state)
+			if step == nil {
+				continue
+			}
+			selectedRevision, selectedState, selectedStep = candidate, state, step
+			break
+		}
 	}
 	if selectedStep == nil {
 		reason := "no feasible replica change is currently available within the rollout constraints"
@@ -227,12 +249,59 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		roles := bootstrapSurgeRoleNames(allRoleNames, selectedState, selectedStep)
 		log.Info("Used bootstrap surge to unblock rolling update", "roles", roles)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge,
-			"Bootstrap", "Temporarily exceeded maxSurge by one replica for roles %v to preserve revision completeness", roles)
+			"Bootstrap", "Created one bootstrap replica for roles %v without a free maxSurge slot to preserve revision completeness", roles)
+	}
+	if selectedStep.UsesUnavailableFallback {
+		roles := unavailableFallbackRoleNames(allRoleNames, selectedState, selectedStep)
+		log.Info("Used availability fallback for scheduler-unschedulable target Pods", "roles", roles)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback,
+			"ReleaseCapacity", "Temporarily allowed one additional unavailable replica per role while retiring revision %s to release capacity for scheduler-unschedulable target roles %v",
+			selectedRevision.Revision, roles)
 	}
 
 	// Object updates normally trigger the next reconcile immediately. The
 	// timer also lets the planner retry when pending replicas become Ready.
 	return ctrl.Result{RequeueAfter: time.Second}, false, nil
+}
+
+// targetUnschedulableRoles reports target roles with a Pod that the scheduler
+// has continuously marked Unschedulable for the grace period. Slow startup,
+// image pulls, and Pending Pods without this scheduler condition do not qualify.
+func (executor *RollingUpdateExecutor) targetUnschedulableRoles(
+	ctx context.Context,
+	target disaggregatedsetutils.RevisionRoles,
+	roleNames []string,
+) ([]bool, error) {
+	result := make([]bool, len(roleNames))
+	now := time.Now()
+	for i, roleName := range roleNames {
+		lws := target.Roles[roleName]
+		if lws == nil {
+			continue
+		}
+		pods, err := executor.LWSManager.listPods(ctx, lws)
+		if err != nil {
+			return nil, err
+		}
+		for j := range pods {
+			if podIsPersistentlyUnschedulable(&pods[j], now) {
+				result[i] = true
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func podIsPersistentlyUnschedulable(pod *corev1.Pod, now time.Time) bool {
+	if pod == nil || !pod.DeletionTimestamp.IsZero() || pod.Status.Phase != corev1.PodPending {
+		return false
+	}
+	_, condition := podutils.GetPodCondition(&pod.Status, corev1.PodScheduled)
+	return condition != nil && condition.Status == corev1.ConditionFalse &&
+		condition.Reason == corev1.PodReasonUnschedulable &&
+		!condition.LastTransitionTime.IsZero() &&
+		!condition.LastTransitionTime.Add(unschedulablePodGracePeriod).After(now)
 }
 
 // --- Helpers ---
@@ -246,12 +315,6 @@ func collectDesiredAndOldRoles(specRoleNames []string, oldRevisions disaggregate
 		}
 	}
 	return desiredRoles, oldRoles
-}
-
-func removedRoleNames(oldRoles, desiredRoles sets.Set[string]) []string {
-	removed := oldRoles.Difference(desiredRoles).UnsortedList()
-	slices.Sort(removed)
-	return removed
 }
 
 // orderedRevisionCandidates returns non-empty old revisions in planner
@@ -311,11 +374,12 @@ func rolloutStateForRevision(
 			ReadyReplicas:    activeState.ReadyReplicas,
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:    make([]bool, len(roleNames)),
-			SpecReplicas:     make(RoleReplicaState, len(roleNames)),
-			RawReadyReplicas: make(RoleReplicaState, len(roleNames)),
-			ReadyReplicas:    make(RoleReplicaState, len(roleNames)),
-			DesiredReplicas:  slicesClone(targetReplicas),
+			RequiredRoles:      make([]bool, len(roleNames)),
+			SpecReplicas:       make(RoleReplicaState, len(roleNames)),
+			RawReadyReplicas:   make(RoleReplicaState, len(roleNames)),
+			ReadyReplicas:      make(RoleReplicaState, len(roleNames)),
+			DesiredReplicas:    slicesClone(targetReplicas),
+			UnschedulableRoles: make([]bool, len(roleNames)),
 		},
 		Config: slices.Clone(config),
 	}
@@ -569,19 +633,36 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 
 	snapshot := snapshotForRolloutState(state)
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	ordinaryPast := furthestOldTargets(snapshot, state.ActiveOld.RequiredRoles)
+	ordinaryNew := furthestNewTargets(snapshot, phaseTargets)
+	ordinaryStepAvailable := anyChange(
+		ordinaryPast, ordinaryNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas,
+	)
+	bootstrapSnapshot, bootstrapSurgeAvailable := snapshotWithBootstrapSurge(snapshot, phaseTargets)
+	bootstrapStepAvailable := bootstrapSurgeAvailable && anyChange(
+		ordinaryPast, furthestNewTargets(bootstrapSnapshot, phaseTargets),
+		state.ActiveOld.SpecReplicas, state.Target.SpecReplicas,
+	)
 	normalLimits := hardNewReplicaLimits(snapshot)
 	newLimits := normalLimits
+	availabilitySnapshot := snapshot
+	if step.UsesBootstrapSurge && step.UsesUnavailableFallback {
+		return fmt.Errorf("bootstrap surge and availability fallback cannot be used together")
+	}
 	if step.UsesBootstrapSurge {
-		normalOld := furthestOldTargets(snapshot, state.ActiveOld.RequiredRoles)
-		normalNew := furthestNewTargets(snapshot, phaseTargets)
-		if anyChange(normalOld, normalNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
-			return fmt.Errorf("bootstrap surge used while an ordinary rollout step is available")
-		}
-		bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
-		if !ok {
-			return fmt.Errorf("bootstrap surge used without a missing blocked target role")
+		if err := validateBootstrapSurgeStep(ordinaryStepAvailable, bootstrapSurgeAvailable); err != nil {
+			return err
 		}
 		newLimits = hardNewReplicaLimits(bootstrapSnapshot)
+	}
+	if step.UsesUnavailableFallback {
+		fallbackSnapshot := snapshotWithUnavailableFallback(snapshot)
+		if err := validateUnavailableFallbackStep(
+			state, step, fallbackSnapshot, ordinaryStepAvailable, bootstrapStepAvailable,
+		); err != nil {
+			return err
+		}
+		availabilitySnapshot = fallbackSnapshot
 	}
 	if bounded := boundDrainingRoleTargetsToWindow(
 		state.ActiveOld.SpecReplicas,
@@ -616,8 +697,47 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 	if !changed {
 		return fmt.Errorf("plan makes no API change")
 	}
-	if !availabilityPreserved(snapshot, step.Past, state.ActiveOld.RequiredRoles) {
+	if !availabilityPreserved(availabilitySnapshot, step.Past, state.ActiveOld.RequiredRoles) {
 		return fmt.Errorf("old targets reduce usable readiness below its safe bound")
+	}
+	return nil
+}
+
+func validateBootstrapSurgeStep(
+	ordinaryStepAvailable, bootstrapSurgeAvailable bool,
+) error {
+	if ordinaryStepAvailable {
+		return fmt.Errorf("bootstrap surge used while an ordinary rollout step is available")
+	}
+	if !bootstrapSurgeAvailable {
+		return fmt.Errorf("bootstrap surge used without a missing blocked target role")
+	}
+	return nil
+}
+
+func validateUnavailableFallbackStep(
+	state RolloutState,
+	step *UpdateStep,
+	fallbackSnapshot rolloutSnapshot,
+	ordinaryStepAvailable, bootstrapStepAvailable bool,
+) error {
+	if ordinaryStepAvailable {
+		return fmt.Errorf("availability fallback used while an ordinary rollout step is available")
+	}
+	if bootstrapStepAvailable {
+		return fmt.Errorf("availability fallback used while bootstrap surge is available")
+	}
+
+	expectedPast := furthestOldTargets(fallbackSnapshot, state.ActiveOld.RequiredRoles)
+	if !slices.Equal(step.Past, expectedPast) || !slices.Equal(step.New, state.Target.SpecReplicas) {
+		return fmt.Errorf("availability fallback does not match the bounded planner target")
+	}
+	if !drainsUnschedulableRole(
+		state.ActiveOld.SpecReplicas,
+		step.Past,
+		state.Target.UnschedulableRoles,
+	) {
+		return fmt.Errorf("availability fallback does not release an unschedulable target role")
 	}
 	return nil
 }
@@ -629,6 +749,16 @@ func bootstrapSurgeRoleNames(roleNames []string, state RolloutState, step *Updat
 	roles := make([]string, 0, len(roleNames))
 	for i, name := range roleNames {
 		if step.New[i] > min(normalLimits[i], phaseTargets[i]) {
+			roles = append(roles, name)
+		}
+	}
+	return roles
+}
+
+func unavailableFallbackRoleNames(roleNames []string, state RolloutState, step *UpdateStep) []string {
+	roles := make([]string, 0, len(roleNames))
+	for i, name := range roleNames {
+		if state.Target.UnschedulableRoles[i] && step.Past[i] < state.ActiveOld.SpecReplicas[i] {
 			roles = append(roles, name)
 		}
 	}

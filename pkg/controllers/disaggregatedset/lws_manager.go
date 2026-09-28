@@ -22,6 +22,7 @@ import (
 	"maps"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -208,6 +209,18 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregate
 		return nil, nil
 	}
 	return lws, nil
+}
+
+// listPods returns Pods belonging to one LeaderWorkerSet.
+func (manager *LeaderWorkerSetManager) listPods(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet) ([]corev1.Pod, error) {
+	pods := &corev1.PodList{}
+	if err := manager.client.List(ctx, pods,
+		client.InNamespace(lws.Namespace),
+		client.MatchingLabels{leaderworkersetv1.SetNameLabelKey: lws.Name},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list Pods for LeaderWorkerSet %s: %w", lws.Name, err)
+	}
+	return pods.Items, nil
 }
 
 // ListForSlice returns the LWS controlled by disaggregatedSet for one slice.

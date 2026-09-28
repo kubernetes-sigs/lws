@@ -19,6 +19,7 @@ workload primitive.
     - [Issued work and available capacity](#issued-work-and-available-capacity)
     - [Capacity and pending-work bounds](#capacity-and-pending-work-bounds)
     - [Bootstrap surge](#bootstrap-surge)
+    - [Automatic unschedulable target recovery](#automatic-unschedulable-target-recovery)
     - [Reconcile ordering and completion](#reconcile-ordering-and-completion)
   - [Example: Pipelining an 8P/4D Rollout](#example-pipelining-an-8p4d-rollout)
   - [Service Orchestration](#service-orchestration)
@@ -88,7 +89,7 @@ We propose adding a new CRD called `DisaggregatedSet` that acts as a higher-leve
 
 **Risk**: The N-dimensional rolling update algorithm adds complexity that could lead to stuck rollouts.
 
-**Mitigation**: The planner receives one active old revision, every other old revision, and the target revision. It finds the furthest replica targets that satisfy the coordination window, rollout budgets, available capacity, and revision completeness together. The executor does not repair those targets. If one old revision cannot move, it tries the next candidate. If no ordinary move exists, the planner may create one bootstrap replica for a missing required role. That replica may temporarily exceed the role's surge ceiling by one. The controller reports a temporary block only when neither ordinary nor bootstrap progress is possible. After a restart, it reconstructs rollout state from the `disaggregatedset.x-k8s.io/revision` label on existing LeaderWorkerSets.
+**Mitigation**: The planner receives one active old revision, every other old revision, and the target revision. It finds the furthest replica targets that satisfy the coordination window, rollout budgets, available capacity, and revision completeness together. The executor does not repair those targets. If one old revision cannot move, it tries the next candidate. If no ordinary move exists, the planner may create one bootstrap replica for a missing required role. If the scheduler then cannot place that replica, the planner may drain old capacity without leaving a partial revision through the bounded fallback described below. After a restart, the controller reconstructs rollout state from the `disaggregatedset.x-k8s.io/revision` label on existing LeaderWorkerSets.
 
 **Risk**: Adding a new CRD increases the API surface and maintenance burden.
 
@@ -229,7 +230,7 @@ For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable cap
 
 #### Capacity and pending-work bounds
 
-`MaxSurge` and `MaxUnavailable` remain hard, absolute per-role limits. For each role the planner enforces:
+`MaxSurge` and `MaxUnavailable` are the per-role limits for ordinary rollout steps. The two bounded deadlock fallbacks are described below. For each role the ordinary planner enforces:
 
 ```
 roleReplicaCount  = max(initialOld, target)
@@ -241,7 +242,7 @@ oldSpec + newSpec <= surgeCeiling
 
 `oldSpec` includes active and parked old revisions. Existing out-of-bound Spec is never increased.
 
-For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase: `phaseTarget = max(currentNewSpec, target - parkedUsableReady)`.
+For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase. However, each role required by the final target keeps a phase target of at least one replica. This lets the target revision form a complete same-revision unit instead of depending on a counterpart from a parked revision: `phaseTarget = max(currentNewSpec, target - parkedUsableReady, 1)` for required roles.
 
 The planner also limits issued-but-unready target work while old Spec remains. Let `budgetScale` be the largest `initialOld` or target count across the roles. A raw per-role budget is projected onto that scale as:
 
@@ -261,11 +262,21 @@ Revision completeness is a separate hard constraint. For required roles that are
 
 #### Bootstrap surge
 
-A zero-surge rollout can otherwise reach a state in which no ordinary move is possible. For example, an old `1P/5D` revision may have drained to `1P/4D` while the target revision is `0P/1D`. The old Prefill cannot retire by itself because that would leave its revision incomplete. The target Prefill cannot start without exceeding its surge ceiling. The target Decode cannot authorize another old Decode drain because a target revision with no Prefill is not usable.
+A rollout can reach a state in which no ordinary move is possible. For example, an old `1P/5D` revision may have drained to `1P/4D` while the target revision is `0P/1D`. The old Prefill cannot retire by itself because that would leave its revision incomplete. The target Prefill cannot start without exceeding its surge ceiling. The target Decode cannot authorize another old Decode drain because a target revision with no Prefill is not usable. An interrupted rollout can reach the same state when parked old revisions consume an otherwise positive `maxSurge`.
 
-When the ordinary constraint intersection is empty, the planner may treat `maxSurge: 0` as `maxSurge: 1` to create the first Spec replica of each missing required target role. This exception applies only when that role has a positive `maxUnavailable`; a zero value for both budgets is not a valid rollout configuration. Physical occupancy may exceed the configured surge ceiling by at most one replica for each such role. A role is eligible only while its target Spec and ordinary replica limit are both zero. Once that first replica has been issued, the exception cannot create another replica for the role. The controller waits for the bootstrap replica to become Ready.
+When the ordinary constraint intersection is empty, the planner may create the first Spec replica of each missing required target role without a free configured surge slot. The role must have a positive `maxSurge` or `maxUnavailable`; a zero value for both budgets is not a valid rollout configuration. The bootstrap action creates exactly one replica for that role. A role is eligible only while its target Spec and ordinary replica limit are both zero. Once that first replica has been issued, the exception cannot create another replica for the role. The controller waits for the bootstrap replica to become Ready.
 
-The executor prefers an ordinary step from any old-revision candidate over a bootstrap step. It uses bootstrap surge only when no candidate can make ordinary progress. Once every required target role has Ready capacity, the normal planner can drain old capacity, reuse the released slots, and return within the configured surge ceiling. If a bootstrap replica cannot be scheduled or does not become Ready, the rollout remains blocked; creating additional emergency replicas cannot resolve that operational failure.
+The executor prefers an ordinary step from any old-revision candidate over a bootstrap step. It uses bootstrap surge only when no candidate can make ordinary progress. Once every required target role has Ready capacity, the normal planner can drain old capacity, reuse the released slots, and return within the configured surge ceiling. If the bootstrap Pod is scheduled but does not become Ready, the rollout waits. Slow startup does not permit another exception.
+
+#### Automatic unschedulable target recovery
+
+A target Pod created through ordinary or bootstrap growth can remain Pending because the old replicas occupy all suitable capacity. Creating more Pods would not help. After the scheduler has continuously reported `PodScheduled=False` with reason `Unschedulable` for one minute, the planner may instead release old capacity for that role. This choice is automatic; it does not add an API policy.
+
+This is the final fallback. It is considered only when no ordinary or bootstrap step is available. The selected drain must remove an old replica of the same role as the unschedulable target Pod and must keep every surviving old revision complete. During that drain, each role may fall at most one replica below its configured availability floor. This relaxation is not cumulative: later reconciles use the same floor minus one, so the same Pending Pod cannot cause repeated drains below that bound.
+
+For example, assume the target is `1P/4D`, `maxSurge=1`, and `maxUnavailable=0`. Revisions A and B currently provide `A=1P/3D` and `B=1P/1D`. Revision C has `1P/1D`, but its Prefill Pod is unschedulable. The fallback may retire B. This releases B's Prefill capacity for C while temporarily reducing usable Decode capacity from four to three. A remains complete, and no later fallback may reduce Decode below three.
+
+A merely Pending Pod, an image pull, slow readiness, or a recently reported scheduling failure does not activate the fallback. If releasing one old revision is insufficient, the rollout waits rather than relaxing the bound again.
 
 #### Reconcile ordering and completion
 
@@ -273,7 +284,7 @@ The executor considers old revisions with no observed Ready replicas first, then
 
 One plan may contain both an old-side drain and new-side growth. The executor applies the old drain first. It then grows the target revision. For ordinary plans, this ordering avoids a transient surge violation between API updates. A marked bootstrap plan is the documented one-replica exception. The executor does not repair or reinterpret the planner's targets.
 
-If no candidate has an ordinary step, the executor uses the first candidate's bootstrap step, when available. Otherwise, the rollout is temporarily blocked, not complete. The controller emits one event, requeues, and waits for readiness, deletion, capacity, or a configuration change. Completion is checked separately from the absence of a feasible step.
+If no candidate has an ordinary step, the executor uses the first candidate's bootstrap step, when available. If neither exists, it checks for a persistently scheduler-unschedulable target Pod and asks the planner for the bounded availability fallback. Otherwise, the rollout is temporarily blocked, not complete. The controller emits an event, requeues, and waits for readiness, deletion, capacity, or a configuration change. Completion is checked separately from the absence of a feasible step.
 
 Interrupted rollouts mutate at most one old revision per reconcile and leave the others parked. Roles with an intended size of zero are not required. A terminating LWS contributes neither Spec nor Ready capacity.
 
@@ -341,8 +352,8 @@ to implement this enhancement.
 
 #### Unit tests
 
-- Rolling update planner: constraint intersection, fractional windows, same-revision usable readiness, worst-case Ready loss, revision completeness, bootstrap surge, and blocked-state feasibility
-- Executor: first-executable candidate selection, pending drains, slow-role readiness, terminating targets, External shrink, and staged interrupted rollouts
+- Rolling update planner: constraint intersection, fractional windows, same-revision usable readiness, worst-case Ready loss, revision completeness, bootstrap surge, scheduler-unschedulable recovery, and blocked-state feasibility
+- Executor: first-executable candidate selection, pending drains, slow-role readiness, scheduler-unschedulable recovery, terminating targets, External shrink, and staged interrupted rollouts
 - Cleanup: repeated interrupted revisions retain at most one drained rollout marker
 - API validation: role count, unique names, replica constraints
 

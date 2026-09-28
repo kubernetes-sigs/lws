@@ -17,7 +17,7 @@ limitations under the License.
 // Package disaggregatedset plans and executes DisaggregatedSet rolling updates.
 // ComputeNextStep intersects fractional coordination, surge, pending-readiness,
 // availability, and revision-completeness bounds over observed Spec and Ready
-// replicas. A bounded bootstrap surge unblocks otherwise-infeasible rollouts.
+// replicas. Bounded surge and availability fallbacks unblock capacity wedges.
 package disaggregatedset
 
 type UpdateStep struct {
@@ -26,6 +26,9 @@ type UpdateStep struct {
 	// UsesBootstrapSurge reports that New exceeds a configured surge ceiling
 	// to create the first replica of a missing required target role.
 	UsesBootstrapSurge bool
+	// UsesUnavailableFallback reports that Past uses one additional unavailable
+	// replica to release capacity for an unschedulable target role.
+	UsesUnavailableFallback bool
 }
 
 // RoleReplicaState contains one replica count per role. The executor resolves
@@ -61,11 +64,12 @@ type ParkedRevisionState struct {
 
 // TargetRevisionState describes the revision being rolled out.
 type TargetRevisionState struct {
-	RequiredRoles    []bool
-	SpecReplicas     RoleReplicaState
-	RawReadyReplicas RoleReplicaState
-	ReadyReplicas    RoleReplicaState
-	DesiredReplicas  RoleReplicaState
+	RequiredRoles      []bool
+	SpecReplicas       RoleReplicaState
+	RawReadyReplicas   RoleReplicaState
+	ReadyReplicas      RoleReplicaState
+	DesiredReplicas    RoleReplicaState
+	UnschedulableRoles []bool
 }
 
 // RolloutState is the value-only input to revision-aware planning. Kubernetes
@@ -101,9 +105,11 @@ type rolloutSnapshot []roleRolloutSnapshot
 
 // ComputeNextStep returns the furthest executable targets in the intersection
 // of all rollout constraints. When that intersection contains no mutation, it
-// may return a marked bootstrap-surge step for a missing target role. Partial
-// drains, whole-revision retirement, replacement growth, and bootstrap growth
-// are planner decisions; the executor does not repair their targets.
+// may return a marked bootstrap-surge step for a missing target role. If a
+// target role is scheduler-unschedulable, it may instead return a marked drain
+// using one additional unavailable replica. Partial drains, whole-revision
+// retirement, and replacement growth are planner decisions; the executor does
+// not repair their targets.
 func ComputeNextStep(state RolloutState) *UpdateStep {
 	if !validRolloutState(state) {
 		return nil
@@ -121,16 +127,42 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 		return next
 	}
 
-	bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
-	if !ok {
+	if bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets); ok {
+		bootstrapNew := furthestNewTargets(bootstrapSnapshot, phaseTargets)
+		if anyChange(next.Past, bootstrapNew, currentOld, currentNew) {
+			return &UpdateStep{
+				Past:               next.Past,
+				New:                bootstrapNew,
+				UsesBootstrapSurge: true,
+			}
+		}
+	}
+
+	// A target Pod that the scheduler cannot place may need capacity held by an
+	// old replica of the same role. As a last resort, permit exactly one more
+	// unavailable replica while keeping the old revision complete.
+	fallbackSnapshot := snapshotWithUnavailableFallback(snapshot)
+	fallbackPast := furthestOldTargets(fallbackSnapshot, state.ActiveOld.RequiredRoles)
+	if !drainsUnschedulableRole(currentOld, fallbackPast, state.Target.UnschedulableRoles) {
 		return nil
 	}
-	next.New = furthestNewTargets(bootstrapSnapshot, phaseTargets)
-	if !anyChange(next.Past, next.New, currentOld, currentNew) {
-		return nil
+	return &UpdateStep{
+		Past:                    fallbackPast,
+		New:                     currentNew,
+		UsesUnavailableFallback: true,
 	}
-	next.UsesBootstrapSurge = true
-	return next
+}
+
+func drainsUnschedulableRole(current, target RoleReplicaState, unschedulable []bool) bool {
+	if len(unschedulable) != len(current) {
+		return false
+	}
+	for i, blocked := range unschedulable {
+		if blocked && target[i] < current[i] {
+			return true
+		}
+	}
+	return false
 }
 
 func validRolloutState(state RolloutState) bool {
@@ -144,7 +176,8 @@ func validRolloutState(state RolloutState) bool {
 		len(state.Target.SpecReplicas) != roleCount ||
 		len(state.Target.RawReadyReplicas) != roleCount ||
 		len(state.Target.ReadyReplicas) != roleCount ||
-		len(state.Target.DesiredReplicas) != roleCount {
+		len(state.Target.DesiredReplicas) != roleCount ||
+		len(state.Target.UnschedulableRoles) != roleCount {
 		return false
 	}
 	for _, revision := range state.ParkedOld {
@@ -220,12 +253,17 @@ func usableReadyReplicas(requiredRoles []bool, readyReplicas RoleReplicaState) R
 
 // targetReplicasForActiveRevision subtracts capacity supplied by complete
 // parked revisions. The target revision replaces only the active old revision
-// during this planner call.
+// during this planner call, but still needs one replica of every required role
+// so its roles can form a usable same-revision unit.
 func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState {
 	targets := make(RoleReplicaState, len(snapshot))
 	for i, role := range snapshot {
 		parkedReady := max(0, role.OldUsableReadyReplicas-role.ActiveOldUsableReadyReplicas)
-		targets[i] = max(role.NewSpecReplicas, role.NewTargetReplicas-parkedReady)
+		residualTarget := role.NewTargetReplicas - parkedReady
+		if role.NewTargetReplicas > 0 {
+			residualTarget = max(1, residualTarget)
+		}
+		targets[i] = max(role.NewSpecReplicas, residualTarget)
 	}
 	return targets
 }
@@ -345,11 +383,12 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	return hardLimits
 }
 
-// snapshotWithBootstrapSurge grants one extra surge slot to each required
-// target role that has no Spec replica and cannot start within the ordinary
-// limits. ComputeNextStep considers this only when no ordinary mutation exists.
-// Once the first replica is issued, the role is no longer eligible, so the
-// planner waits for it instead of creating another emergency replica.
+// snapshotWithBootstrapSurge grants enough temporary surge for the first
+// replica of each missing required target role. This includes interrupted
+// rollouts where parked old revisions already consume a positive MaxSurge.
+// ComputeNextStep considers this only when no ordinary mutation exists. Once
+// the first replica is issued, the role is no longer eligible, so the planner
+// waits for it instead of creating another emergency replica.
 func snapshotWithBootstrapSurge(
 	snapshot rolloutSnapshot,
 	phaseTargets RoleReplicaState,
@@ -358,13 +397,28 @@ func snapshotWithBootstrapSurge(
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false
 	for i, role := range snapshot {
-		if role.Config.MaxSurge == 0 && role.Config.MaxUnavailable > 0 &&
+		if role.Config.MaxSurge+role.Config.MaxUnavailable > 0 &&
 			role.NewSpecReplicas == 0 && phaseTargets[i] > 0 && normalLimits[i] == 0 {
-			bootstrap[i].Config.MaxSurge = 1
+			roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
+			bootstrap[i].Config.MaxSurge = max(
+				role.Config.MaxSurge+1,
+				role.OldSpecReplicas-roleReplicaCount+1,
+			)
 			needed = true
 		}
 	}
 	return bootstrap, needed
+}
+
+// snapshotWithUnavailableFallback temporarily adds one MaxUnavailable replica
+// per role. The planner uses this view only after a sustained scheduler
+// rejection and only when ordinary and bootstrap steps are both blocked.
+func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
+	fallback := append(rolloutSnapshot(nil), snapshot...)
+	for i := range fallback {
+		fallback[i].Config.MaxUnavailable++
+	}
+	return fallback
 }
 
 // availabilityFloor is the minimum committed Ready capacity required for one
@@ -570,11 +624,12 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 			ReadyReplicas:    slicesClone(initialOld),
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:    requiredTarget,
-			SpecReplicas:     make(RoleReplicaState, len(target)),
-			RawReadyReplicas: make(RoleReplicaState, len(target)),
-			ReadyReplicas:    make(RoleReplicaState, len(target)),
-			DesiredReplicas:  slicesClone(target),
+			RequiredRoles:      requiredTarget,
+			SpecReplicas:       make(RoleReplicaState, len(target)),
+			RawReadyReplicas:   make(RoleReplicaState, len(target)),
+			ReadyReplicas:      make(RoleReplicaState, len(target)),
+			DesiredReplicas:    slicesClone(target),
+			UnschedulableRoles: make([]bool, len(target)),
 		},
 		Config: config,
 	}

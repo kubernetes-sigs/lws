@@ -126,6 +126,17 @@ func revisionLWSObjects(revision string, replicas, ready, initial [2]int32, crea
 	return objects
 }
 
+func podWithSchedulingCondition(
+	phase corev1.PodPhase,
+	status corev1.ConditionStatus,
+	reason string,
+	transition metav1.Time,
+) *corev1.Pod {
+	return &corev1.Pod{Status: corev1.PodStatus{Phase: phase, Conditions: []corev1.PodCondition{{
+		Type: corev1.PodScheduled, Status: status, Reason: reason, LastTransitionTime: transition,
+	}}}}
+}
+
 // getTestLWSReplicas is a helper to get the current replica count from a LWS.
 func getTestLWSReplicas(fakeClient client.Client, namespace, name string) int32 {
 	var leaderWorkerSet leaderworkersetv1.LeaderWorkerSet
@@ -288,6 +299,22 @@ func assertRevisionReplicas(t *testing.T, fakeClient client.Client, revision str
 		assert.EqualValues(t, want[i], getTestLWSReplicas(fakeClient, testNamespace,
 			fmt.Sprintf("test-0-%s-%s", revision, role)), "%s %s", revision, role)
 	}
+}
+
+func newOccupiedSurgeRollout() (
+	client.Client, *RollingUpdateExecutor, *disaggregatedsetv1.DisaggregatedSet, *events.FakeRecorder,
+) {
+	createdAt := time.Now()
+	initial := [2]int32{1, 4}
+	objects := revisionLWSObjects("hashA", [2]int32{1, 3}, [2]int32{1, 3}, initial, createdAt)
+	objects = append(objects, revisionLWSObjects(
+		"hashB", [2]int32{1, 1}, [2]int32{1, 1}, initial, createdAt.Add(time.Hour))...)
+	objects = append(objects, revisionLWSObjects(
+		"hashC", [2]int32{0, 1}, [2]int32{0, 1}, initial, createdAt.Add(2*time.Hour))...)
+	fakeClient := newTestClient(objects...)
+	recorder := events.NewFakeRecorder(10)
+	executor := &RollingUpdateExecutor{LWSManager: NewLeaderWorkerSetManager(fakeClient), Record: recorder}
+	return fakeClient, executor, newTwoRoleTestDisaggregatedSet(initial, [2]int{1, 1}, [2]int{}), recorder
 }
 
 // setupABCScenario creates a multi-workload test scenario with workloads A, B, and C.
@@ -698,6 +725,104 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
 	require.Len(t, recorder.Events, 1)
 	assert.Contains(t, <-recorder.Events, EventReasonRevisionDrainBlocked)
+}
+
+func TestReconcileExistingRolloutBootstrapsPastOccupiedSurge(t *testing.T) {
+	fakeClient, executor, ds, recorder := newOccupiedSurgeRollout()
+
+	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
+	assert.False(t, complete)
+	assert.NotZero(t, result.RequeueAfter)
+	assertRevisionReplicas(t, fakeClient, "hashA", [2]int32{1, 3})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
+	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
+	require.Len(t, recorder.Events, 2)
+	eventsSeen := (<-recorder.Events) + (<-recorder.Events)
+	assert.Contains(t, eventsSeen, EventReasonBootstrapSurge)
+	assert.Contains(t, eventsSeen, testRolePrefill)
+}
+
+func TestReconcileExistingRolloutReleasesCapacityForUnschedulableBootstrap(t *testing.T) {
+	fakeClient, executor, ds, recorder := newOccupiedSurgeRollout()
+
+	// No ordinary step exists, so the first reconcile creates C's bootstrap
+	// Prefill. B remains complete while that Pod gets a chance to schedule.
+	reconcileExistingForTest(t, executor, ds, "hashC")
+	assertRevisionReplicas(t, fakeClient, "hashA", [2]int32{1, 3})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
+	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
+	for len(recorder.Events) > 0 {
+		<-recorder.Events
+	}
+
+	pod := podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+		corev1.PodReasonUnschedulable, metav1.NewTime(time.Now()))
+	pod.Name = "hash-c-prefill-0"
+	pod.Namespace = testNamespace
+	pod.Labels = map[string]string{leaderworkersetv1.SetNameLabelKey: "test-0-hashC-prefill"}
+	require.NoError(t, fakeClient.Create(context.Background(), pod))
+
+	// A recent scheduling failure is not enough evidence to reduce
+	// availability. Give the scheduler a grace period first.
+	reconcileExistingForTest(t, executor, ds, "hashC")
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
+	for len(recorder.Events) > 0 {
+		<-recorder.Events
+	}
+	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+		Namespace: pod.Namespace,
+		Name:      pod.Name,
+	}, pod))
+	pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(
+		time.Now().Add(-unschedulablePodGracePeriod - time.Second),
+	)
+	require.NoError(t, fakeClient.Status().Update(context.Background(), pod))
+
+	// The scheduler has confirmed that C's Prefill cannot fit. Retiring B is
+	// now allowed to release B's Prefill capacity. A remains complete, and the
+	// temporary availability deficit is limited to one Decode replica.
+	reconcileExistingForTest(t, executor, ds, "hashC")
+	assertRevisionReplicas(t, fakeClient, "hashA", [2]int32{1, 3})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{})
+	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
+	eventsSeen := ""
+	for len(recorder.Events) > 0 {
+		eventsSeen += <-recorder.Events
+	}
+	assert.Contains(t, eventsSeen, EventReasonAvailabilityFallback)
+	assert.Contains(t, eventsSeen, testRolePrefill)
+}
+
+func TestPodIsPersistentlyUnschedulable(t *testing.T) {
+	now := time.Now()
+	oldTransition := metav1.NewTime(now.Add(-unschedulablePodGracePeriod - time.Second))
+	recentTransition := metav1.NewTime(now.Add(-unschedulablePodGracePeriod + time.Second))
+	deleting := metav1.NewTime(now)
+	deletingPod := podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+		corev1.PodReasonUnschedulable, oldTransition)
+	deletingPod.DeletionTimestamp = &deleting
+
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want bool
+	}{
+		{"old scheduler rejection", podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+			corev1.PodReasonUnschedulable, oldTransition), true},
+		{"recent scheduler rejection", podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+			corev1.PodReasonUnschedulable, recentTransition), false},
+		{"pending without scheduler rejection", &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}, false},
+		{"different pending reason", podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+			"ImagePullBackOff", oldTransition), false},
+		{"scheduled but unready", podWithSchedulingCondition(corev1.PodRunning, corev1.ConditionTrue,
+			"", oldTransition), false},
+		{"deleting unschedulable Pod", deletingPod, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, podIsPersistentlyUnschedulable(tc.pod, now))
+		})
+	}
 }
 
 func TestReconcileExistingRolloutDrainsUnreadySpecWithoutSpendingReadyAgain(t *testing.T) {

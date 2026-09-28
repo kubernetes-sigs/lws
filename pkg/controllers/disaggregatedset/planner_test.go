@@ -55,11 +55,12 @@ func rolloutState(
 			ReadyReplicas:    slicesClone(activeReady),
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:    requiredRoles(target),
-			SpecReplicas:     slicesClone(newSpec),
-			RawReadyReplicas: slicesClone(newReady),
-			ReadyReplicas:    slicesClone(newReady),
-			DesiredReplicas:  slicesClone(target),
+			RequiredRoles:      requiredRoles(target),
+			SpecReplicas:       slicesClone(newSpec),
+			RawReadyReplicas:   slicesClone(newReady),
+			ReadyReplicas:      slicesClone(newReady),
+			DesiredReplicas:    slicesClone(target),
+			UnschedulableRoles: make([]bool, len(target)),
 		},
 		Config: append([]RollingUpdateConfig(nil), config...),
 	}
@@ -103,6 +104,9 @@ func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 		{"asymmetric zero-surge wedge bootstraps its missing role", rolloutState(
 			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{1, 5},
 			configs([]int{0, 0}, []int{1, 1})), RoleReplicaState{1, 4}, RoleReplicaState{1, 1}, false, true},
+		{"interrupted rollout bootstraps a surge slot occupied by old revisions", rolloutState(
+			[]int{1, 4}, []int{1, 1}, []int{1, 1}, []int{1, 3}, []int{1, 3}, []int{0, 1}, []int{0, 1}, []int{1, 4},
+			configs([]int{1, 1}, []int{0, 0})), RoleReplicaState{1, 1}, RoleReplicaState{1, 1}, false, true},
 		{"does not add replicas while the bootstrap replica is unready", rolloutState(
 			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{1, 1}, []int{0, 1}, []int{1, 5},
 			configs([]int{0, 0}, []int{1, 1})), nil, nil, true, false},
@@ -126,6 +130,25 @@ func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 	}
 }
 
+func TestPhaseTargetSeedsEveryRequiredTargetRole(t *testing.T) {
+	state := rolloutState(
+		[]int{1, 4}, []int{1, 1}, []int{1, 1}, []int{1, 3}, []int{1, 3},
+		[]int{0, 0}, []int{0, 0}, []int{1, 4},
+		configs([]int{2, 2}, []int{0, 0}),
+	)
+	snapshot := snapshotForRolloutState(state)
+	assert.Equal(t, RoleReplicaState{1, 1}, targetReplicasForActiveRevision(snapshot),
+		"parked Prefill cannot replace the target revision's own Prefill")
+
+	state = rolloutState(
+		[]int{1, 4}, []int{1, 3}, []int{1, 3}, []int{1, 1}, []int{1, 1},
+		[]int{0, 0}, []int{0, 0}, []int{1, 4},
+		configs([]int{2, 2}, []int{0, 0}),
+	)
+	snapshot = snapshotForRolloutState(state)
+	assert.Equal(t, RoleReplicaState{1, 3}, targetReplicasForActiveRevision(snapshot))
+}
+
 func TestComputeNextStepUsesRevisionAwareReadiness(t *testing.T) {
 	// This is the corrected slide-7 state. Decode in C is Ready, but C has no
 	// Ready Prefill, so none of C's readiness can authorize B's retirement.
@@ -146,6 +169,50 @@ func TestComputeNextStepUsesRevisionAwareReadiness(t *testing.T) {
 	require.NotNil(t, step)
 	assert.Equal(t, RoleReplicaState{0, 0}, step.Past, "B retires once C is complete and Ready")
 	assert.Equal(t, RoleReplicaState{1, 2}, step.New)
+}
+
+func TestComputeNextStepReleasesCapacityForUnschedulableTargetRole(t *testing.T) {
+	// A and B together provide exactly the 1P/4D availability floor. C's
+	// bootstrap Prefill exists but cannot be scheduled. Retiring B releases a
+	// Prefill slot and temporarily lowers usable Decode capacity from four to
+	// three, which is the single unavailable replica permitted by the fallback.
+	state := rolloutState(
+		[]int{1, 4}, []int{1, 1}, []int{1, 1}, []int{1, 3}, []int{1, 3},
+		[]int{1, 1}, []int{0, 1}, []int{1, 4},
+		configs([]int{1, 1}, []int{0, 0}),
+	)
+	beforeBootstrap := state
+	beforeBootstrap.Target.SpecReplicas = RoleReplicaState{0, 1}
+	beforeBootstrap.Target.UnschedulableRoles = []bool{true, false}
+	step := ComputeNextStep(beforeBootstrap)
+	require.NotNil(t, step)
+	assert.True(t, step.UsesBootstrapSurge,
+		"bootstrap surge must be tried before relaxing availability")
+	assert.False(t, step.UsesUnavailableFallback)
+
+	assert.Nil(t, ComputeNextStep(state),
+		"an unready target role alone must not relax availability")
+
+	state.Target.UnschedulableRoles = []bool{true, false}
+	step = ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{0, 0}, step.Past)
+	assert.Equal(t, RoleReplicaState{1, 1}, step.New)
+	assert.True(t, step.UsesUnavailableFallback)
+	assert.False(t, step.UsesBootstrapSurge)
+	require.NoError(t, validateUpdateStep(state, step))
+
+	// After B retires, the remaining A revision already holds the relaxed
+	// availability floor. Ordinary target growth may continue, but the same
+	// unschedulable Pod cannot cascade into another old-revision drain.
+	state.ActiveOld.SpecReplicas = RoleReplicaState{1, 3}
+	state.ActiveOld.RawReadyReplicas = RoleReplicaState{1, 3}
+	state.ActiveOld.ReadyReplicas = RoleReplicaState{1, 3}
+	state.ParkedOld = nil
+	step = ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{1, 3}, step.Past)
+	assert.False(t, step.UsesUnavailableFallback)
 }
 
 func TestUsableReadyReplicasRequiresEveryRequiredRole(t *testing.T) {
