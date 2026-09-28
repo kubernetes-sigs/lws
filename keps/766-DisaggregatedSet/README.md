@@ -375,8 +375,7 @@ to implement this enhancement.
 - 2026-03-05: Initial KEP draft
 - 2026-03-22: Updated to reflect N-dimensional roles API
 - 2026-03-23: Renamed "phase" to "role" throughout for semantic clarity
-- 2026-09-25: Updated the rolling-update contract to cover fractional lockstep, readiness and availability bounds, staged interrupted rollouts, and durable intended replica counts.
-- 2026-09-28: Made rollout planning revision-aware, replaced executor recovery actions with one constraint-based calculation, and documented committed readiness and bounded drained-revision retention.
+- 2026-09-28: Updated rolling updates with fractional lockstep, readiness and availability bounds, durable intended replica counts, and revision-aware constraint planning for interrupted rollouts, replacing executor recovery actions and documenting committed readiness and bounded drained-revision retention.
 
 ## Drawbacks
 

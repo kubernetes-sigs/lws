@@ -424,7 +424,7 @@ to implement this enhancement.
 - 2026-07-03: Initial KEP draft (user-authored scaler CR shape).
 - 2026-07-04: Documented interaction with KEP-846 slices; scoped alpha to `spec.slices == 1`.
 - 2026-07-08: Redesigned around auto-created scalers.
-- 2026-09-14: Updated rolling-update behavior to preserve each revision's scaler target when a rollout is interrupted.
+- 2026-09-28: Updated rolling-update behavior to preserve each revision's scaler target when a rollout is interrupted.
 
 ## Drawbacks
 
