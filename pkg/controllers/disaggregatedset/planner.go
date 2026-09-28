@@ -14,18 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package disaggregatedset plans and executes rolling updates for DisaggregatedSet.
-//
-// Each side of a rollout advances inside a fractional coordination window. The
-// window calculation stores the denominator of largestReplicaFraction in
-// fractionalCoordinationWindow.largestReplicaFractionDenominator. It is the
-// smallest positive role replica count on that side of the rollout.
-//
-// Spec represents replicas already requested from the LWS, including replicas
-// that are still starting. ComputeNextStep intersects the fractional window
-// with surge, pending-readiness, availability, and revision-completeness
-// bounds. A narrowly scoped bootstrap surge breaks otherwise-infeasible
-// zero-surge rollouts. The executor never repairs the returned result.
+// Package disaggregatedset plans and executes DisaggregatedSet rolling updates.
+// ComputeNextStep intersects fractional coordination, surge, pending-readiness,
+// availability, and revision-completeness bounds over observed Spec and Ready
+// replicas. A bounded bootstrap surge unblocks otherwise-infeasible rollouts.
 package disaggregatedset
 
 type UpdateStep struct {
@@ -82,15 +74,9 @@ type RolloutState struct {
 	Config    []RollingUpdateConfig
 }
 
-// roleRolloutSnapshot contains all observed state needed to plan one role. It
-// is rebuilt on every reconciliation and is never persisted by the controller.
-//
-// InitialOldReplicas and ActiveOldSpecReplicas describe the one old revision
-// currently being replaced. OldSpecReplicas and OldUsableReadyReplicas cover
-// every old revision because parked revisions still consume capacity and may
-// serve traffic. New Spec counts replicas already requested from the target
-// LWS, including replicas that are still starting. Ready excludes replicas
-// already committed to termination.
+// roleRolloutSnapshot is the per-role observed state rebuilt each reconcile.
+// Active fields describe the revision being replaced; aggregate Old fields
+// also include parked revisions. Ready excludes replicas pending termination.
 type roleRolloutSnapshot struct {
 	InitialOldReplicas           int                 // Durable replica baseline of the active old revision.
 	ActiveOldSpecReplicas        int                 // Current Spec replicas of the active old revision.

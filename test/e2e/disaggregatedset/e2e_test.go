@@ -564,86 +564,7 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		for _, tc := range testCases {
 			tc := tc // capture range variable
 			It(fmt.Sprintf("should preserve rollout invariants for %s", tc.Name), func() {
-				By("creating initial DisaggregatedSet with source replicas")
-				initialYaml := fixtures.PrefillDecode(deploymentName,
-					fixtures.Role{Replicas: tc.SourcePrefill, HasRollout: true, MaxSurge: tc.PrefillSurge, MaxUnavailable: tc.PrefillUnavail},
-					fixtures.Role{Replicas: tc.SourceDecode, HasRollout: true, MaxSurge: tc.DecodeSurge, MaxUnavailable: tc.DecodeUnavail},
-				).YAML()
-				Expect(applyYAML(initialYaml)).To(Succeed())
-
-				By("waiting for initial deployment to stabilize")
-				expectedInitialPods := tc.SourcePrefill + tc.SourceDecode
-				kubectl.ForRunningPodCountWithTimeout(deploymentName, expectedInitialPods, 3*time.Minute)
-
-				// Get the initial revision
-				oldRevision, err := kubectl.GetRevision(deploymentName)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(oldRevision).NotTo(BeEmpty())
-				_, _ = fmt.Fprintf(GinkgoWriter, "Initial revision: %s\n", oldRevision)
-
-				// Capture a fully Ready initial state before triggering the update.
-				var initialObservation rolloutObservation
-				Eventually(func(g Gomega) {
-					var err error
-					initialObservation, err = getCurrentRolloutObservation(deploymentName, oldRevision)
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(initialObservation.OldReadyPrefill).To(Equal(tc.SourcePrefill))
-					g.Expect(initialObservation.OldReadyDecode).To(Equal(tc.SourceDecode))
-				}).Should(Succeed())
-				_, _ = fmt.Fprintf(GinkgoWriter, "Initial state captured: %s\n", initialObservation.Spec)
-
-				By("triggering rolling update by changing image and target replicas")
-				updatedYaml := fixtures.PrefillDecode(deploymentName,
-					fixtures.Role{Replicas: tc.TargetPrefill, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.PrefillSurge, MaxUnavailable: tc.PrefillUnavail},
-					fixtures.Role{Replicas: tc.TargetDecode, Image: "registry.k8s.io/pause:3.10", HasRollout: true, MaxSurge: tc.DecodeSurge, MaxUnavailable: tc.DecodeUnavail},
-				).YAML()
-				Expect(applyYAML(updatedYaml)).To(Succeed())
-
-				By("tracking rollout states")
-				// Exact planner steps are covered by planner unit tests. An e2e
-				// poll can observe the controller between two LWS updates, so record
-				// distinct Spec states and validate observable Spec invariants instead.
-				// Exact availability decisions require the snapshot seen by the
-				// controller and are covered by deterministic unit tests.
-				observations := []rolloutObservation{initialObservation}
-				lastState := initialObservation.Spec
-				finalObservation := rolloutObservation{}
-
-				// Poll rapidly to capture states
-				finalState := rolloutState{NewPrefill: tc.TargetPrefill, NewDecode: tc.TargetDecode}
-				Eventually(func(g Gomega) bool {
-					observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
-					g.Expect(err).NotTo(HaveOccurred())
-					finalObservation = observation
-					state := observation.Spec
-
-					// Record state if it's different from the last one
-					if !state.Equals(lastState) {
-						observations = append(observations, observation)
-						_, _ = fmt.Fprintf(GinkgoWriter, "Observed state %d: %s\n", len(observations)-1, state)
-						lastState = state
-					}
-
-					// Reaching the final Spec does not mean the rollout is Ready yet.
-					// Wait for committed Ready capacity as well so a transient readiness
-					// loss after the final scale operation does not end the test early.
-					return state.Equals(finalState) &&
-						observation.NewReadyPrefill == tc.TargetPrefill &&
-						observation.NewReadyDecode == tc.TargetDecode
-				}, 5*time.Minute, 100*time.Millisecond).Should(BeTrue(), "should reach the final Spec and Ready state")
-
-				By("verifying rollout invariants over every observed Spec state")
-				_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Rollout Summary ===\n")
-				_, _ = fmt.Fprintf(GinkgoWriter, "Total observed states: %d\n", len(observations))
-				assertRolloutObservations(tc, observations)
-
-				Expect(observations[0].Spec).To(Equal(rolloutState{
-					OldPrefill: tc.SourcePrefill,
-					OldDecode:  tc.SourceDecode,
-				}), "initial state should match")
-				Expect(observations[len(observations)-1].Spec).To(Equal(finalState), "final state should match")
-				Expect(finalObservation.NewReadyPrefill).To(Equal(tc.TargetPrefill), "final prefill should be Ready")
-				Expect(finalObservation.NewReadyDecode).To(Equal(tc.TargetDecode), "final decode should be Ready")
+				runObservedRollout(deploymentName, tc)
 			})
 		}
 	})
@@ -663,60 +584,19 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 		})
 
 		It("should pipeline work while earlier replicas are unready", func() {
-			slowRole := func(replicas int) fixtures.Role {
-				return fixtures.Role{
-					Replicas:            replicas,
-					HasRollout:          true,
-					MaxSurge:            intstr.FromInt(maxSurge),
-					MaxUnavailable:      intstr.FromInt(maxUnavailable),
-					StartupDelaySeconds: startupDelay,
-				}
+			observations := runObservedRollout(deploymentName, rolloutTestCase{
+				SourcePrefill: prefill, SourceDecode: decode,
+				TargetPrefill: prefill, TargetDecode: decode,
+				PrefillSurge: intstr.FromInt(maxSurge), DecodeSurge: intstr.FromInt(maxSurge),
+				PrefillUnavail: intstr.FromInt(maxUnavailable), DecodeUnavail: intstr.FromInt(maxUnavailable),
+				StartupDelaySeconds: startupDelay,
+			})
+			pipelined := false
+			for _, observation := range observations {
+				pipelined = pipelined || observation.Spec.NewPrefill >= 4 && observation.Spec.NewDecode >= 2 &&
+					observation.NewReadyPrefill < 2 && observation.NewReadyDecode < 1
 			}
-
-			By("creating and waiting for the initial revision")
-			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, slowRole(prefill), slowRole(decode)).YAML())).To(Succeed())
-			var oldRevision string
-			Eventually(func(g Gomega) string {
-				var err error
-				oldRevision, err = kubectl.GetRevision(deploymentName)
-				g.Expect(err).NotTo(HaveOccurred())
-				return oldRevision
-			}).ShouldNot(BeEmpty())
-			Eventually(func(g Gomega) {
-				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(observation.OldReadyPrefill).To(Equal(prefill))
-				g.Expect(observation.OldReadyDecode).To(Equal(decode))
-			}, 3*time.Minute, time.Second).Should(Succeed())
-
-			By("triggering a rolling update with a pod-template annotation")
-			updatedPrefill := slowRole(prefill)
-			updatedPrefill.Annotations = map[string]string{"rollout-version": "v2"}
-			updatedDecode := slowRole(decode)
-			updatedDecode.Annotations = map[string]string{"rollout-version": "v2"}
-			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, updatedPrefill, updatedDecode).YAML())).To(Succeed())
-
-			By("observing a second fraction before the first becomes ready")
-			Eventually(func(g Gomega) {
-				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(observation.Spec.NewPrefill).To(BeNumerically(">=", 4))
-				g.Expect(observation.Spec.NewDecode).To(BeNumerically(">=", 2))
-				g.Expect(observation.NewReadyPrefill).To(BeNumerically("<", 2))
-				g.Expect(observation.NewReadyDecode).To(BeNumerically("<", 1))
-			}, 20*time.Second, 250*time.Millisecond).Should(Succeed())
-
-			By("waiting for the rollout to complete")
-			Eventually(func(g Gomega) {
-				observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(observation.Spec).To(Equal(rolloutState{
-					NewPrefill: prefill,
-					NewDecode:  decode,
-				}))
-				g.Expect(observation.NewReadyPrefill).To(Equal(prefill))
-				g.Expect(observation.NewReadyDecode).To(Equal(decode))
-			}, 8*time.Minute, time.Second).Should(Succeed())
+			Expect(pipelined).To(BeTrue(), "a second fraction should be issued while the first is unready")
 		})
 	})
 
@@ -1176,15 +1056,70 @@ func (s rolloutState) Equals(other rolloutState) bool {
 
 // rolloutTestCase defines a rolling update scenario to test
 type rolloutTestCase struct {
-	Name           string
-	SourcePrefill  int
-	SourceDecode   int
-	TargetPrefill  int
-	TargetDecode   int
-	PrefillSurge   intstr.IntOrString
-	DecodeSurge    intstr.IntOrString
-	PrefillUnavail intstr.IntOrString
-	DecodeUnavail  intstr.IntOrString
+	Name                          string
+	SourcePrefill, SourceDecode   int
+	TargetPrefill, TargetDecode   int
+	PrefillSurge, DecodeSurge     intstr.IntOrString
+	PrefillUnavail, DecodeUnavail intstr.IntOrString
+	StartupDelaySeconds           int
+}
+
+func runObservedRollout(deploymentName string, tc rolloutTestCase) []rolloutObservation {
+	GinkgoHelper()
+	role := func(replicas int, surge, unavailable intstr.IntOrString, updated bool) fixtures.Role {
+		result := fixtures.Role{
+			Replicas: replicas, HasRollout: true, MaxSurge: surge, MaxUnavailable: unavailable,
+			StartupDelaySeconds: tc.StartupDelaySeconds,
+		}
+		if updated && tc.StartupDelaySeconds > 0 {
+			result.Annotations = map[string]string{"rollout-version": "v2"}
+		} else if updated {
+			result.Image = "registry.k8s.io/pause:3.10"
+		}
+		return result
+	}
+	config := func(prefill, decode int, updated bool) string {
+		return fixtures.PrefillDecode(deploymentName,
+			role(prefill, tc.PrefillSurge, tc.PrefillUnavail, updated),
+			role(decode, tc.DecodeSurge, tc.DecodeUnavail, updated),
+		).YAML()
+	}
+
+	By("creating initial DisaggregatedSet with source replicas")
+	Expect(applyYAML(config(tc.SourcePrefill, tc.SourceDecode, false))).To(Succeed())
+	kubectl.ForRunningPodCountWithTimeout(deploymentName, tc.SourcePrefill+tc.SourceDecode, 3*time.Minute)
+	oldRevision, err := kubectl.GetRevision(deploymentName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(oldRevision).NotTo(BeEmpty())
+
+	var initial rolloutObservation
+	Eventually(func(g Gomega) {
+		initial, err = getCurrentRolloutObservation(deploymentName, oldRevision)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(initial.OldReadyPrefill).To(Equal(tc.SourcePrefill))
+		g.Expect(initial.OldReadyDecode).To(Equal(tc.SourceDecode))
+	}, 3*time.Minute, time.Second).Should(Succeed())
+
+	By("triggering the rolling update")
+	Expect(applyYAML(config(tc.TargetPrefill, tc.TargetDecode, true))).To(Succeed())
+	observations := []rolloutObservation{initial}
+	lastState := initial.Spec
+	finalState := rolloutState{NewPrefill: tc.TargetPrefill, NewDecode: tc.TargetDecode}
+	Eventually(func(g Gomega) bool {
+		observation, err := getCurrentRolloutObservation(deploymentName, oldRevision)
+		g.Expect(err).NotTo(HaveOccurred())
+		if !observation.Spec.Equals(lastState) {
+			observations = append(observations, observation)
+			lastState = observation.Spec
+		}
+		return observation.Spec.Equals(finalState) && observation.NewReadyPrefill == tc.TargetPrefill &&
+			observation.NewReadyDecode == tc.TargetDecode
+	}, 8*time.Minute, 100*time.Millisecond).Should(BeTrue(), "should reach the final Spec and Ready state")
+
+	assertRolloutObservations(tc, observations)
+	Expect(observations[0].Spec).To(Equal(rolloutState{OldPrefill: tc.SourcePrefill, OldDecode: tc.SourceDecode}))
+	Expect(observations[len(observations)-1].Spec).To(Equal(finalState))
+	return observations
 }
 
 func assertRolloutObservations(tc rolloutTestCase, observations []rolloutObservation) {

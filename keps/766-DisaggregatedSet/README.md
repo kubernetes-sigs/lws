@@ -209,12 +209,7 @@ The fractional window does not replace rollout budgets. For each candidate revis
 
 #### Issued work and available capacity
 
-The controller deliberately distinguishes the desired replica count in the LWS Spec from its Ready status:
-
-```
-Spec  = work already issued to the cluster, including pods still starting
-Ready = work that has completed startup and is available to serve
-```
+The controller distinguishes LWS `Spec` replicas (work already issued, including pods still starting) from `Ready` replicas (capacity available to serve).
 
 Spec drives the planner's progress calculation. Re-planning from Ready would request the same work again on every reconcile while a pod is starting. Ready instead controls how much additional work may be in flight, whether an old replica can be removed safely, and whether the rollout is complete.
 
@@ -228,12 +223,7 @@ committedReady = min(spec.replicas,
 
 This prevents a replica already committed to deletion from authorizing another drain. The controller guarantees that a drain is safe for the snapshot it observed. It cannot prevent an unrelated pod from losing readiness after that observation.
 
-Readiness is also revision-aware. A revision contributes usable Ready capacity only when every role required by that revision has at least one committed Ready replica:
-
-```
-usableReady(revision) = committed Ready counts, if every required role is Ready
-                        zero for every role, otherwise
-```
+Readiness is also revision-aware. A revision contributes its committed Ready counts only when every required role has at least one; otherwise it contributes zero for every role.
 
 For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable capacity. Its Decode replicas cannot authorize retirement of an old Prefill/Decode revision. Once the target reaches `1P/2D` Ready, both role counts become usable together.
 
@@ -251,20 +241,13 @@ oldSpec + newSpec <= surgeCeiling
 
 `oldSpec` includes active and parked old revisions. Existing out-of-bound Spec is never increased.
 
-For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase:
-
-```
-phaseTarget = max(currentNewSpec, target - parkedUsableReady)
-```
+For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase: `phaseTarget = max(currentNewSpec, target - parkedUsableReady)`.
 
 The planner also limits issued-but-unready target work while old Spec remains. Let `budgetScale` be the largest `initialOld` or target count across the roles. A raw per-role budget is projected onto that scale as:
 
 ```
 projected(role, budget) = ceil(roleReplicaCount * budget / budgetScale)
-```
-
-```
-pendingAllowance = projected(role, MaxSurge + MaxUnavailable)
+pendingAllowance        = projected(role, MaxSurge + MaxUnavailable)
 newSpec - newCommittedReady <= pendingAllowance
 ```
 
@@ -286,16 +269,7 @@ The executor prefers an ordinary step from any old-revision candidate over a boo
 
 #### Reconcile ordering and completion
 
-The executor considers old revisions with no observed Ready replicas first. It then considers the other old revisions from newest to oldest. This ordering is a preference. For each candidate, it constructs a value-only state containing that active revision, every parked revision, the target revision, and the per-role limits. It calls the same planner calculation:
-
-```
-oldTargets = furthest drain allowed by availability, the fractional window,
-             and revision completeness
-newTargets = furthest growth allowed by surge, pending readiness,
-             the phase target, and the fractional window
-```
-
-These are constraints on one result, not a sequence of recovery actions. The executor validates and applies the result without changing its meaning. If the result changes no API target, the executor tries the next old revision.
+The executor considers old revisions with no observed Ready replicas first, then the others from newest to oldest. For each candidate, the planner computes the furthest old drain and target growth allowed by all constraints. These are constraints on one result, not a sequence of recovery actions. The executor validates and applies that result unchanged; if it changes no API target, the executor tries the next candidate.
 
 One plan may contain both an old-side drain and new-side growth. The executor applies the old drain first. It then grows the target revision. For ordinary plans, this ordering avoids a transient surge violation between API updates. A marked bootstrap plan is the documented one-replica exception. The executor does not repair or reinterpret the planner's targets.
 

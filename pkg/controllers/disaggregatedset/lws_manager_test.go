@@ -222,53 +222,44 @@ func TestManagerDelete(t *testing.T) {
 }
 
 func TestTerminatingLWSIsIgnored(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
-	ds := testManagerDS("test-deployment")
-	ds.UID = types.UID("test-uid")
+	scheme := testSchemeForUnit()
+	ds := testManagerDS("test")
+	ds.UID = types.UID("uid")
 
-	terminatingOld := func(replicas int32) *leaderworkersetv1.LeaderWorkerSet {
-		lws := buildOwnedManagerTestLWS("old-prefill", replicas, ds)
-		lws.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, "old", "prefill")
+	terminating := func(revision string, replicas int32, ready bool) *leaderworkersetv1.LeaderWorkerSet {
+		readyReplicas := int32(0)
+		if ready {
+			readyReplicas = replicas
+		}
+		lws := revisionLWS(revision, testRolePrefill, replicas, readyReplicas, time.Time{}, replicas)
 		now := metav1.Now()
 		lws.DeletionTimestamp = &now
 		lws.Finalizers = []string{"foregroundDeletion"}
 		return lws
 	}
 
-	t.Run("excluded from rollout discovery regardless of Spec", func(t *testing.T) {
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-			WithRuntimeObjects(terminatingOld(3)).Build()
-		manager := NewLeaderWorkerSetManager(fakeClient)
-
-		oldRevisions, newRevision, err := manager.GetRevisionRolesList(context.Background(), ds, 0, "target")
-
-		require.NoError(t, err)
-		assert.Empty(t, oldRevisions)
-		assert.Nil(t, newRevision)
-	})
-
-	t.Run("terminating target is not reported as usable capacity", func(t *testing.T) {
-		terminatingTarget := terminatingOld(3)
-		terminatingTarget.Name = "target-prefill"
-		terminatingTarget.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, "target", "prefill")
-		terminatingTarget.Status.Replicas = 3
-		terminatingTarget.Status.ReadyReplicas = 3
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-			WithRuntimeObjects(terminatingTarget).Build()
-		manager := NewLeaderWorkerSetManager(fakeClient)
-
-		oldRevisions, newRevision, err := manager.GetRevisionRolesList(context.Background(), ds, 0, "target")
-
-		require.NoError(t, err)
-		assert.Empty(t, oldRevisions)
-		assert.Nil(t, newRevision)
-	})
+	for _, tc := range []struct {
+		name, revision string
+		ready          bool
+	}{
+		{"excluded from rollout discovery regardless of Spec", "old", false},
+		{"terminating target is not reported as usable capacity", "target", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithRuntimeObjects(terminating(tc.revision, 3, tc.ready)).Build()
+			oldRevisions, newRevision, err := NewLeaderWorkerSetManager(fakeClient).
+				GetRevisionRolesList(context.Background(), ds, 0, "target")
+			require.NoError(t, err)
+			assert.Empty(t, oldRevisions)
+			assert.Nil(t, newRevision)
+		})
+	}
 
 	t.Run("cleanup does not delete or emit an event again", func(t *testing.T) {
 		deleteCalls := 0
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-			WithRuntimeObjects(terminatingOld(0)).
+			WithRuntimeObjects(terminating("old", 0, false)).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 					deleteCalls++
@@ -288,16 +279,12 @@ func TestTerminatingLWSIsIgnored(t *testing.T) {
 }
 
 func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
-	ds := testManagerDS("test-deployment")
-	ds.UID = types.UID("test-uid")
+	scheme := testSchemeForUnit()
+	ds := testManagerDS("test")
+	ds.UID = types.UID("uid")
 	createdAt := time.Now()
 	old := func(revision string, replicas int32, age time.Duration) *leaderworkersetv1.LeaderWorkerSet {
-		lws := buildOwnedManagerTestLWS(revision+"-prefill", replicas, ds)
-		lws.Labels = disaggregatedsetutils.GenerateLabels(ds.Name, 0, revision, "prefill")
-		lws.CreationTimestamp = metav1.NewTime(createdAt.Add(age))
-		return lws
+		return revisionLWS(revision, testRolePrefill, replicas, replicas, createdAt.Add(age), replicas)
 	}
 
 	for _, tc := range []struct {
