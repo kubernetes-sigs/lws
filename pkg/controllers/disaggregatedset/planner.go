@@ -42,27 +42,30 @@ type RollingUpdateConfig struct {
 // call. RequiredRoles identifies the roles that must remain together until the
 // revision is retired. Every slice in this type is index-aligned.
 type ActiveRevisionState struct {
-	RequiredRoles   []bool
-	InitialReplicas RoleReplicaState
-	SpecReplicas    RoleReplicaState
-	ReadyReplicas   RoleReplicaState
+	RequiredRoles    []bool
+	InitialReplicas  RoleReplicaState
+	SpecReplicas     RoleReplicaState
+	RawReadyReplicas RoleReplicaState
+	ReadyReplicas    RoleReplicaState
 }
 
 // ParkedRevisionState describes one old revision that participates in global
 // capacity accounting but is not mutated by this planner call. Keeping parked
 // revisions separate is what makes Ready capacity revision-aware.
 type ParkedRevisionState struct {
-	RequiredRoles []bool
-	SpecReplicas  RoleReplicaState
-	ReadyReplicas RoleReplicaState
+	RequiredRoles    []bool
+	SpecReplicas     RoleReplicaState
+	RawReadyReplicas RoleReplicaState
+	ReadyReplicas    RoleReplicaState
 }
 
 // TargetRevisionState describes the revision being rolled out.
 type TargetRevisionState struct {
-	RequiredRoles   []bool
-	SpecReplicas    RoleReplicaState
-	ReadyReplicas   RoleReplicaState
-	DesiredReplicas RoleReplicaState
+	RequiredRoles    []bool
+	SpecReplicas     RoleReplicaState
+	RawReadyReplicas RoleReplicaState
+	ReadyReplicas    RoleReplicaState
+	DesiredReplicas  RoleReplicaState
 }
 
 // RolloutState is the value-only input to revision-aware planning. Kubernetes
@@ -83,6 +86,7 @@ type roleRolloutSnapshot struct {
 	ActiveOldUsableReadyReplicas int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
 	OldSpecReplicas              int                 // Current Spec replicas summed across all old revisions.
 	OldUsableReadyReplicas       int                 // Ready replicas from complete old revisions only.
+	ObservedUsableReadyReplicas  int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
 	NewSpecReplicas              int                 // Current Spec replicas of the target revision.
 	NewCommittedReadyReplicas    int                 // Target Ready replicas excluding replicas committed to termination.
 	NewUsableReadyReplicas       int                 // Target Ready replicas, or zero when a required role is not Ready.
@@ -134,9 +138,11 @@ func validRolloutState(state RolloutState) bool {
 	if len(state.ActiveOld.RequiredRoles) != roleCount ||
 		len(state.ActiveOld.InitialReplicas) != roleCount ||
 		len(state.ActiveOld.SpecReplicas) != roleCount ||
+		len(state.ActiveOld.RawReadyReplicas) != roleCount ||
 		len(state.ActiveOld.ReadyReplicas) != roleCount ||
 		len(state.Target.RequiredRoles) != roleCount ||
 		len(state.Target.SpecReplicas) != roleCount ||
+		len(state.Target.RawReadyReplicas) != roleCount ||
 		len(state.Target.ReadyReplicas) != roleCount ||
 		len(state.Target.DesiredReplicas) != roleCount {
 		return false
@@ -144,6 +150,7 @@ func validRolloutState(state RolloutState) bool {
 	for _, revision := range state.ParkedOld {
 		if len(revision.RequiredRoles) != roleCount ||
 			len(revision.SpecReplicas) != roleCount ||
+			len(revision.RawReadyReplicas) != roleCount ||
 			len(revision.ReadyReplicas) != roleCount {
 			return false
 		}
@@ -153,14 +160,19 @@ func validRolloutState(state RolloutState) bool {
 
 func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 	activeUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.ReadyReplicas)
+	activeObservedUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.RawReadyReplicas)
 	targetUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.ReadyReplicas)
+	targetObservedUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.RawReadyReplicas)
 	parkedSpec := make(RoleReplicaState, len(state.Config))
 	parkedUsableReady := make(RoleReplicaState, len(state.Config))
+	parkedObservedUsableReady := make(RoleReplicaState, len(state.Config))
 	for _, revision := range state.ParkedOld {
 		ready := usableReadyReplicas(revision.RequiredRoles, revision.ReadyReplicas)
+		observedReady := usableReadyReplicas(revision.RequiredRoles, revision.RawReadyReplicas)
 		for i := range parkedSpec {
 			parkedSpec[i] += revision.SpecReplicas[i]
 			parkedUsableReady[i] += ready[i]
+			parkedObservedUsableReady[i] += observedReady[i]
 		}
 	}
 
@@ -172,11 +184,13 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 			ActiveOldUsableReadyReplicas: activeUsableReady[i],
 			OldSpecReplicas:              state.ActiveOld.SpecReplicas[i] + parkedSpec[i],
 			OldUsableReadyReplicas:       activeUsableReady[i] + parkedUsableReady[i],
-			NewSpecReplicas:              state.Target.SpecReplicas[i],
-			NewCommittedReadyReplicas:    state.Target.ReadyReplicas[i],
-			NewUsableReadyReplicas:       targetUsableReady[i],
-			NewTargetReplicas:            state.Target.DesiredReplicas[i],
-			Config:                       state.Config[i],
+			ObservedUsableReadyReplicas: activeObservedUsableReady[i] + parkedObservedUsableReady[i] +
+				targetObservedUsableReady[i],
+			NewSpecReplicas:           state.Target.SpecReplicas[i],
+			NewCommittedReadyReplicas: state.Target.ReadyReplicas[i],
+			NewUsableReadyReplicas:    targetUsableReady[i],
+			NewTargetReplicas:         state.Target.DesiredReplicas[i],
+			Config:                    state.Config[i],
 		}
 	}
 	return snapshot
@@ -247,10 +261,7 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 		for i, role := range snapshot {
 			parkedAndTargetReady := role.OldUsableReadyReplicas -
 				role.ActiveOldUsableReadyReplicas + role.NewUsableReadyReplicas
-			minimumUsableReady := min(
-				role.OldUsableReadyReplicas+role.NewUsableReadyReplicas,
-				availabilityFloor(role),
-			)
+			minimumUsableReady := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
 			activeReadyToPreserve := max(0, minimumUsableReady-parkedAndTargetReady)
 			if requiredRoles[i] && current[i] > 0 {
 				activeReadyToPreserve = max(1, activeReadyToPreserve)
@@ -366,15 +377,26 @@ func availabilityFloor(role roleRolloutSnapshot) int {
 }
 
 // availabilityPreserved checks the worst case after the requested Spec drain:
-// every removed replica may have been Ready. The active revision contributes
-// capacity only if every surviving required role still has a Ready replica.
-// When the observed state is already below its floor, a step is allowed only
-// if it does not reduce the currently usable capacity further.
+// every removed replica may have been Ready. Raw Ready establishes how much
+// currently serving capacity must be preserved, capped at the configured
+// floor. Committed Ready evaluates the post-drain state so replicas already
+// pending deletion cannot be spent again. A step with no drain is always safe.
 func availabilityPreserved(
 	snapshot rolloutSnapshot,
 	oldTargets RoleReplicaState,
 	requiredRoles []bool,
 ) bool {
+	draining := false
+	for i, role := range snapshot {
+		if oldTargets[i] < role.ActiveOldSpecReplicas {
+			draining = true
+			break
+		}
+	}
+	if !draining {
+		return true
+	}
+
 	activeReadyAfter := make(RoleReplicaState, len(snapshot))
 	activeRemainsUsable := false
 	for i, required := range requiredRoles {
@@ -396,8 +418,7 @@ func availabilityPreserved(
 
 	for i, role := range snapshot {
 		parkedReady := role.OldUsableReadyReplicas - role.ActiveOldUsableReadyReplicas
-		usableBefore := role.OldUsableReadyReplicas + role.NewUsableReadyReplicas
-		minimumAfter := min(usableBefore, availabilityFloor(role))
+		minimumAfter := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
 		if parkedReady+role.NewUsableReadyReplicas+activeReadyAfter[i] < minimumAfter {
 			return false
 		}
@@ -542,16 +563,18 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 	}
 	state := RolloutState{
 		ActiveOld: ActiveRevisionState{
-			RequiredRoles:   requiredOld,
-			InitialReplicas: slicesClone(initialOld),
-			SpecReplicas:    slicesClone(initialOld),
-			ReadyReplicas:   slicesClone(initialOld),
+			RequiredRoles:    requiredOld,
+			InitialReplicas:  slicesClone(initialOld),
+			SpecReplicas:     slicesClone(initialOld),
+			RawReadyReplicas: slicesClone(initialOld),
+			ReadyReplicas:    slicesClone(initialOld),
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:   requiredTarget,
-			SpecReplicas:    make(RoleReplicaState, len(target)),
-			ReadyReplicas:   make(RoleReplicaState, len(target)),
-			DesiredReplicas: slicesClone(target),
+			RequiredRoles:    requiredTarget,
+			SpecReplicas:     make(RoleReplicaState, len(target)),
+			RawReadyReplicas: make(RoleReplicaState, len(target)),
+			ReadyReplicas:    make(RoleReplicaState, len(target)),
+			DesiredReplicas:  slicesClone(target),
 		},
 		Config: config,
 	}
@@ -564,8 +587,10 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 		}
 		steps = append(steps, *next)
 		state.ActiveOld.SpecReplicas = slicesClone(next.Past)
+		state.ActiveOld.RawReadyReplicas = slicesClone(next.Past)
 		state.ActiveOld.ReadyReplicas = slicesClone(next.Past)
 		state.Target.SpecReplicas = slicesClone(next.New)
+		state.Target.RawReadyReplicas = slicesClone(next.New)
 		state.Target.ReadyReplicas = slicesClone(next.New)
 	}
 	return steps

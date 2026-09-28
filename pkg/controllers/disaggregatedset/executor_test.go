@@ -1289,6 +1289,54 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{8, 4})
 }
 
+func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {
+	createdAt := time.Now()
+	active := disaggregatedsetutils.RevisionRoles{
+		Revision: "B",
+		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testRolePrefill: revisionLWS("B", testRolePrefill, 7, 10, createdAt, 50),
+			testRoleDecode:  revisionLWS("B", testRoleDecode, 3, 5, createdAt, 25),
+		},
+	}
+	active.Roles[testRolePrefill].Status.Replicas = 16
+	active.Roles[testRoleDecode].Status.Replicas = 8
+
+	parked := disaggregatedsetutils.RevisionRoles{
+		Revision: "A",
+		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testRolePrefill: revisionLWS("A", testRolePrefill, 37, 37, createdAt.Add(-time.Hour), 50),
+			testRoleDecode:  revisionLWS("A", testRoleDecode, 18, 19, createdAt.Add(-time.Hour), 25),
+		},
+	}
+	parked.Roles[testRolePrefill].Status.Replicas = 38
+	parked.Roles[testRoleDecode].Status.Replicas = 19
+
+	target := disaggregatedsetutils.RevisionRoles{
+		Revision: "C",
+		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+			testRolePrefill: revisionLWS("C", testRolePrefill, 11, 7, createdAt.Add(time.Hour), 50),
+			testRoleDecode:  revisionLWS("C", testRoleDecode, 7, 5, createdAt.Add(time.Hour), 25),
+		},
+	}
+
+	state := rolloutStateForRevision(
+		testRoleNames(),
+		disaggregatedsetutils.RevisionRolesList{parked, active},
+		active,
+		target,
+		RoleReplicaState{50, 25},
+		configs([]int{5, 5}, []int{5, 5}),
+	)
+
+	assert.Equal(t, RoleReplicaState{10, 5}, state.ActiveOld.RawReadyReplicas)
+	assert.Equal(t, RoleReplicaState{1, 0}, state.ActiveOld.ReadyReplicas)
+	require.Len(t, state.ParkedOld, 1)
+	assert.Equal(t, RoleReplicaState{37, 19}, state.ParkedOld[0].RawReadyReplicas)
+	assert.Equal(t, RoleReplicaState{36, 18}, state.ParkedOld[0].ReadyReplicas)
+	assert.Equal(t, RoleReplicaState{7, 5}, state.Target.RawReadyReplicas)
+	assert.Equal(t, RoleReplicaState{7, 5}, state.Target.ReadyReplicas)
+}
+
 type abcExecutorScenario struct {
 	name                            string
 	target, a, b, c                 [2]int32 // [prefill, decode]

@@ -48,24 +48,27 @@ func rolloutState(
 ) RolloutState {
 	state := RolloutState{
 		ActiveOld: ActiveRevisionState{
-			RequiredRoles:   requiredRoles(initial),
-			InitialReplicas: slicesClone(initial),
-			SpecReplicas:    slicesClone(activeSpec),
-			ReadyReplicas:   slicesClone(activeReady),
+			RequiredRoles:    requiredRoles(initial),
+			InitialReplicas:  slicesClone(initial),
+			SpecReplicas:     slicesClone(activeSpec),
+			RawReadyReplicas: slicesClone(activeReady),
+			ReadyReplicas:    slicesClone(activeReady),
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:   requiredRoles(target),
-			SpecReplicas:    slicesClone(newSpec),
-			ReadyReplicas:   slicesClone(newReady),
-			DesiredReplicas: slicesClone(target),
+			RequiredRoles:    requiredRoles(target),
+			SpecReplicas:     slicesClone(newSpec),
+			RawReadyReplicas: slicesClone(newReady),
+			ReadyReplicas:    slicesClone(newReady),
+			DesiredReplicas:  slicesClone(target),
 		},
 		Config: append([]RollingUpdateConfig(nil), config...),
 	}
 	if parkedSpec != nil {
 		state.ParkedOld = []ParkedRevisionState{{
-			RequiredRoles: requiredRoles(parkedSpec),
-			SpecReplicas:  slicesClone(parkedSpec),
-			ReadyReplicas: slicesClone(parkedReady),
+			RequiredRoles:    requiredRoles(parkedSpec),
+			SpecReplicas:     slicesClone(parkedSpec),
+			RawReadyReplicas: slicesClone(parkedReady),
+			ReadyReplicas:    slicesClone(parkedReady),
 		}}
 	}
 	return state
@@ -137,6 +140,7 @@ func TestComputeNextStepUsesRevisionAwareReadiness(t *testing.T) {
 	assert.Equal(t, RoleReplicaState{1, 2}, step.New, "ordinary growth creates C Prefill")
 
 	state.Target.SpecReplicas = RoleReplicaState{1, 2}
+	state.Target.RawReadyReplicas = RoleReplicaState{1, 2}
 	state.Target.ReadyReplicas = RoleReplicaState{1, 2}
 	step = ComputeNextStep(state)
 	require.NotNil(t, step)
@@ -184,6 +188,26 @@ func TestUnavailableRevisionCanRetireWithoutReducingUsableCapacity(t *testing.T)
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
 	assert.Equal(t, RoleReplicaState{0, 0}, step.Past)
+}
+
+func TestPendingDrainDoesNotDiscardObservedCapacityBelowFloor(t *testing.T) {
+	// This is the state observed in scenario 15 before B was retired. B's raw
+	// Ready replicas still keep Prefill above its floor, but a pending drain
+	// leaves B with no committed Decode and therefore no committed usable
+	// capacity. Retiring B would make the raw Ready drop visible to users.
+	state := rolloutState(
+		[]int{50, 25}, []int{7, 3}, []int{1, 0}, []int{37, 18}, []int{36, 18},
+		[]int{11, 7}, []int{7, 5}, []int{50, 25},
+		configs([]int{5, 5}, []int{5, 5}),
+	)
+	state.ActiveOld.RawReadyReplicas = RoleReplicaState{10, 5}
+	state.ParkedOld[0].RawReadyReplicas = RoleReplicaState{37, 19}
+	state.Target.RawReadyReplicas = RoleReplicaState{7, 5}
+
+	snapshot := snapshotForRolloutState(state)
+	assert.False(t, availabilityPreserved(snapshot, RoleReplicaState{0, 0}, state.ActiveOld.RequiredRoles),
+		"B's observed Ready capacity is still needed to preserve the Prefill floor")
+	assert.Nil(t, ComputeNextStep(state), "the planner must wait for pending drains or replacement readiness")
 }
 
 func TestFractionalWindowBounds(t *testing.T) {

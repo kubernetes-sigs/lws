@@ -304,16 +304,18 @@ func rolloutStateForRevision(
 	initial, activeState := observeOldRevision(active, roleNames)
 	state := RolloutState{
 		ActiveOld: ActiveRevisionState{
-			RequiredRoles:   activeState.RequiredRoles,
-			InitialReplicas: initial,
-			SpecReplicas:    activeState.SpecReplicas,
-			ReadyReplicas:   activeState.ReadyReplicas,
+			RequiredRoles:    activeState.RequiredRoles,
+			InitialReplicas:  initial,
+			SpecReplicas:     activeState.SpecReplicas,
+			RawReadyReplicas: activeState.RawReadyReplicas,
+			ReadyReplicas:    activeState.ReadyReplicas,
 		},
 		Target: TargetRevisionState{
-			RequiredRoles:   make([]bool, len(roleNames)),
-			SpecReplicas:    make(RoleReplicaState, len(roleNames)),
-			ReadyReplicas:   make(RoleReplicaState, len(roleNames)),
-			DesiredReplicas: slicesClone(targetReplicas),
+			RequiredRoles:    make([]bool, len(roleNames)),
+			SpecReplicas:     make(RoleReplicaState, len(roleNames)),
+			RawReadyReplicas: make(RoleReplicaState, len(roleNames)),
+			ReadyReplicas:    make(RoleReplicaState, len(roleNames)),
+			DesiredReplicas:  slicesClone(targetReplicas),
 		},
 		Config: slices.Clone(config),
 	}
@@ -329,6 +331,7 @@ func rolloutStateForRevision(
 		lws := target.Roles[roleName]
 		if lws != nil {
 			state.Target.SpecReplicas[i] = int(getLWSReplicas(lws))
+			state.Target.RawReadyReplicas[i] = int(lws.Status.ReadyReplicas)
 			state.Target.ReadyReplicas[i] = committedReadyReplicas(lws)
 		}
 	}
@@ -341,9 +344,10 @@ func observeOldRevision(
 ) (RoleReplicaState, ParkedRevisionState) {
 	initial := make(RoleReplicaState, len(roleNames))
 	state := ParkedRevisionState{
-		RequiredRoles: make([]bool, len(roleNames)),
-		SpecReplicas:  make(RoleReplicaState, len(roleNames)),
-		ReadyReplicas: make(RoleReplicaState, len(roleNames)),
+		RequiredRoles:    make([]bool, len(roleNames)),
+		SpecReplicas:     make(RoleReplicaState, len(roleNames)),
+		RawReadyReplicas: make(RoleReplicaState, len(roleNames)),
+		ReadyReplicas:    make(RoleReplicaState, len(roleNames)),
 	}
 	for i, roleName := range roleNames {
 		lws := revision.Roles[roleName]
@@ -353,6 +357,7 @@ func observeOldRevision(
 		initial[i] = revision.GetInitialReplicasPerRole(roleName)
 		state.RequiredRoles[i] = initial[i] > 0
 		state.SpecReplicas[i] = int(getLWSReplicas(lws))
+		state.RawReadyReplicas[i] = int(lws.Status.ReadyReplicas)
 		state.ReadyReplicas[i] = committedReadyReplicas(lws)
 	}
 	return initial, state
