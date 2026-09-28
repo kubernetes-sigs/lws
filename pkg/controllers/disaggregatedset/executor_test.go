@@ -666,7 +666,6 @@ func TestReconcileExistingRolloutPrefersOrdinaryProgressOverBootstrapSurge(t *te
 }
 
 func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
-	ctx := context.Background()
 	createdAt := time.Now()
 	objects := revisionLWSObjects(
 		"hashB", [2]int32{1, 4}, [2]int32{1, 4}, [2]int32{1, 5}, createdAt,
@@ -678,14 +677,7 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	recorder := events.NewFakeRecorder(10)
 	executor := &RollingUpdateExecutor{LWSManager: NewLeaderWorkerSetManager(fakeClient), Record: recorder}
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 5}, [2]int{}, [2]int{1, 1})
-	oldRevisions, targetRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, "hashC")
-	require.NoError(t, err)
-	require.NotNil(t, targetRevision)
-
-	result, complete, err := executor.reconcileExistingRollout(
-		ctx, ds, oldRevisions, *targetRevision, resolveDesiredReplicasByRole(ds, nil),
-	)
-	require.NoError(t, err)
+	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)
 	assert.NotZero(t, result.RequeueAfter)
 	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 4})

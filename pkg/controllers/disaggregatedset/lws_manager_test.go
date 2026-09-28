@@ -59,6 +59,11 @@ func testManagerDS(name string) *disaggregatedsetv1.DisaggregatedSet {
 	return wrappers.BuildDisaggregatedSet(name, "default").Obj()
 }
 
+func testManagerDSWithRole(name string) (*disaggregatedsetv1.DisaggregatedSet, *disaggregatedsetv1.DisaggregatedRoleSpec) {
+	ds := wrappers.BuildDisaggregatedSet(name, "default").WithRole("prefill", 1, "").Obj()
+	return ds, &ds.Spec.Roles[0]
+}
+
 // ownerRefFor builds the controller OwnerReference this package's own
 // LeaderWorkerSetManager.Create sets, so fixtures match real objects.
 func ownerRefFor(ds *disaggregatedsetv1.DisaggregatedSet) metav1.OwnerReference {
@@ -494,20 +499,7 @@ func TestManagerCreate(t *testing.T) {
 	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
 	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
 
-	testDeploy := &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-deploy",
-			Namespace: "default",
-			UID:       "test-uid",
-		},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
-			Name: "prefill",
-			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
-			}},
-		}}},
-	}
-	testRole := &testDeploy.Spec.Roles[0]
+	testDeploy, testRole := testManagerDSWithRole("test-deploy")
 	testRevision := disaggregatedsetutils.ComputeRevision(testDeploy.Spec.Roles)
 	testLWSName := disaggregatedsetutils.GenerateName(testDeploy.Name, 0, testRevision, testRole.Name)
 
@@ -568,22 +560,9 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		ds := &disaggregatedsetv1.DisaggregatedSet{
-			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
-			Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
-				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels:      map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"},
-						Annotations: map[string]string{"note": "val"},
-					},
-					Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(1))},
-					},
-				},
-			}}},
-		}
-		role := &ds.Spec.Roles[0]
+		ds, role := testManagerDSWithRole("test")
+		role.Labels = map[string]string{"kueue.x-k8s.io/queue-name": "q1", "app": "user-app"}
+		role.Annotations = map[string]string{"note": "val"}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
 		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
@@ -602,26 +581,13 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		ds := &disaggregatedsetv1.DisaggregatedSet{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
-			Spec: disaggregatedsetv1.DisaggregatedSetSpec{
-				PlacementPolicy: &disaggregatedsetv1.PlacementPolicy{
-					Type:     disaggregatedsetv1.PlacementExclusiveTopology,
-					Topology: "topology.example.com/rack",
-				},
-				Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
-					Name: "prefill",
-					LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-							Size:           ptr.To(int32(2)),
-							LeaderTemplate: &corev1.PodTemplateSpec{},
-							WorkerTemplate: corev1.PodTemplateSpec{},
-						},
-					}},
-				}},
-			},
+		ds, role := testManagerDSWithRole("test-deploy")
+		ds.Spec.PlacementPolicy = &disaggregatedsetv1.PlacementPolicy{
+			Type: disaggregatedsetv1.PlacementExclusiveTopology, Topology: "topology.example.com/rack",
 		}
-		role := &ds.Spec.Roles[0]
+		role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
+		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
+		role.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
 		err := manager.Create(context.Background(), ds, role, 1, 2, 2)
@@ -657,19 +623,9 @@ func TestManagerCreate(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		manager := NewLeaderWorkerSetManager(fakeClient)
 
-		ds := &disaggregatedsetv1.DisaggregatedSet{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default", UID: "uid"},
-			Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
-				Name: "prefill",
-				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-						Size:           ptr.To(int32(2)),
-						LeaderTemplate: &corev1.PodTemplateSpec{},
-					},
-				}},
-			}}},
-		}
-		role := &ds.Spec.Roles[0]
+		ds, role := testManagerDSWithRole("test-deploy")
+		role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
+		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
 		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
@@ -945,23 +901,9 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	manager := NewLeaderWorkerSetManager(fakeClient)
 
-	ds := &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-deploy",
-			Namespace: "default",
-			UID:       "test-uid",
-		},
-		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
-			Name: "prefill",
-			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{Spec: leaderworkersetv1.LeaderWorkerSetSpec{
-				GroupIdentity: leaderworkersetv1.GroupIdentityHash,
-				LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
-					Size: ptr.To(int32(2)),
-				},
-			}},
-		}}},
-	}
-	role := &ds.Spec.Roles[0]
+	ds, role := testManagerDSWithRole("test-deploy")
+	role.Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
+	role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
 	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
 	require.NoError(t, manager.Create(context.Background(), ds, role, 0, 2, 2))
