@@ -39,6 +39,8 @@ import (
 	configv1alpha1 "sigs.k8s.io/lws/api/config/v1alpha1"
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	dswebhooks "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
 )
@@ -156,6 +158,7 @@ func isBlank(doc []byte) bool {
 // Kinds the scheme does not know (for example KEDA or Kueue objects) only need
 // to be well-formed YAML with an apiVersion and a kind.
 func TestExampleManifests(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, true)
 	root := repoRoot(t)
 	scheme := newScheme(t)
 	decoder := serializer.NewCodecFactory(scheme, serializer.EnableStrict).UniversalDeserializer()
@@ -193,7 +196,7 @@ func TestExampleManifests(t *testing.T) {
 					if o.Namespace == "" {
 						o.Namespace = metav1.NamespaceDefault
 					}
-					webhook := &webhooks.LeaderWorkerSetWebhook{}
+					webhook := &webhooks.LeaderWorkerSetWebhook{SchedulerProvider: schedulerprovider.Kubernetes}
 					if err := webhook.Default(ctx, o); err != nil {
 						t.Fatalf("document %d (%s): defaulting failed: %v", i, gvk, err)
 					}
