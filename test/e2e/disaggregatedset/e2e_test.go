@@ -551,6 +551,18 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				PrefillUnavail: intstr.FromInt(2),
 				DecodeUnavail:  intstr.FromInt(2),
 			},
+			{
+				Name:                   "singleton-role-uses-emergency-surge",
+				SourcePrefill:          1,
+				SourceDecode:           5,
+				TargetPrefill:          1,
+				TargetDecode:           5,
+				PrefillSurge:           intstr.FromInt(0),
+				DecodeSurge:            intstr.FromInt(0),
+				PrefillUnavail:         intstr.FromInt(1),
+				DecodeUnavail:          intstr.FromInt(1),
+				AllowEmergencyMaxSurge: true,
+			},
 		}
 
 		AfterEach(func() {
@@ -1062,6 +1074,9 @@ type rolloutTestCase struct {
 	PrefillSurge, DecodeSurge     intstr.IntOrString
 	PrefillUnavail, DecodeUnavail intstr.IntOrString
 	StartupDelaySeconds           int
+	// This test-only flag acknowledges that the scenario may use the
+	// controller's automatic one-replica bootstrap surge.
+	AllowEmergencyMaxSurge bool
 }
 
 func runObservedRollout(deploymentName string, tc rolloutTestCase) []rolloutObservation {
@@ -1128,6 +1143,10 @@ func assertRolloutObservations(tc rolloutTestCase, observations []rolloutObserva
 
 	prefillSurge := rolloutSurge(tc.PrefillSurge, tc.PrefillUnavail, tc.TargetPrefill)
 	decodeSurge := rolloutSurge(tc.DecodeSurge, tc.DecodeUnavail, tc.TargetDecode)
+	if tc.AllowEmergencyMaxSurge {
+		prefillSurge++
+		decodeSurge++
+	}
 	prefillCeiling := max(tc.SourcePrefill, tc.TargetPrefill) + prefillSurge
 	decodeCeiling := max(tc.SourceDecode, tc.TargetDecode) + decodeSurge
 
