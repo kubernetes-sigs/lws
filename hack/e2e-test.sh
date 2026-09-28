@@ -282,7 +282,7 @@ function lws_deploy {
     pushd "$CWD/config/manager"
     $KUSTOMIZE edit set image controller=$IMAGE_TAG
     # Base configuration
-    config_content="apiVersion: config.lws.x-k8s.io/v1alpha1
+    config_content="apiVersion: config.lws.x-k8s.io/v1
 kind: Configuration
 leaderElection:
   leaderElect: true"
