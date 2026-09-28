@@ -839,8 +839,10 @@ func TestReconcileExistingRolloutDrainsUnreadySpecWithoutSpendingReadyAgain(t *t
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{3, 2}, [2]int{1, 1}, [2]int{})
 	reconcileExistingForTest(t, executor, ds, "hashC")
 
+	// B's extra unready Prefill can drain, but its Ready Decode remains needed
+	// until A or C has replacement Decode readiness.
 	assertRevisionReplicas(t, fakeClient, "hashA", [2]int32{1, 1})
-	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
 }
 
 // =============================================================================

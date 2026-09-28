@@ -83,19 +83,22 @@ type RolloutState struct {
 
 // roleRolloutSnapshot is the per-role observed state rebuilt each reconcile.
 // Active fields describe the revision being replaced; aggregate Old fields
-// also include parked revisions. Ready excludes replicas pending termination.
+// also include parked revisions. Committed Ready excludes replicas reserved by
+// a pending termination; observed Ready does not.
 type roleRolloutSnapshot struct {
-	InitialOldReplicas           int                 // Durable replica baseline of the active old revision.
-	ActiveOldSpecReplicas        int                 // Current Spec replicas of the active old revision.
-	ActiveOldUsableReadyReplicas int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
-	OldSpecReplicas              int                 // Current Spec replicas summed across all old revisions.
-	OldUsableReadyReplicas       int                 // Ready replicas from complete old revisions only.
-	ObservedUsableReadyReplicas  int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
-	NewSpecReplicas              int                 // Current Spec replicas of the target revision.
-	NewCommittedReadyReplicas    int                 // Target Ready replicas excluding replicas committed to termination.
-	NewUsableReadyReplicas       int                 // Target Ready replicas, or zero when a required role is not Ready.
-	NewTargetReplicas            int                 // Desired target-revision replicas after rollout.
-	Config                       RollingUpdateConfig // Surge and availability limits configured for this role.
+	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
+	ActiveOldSpecReplicas           int                 // Current Spec replicas of the active old revision.
+	ActiveOldCommittedReadyReplicas int                 // Active-old Ready replicas not reserved by a pending deletion.
+	ActiveOldUsableReadyReplicas    int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
+	OldSpecReplicas                 int                 // Current Spec replicas summed across all old revisions.
+	OldUsableReadyReplicas          int                 // Ready replicas from complete old revisions only.
+	ObservedUsableReadyReplicas     int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
+	ObservedPerRoleReadyReplicas    int                 // Active raw Ready plus raw Ready from complete replacement revisions.
+	NewSpecReplicas                 int                 // Current Spec replicas of the target revision.
+	NewCommittedReadyReplicas       int                 // Target Ready replicas excluding replicas committed to termination.
+	NewUsableReadyReplicas          int                 // Target Ready replicas, or zero when a required role is not Ready.
+	NewTargetReplicas               int                 // Desired target-revision replicas after rollout.
+	Config                          RollingUpdateConfig // Surge and availability limits configured for this role.
 }
 
 // rolloutSnapshot is index-aligned with the role-name slice used by the
@@ -212,13 +215,16 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 	snapshot := make(rolloutSnapshot, len(state.Config))
 	for i := range snapshot {
 		snapshot[i] = roleRolloutSnapshot{
-			InitialOldReplicas:           state.ActiveOld.InitialReplicas[i],
-			ActiveOldSpecReplicas:        state.ActiveOld.SpecReplicas[i],
-			ActiveOldUsableReadyReplicas: activeUsableReady[i],
-			OldSpecReplicas:              state.ActiveOld.SpecReplicas[i] + parkedSpec[i],
-			OldUsableReadyReplicas:       activeUsableReady[i] + parkedUsableReady[i],
+			InitialOldReplicas:              state.ActiveOld.InitialReplicas[i],
+			ActiveOldSpecReplicas:           state.ActiveOld.SpecReplicas[i],
+			ActiveOldCommittedReadyReplicas: state.ActiveOld.ReadyReplicas[i],
+			ActiveOldUsableReadyReplicas:    activeUsableReady[i],
+			OldSpecReplicas:                 state.ActiveOld.SpecReplicas[i] + parkedSpec[i],
+			OldUsableReadyReplicas:          activeUsableReady[i] + parkedUsableReady[i],
 			ObservedUsableReadyReplicas: activeObservedUsableReady[i] + parkedObservedUsableReady[i] +
 				targetObservedUsableReady[i],
+			ObservedPerRoleReadyReplicas: state.ActiveOld.RawReadyReplicas[i] +
+				parkedObservedUsableReady[i] + targetObservedUsableReady[i],
 			NewSpecReplicas:           state.Target.SpecReplicas[i],
 			NewCommittedReadyReplicas: state.Target.ReadyReplicas[i],
 			NewUsableReadyReplicas:    targetUsableReady[i],
@@ -296,21 +302,59 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 	// that would lose usable capacity, derive the minimum surviving Spec directly
 	// from the Ready capacity that this revision must continue to provide.
 	if !availabilityPreserved(snapshot, targets, requiredRoles) {
+		activeUsableReadyToPreserve := make(RoleReplicaState, len(snapshot))
+		activeMustRemainUsable := false
 		for i, role := range snapshot {
-			parkedAndTargetReady := role.OldUsableReadyReplicas -
-				role.ActiveOldUsableReadyReplicas + role.NewUsableReadyReplicas
+			replacementReady := replacementReadyReplicas(role)
 			minimumUsableReady := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
-			activeReadyToPreserve := max(0, minimumUsableReady-parkedAndTargetReady)
-			if requiredRoles[i] && current[i] > 0 {
-				activeReadyToPreserve = max(1, activeReadyToPreserve)
+			activeUsableReadyToPreserve[i] = max(0, minimumUsableReady-replacementReady)
+			activeMustRemainUsable = activeMustRemainUsable || activeUsableReadyToPreserve[i] > 0
+		}
+
+		for i, role := range snapshot {
+			replacementReady := replacementReadyReplicas(role)
+			if activeMustRemainUsable && requiredRoles[i] && current[i] > 0 {
+				activeUsableReadyToPreserve[i] = max(1, activeUsableReadyToPreserve[i])
 			}
-			readyLoss := max(0, role.ActiveOldUsableReadyReplicas-activeReadyToPreserve)
-			targets[i] = max(0, current[i]-readyLoss)
+			minimumUsableSpec := minimumSpecToPreserveReady(
+				current[i], role.ActiveOldUsableReadyReplicas, activeUsableReadyToPreserve[i],
+			)
+
+			// Revision-complete readiness above decides whether another revision
+			// can replace this one. Independently, do not delete this role's own
+			// Ready replicas just because another required role is temporarily
+			// unready and made the whole revision unusable.
+			minimumRoleReady := min(
+				role.ObservedPerRoleReadyReplicas,
+				availabilityFloor(role),
+			)
+			activeRoleReadyToPreserve := max(0, minimumRoleReady-replacementReady)
+			minimumRoleSpec := minimumSpecToPreserveReady(
+				current[i], role.ActiveOldCommittedReadyReplicas, activeRoleReadyToPreserve,
+			)
+			targets[i] = max(minimumUsableSpec, minimumRoleSpec)
 		}
 	}
 	targets = boundDrainingRoleTargetsToWindow(current, initial, targets)
 	targets = boundOldTargetsByRevisionCompleteness(current, targets, requiredRoles)
 	return boundDrainingRoleTargetsToWindow(current, initial, targets)
+}
+
+// minimumSpecToPreserveReady returns the lowest Spec that cannot remove more
+// committed Ready replicas than the active revision can afford to lose. When
+// none of its readiness is needed, readiness places no lower bound on Spec.
+func minimumSpecToPreserveReady(currentSpec, committedReady, readyToPreserve int) int {
+	if readyToPreserve == 0 {
+		return 0
+	}
+	return max(0, currentSpec-max(0, committedReady-readyToPreserve))
+}
+
+// replacementReadyReplicas returns committed Ready capacity supplied by
+// complete parked and target revisions.
+func replacementReadyReplicas(role roleRolloutSnapshot) int {
+	parkedReady := role.OldUsableReadyReplicas - role.ActiveOldUsableReadyReplicas
+	return parkedReady + role.NewUsableReadyReplicas
 }
 
 // boundOldTargetsByRevisionCompleteness makes the surviving required roles a
@@ -431,9 +475,10 @@ func availabilityFloor(role roleRolloutSnapshot) int {
 }
 
 // availabilityPreserved checks the worst case after the requested Spec drain:
-// every removed replica may have been Ready. Raw Ready establishes how much
-// currently serving capacity must be preserved, capped at the configured
-// floor. Committed Ready evaluates the post-drain state so replicas already
+// every removed replica may have been Ready. Complete revisions determine
+// serving capacity, while per-role readiness is preserved independently so a
+// transient dip in one role cannot authorize deletion of another role's Ready
+// replicas. Committed Ready evaluates the post-drain state so replicas already
 // pending deletion cannot be spent again. A step with no drain is always safe.
 func availabilityPreserved(
 	snapshot rolloutSnapshot,
@@ -471,9 +516,19 @@ func availabilityPreserved(
 	}
 
 	for i, role := range snapshot {
-		parkedReady := role.OldUsableReadyReplicas - role.ActiveOldUsableReadyReplicas
-		minimumAfter := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
-		if parkedReady+role.NewUsableReadyReplicas+activeReadyAfter[i] < minimumAfter {
+		replacementReady := replacementReadyReplicas(role)
+		minimumUsableAfter := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
+		if replacementReady+activeReadyAfter[i] < minimumUsableAfter {
+			return false
+		}
+
+		drain := role.ActiveOldSpecReplicas - oldTargets[i]
+		activeRoleReadyAfter := max(0, role.ActiveOldCommittedReadyReplicas-drain)
+		minimumRoleReadyAfter := min(
+			role.ObservedPerRoleReadyReplicas,
+			availabilityFloor(role),
+		)
+		if replacementReady+activeRoleReadyAfter < minimumRoleReadyAfter {
 			return false
 		}
 	}

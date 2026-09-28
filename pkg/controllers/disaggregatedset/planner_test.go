@@ -246,7 +246,7 @@ func TestAvailabilityAccountsForCrossRoleReadyLoss(t *testing.T) {
 	assert.True(t, availabilityPreserved(snapshot, RoleReplicaState{2, 2}, state.ActiveOld.RequiredRoles))
 }
 
-func TestUnavailableRevisionCanRetireWithoutReducingUsableCapacity(t *testing.T) {
+func TestIncompleteRevisionsPreservePerRoleReadiness(t *testing.T) {
 	state := rolloutState(
 		[]int{2, 2}, []int{2, 2}, []int{0, 1}, nil, nil,
 		[]int{1, 1}, []int{0, 1}, []int{2, 2},
@@ -254,7 +254,60 @@ func TestUnavailableRevisionCanRetireWithoutReducingUsableCapacity(t *testing.T)
 	)
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
-	assert.Equal(t, RoleReplicaState{0, 0}, step.Past)
+	assert.Equal(t, RoleReplicaState{1, 2}, step.Past,
+		"the unready replica may drain, but the other role's Ready replica must remain")
+	require.NoError(t, validateUpdateStep(state, step))
+}
+
+func TestReadinessDipPreservesOldRevisionUntilReplacementIsReady(t *testing.T) {
+	tests := []struct {
+		name        string
+		activeReady RoleReplicaState
+		newSpec     RoleReplicaState
+		newReady    RoleReplicaState
+		wantPast    RoleReplicaState
+		wantNew     RoleReplicaState
+	}{
+		{
+			name:        "single-role dip does not retire the old revision",
+			activeReady: RoleReplicaState{0, 8},
+			newSpec:     RoleReplicaState{0, 0},
+			newReady:    RoleReplicaState{0, 0},
+			wantPast:    RoleReplicaState{1, 8},
+			wantNew:     RoleReplicaState{1, 4},
+		},
+		{
+			name:        "recovered old role and partial replacement allow a bounded drain",
+			activeReady: RoleReplicaState{1, 8},
+			newSpec:     RoleReplicaState{1, 4},
+			newReady:    RoleReplicaState{1, 4},
+			wantPast:    RoleReplicaState{1, 4},
+			wantNew:     RoleReplicaState{1, 4},
+		},
+		{
+			name:        "complete replacement readiness allows retirement",
+			activeReady: RoleReplicaState{0, 8},
+			newSpec:     RoleReplicaState{1, 8},
+			newReady:    RoleReplicaState{1, 8},
+			wantPast:    RoleReplicaState{0, 0},
+			wantNew:     RoleReplicaState{1, 8},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := rolloutState(
+				[]int{1, 8}, []int{1, 8}, tc.activeReady, nil, nil,
+				tc.newSpec, tc.newReady, []int{1, 8},
+				configs([]int{1, 4}, []int{0, 0}),
+			)
+			step := ComputeNextStep(state)
+			require.NotNil(t, step)
+			assert.Equal(t, tc.wantPast, step.Past)
+			assert.Equal(t, tc.wantNew, step.New)
+			require.NoError(t, validateUpdateStep(state, step))
+		})
+	}
 }
 
 func TestPendingDrainDoesNotDiscardObservedCapacityBelowFloor(t *testing.T) {
