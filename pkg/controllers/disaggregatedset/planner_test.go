@@ -77,25 +77,32 @@ func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 		state              RolloutState
 		wantPast, wantNew  RoleReplicaState
 		expectNoTransition bool
+		wantBootstrap      bool
 	}{
 		{"complete rollout has no step", rolloutState(
 			[]int{3, 6}, []int{0, 0}, []int{0, 0}, nil, nil, []int{4, 7}, []int{4, 7}, []int{3, 6},
-			configs([]int{1, 1}, []int{0, 0})), nil, nil, true},
+			configs([]int{1, 1}, []int{0, 0})), nil, nil, true, false},
 		{"fresh rollout grows within surge and pending bounds", rolloutState(
 			[]int{4, 4}, []int{4, 4}, []int{4, 4}, nil, nil, []int{0, 0}, []int{0, 0}, []int{4, 4},
-			configs([]int{1, 1}, []int{0, 0})), RoleReplicaState{4, 4}, RoleReplicaState{1, 1}, false},
+			configs([]int{1, 1}, []int{0, 0})), RoleReplicaState{4, 4}, RoleReplicaState{1, 1}, false, false},
 		{"slow pods do not prevent another bounded batch", rolloutState(
 			[]int{20, 20}, []int{18, 18}, []int{18, 18}, nil, nil, []int{2, 2}, []int{0, 0}, []int{20, 20},
-			configs([]int{2, 2}, []int{2, 2})), RoleReplicaState{18, 18}, RoleReplicaState{4, 4}, false},
+			configs([]int{2, 2}, []int{2, 2})), RoleReplicaState{18, 18}, RoleReplicaState{4, 4}, false, false},
 		{"fractional window holds a faster role", rolloutState(
 			[]int{8, 4}, []int{8, 4}, []int{8, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{8, 4},
-			configs([]int{8, 0}, []int{0, 0})), nil, RoleReplicaState{4, 1}, false},
+			configs([]int{8, 0}, []int{0, 0})), nil, RoleReplicaState{4, 1}, false, false},
 		{"complete parked capacity reduces this phase target", rolloutState(
 			[]int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{0, 0}, []int{0, 0}, []int{2, 2},
-			configs([]int{1, 1}, []int{0, 0})), nil, RoleReplicaState{1, 1}, false},
+			configs([]int{1, 1}, []int{0, 0})), nil, RoleReplicaState{1, 1}, false, false},
 		{"zero budgets are genuinely blocked", rolloutState(
 			[]int{1, 1}, []int{1, 1}, []int{1, 1}, nil, nil, []int{0, 0}, []int{0, 0}, []int{1, 1},
-			configs([]int{0, 0}, []int{0, 0})), nil, nil, true},
+			configs([]int{0, 0}, []int{0, 0})), nil, nil, true, false},
+		{"asymmetric zero-surge wedge bootstraps its missing role", rolloutState(
+			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{1, 5},
+			configs([]int{0, 0}, []int{1, 1})), RoleReplicaState{1, 4}, RoleReplicaState{1, 1}, false, true},
+		{"does not add replicas while the bootstrap replica is unready", rolloutState(
+			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{1, 1}, []int{0, 1}, []int{1, 5},
+			configs([]int{0, 0}, []int{1, 1})), nil, nil, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +112,7 @@ func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 				return
 			}
 			require.NotNil(t, step)
+			assert.Equal(t, tc.wantBootstrap, step.UsesBootstrapSurge)
 			if tc.wantPast != nil {
 				assert.Equal(t, tc.wantPast, step.Past)
 			}
@@ -230,6 +238,7 @@ func TestComputeAllStepsCompletes(t *testing.T) {
 	}{
 		{"asymmetric", []int{10, 2}, []int{6, 8}, []int{2, 2}, []int{0, 0}},
 		{"zero surge", []int{4, 4}, []int{4, 4}, []int{0, 0}, []int{1, 1}},
+		{"singleton role bootstrap", []int{1, 5}, []int{1, 5}, []int{0, 0}, []int{1, 1}},
 		{"three roles", []int{6, 3, 2}, []int{6, 3, 2}, []int{1, 1, 1}, []int{0, 0, 0}},
 		{"add role", []int{4, 4, 0}, []int{4, 4, 4}, []int{1, 1, 1}, []int{0, 0, 0}},
 		{"remove role", []int{4, 4, 4}, []int{4, 4, 0}, []int{1, 1, 1}, []int{0, 0, 0}},
@@ -253,10 +262,20 @@ func assertPlannerRolloutInvariants(
 	assert.Equal(t, make(RoleReplicaState, len(initial)), last.Past)
 	assert.Equal(t, RoleReplicaState(target), last.New)
 
+	bootstrapActive := make([]bool, len(initial))
 	for stepIndex, current := range steps {
 		for role := range initial {
 			total := current.Past[role] + current.New[role]
 			ceiling := max(initial[role], target[role]) + config[role].MaxSurge
+			if current.UsesBootstrapSurge && total > ceiling {
+				bootstrapActive[role] = true
+			}
+			if total <= ceiling {
+				bootstrapActive[role] = false
+			}
+			if bootstrapActive[role] {
+				ceiling++
+			}
 			floor := max(0, min(initial[role], target[role])-config[role].MaxUnavailable)
 			assert.LessOrEqual(t, total, ceiling, "step %d role %d exceeds surge", stepIndex, role)
 			assert.GreaterOrEqual(t, total, floor, "step %d role %d crosses availability", stepIndex, role)
@@ -337,13 +356,21 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 		if step != nil {
 			require.NoError(t, validateUpdateStep(state, step), "scenario %d: step=%v state=%+v", scenario, step, state)
 		}
+
+		if config[0].MaxSurge+config[0].MaxUnavailable > 0 && config[1].MaxSurge+config[1].MaxUnavailable > 0 {
+			steps := ComputeAllSteps(initial, target, config)
+			last := steps[len(steps)-1]
+			require.Equal(t, make(RoleReplicaState, len(initial)), last.Past,
+				"scenario %d did not drain: initial=%v target=%v config=%v", scenario, initial, target, config)
+			require.Equal(t, target, last.New,
+				"scenario %d did not reach its target: initial=%v target=%v config=%v", scenario, initial, target, config)
+		}
 	}
 }
 
 func hasFeasibleMutation(state RolloutState) bool {
 	snapshot := snapshotForRolloutState(state)
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
-	newLimits := hardNewReplicaLimits(snapshot)
 	for old0 := 0; old0 <= state.ActiveOld.SpecReplicas[0]; old0++ {
 		for old1 := 0; old1 <= state.ActiveOld.SpecReplicas[1]; old1++ {
 			old := RoleReplicaState{old0, old1}
@@ -357,16 +384,21 @@ func hasFeasibleMutation(state RolloutState) bool {
 			}
 		}
 	}
-	for new0 := state.Target.SpecReplicas[0]; new0 <= min(phaseTargets[0], newLimits[0]); new0++ {
-		for new1 := state.Target.SpecReplicas[1]; new1 <= min(phaseTargets[1], newLimits[1]); new1++ {
-			newTarget := RoleReplicaState{new0, new1}
-			if !slices.Equal(boundGrowingRoleTargetsToWindow(state.Target.SpecReplicas, phaseTargets, newTarget), newTarget) {
-				continue
-			}
-			if !slices.Equal(newTarget, state.Target.SpecReplicas) {
-				return true
+	hasNewMutation := func(newLimits RoleReplicaState) bool {
+		for new0 := state.Target.SpecReplicas[0]; new0 <= min(phaseTargets[0], newLimits[0]); new0++ {
+			for new1 := state.Target.SpecReplicas[1]; new1 <= min(phaseTargets[1], newLimits[1]); new1++ {
+				newTarget := RoleReplicaState{new0, new1}
+				if slices.Equal(boundGrowingRoleTargetsToWindow(state.Target.SpecReplicas, phaseTargets, newTarget), newTarget) &&
+					!slices.Equal(newTarget, state.Target.SpecReplicas) {
+					return true
+				}
 			}
 		}
+		return false
 	}
-	return false
+	if hasNewMutation(hardNewReplicaLimits(snapshot)) {
+		return true
+	}
+	bootstrap, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
+	return ok && hasNewMutation(hardNewReplicaLimits(bootstrap))
 }

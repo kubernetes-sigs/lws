@@ -24,12 +24,16 @@ limitations under the License.
 // Spec represents replicas already requested from the LWS, including replicas
 // that are still starting. ComputeNextStep intersects the fractional window
 // with surge, pending-readiness, availability, and revision-completeness
-// bounds. It returns one executable result; the executor never repairs it.
+// bounds. A narrowly scoped bootstrap surge breaks otherwise-infeasible
+// zero-surge rollouts. The executor never repairs the returned result.
 package disaggregatedset
 
 type UpdateStep struct {
 	Past RoleReplicaState
 	New  RoleReplicaState
+	// UsesBootstrapSurge reports that New exceeds a configured surge ceiling
+	// to create the first replica of a missing required target role.
+	UsesBootstrapSurge bool
 }
 
 // RoleReplicaState contains one replica count per role. The executor resolves
@@ -106,9 +110,10 @@ type roleRolloutSnapshot struct {
 type rolloutSnapshot []roleRolloutSnapshot
 
 // ComputeNextStep returns the furthest executable targets in the intersection
-// of all rollout constraints. Growth and drain are calculated once. Partial
-// drains, whole-revision retirement, and replacement growth emerge from those
-// bounds rather than from separate fallback actions.
+// of all rollout constraints. When that intersection contains no mutation, it
+// may return a marked bootstrap-surge step for a missing target role. Partial
+// drains, whole-revision retirement, replacement growth, and bootstrap growth
+// are planner decisions; the executor does not repair their targets.
 func ComputeNextStep(state RolloutState) *UpdateStep {
 	if !validRolloutState(state) {
 		return nil
@@ -122,9 +127,19 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 		Past: furthestOldTargets(snapshot, state.ActiveOld.RequiredRoles),
 		New:  furthestNewTargets(snapshot, phaseTargets),
 	}
+	if anyChange(next.Past, next.New, currentOld, currentNew) {
+		return next
+	}
+
+	bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
+	if !ok {
+		return nil
+	}
+	next.New = furthestNewTargets(bootstrapSnapshot, phaseTargets)
 	if !anyChange(next.Past, next.New, currentOld, currentNew) {
 		return nil
 	}
+	next.UsesBootstrapSurge = true
 	return next
 }
 
@@ -331,6 +346,28 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 		hardLimits[i] = max(role.NewSpecReplicas, min(role.NewTargetReplicas, limit))
 	}
 	return hardLimits
+}
+
+// snapshotWithBootstrapSurge grants one extra surge slot to each required
+// target role that has no Spec replica and cannot start within the ordinary
+// limits. ComputeNextStep considers this only when no ordinary mutation exists.
+// Once the first replica is issued, the role is no longer eligible, so the
+// planner waits for it instead of creating another emergency replica.
+func snapshotWithBootstrapSurge(
+	snapshot rolloutSnapshot,
+	phaseTargets RoleReplicaState,
+) (rolloutSnapshot, bool) {
+	normalLimits := hardNewReplicaLimits(snapshot)
+	bootstrap := append(rolloutSnapshot(nil), snapshot...)
+	needed := false
+	for i, role := range snapshot {
+		if role.Config.MaxSurge == 0 && role.Config.MaxUnavailable > 0 &&
+			role.NewSpecReplicas == 0 && phaseTargets[i] > 0 && normalLimits[i] == 0 {
+			bootstrap[i].Config.MaxSurge = 1
+			needed = true
+		}
+	}
+	return bootstrap, needed
 }
 
 // availabilityFloor is the minimum committed Ready capacity required for one

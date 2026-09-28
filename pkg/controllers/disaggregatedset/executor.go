@@ -39,6 +39,7 @@ const (
 	EventReasonRollingUpdateCompleted = "RollingUpdateCompleted"
 	EventReasonScalingUp              = "ScalingUp"
 	EventReasonScalingDown            = "ScalingDown"
+	EventReasonBootstrapSurge         = "BootstrapSurge"
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
@@ -190,6 +191,14 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		if step == nil {
 			continue
 		}
+		// Remember the first emergency step, but prefer ordinary progress from
+		// any candidate before exceeding a configured surge ceiling.
+		if step.UsesBootstrapSurge {
+			if selectedStep == nil {
+				selectedRevision, selectedState, selectedStep = candidate, state, step
+			}
+			continue
+		}
 		selectedRevision = candidate
 		selectedState = state
 		selectedStep = step
@@ -205,14 +214,19 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 
 	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(allRoleNames, selectedStep)...)
 	log.Info("Next rollout step computed", logArgs...)
-	// Scale down old replicas before scaling up new ones. This ordering ensures
-	// the total replica count never exceeds the surge limit between the two
-	// API calls.
+	// Apply drains before growth so ordinary steps cannot transiently exceed
+	// their surge ceilings. A marked bootstrap step is the sole exception.
 	if err := executor.applyOldTargets(ctx, disaggregatedSet, selectedRevision, allRoleNames, selectedState, selectedStep); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, selectedStep.New); err != nil {
 		return ctrl.Result{}, false, err
+	}
+	if selectedStep.UsesBootstrapSurge {
+		roles := bootstrapSurgeRoleNames(allRoleNames, selectedState, selectedStep)
+		log.Info("Used bootstrap surge to unblock rolling update", "roles", roles)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge,
+			"Bootstrap", "Temporarily exceeded maxSurge by one replica for roles %v to preserve revision completeness", roles)
 	}
 
 	// Object updates normally trigger the next reconcile immediately. The
@@ -554,8 +568,21 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 	}
 
 	snapshot := snapshotForRolloutState(state)
-	newLimits := hardNewReplicaLimits(snapshot)
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	normalLimits := hardNewReplicaLimits(snapshot)
+	newLimits := normalLimits
+	if step.UsesBootstrapSurge {
+		normalOld := furthestOldTargets(snapshot, state.ActiveOld.RequiredRoles)
+		normalNew := furthestNewTargets(snapshot, phaseTargets)
+		if anyChange(normalOld, normalNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
+			return fmt.Errorf("bootstrap surge used while an ordinary rollout step is available")
+		}
+		bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
+		if !ok {
+			return fmt.Errorf("bootstrap surge used without a missing blocked target role")
+		}
+		newLimits = hardNewReplicaLimits(bootstrapSnapshot)
+	}
 	if bounded := boundDrainingRoleTargetsToWindow(
 		state.ActiveOld.SpecReplicas,
 		state.ActiveOld.InitialReplicas,
@@ -571,6 +598,7 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 		return fmt.Errorf("new targets exceed the fractional coordination window")
 	}
 	changed := false
+	usedBootstrapSurge := false
 	for i, role := range snapshot {
 		if step.Past[i] < 0 || step.Past[i] > role.ActiveOldSpecReplicas {
 			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, role.ActiveOldSpecReplicas)
@@ -579,7 +607,11 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 		if step.New[i] < role.NewSpecReplicas || step.New[i] > maxNew {
 			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, role.NewSpecReplicas, maxNew)
 		}
+		usedBootstrapSurge = usedBootstrapSurge || step.New[i] > min(normalLimits[i], phaseTargets[i])
 		changed = changed || step.Past[i] < role.ActiveOldSpecReplicas || step.New[i] > role.NewSpecReplicas
+	}
+	if step.UsesBootstrapSurge != usedBootstrapSurge {
+		return fmt.Errorf("bootstrap surge marker does not match the new replica targets")
 	}
 	if !changed {
 		return fmt.Errorf("plan makes no API change")
@@ -588,6 +620,19 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 		return fmt.Errorf("old targets reduce usable readiness below its safe bound")
 	}
 	return nil
+}
+
+func bootstrapSurgeRoleNames(roleNames []string, state RolloutState, step *UpdateStep) []string {
+	snapshot := snapshotForRolloutState(state)
+	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	normalLimits := hardNewReplicaLimits(snapshot)
+	roles := make([]string, 0, len(roleNames))
+	for i, name := range roleNames {
+		if step.New[i] > min(normalLimits[i], phaseTargets[i]) {
+			roles = append(roles, name)
+		}
+	}
+	return roles
 }
 
 // ensureOldInitialReplicas is a guardrail for an unexpected missing or invalid

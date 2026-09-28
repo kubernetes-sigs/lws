@@ -645,7 +645,7 @@ func TestOrderedRevisionCandidatesPreferUnreadyThenNewest(t *testing.T) {
 	assert.Equal(t, []string{"B", "A"}, []string{candidates[0].Revision, candidates[1].Revision})
 }
 
-func TestReconcileExistingRolloutSkipsBlockedNewerRevision(t *testing.T) {
+func TestReconcileExistingRolloutPrefersOrdinaryProgressOverBootstrapSurge(t *testing.T) {
 	createdAt := time.Now()
 	objects := revisionLWSObjects("hashA", [2]int32{1, 1}, [2]int32{1, 0}, [2]int32{1, 1}, createdAt)
 	objects = append(objects, revisionLWSObjects(
@@ -659,11 +659,13 @@ func TestReconcileExistingRolloutSkipsBlockedNewerRevision(t *testing.T) {
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 1}, [2]int{1, 1}, [2]int{})
 	reconcileExistingForTest(t, executor, ds, "hashC")
 
+	// hashB could bootstrap C, but retiring unusable hashA is ordinary progress
+	// and must take precedence over exceeding a configured surge ceiling.
 	assertRevisionReplicas(t, fakeClient, "hashA", [2]int32{})
 	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
 }
 
-func TestReconcileExistingRolloutReportsOneEventWhenEveryCandidateIsBlocked(t *testing.T) {
+func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	ctx := context.Background()
 	createdAt := time.Now()
 	objects := revisionLWSObjects(
@@ -687,14 +689,36 @@ func TestReconcileExistingRolloutReportsOneEventWhenEveryCandidateIsBlocked(t *t
 	assert.False(t, complete)
 	assert.NotZero(t, result.RequeueAfter)
 	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 4})
-	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{0, 1})
+	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
+	eventsSeen := make([]string, 0, 2)
+	for range 2 {
+		select {
+		case event := <-recorder.Events:
+			eventsSeen = append(eventsSeen, event)
+		default:
+			t.Fatal("expected scaling and bootstrap-surge events")
+		}
+	}
+	assert.Contains(t, eventsSeen[0]+eventsSeen[1], EventReasonScalingUp)
+	assert.Contains(t, eventsSeen[0]+eventsSeen[1], EventReasonBootstrapSurge)
+	assert.Contains(t, eventsSeen[0]+eventsSeen[1], testRolePrefill)
+	assert.NotContains(t, eventsSeen[0]+eventsSeen[1], EventReasonRevisionDrainBlocked)
+	assert.Empty(t, recorder.Events, "one reconciliation should emit exactly two events")
+
+	// The emergency replica now exists but is not Ready. A second reconcile
+	// waits instead of spending another bootstrap replica.
+	result, complete = reconcileExistingForTest(t, executor, ds, "hashC")
+	assert.False(t, complete)
+	assert.NotZero(t, result.RequeueAfter)
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 4})
+	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
 	select {
 	case event := <-recorder.Events:
 		assert.Contains(t, event, EventReasonRevisionDrainBlocked)
 	default:
-		t.Fatal("expected a blocked rollout event")
+		t.Fatal("expected a blocked rollout event while bootstrap capacity is unready")
 	}
-	assert.Empty(t, recorder.Events, "one reconciliation should emit one blocked event")
+	assert.Empty(t, recorder.Events, "the waiting reconciliation should emit one blocked event")
 }
 
 func TestReconcileExistingRolloutDrainsUnreadySpecWithoutSpendingReadyAgain(t *testing.T) {
@@ -1356,13 +1380,13 @@ func TestReconcileExistingRolloutABCScenario(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			aReady := tc.a
+			readyA := tc.a
 			if tc.aUnready {
-				aReady = [2]int32{}
+				readyA = [2]int32{}
 			}
 			var objects []client.Object
 			if tc.a != [2]int32{} {
-				objects = append(objects, revisionLWSObjects("hashA", tc.a, aReady, tc.target, baseTime)...)
+				objects = append(objects, revisionLWSObjects("hashA", tc.a, readyA, tc.target, baseTime)...)
 			}
 			bReady := tc.b
 			if tc.bPrefillUnready {
