@@ -176,7 +176,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	}
 	candidates := orderedRevisionCandidates(oldRevisions)
 	if len(candidates) == 0 {
-		if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, targetReplicas); err != nil {
+		if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, newRevision, specRoleNames, targetReplicas); err != nil {
 			return ctrl.Result{}, false, err
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
@@ -199,9 +199,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			}
 			continue
 		}
-		selectedRevision = candidate
-		selectedState = state
-		selectedStep = step
+		selectedRevision, selectedState, selectedStep = candidate, state, step
 		break
 	}
 	if selectedStep == nil {
@@ -212,14 +210,17 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
+	if err := validateUpdateStep(selectedState, selectedStep); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("planner returned an invalid rollout step: %w", err)
+	}
 	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(allRoleNames, selectedStep)...)
 	log.Info("Next rollout step computed", logArgs...)
 	// Apply drains before growth so ordinary steps cannot transiently exceed
 	// their surge ceilings. A marked bootstrap step is the sole exception.
-	if err := executor.applyOldTargets(ctx, disaggregatedSet, selectedRevision, allRoleNames, selectedState, selectedStep); err != nil {
+	if err := executor.scaleDownActiveRevision(ctx, disaggregatedSet, selectedRevision, allRoleNames, selectedStep.Past); err != nil {
 		return ctrl.Result{}, false, err
 	}
-	if err := executor.scaleUpNew(ctx, disaggregatedSet, newRevision, specRoleNames, selectedStep.New); err != nil {
+	if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, newRevision, specRoleNames, selectedStep.New); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if selectedStep.UsesBootstrapSurge {
@@ -488,21 +489,21 @@ func isRolloutReady(
 
 // --- Scaling operations ---
 
-func (executor *RollingUpdateExecutor) scaleUpNew(
+func (executor *RollingUpdateExecutor) scaleUpTargetRevision(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	newRevision disaggregatedsetutils.RevisionRoles,
+	targetRevision disaggregatedsetutils.RevisionRoles,
 	roleNames []string,
-	targetNew RoleReplicaState,
+	targets RoleReplicaState,
 ) error {
 	log := logf.FromContext(ctx)
 	for i, name := range roleNames {
-		lws := newRevision.Roles[name]
+		lws := targetRevision.Roles[name]
 		if lws == nil {
 			continue
 		}
 		currentSpec := int(getLWSReplicas(lws))
-		desiredSpec := targetNew[i]
+		desiredSpec := targets[i]
 		if currentSpec >= desiredSpec {
 			continue
 		}
@@ -517,20 +518,14 @@ func (executor *RollingUpdateExecutor) scaleUpNew(
 	return nil
 }
 
-// applyOldTargets validates and applies the planner's old-revision targets.
-// It never selects another revision or changes the step.
-func (executor *RollingUpdateExecutor) applyOldTargets(
+// scaleDownActiveRevision applies the planner's old-revision targets verbatim.
+func (executor *RollingUpdateExecutor) scaleDownActiveRevision(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	activeRevision disaggregatedsetutils.RevisionRoles,
 	roleNames []string,
-	state RolloutState,
-	step *UpdateStep,
+	targets RoleReplicaState,
 ) error {
-	if err := validateUpdateStep(state, step); err != nil {
-		return fmt.Errorf("planner returned an invalid rollout step: %w", err)
-	}
-
 	log := logf.FromContext(ctx)
 	for i, name := range roleNames {
 		lws := activeRevision.Roles[name]
@@ -538,7 +533,7 @@ func (executor *RollingUpdateExecutor) applyOldTargets(
 			continue
 		}
 		currentSpec := int(getLWSReplicas(lws))
-		desiredSpec := step.Past[i]
+		desiredSpec := targets[i]
 		if desiredSpec >= currentSpec {
 			continue
 		}

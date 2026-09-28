@@ -926,7 +926,7 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 	}
 }
 
-func TestApplyOldTargetsUsesPlannerTargetsVerbatim(t *testing.T) {
+func TestScaleDownActiveRevisionUsesPlannerTargetsVerbatim(t *testing.T) {
 	ctx := context.Background()
 	oldPrefill := buildTestLWS("old-prefill", testNamespace, testRolePrefill, "old").
 		Replica(2).StatusReplicas(2).ReadyReplicas(1).Obj()
@@ -942,14 +942,9 @@ func TestApplyOldTargetsUsesPlannerTargetsVerbatim(t *testing.T) {
 			testRoleDecode:  oldDecode,
 		},
 	}
-	state := rolloutState(
-		RoleReplicaState{2, 1}, RoleReplicaState{2, 1}, RoleReplicaState{1, 1}, nil, nil,
-		RoleReplicaState{2, 1}, RoleReplicaState{2, 1}, RoleReplicaState{2, 1},
-		configs([]int{1, 1}, []int{0, 0}),
-	)
-	step := &UpdateStep{Past: RoleReplicaState{1, 1}, New: RoleReplicaState{2, 1}}
-
-	require.NoError(t, executor.applyOldTargets(ctx, ds, active, testRoleNames(), state, step))
+	require.NoError(t, executor.scaleDownActiveRevision(
+		ctx, ds, active, testRoleNames(), RoleReplicaState{1, 1},
+	))
 	assert.EqualValues(t, 1, getTestLWSReplicas(fakeClient, testNamespace, oldPrefill.Name))
 	assert.EqualValues(t, 1, getTestLWSReplicas(fakeClient, testNamespace, oldDecode.Name))
 }
@@ -980,10 +975,10 @@ func TestReconcileExistingRolloutWaitsForACompleteReadyTargetRevision(t *testing
 }
 
 // =============================================================================
-// Unit Tests for scaleUpNew
+// Unit Tests for scaleUpTargetRevision
 // =============================================================================
 
-func TestScaleUpNew(t *testing.T) {
+func TestScaleUpTargetRevision(t *testing.T) {
 	baseTime := time.Now()
 	namespace := testNamespace
 	roleNames := testRoleNames()
@@ -1014,7 +1009,7 @@ func TestScaleUpNew(t *testing.T) {
 
 			ds := newTestDisaggregatedSet()
 
-			newRevision := disaggregatedsetutils.RevisionRoles{
+			targetRevision := disaggregatedsetutils.RevisionRoles{
 				Revision: "newhash",
 				Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 					testRolePrefill: makeLWS(withName("test-0-newhash-prefill"), withReplicas(tc.workloadPrefill)),
@@ -1022,8 +1017,8 @@ func TestScaleUpNew(t *testing.T) {
 				},
 			}
 
-			target := RoleReplicaState{tc.targetPrefill, tc.targetDecode}
-			err := executor.scaleUpNew(context.TODO(), ds, newRevision, roleNames, target)
+			targets := RoleReplicaState{tc.targetPrefill, tc.targetDecode}
+			err := executor.scaleUpTargetRevision(context.TODO(), ds, targetRevision, roleNames, targets)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expectedPrefill, getTestLWSReplicas(fakeClient, namespace, "test-0-newhash-prefill"))
