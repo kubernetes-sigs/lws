@@ -109,6 +109,11 @@ func TestParseInitialReplicasAnnotation(t *testing.T) {
 			expected:    nil,
 		},
 		{
+			name:        "negative annotation returns nil",
+			annotations: map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "-1"},
+			expected:    nil,
+		},
+		{
 			name:        "valid annotation returns correct value",
 			annotations: map[string]string{disaggregatedsetv1.InitialReplicasAnnotationKey: "5"},
 			expected:    ptr.To(5),

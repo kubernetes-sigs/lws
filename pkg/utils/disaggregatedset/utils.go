@@ -33,6 +33,9 @@ import (
 
 const NumRequiredRoles = 2
 
+// GetInitialReplicas returns a valid non-negative initial-replicas annotation.
+// Missing, empty, malformed, negative, or out-of-range values are treated as
+// unset so the controller can reconstruct the baseline from observed state.
 func GetInitialReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) (int32, bool) {
 	if leaderWorkerSet.Annotations == nil {
 		return 0, false

@@ -1218,7 +1218,7 @@ func TestOldInitialReplicasPreservesExplicitZero(t *testing.T) {
 	assert.Empty(t, recorder.Events, "a valid zero baseline must not be repaired or warn")
 }
 
-func TestExternalTargetUpdatesCurrentRevisionInitialReplicas(t *testing.T) {
+func TestTargetInitialReplicasFollowResolvedRolloutTarget(t *testing.T) {
 	ctx := context.Background()
 	ds := newTestDisaggregatedSet(disaggregatedsetv1.DisaggregatedRoleSpec{
 		Name: testRolePrefill, Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal},
@@ -1232,9 +1232,10 @@ func TestExternalTargetUpdatesCurrentRevisionInitialReplicas(t *testing.T) {
 	current := disaggregatedsetutils.RevisionRoles{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 		testRolePrefill: lws,
 	}}
-	desiredReplicasByRole := map[string]int{testRolePrefill: 6}
 
-	require.NoError(t, executor.syncTargetInitialReplicas(ctx, ds, []string{testRolePrefill}, current, desiredReplicasByRole))
+	require.NoError(t, executor.syncTargetInitialReplicas(
+		ctx, ds, []string{testRolePrefill}, current, RoleReplicaState{6},
+	))
 	stored, err := executor.LWSManager.Get(ctx, ds, lws.Name)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
@@ -1256,6 +1257,70 @@ func TestExternalTargetUpdatesCurrentRevisionInitialReplicas(t *testing.T) {
 		disaggregatedsetutils.RevisionRoles{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: stored}},
 		map[string]int{testRolePrefill: 1})
 	assert.Equal(t, RoleReplicaState{2}, targets, "non-zero old capacity for the same role keeps the in-flight target from shrinking")
+
+	require.NoError(t, executor.syncTargetInitialReplicas(
+		ctx, ds, []string{testRolePrefill}, current, targets,
+	))
+	stored, err = executor.LWSManager.Get(ctx, ds, lws.Name)
+	require.NoError(t, err)
+	initial, ok = disaggregatedsetutils.GetInitialReplicas(stored)
+	require.True(t, ok)
+	assert.EqualValues(t, 2, initial,
+		"the annotation must follow the clamped rollout target, not the raw external target of one")
+}
+
+func TestExternalScaleDownPersistsClampedRolloutTarget(t *testing.T) {
+	ctx := context.Background()
+	one, zero := intstr.FromInt(1), intstr.FromInt(0)
+	role := makeRoleSpec(testRolePrefill, 3, corev1.PodSpec{}, one, zero)
+	role.Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+	ds := newTestDisaggregatedSet(role)
+	createdAt := time.Now()
+	oldLWS := revisionLWS("hashA", testRolePrefill, 1, 1, createdAt, 1)
+	targetLWS := revisionLWS("hashB", testRolePrefill, 3, 3, createdAt.Add(time.Hour), 6)
+	fakeClient := newTestClient(oldLWS, targetLWS)
+	executor := newTestExecutor(fakeClient)
+	old := disaggregatedsetutils.RevisionRolesList{{
+		Revision: "hashA",
+		Roles:    map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: oldLWS},
+	}}
+	target := disaggregatedsetutils.RevisionRoles{
+		Revision: "hashB",
+		Roles:    map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: targetLWS},
+	}
+
+	_, _, err := executor.reconcileExistingRollout(
+		ctx, ds, old, target, map[string]int{testRolePrefill: 1},
+	)
+	require.NoError(t, err)
+
+	stored, err := executor.LWSManager.Get(ctx, ds, targetLWS.Name)
+	require.NoError(t, err)
+	initial, ok := disaggregatedsetutils.GetInitialReplicas(stored)
+	require.True(t, ok)
+	assert.EqualValues(t, 3, initial,
+		"while old capacity remains, the current Spec—not the lower raw scaler value—is the rollout target")
+}
+
+func TestObserveOldRevisionNeverUsesBaselineBelowSpec(t *testing.T) {
+	for _, annotation := range []string{"1", "0", "-1", "not-a-number"} {
+		t.Run(annotation, func(t *testing.T) {
+			lws := revisionLWS("hashB", testRolePrefill, 3, 3, time.Now())
+			lws.Annotations = map[string]string{
+				disaggregatedsetv1.InitialReplicasAnnotationKey: annotation,
+			}
+			revision := disaggregatedsetutils.RevisionRoles{
+				Revision: "hashB",
+				Roles:    map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: lws},
+			}
+
+			initial, observed := observeOldRevision(revision, []string{testRolePrefill})
+
+			assert.Equal(t, RoleReplicaState{3}, initial)
+			assert.Equal(t, RoleReplicaState{3}, observed.SpecReplicas)
+			assert.Equal(t, []bool{true}, observed.RequiredRoles)
+		})
+	}
 }
 
 func TestExternalTargetShrinksAfterRoleOldSpecReachesZero(t *testing.T) {

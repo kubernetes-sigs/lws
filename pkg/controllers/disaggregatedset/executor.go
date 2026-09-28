@@ -159,14 +159,13 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	log := logf.FromContext(ctx)
 	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	desiredRoles, oldRoles := collectDesiredAndOldRoles(specRoleNames, oldRevisions)
-	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, specRoleNames, newRevision, desiredReplicasByRole); err != nil {
-		return ctrl.Result{}, false, err
-	}
-
 	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
 	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames...)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
 	targetReplicas := rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, newRevision, desiredReplicasByRole)
+	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, allRoleNames, newRevision, targetReplicas); err != nil {
+		return ctrl.Result{}, false, err
+	}
 
 	if isRolloutSpecComplete(oldRevisions, newRevision, allRoleNames, targetReplicas) {
 		if !isRolloutReady(oldRevisions, newRevision, allRoleNames, targetReplicas) {
@@ -418,9 +417,11 @@ func observeOldRevision(
 		if lws == nil {
 			continue
 		}
-		initial[i] = revision.GetInitialReplicasPerRole(roleName)
-		state.RequiredRoles[i] = initial[i] > 0
 		state.SpecReplicas[i] = int(getLWSReplicas(lws))
+		// Spec may exceed a stale annotation after an External scale-down or a
+		// manual edit. Never describe live replicas as outside the old baseline.
+		initial[i] = max(revision.GetInitialReplicasPerRole(roleName), state.SpecReplicas[i])
+		state.RequiredRoles[i] = initial[i] > 0
 		state.RawReadyReplicas[i] = int(lws.Status.ReadyReplicas)
 		state.ReadyReplicas[i] = committedReadyReplicas(lws)
 	}
@@ -791,22 +792,23 @@ func (executor *RollingUpdateExecutor) ensureOldInitialReplicas(
 	return nil
 }
 
-// syncTargetInitialReplicas follows replica-only and external-scaler changes
-// while a revision is current. The value freezes when that revision becomes
-// old, preserving the target it would have reached had its rollout completed.
+// syncTargetInitialReplicas stores the resolved rollout target while a revision
+// is current. This includes any clamp that defers an External scale-down until
+// overlapping old capacity is gone. The value freezes when the revision becomes
+// old, preserving the baseline from which it must drain.
 func (executor *RollingUpdateExecutor) syncTargetInitialReplicas(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	roleNames []string,
 	newRevision disaggregatedsetutils.RevisionRoles,
-	desiredReplicasByRole map[string]int,
+	targetReplicas RoleReplicaState,
 ) error {
-	for _, roleName := range roleNames {
+	for i, roleName := range roleNames {
 		lws := newRevision.Roles[roleName]
 		if lws == nil {
 			continue
 		}
-		initial := desiredReplicasByRole[roleName]
+		initial := targetReplicas[i]
 		current, ok := disaggregatedsetutils.GetInitialReplicas(lws)
 		if ok && int(current) == initial {
 			continue
