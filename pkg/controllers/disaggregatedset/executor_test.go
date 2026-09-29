@@ -35,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -823,6 +824,38 @@ func TestPodIsPersistentlyUnschedulable(t *testing.T) {
 			assert.Equal(t, tc.want, podIsPersistentlyUnschedulable(tc.pod, now))
 		})
 	}
+}
+
+func TestTargetUnschedulableRolesSkipsReadyRoles(t *testing.T) {
+	now := time.Now()
+	ready := revisionLWS("target", testRolePrefill, 1, 1, now)
+	pending := revisionLWS("target", testRoleDecode, 1, 0, now)
+	pod := podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse,
+		corev1.PodReasonUnschedulable, metav1.NewTime(now.Add(-unschedulablePodGracePeriod-time.Second)))
+	pod.Name = "target-decode-0"
+	pod.Namespace = testNamespace
+	pod.Labels = map[string]string{leaderworkersetv1.SetNameLabelKey: pending.Name}
+
+	podListCalls := 0
+	baseClient := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).WithObjects(pod).Build()
+	countingClient := interceptor.NewClient(baseClient, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.PodList); ok {
+				podListCalls++
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	executor := newTestExecutor(countingClient)
+	target := disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		testRolePrefill: ready,
+		testRoleDecode:  pending,
+	}}
+
+	roles, err := executor.targetUnschedulableRoles(context.Background(), target, testRoleNames())
+	require.NoError(t, err)
+	assert.Equal(t, []bool{false, true}, roles)
+	assert.Equal(t, 1, podListCalls)
 }
 
 func TestReconcileExistingRolloutDrainsUnreadySpecWithoutSpendingReadyAgain(t *testing.T) {

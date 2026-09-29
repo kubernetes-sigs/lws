@@ -275,6 +275,10 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	if err != nil {
 		return selectedRevision, selectedState, nil, err
 	}
+	// With no unschedulable role, a second planner pass would use the same state.
+	if !slices.Contains(unschedulableRoles, true) {
+		return selectedRevision, selectedState, nil, nil
+	}
 	for i, candidate := range candidates {
 		state := candidateStates[i]
 		state.Target.UnschedulableRoles = slices.Clone(unschedulableRoles)
@@ -338,6 +342,11 @@ func (executor *RollingUpdateExecutor) targetUnschedulableRoles(
 	for i, roleName := range roleNames {
 		lws := target.Roles[roleName]
 		if lws == nil {
+			continue
+		}
+		// Every issued replica is accounted for as Ready, so this role cannot
+		// need scheduler-capacity recovery.
+		if int(getLWSReplicas(lws)) <= committedReadyReplicas(lws) {
 			continue
 		}
 		pods, err := executor.LWSManager.listPods(ctx, lws)
