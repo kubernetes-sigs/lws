@@ -169,8 +169,9 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 
-	if isRolloutSpecComplete(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas) {
-		if !isRolloutReady(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas) {
+	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas)
+	if specComplete {
+		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: time.Second}, false, nil
 		}
@@ -573,42 +574,32 @@ func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	return args
 }
 
-func isRolloutSpecComplete(
+func rolloutCompletionStatus(
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
 	targetRevision disaggregatedsetutils.RevisionRoles,
 	roleNames []string,
 	targetReplicas RoleReplicaState,
-) bool {
+) (specComplete, targetReady bool) {
+	targetReady = true
 	for i, roleName := range roleNames {
 		if oldRevisions.GetTotalReplicasPerRole(roleName) != 0 {
-			return false
+			return false, false
 		}
-		lws := targetRevision.Roles[roleName]
-		if (lws == nil && targetReplicas[i] > 0) ||
-			(lws != nil && int(getLWSReplicas(lws)) < targetReplicas[i]) {
-			return false
-		}
-	}
-	return true
-}
 
-func isRolloutReady(
-	oldRevisions disaggregatedsetutils.RevisionRolesList,
-	targetRevision disaggregatedsetutils.RevisionRoles,
-	roleNames []string,
-	targetReplicas RoleReplicaState,
-) bool {
-	if !isRolloutSpecComplete(oldRevisions, targetRevision, roleNames, targetReplicas) {
-		return false
-	}
-	for i, roleName := range roleNames {
+		target := targetReplicas[i]
+		if target == 0 {
+			continue
+		}
+
 		lws := targetRevision.Roles[roleName]
-		if (lws == nil && targetReplicas[i] > 0) ||
-			(lws != nil && committedReadyReplicas(lws) < targetReplicas[i]) {
-			return false
+		if lws == nil || int(getLWSReplicas(lws)) < target {
+			return false, false
+		}
+		if committedReadyReplicas(lws) < target {
+			targetReady = false
 		}
 	}
-	return true
+	return true, targetReady
 }
 
 // --- Scaling operations ---
