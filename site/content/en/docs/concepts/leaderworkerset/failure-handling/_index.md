@@ -104,3 +104,8 @@ Editing or unsetting `maxGroupRestarts`, or deleting retained Pods, does not
 recover an exhausted group. LWS deletion, scale-down, and selecting the group
 for replacement during a rollout remove retained objects as normal lifecycle
 cleanup rather than starting recovery.
+
+## Accelerate Group Rebuild and Teardown
+
+To reduce teardown and recreation latency when groups are deleted or rebuilt, you can configure `.spec.podTerminationPolicy: Parallel`. This enables concurrent termination of leader and worker pods instead of waiting for sequential cascading deletion. See [Pod Termination Policy](../pod-termination-policy/) for details.
+

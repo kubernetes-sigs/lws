@@ -83,6 +83,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		lws.Spec.GroupReplacementPolicy = v1.GroupReplacementPostTermination
 	}
 
+	if lws.Spec.PodTerminationPolicy == "" {
+		lws.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
 	}
@@ -336,7 +340,27 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("name"), lws.Name, fmt.Sprintf("must be no more than %d characters with groupIdentity Hash", maxLen)))
 		}
 	}
+	allErrs = append(allErrs, ValidatePodTerminationPolicy(specPath, &lws.Spec)...)
 
+	return allErrs
+}
+
+// ValidatePodTerminationPolicy validates that podTerminationPolicy is one of the supported values.
+func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if spec.PodTerminationPolicy == "" {
+		return allErrs
+	}
+	switch spec.PodTerminationPolicy {
+	case v1.DefaultPodTerminationPolicy, v1.ParallelPodTerminationPolicy:
+		return allErrs
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			specPath.Child("podTerminationPolicy"),
+			spec.PodTerminationPolicy,
+			[]string{string(v1.DefaultPodTerminationPolicy), string(v1.ParallelPodTerminationPolicy)},
+		))
+	}
 	return allErrs
 }
 

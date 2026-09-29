@@ -284,6 +284,20 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("leader pod template has pod termination policy annotation when Parallel", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).PodTerminationPolicy(leaderworkerset.ParallelPodTerminationPolicy)
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderSts appsv1.StatefulSet
+						testing.GetLeaderStatefulset(ctx, lws, k8sClient, &leaderSts)
+						gomega.Expect(leaderSts.Spec.Template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey]).To(gomega.Equal(string(leaderworkerset.ParallelPodTerminationPolicy)))
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
