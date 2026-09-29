@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -921,6 +922,50 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				},
 			}),
 			expectError: false,
+		},
+		{
+			name: "hash role with restartBackoff is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						Base: &metav1.Duration{Duration: 10 * time.Second},
+						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+					},
+				},
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with restartBackoff and NoneRestartPolicy is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						Base: &metav1.Duration{Duration: 10 * time.Second},
+						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+					},
+					RestartPolicy: leaderworkerset.NoneRestartPolicy,
+				},
+			}),
+			expectError: true,
+			errorMsg:    "restartBackoff is only supported when restartPolicy recreates the group",
+		},
+		{
+			name: "role with invalid restartBackoff base > cap is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						Base: &metav1.Duration{Duration: 10 * time.Minute},
+						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+					},
+				},
+			}),
+			expectError: true,
+			errorMsg:    "base must not be greater than cap",
 		},
 	}
 

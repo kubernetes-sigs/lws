@@ -17,11 +17,20 @@ limitations under the License.
 package v1
 
 import (
+	"time"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+)
+
+const (
+	// DefaultRestartBackoffBase is the default base interval for group restart backoff.
+	DefaultRestartBackoffBase = 10 * time.Second
+	// DefaultRestartBackoffCap is the default maximum interval for group restart backoff.
+	DefaultRestartBackoffCap = 5 * time.Minute
 )
 
 const (
@@ -382,6 +391,14 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Minimum=0
 	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 
+	// restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+	// or RecreateGroupAfterStart. When specified, the controller applies an exponential
+	// backoff delay between group recreations.
+	// It is opt-in: when unset (nil), group recreation happens immediately.
+	//
+	// +optional
+	RestartBackoff *RestartBackoff `json:"restartBackoff,omitempty"`
+
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
 	// +optional
@@ -398,6 +415,21 @@ type LeaderWorkerTemplate struct {
 	// the VolumeClaimTemplates.
 	// +optional
 	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
+}
+
+// RestartBackoff defines the exponential backoff configuration for group recreation.
+type RestartBackoff struct {
+	// base is the initial backoff delay before group recreation.
+	// Defaults to 10s.
+	// +kubebuilder:default="10s"
+	// +optional
+	Base *metav1.Duration `json:"base,omitempty"`
+
+	// cap is the maximum backoff delay before group recreation.
+	// Defaults to 5m.
+	// +kubebuilder:default="5m"
+	// +optional
+	Cap *metav1.Duration `json:"cap,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

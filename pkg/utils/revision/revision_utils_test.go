@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
@@ -98,6 +99,67 @@ func TestApplyRevisionPreservesMaxGroupRestarts(t *testing.T) {
 	}
 	if got := *restored.Spec.LeaderWorkerTemplate.MaxGroupRestarts; got != currentBudget {
 		t.Fatalf("ApplyRevision restored maxGroupRestarts=%d, want %d", got, currentBudget)
+	}
+}
+
+func TestNewRevisionIgnoresRestartBackoff(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	withoutBackoff := wrappers.BuildLeaderWorkerSet("default").
+		RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+		Obj()
+	withDifferentBackoff := withoutBackoff.DeepCopy()
+	withDifferentBackoff.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
+		Base: &metav1.Duration{Duration: 20 * time.Second},
+		Cap:  &metav1.Duration{Duration: 10 * time.Minute},
+	}
+
+	first, err := NewRevision(context.TODO(), client, withoutBackoff, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewRevision(context.TODO(), client, withDifferentBackoff, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(first.Data.Raw, second.Data.Raw) {
+		t.Fatalf("restartBackoff must not change revision data: first=%s second=%s", first.Data.Raw, second.Data.Raw)
+	}
+	if first.Name != second.Name {
+		t.Fatalf("restartBackoff must not change revision identity: first=%q second=%q", first.Name, second.Name)
+	}
+	if bytes.Contains(first.Data.Raw, []byte("restartBackoff")) {
+		t.Fatalf("revision data unexpectedly contains restartBackoff: %s", first.Data.Raw)
+	}
+}
+
+func TestApplyRevisionPreservesRestartBackoff(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+
+	source := wrappers.BuildLeaderWorkerSet("default").
+		RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+		Obj()
+	revision, err := NewRevision(context.TODO(), client, source, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	live := source.DeepCopy()
+	currentBackoff := &leaderworkerset.RestartBackoff{
+		Base: &metav1.Duration{Duration: 15 * time.Second},
+		Cap:  &metav1.Duration{Duration: 3 * time.Minute},
+	}
+	live.Spec.LeaderWorkerTemplate.RestartBackoff = currentBackoff
+	restored, err := ApplyRevision(live, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Spec.LeaderWorkerTemplate.RestartBackoff == nil {
+		t.Fatal("ApplyRevision cleared the live restartBackoff")
+	}
+	if diff := cmp.Diff(restored.Spec.LeaderWorkerTemplate.RestartBackoff, currentBackoff); diff != "" {
+		t.Fatalf("ApplyRevision restored restartBackoff mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -17,6 +17,7 @@ package webhooks
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/onsi/ginkgo/v2"
@@ -177,6 +178,28 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 							MaxUnavailable: intstr.FromInt32(2),
 							MaxSurge:       intstr.FromInt32(1),
 						}})
+			},
+		}),
+		ginkgo.Entry("defaulting logic applies when restartBackoff is set with empty fields", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartBackoff(nil, nil)
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: leaderworkerset.DefaultRestartBackoffBase}, &metav1.Duration{Duration: leaderworkerset.DefaultRestartBackoffCap})
+			},
+		}),
+		ginkgo.Entry("defaulting logic applies when restartBackoff is set with custom fields", &testDefaultingCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 2 * time.Minute})
+			},
+			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 2 * time.Minute})
 			},
 		}),
 	)
@@ -635,6 +658,81 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = nil
+				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("creation with restartBackoff and RecreateGroupOnPodRestart should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("creation with restartBackoff and RecreateGroupAfterStart should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupAfterStart).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			lwsCreationShouldFail: false,
+		}),
+		ginkgo.Entry("creation with restartBackoff and None restart policy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.NoneRestartPolicy).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("creation with invalid restartBackoff (base <= 0) should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 0}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("creation with invalid restartBackoff (base > cap) should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Minute}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			lwsCreationShouldFail: true,
+		}),
+		ginkgo.Entry("update adding valid restartBackoff should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
+					Base: &metav1.Duration{Duration: 5 * time.Second},
+					Cap:  &metav1.Duration{Duration: 2 * time.Minute},
+				}
+			},
+			updateShouldFail: false,
+		}),
+		ginkgo.Entry("update keeping restartBackoff while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
+			},
+			updateShouldFail: true,
+		}),
+		ginkgo.Entry("update clearing restartBackoff before changing restart policy should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.RestartBackoff = nil
 				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
 			},
 			updateShouldFail: false,

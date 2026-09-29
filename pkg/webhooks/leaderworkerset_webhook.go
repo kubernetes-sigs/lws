@@ -110,6 +110,15 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		lws.Spec.NetworkConfig.SubdomainPolicy = &subdomainPolicy
 	}
 
+	if lws.Spec.LeaderWorkerTemplate.RestartBackoff != nil {
+		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.Base == nil {
+			lws.Spec.LeaderWorkerTemplate.RestartBackoff.Base = &metav1.Duration{Duration: v1.DefaultRestartBackoffBase}
+		}
+		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.Cap == nil {
+			lws.Spec.LeaderWorkerTemplate.RestartBackoff.Cap = &metav1.Duration{Duration: v1.DefaultRestartBackoffCap}
+		}
+	}
+
 	return nil
 }
 
@@ -330,6 +339,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	}
 
 	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
 	if normalizeGroupIdentity(lws.Spec.GroupIdentity) == v1.GroupIdentityHash {
 		if maxLen := utilvalidation.DNS1035LabelMaxLength - HashNameSuffixLen(&lws.Spec); len(lws.Name) > maxLen {
@@ -359,6 +369,52 @@ func ValidateMaxGroupRestarts(specPath *field.Path, spec *v1.LeaderWorkerSetSpec
 			specPath.Child("leaderWorkerTemplate", "maxGroupRestarts"),
 			*spec.LeaderWorkerTemplate.MaxGroupRestarts,
 			"maxGroupRestarts is only supported when restartPolicy recreates the group",
+		))
+	}
+	return allErrs
+}
+
+// ValidateRestartBackoff validates that restartBackoff is only configured
+// with a restartPolicy that recreates the group, and that its duration fields are positive.
+// Exported for DisaggregatedSet webhook reuse.
+func ValidateRestartBackoff(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if spec.LeaderWorkerTemplate.RestartBackoff == nil {
+		return allErrs
+	}
+	restartPolicy := spec.LeaderWorkerTemplate.RestartPolicy
+	if restartPolicy == "" {
+		restartPolicy = v1.RecreateGroupOnPodRestart
+	}
+	backoffPath := specPath.Child("leaderWorkerTemplate", "restartBackoff")
+	if restartPolicy != v1.RecreateGroupOnPodRestart && restartPolicy != v1.RecreateGroupAfterStart {
+		allErrs = append(allErrs, field.Invalid(
+			backoffPath,
+			spec.LeaderWorkerTemplate.RestartBackoff,
+			"restartBackoff is only supported when restartPolicy recreates the group",
+		))
+	}
+	base := spec.LeaderWorkerTemplate.RestartBackoff.Base
+	cap := spec.LeaderWorkerTemplate.RestartBackoff.Cap
+	if base != nil && base.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(
+			backoffPath.Child("base"),
+			base.Duration.String(),
+			"must be greater than 0",
+		))
+	}
+	if cap != nil && cap.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(
+			backoffPath.Child("cap"),
+			cap.Duration.String(),
+			"must be greater than 0",
+		))
+	}
+	if base != nil && cap != nil && base.Duration > 0 && cap.Duration > 0 && base.Duration > cap.Duration {
+		allErrs = append(allErrs, field.Invalid(
+			backoffPath.Child("base"),
+			base.Duration.String(),
+			"base must not be greater than cap",
 		))
 	}
 	return allErrs
