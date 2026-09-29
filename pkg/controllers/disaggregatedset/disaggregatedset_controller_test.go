@@ -135,12 +135,7 @@ func TestLegacyRevisionHashDoesNotTriggerRollout(t *testing.T) {
 		createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, legacyRevision, 2),
 		createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, legacyRevision, 2),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err)
@@ -176,12 +171,7 @@ func TestVersionedRevisionHashRollsOutStartupPolicyChange(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, oldPrefill, oldDecode).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err)
