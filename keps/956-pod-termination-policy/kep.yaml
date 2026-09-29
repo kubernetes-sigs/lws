@@ -1,0 +1,14 @@
+title: Pod Termination Policy API
+kep-number: 956
+authors:
+  - "mayooot"
+status: implementable
+creation-date: 2026-09-29
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+  - Edwinhr716
+
+stage: alpha

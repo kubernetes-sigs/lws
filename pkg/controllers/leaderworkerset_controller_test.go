@@ -34,6 +34,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 
@@ -1922,3 +1923,129 @@ func TestRollingUpdatePartition(t *testing.T) {
 		})
 	}
 }
+
+func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
+	ctx := context.TODO()
+
+	t.Run("leader pod template gets termination policy annotation", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+
+		template, err := buildLeaderPodTemplateApplyConfiguration(lws, "rev-1")
+		if err != nil {
+			t.Fatalf("buildLeaderPodTemplateApplyConfiguration() failed: %v", err)
+		}
+		if template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey] != string(leaderworkerset.ParallelPodTerminationPolicy) {
+			t.Errorf("expected annotation %s to be %s, got %s",
+				leaderworkerset.PodTerminationPolicyAnnotationKey,
+				leaderworkerset.ParallelPodTerminationPolicy,
+				template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey])
+		}
+	})
+
+	t.Run("lws deletion with Parallel policy deletes worker statefulsets", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = leaderworkerset.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		_ = corev1.AddToScheme(scheme)
+
+		now := metav1.Now()
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Finalizers = []string{"test-finalizer"}
+		lws.DeletionTimestamp = &now
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+
+		workerSts1 := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sample-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-sample",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+			},
+		}
+		workerSts2 := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sample-1",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-sample",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, workerSts1, workerSts2).
+			Build()
+
+		reconciler := NewLeaderWorkerSetReconciler(fakeClient, scheme, events.NewFakeRecorder(10), nil)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}})
+		if err != nil {
+			t.Fatalf("Reconcile() error = %v", err)
+		}
+
+		var stsList appsv1.StatefulSetList
+		if err := fakeClient.List(ctx, &stsList, client.InNamespace("default")); err != nil {
+			t.Fatalf("List() error = %v", err)
+		}
+		if len(stsList.Items) != 0 {
+			t.Errorf("expected 0 worker statefulsets after parallel deletion, got %d", len(stsList.Items))
+		}
+	})
+
+	t.Run("lws deletion with Default policy does not delete worker statefulsets directly", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = leaderworkerset.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		_ = corev1.AddToScheme(scheme)
+
+		now := metav1.Now()
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Finalizers = []string{"test-finalizer"}
+		lws.DeletionTimestamp = &now
+		lws.Spec.PodTerminationPolicy = leaderworkerset.DefaultPodTerminationPolicy
+
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sample-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-sample",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, workerSts).
+			Build()
+
+		reconciler := NewLeaderWorkerSetReconciler(fakeClient, scheme, events.NewFakeRecorder(10), nil)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}})
+		if err != nil {
+			t.Fatalf("Reconcile() error = %v", err)
+		}
+
+		var stsList appsv1.StatefulSetList
+		if err := fakeClient.List(ctx, &stsList, client.InNamespace("default")); err != nil {
+			t.Fatalf("List() error = %v", err)
+		}
+		if len(stsList.Items) != 1 {
+			t.Errorf("expected worker statefulset to be retained under Default policy, got %d", len(stsList.Items))
+		}
+	})
+}
+
