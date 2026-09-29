@@ -174,7 +174,7 @@ If an old LWS does not have a valid `initial-replicas` annotation, the controlle
 
 Suppose a rollout from revision A to revision B is interrupted by revision C. Both A and B are now old. The controller processes only one of them at a time. Revisions with no Ready replicas are preferred. The remaining candidates are ordered newest first. The controller asks the planner about candidates in that order and selects the first candidate with a safe executable action. A blocked B therefore does not prevent a movable A from making progress.
 
-While B is active, A is parked and remains unchanged. Fractional planning uses B's own `initial-replicas` value as `initialOld` and B's current Spec as `activeOldSpec`. Ready replicas in A reduce how much of C is needed during this phase. After B reaches zero, A becomes active and the controller plans the A to C phase. The controller never combines the `initial-replicas` values from A and B.
+While B is active, A is parked and remains unchanged. Fractional planning uses B's own `initial-replicas` value as `initialOld` and B's current Spec as `activeOldSpec`. Ready replicas in A reduce how much of C is needed during this phase. After B reaches zero, A becomes active and the controller plans the A to C phase. The controller never sums the `initial-replicas` values from A and B. For availability only, it takes their per-role maximum so selecting a smaller drain candidate cannot weaken `maxUnavailable`.
 
 Parking does not remove A from safety accounting. The planner includes the Spec of every old revision when enforcing surge. It includes a revision's Ready replicas in available capacity only when every role required by that revision has at least one Ready replica.
 
@@ -233,9 +233,10 @@ For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable cap
 `MaxSurge` and `MaxUnavailable` are the per-role limits for ordinary rollout steps. The two bounded deadlock fallbacks are described below. For each role the ordinary planner enforces:
 
 ```
-roleReplicaCount  = max(initialOld, target)
-surgeCeiling      = roleReplicaCount + MaxSurge
-availabilityFloor = max(0, min(initialOld, target) - MaxUnavailable)
+roleReplicaCount    = max(initialOld, target)
+availabilityBaseline = max(initial-replicas across non-drained old revisions)
+surgeCeiling        = roleReplicaCount + MaxSurge
+availabilityFloor   = max(0, min(availabilityBaseline, target) - MaxUnavailable)
 
 oldSpec + newSpec <= surgeCeiling
 ```
@@ -256,7 +257,7 @@ This bounded window is what permits pipelining across slow pod starts. It does n
 
 The target revision does not need to be complete for its committed Ready count to limit pending work. However, it must be complete before that Ready count can authorize an old drain. The pending-readiness bound applies while any old Spec for that role overlaps the target. Once all old Spec for the role is zero, withholding target replicas cannot protect old availability. The controller may issue the rest of that role's target Spec and then waits for it to become Ready.
 
-For an old drain, the planner assumes every removed Spec replica could have been Ready. If any surviving required role could lose its last Ready replica, the entire active revision becomes unusable for every role. Raw Ready capacity determines how much currently serving capacity must be preserved, capped at the availability floor. The proposed post-drain state is checked with committed Ready capacity, so replicas already pending deletion cannot be counted as survivors. This also prevents an interrupted revision from being retired while its still-running replicas are needed to hold the floor; the controller waits for pending deletions to settle or for another revision to replace that capacity.
+For an old drain, the planner assumes every removed Spec replica could have been Ready. If any surviving required role is absent or could lose its last Ready replica, the entire active revision becomes unusable for every role. Raw Ready capacity determines how much currently serving capacity must be preserved, capped at the rollout-wide availability floor. The proposed post-drain state is checked with committed Ready capacity, so replicas already pending deletion cannot be counted as survivors. This also prevents an interrupted revision from being retired while its still-running replicas are needed to hold the floor; the controller waits for pending deletions to settle or for another revision to replace that capacity.
 
 Revision completeness is a separate hard constraint. For required roles that are still present in the active old revision, either every role remains at one or more Spec replicas, or every role reaches zero in the same plan. This allows ordinary partial drains and coordinated retirement without a fallback that leaves only part of a revision running.
 

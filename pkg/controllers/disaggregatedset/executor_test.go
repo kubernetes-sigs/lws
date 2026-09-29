@@ -1472,6 +1472,38 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 	assert.Equal(t, 2, old.GetTotalReplicasPerRole(testRoleDecode))
 }
 
+func TestRolloutStateUsesSharedAvailabilityBaseline(t *testing.T) {
+	createdAt := time.Now()
+	revision := func(name string, spec, ready, initial [2]int32, created time.Time) disaggregatedsetutils.RevisionRoles {
+		roles := make(map[string]*leaderworkersetv1.LeaderWorkerSet, len(testRoleNames()))
+		for i, roleName := range testRoleNames() {
+			roles[roleName] = revisionLWS(name, roleName, spec[i], ready[i], created, initial[i])
+		}
+		return disaggregatedsetutils.RevisionRoles{Revision: name, Roles: roles}
+	}
+
+	// A's durable 2P/2D baseline remains the availability baseline while the
+	// newer, smaller B revision is the active drain candidate.
+	a := revision("A", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt)
+	b := revision("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt.Add(time.Hour))
+	c := revision("C", [2]int32{0, 0}, [2]int32{0, 0}, [2]int32{2, 2}, createdAt.Add(2*time.Hour))
+	state := rolloutStateForRevision(
+		testRoleNames(),
+		disaggregatedsetutils.RevisionRolesList{a, b},
+		b,
+		c,
+		RoleReplicaState{2, 2},
+		configs([]int{1, 1}, []int{0, 0}),
+	)
+
+	assert.Equal(t, RoleReplicaState{1, 1}, state.ActiveOld.InitialReplicas)
+	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{1, 1}, step.Past)
+	assert.Equal(t, RoleReplicaState{1, 1}, step.New)
+}
+
 func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) {
 	ctx := context.Background()
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 4}, [2]int{1, 1}, [2]int{})
@@ -1500,6 +1532,7 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole)
 	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.InitialReplicas)
+	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.SpecReplicas)
 	require.Len(t, state.ParkedOld, 1)
 	assert.Equal(t, RoleReplicaState{0, 0}, state.ParkedOld[0].SpecReplicas)
