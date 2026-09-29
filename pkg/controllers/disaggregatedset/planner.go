@@ -516,19 +516,23 @@ func availabilityPreserved(
 	}
 
 	for i, role := range snapshot {
+		drain := role.ActiveOldSpecReplicas - oldTargets[i]
 		replacementReady := replacementReadyReplicas(role)
 		minimumUsableAfter := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
-		if replacementReady+activeReadyAfter[i] < minimumUsableAfter {
+		// Do not reject an unrelated drain for a readiness gap that was already
+		// reserved by an in-flight deletion on this unchanged role.
+		if !(drain == 0 && activeReadyAfter[i] > 0) &&
+			replacementReady+activeReadyAfter[i] < minimumUsableAfter {
 			return false
 		}
 
-		drain := role.ActiveOldSpecReplicas - oldTargets[i]
 		activeRoleReadyAfter := max(0, role.ActiveOldCommittedReadyReplicas-drain)
 		minimumRoleReadyAfter := min(
 			role.ObservedPerRoleReadyReplicas,
 			availabilityFloor(role),
 		)
-		if replacementReady+activeRoleReadyAfter < minimumRoleReadyAfter {
+		// Only draining this role can reduce its own Ready replica count.
+		if drain > 0 && replacementReady+activeRoleReadyAfter < minimumRoleReadyAfter {
 			return false
 		}
 	}

@@ -330,6 +330,46 @@ func TestPendingDrainDoesNotDiscardObservedCapacityBelowFloor(t *testing.T) {
 	assert.Nil(t, ComputeNextStep(state), "the planner must wait for pending drains or replacement readiness")
 }
 
+func TestPendingDrainOnOneRoleDoesNotRejectSafeDrainOfAnother(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    RolloutState
+		rawReady RoleReplicaState
+		wantPast RoleReplicaState
+	}{
+		{
+			name: "usable readiness gap",
+			state: rolloutState(
+				[]int{4, 4}, []int{3, 4}, []int{2, 4}, nil, nil,
+				[]int{1, 1}, []int{0, 0}, []int{4, 4},
+				configs([]int{1, 1}, []int{1, 1}),
+			),
+			rawReady: RoleReplicaState{3, 4},
+			wantPast: RoleReplicaState{3, 3},
+		},
+		{
+			name: "per-role readiness gap",
+			state: rolloutState(
+				[]int{2, 2}, []int{2, 1}, []int{0, 0}, nil, nil,
+				[]int{1, 1}, []int{0, 0}, []int{2, 2},
+				configs([]int{1, 1}, []int{0, 0}),
+			),
+			rawReady: RoleReplicaState{0, 1},
+			wantPast: RoleReplicaState{1, 1},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.state.ActiveOld.RawReadyReplicas = tc.rawReady
+			step := ComputeNextStep(tc.state)
+			require.NotNil(t, step)
+			assert.Equal(t, tc.wantPast, step.Past)
+			require.NoError(t, validateUpdateStep(tc.state, step))
+		})
+	}
+}
+
 func TestFractionalWindowBounds(t *testing.T) {
 	counts := RoleReplicaState{8, 4}
 	assert.Equal(t, RoleReplicaState{4, 1},
@@ -470,10 +510,12 @@ func assertProgressWithinFractionalWindow(
 
 func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 	rng := rand.New(rand.NewSource(907))
+	rawReadyRNG := rand.New(rand.NewSource(908))
 	for scenario := range 50000 {
 		initial, activeSpec, activeReady := make(RoleReplicaState, 2), make(RoleReplicaState, 2), make(RoleReplicaState, 2)
 		parkedSpec, parkedReady := make(RoleReplicaState, 2), make(RoleReplicaState, 2)
 		newSpec, newReady, target := make(RoleReplicaState, 2), make(RoleReplicaState, 2), make(RoleReplicaState, 2)
+		activeRawReady, parkedRawReady, newRawReady := make(RoleReplicaState, 2), make(RoleReplicaState, 2), make(RoleReplicaState, 2)
 		config := make([]RollingUpdateConfig, 2)
 		for role := range 2 {
 			initial[role] = rng.Intn(5)
@@ -492,7 +534,15 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 			newReady[role] = rng.Intn(newSpec[role] + 1)
 			config[role] = RollingUpdateConfig{MaxSurge: rng.Intn(3), MaxUnavailable: rng.Intn(3)}
 		}
+		for role := range 2 {
+			activeRawReady[role] = activeReady[role] + rawReadyRNG.Intn(activeSpec[role]-activeReady[role]+1)
+			parkedRawReady[role] = parkedReady[role] + rawReadyRNG.Intn(parkedSpec[role]-parkedReady[role]+1)
+			newRawReady[role] = newReady[role] + rawReadyRNG.Intn(newSpec[role]-newReady[role]+1)
+		}
 		state := rolloutState(initial, activeSpec, activeReady, parkedSpec, parkedReady, newSpec, newReady, target, config)
+		state.ActiveOld.RawReadyReplicas = activeRawReady
+		state.ParkedOld[0].RawReadyReplicas = parkedRawReady
+		state.Target.RawReadyReplicas = newRawReady
 
 		step := ComputeNextStep(state)
 		feasible := hasFeasibleMutation(state)
