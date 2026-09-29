@@ -38,6 +38,9 @@ type Role struct {
 	Annotations    map[string]string // workerTemplate annotations (propagate to pods)
 	LWSLabels      map[string]string // LWS CR metadata labels (for Kueue, exclusive-topology)
 	LWSAnnotations map[string]string // LWS CR metadata annotations
+
+	// StartupDelaySeconds adds a readiness delay for rollout tests.
+	StartupDelaySeconds int
 }
 
 // Config holds configuration for generating DisaggregatedSet YAML.
@@ -118,9 +121,16 @@ spec:
 			}
 		}
 
+		slow := p.StartupDelaySeconds > 0
 		image := p.Image
 		if image == "" {
-			image = "registry.k8s.io/pause:3.9"
+			// Default image depends on whether the caller wants slow-pod
+			// scripting (needs a shell) or just an empty runnable pod.
+			if slow {
+				image = "busybox:1.36"
+			} else {
+				image = "registry.k8s.io/pause:3.9"
+			}
 		}
 		sb.WriteString("      leaderWorkerTemplate:\n")
 		sb.WriteString("        size: 1\n")
@@ -147,6 +157,15 @@ spec:
 		sb.WriteString("            containers:\n")
 		sb.WriteString("            - name: main\n")
 		sb.WriteString(fmt.Sprintf("              image: %s\n", image))
+		if slow {
+			sb.WriteString("              command: [\"sh\", \"-c\"]\n")
+			sb.WriteString("              args: [\"exec sleep infinity\"]\n")
+			sb.WriteString("              readinessProbe:\n")
+			sb.WriteString("                exec:\n")
+			sb.WriteString("                  command: [\"true\"]\n")
+			sb.WriteString(fmt.Sprintf("                initialDelaySeconds: %d\n", p.StartupDelaySeconds))
+			sb.WriteString("                periodSeconds: 1\n")
+		}
 	}
 
 	return sb.String()

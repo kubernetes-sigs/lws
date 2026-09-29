@@ -37,7 +37,13 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
 
-	// InitialReplicasAnnotationKey stores the initial replica count at rollout start.
+	// InitialReplicasAnnotationKey records this LWS revision's intended replica
+	// count. While the revision is current, the controller keeps it aligned with
+	// the target. When a newer revision makes it old, the value freezes and is
+	// used as its drain baseline. It can therefore differ from the current Spec
+	// after an interrupted rollout. The annotation is deleted with the LWS after
+	// the old revision finishes draining. A missing, non-integer, or negative
+	// value is treated as unset.
 	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
 )
 

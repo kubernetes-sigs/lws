@@ -119,20 +119,20 @@ func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {
 	}
 }
 
-func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
+func TestResolveDesiredReplicasByRole(t *testing.T) {
 	cases := []struct {
 		name         string
 		role         disaggregatedsetv1.DisaggregatedRoleSpec
 		scalerHas    bool
 		scalerVal    int32
-		currentNew   int
+		wantResolved bool
 		wantReplicas int
 	}{
-		{"static default", staticRole("r"), false, 0, 0, 1},
-		{"static explicit", roleWithReplicas("r", 4), false, 0, 0, 4},
-		{"external + scaler seeded at 0", externalRole("r"), true, 0, 0, 0},
-		{"external + scaler written to 7", externalRole("r"), true, 7, 0, 7},
-		{"external + scaler missing (transient) falls back to currentNew", externalRole("r"), false, 0, 3, 3},
+		{"static default", staticRole("r"), false, 0, true, 1},
+		{"static explicit", roleWithReplicas("r", 4), false, 0, true, 4},
+		{"external + scaler seeded at 0", externalRole("r"), true, 0, true, 0},
+		{"external + scaler written to 7", externalRole("r"), true, 7, true, 7},
+		{"external + scaler missing leaves target unresolved", externalRole("r"), false, 0, false, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,7 +143,12 @@ func TestGetTargetReplicasResolutionMatrix(t *testing.T) {
 					Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: tc.scalerVal},
 				}
 			}
-			assert.Equal(t, tc.wantReplicas, getTargetReplicas(ds, "r", scalers, tc.currentNew))
+			desiredReplicasByRole := resolveDesiredReplicasByRole(ds, scalers)
+			replicas, resolved := desiredReplicasByRole["r"]
+			assert.Equal(t, tc.wantResolved, resolved)
+			if tc.wantResolved {
+				assert.Equal(t, tc.wantReplicas, replicas)
+			}
 		})
 	}
 }

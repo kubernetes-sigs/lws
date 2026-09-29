@@ -24,12 +24,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -44,6 +47,17 @@ const (
 	testControllerRolePrefill = "prefill"
 	testControllerRoleDecode  = "decode"
 )
+
+func newTestDisaggregatedSetReconciler(c client.Client, scheme *runtime.Scheme) *controller.DisaggregatedSetReconciler {
+	recorder := events.NewFakeRecorder(100)
+	return &controller.DisaggregatedSetReconciler{
+		Client:        c,
+		Scheme:        scheme,
+		LWSManager:    controller.NewLeaderWorkerSetManager(c),
+		ScalerManager: controller.NewScalerManager(c, recorder),
+		Record:        recorder,
+	}
+}
 
 // createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing LWS with the given revision.
 // Useful for simulating pre-existing LWS objects in rolling update tests.
@@ -83,12 +97,7 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -120,12 +129,7 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefillRS, decodeRS).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -135,10 +139,16 @@ func TestScalingWithoutRollingUpdate(t *testing.T) {
 	prefillInfo, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
 	require.NotNil(t, prefillInfo, "prefill LWS should exist")
 	assert.Equal(t, 5, int(*prefillInfo.Spec.Replicas), "prefill replicas should be scaled to 5")
+	prefillInitial, ok := disaggregatedsetutils.GetInitialReplicas(prefillInfo)
+	require.True(t, ok)
+	assert.EqualValues(t, 5, prefillInitial, "replica-only scaling must update the revision's initial replicas")
 
 	decodeInfo, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRoleDecode))
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 4, int(*decodeInfo.Spec.Replicas), "decode replicas should be scaled to 4")
+	decodeInitial, ok := disaggregatedsetutils.GetInitialReplicas(decodeInfo)
+	require.True(t, ok)
+	assert.EqualValues(t, 4, decodeInitial, "replica-only scaling must update the revision's initial replicas")
 }
 
 // createSliceLWS builds an LWS for a specific slice using the real name/label
@@ -173,12 +183,7 @@ func TestSlicesCreateOneSetPerSlice(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -221,12 +226,7 @@ func TestSlicesScaleDownDeletesRemovedSlice(t *testing.T) {
 		createSliceLWS(disaggregatedSet, 1, testControllerRolePrefill, revision),
 		createSliceLWS(disaggregatedSet, 1, testControllerRoleDecode, revision),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -258,12 +258,7 @@ func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -324,12 +319,7 @@ func TestStatusRoleCountsAggregateFromOwnedLWS(t *testing.T) {
 		readyLWS(testControllerRolePrefill),
 		readyLWS(testControllerRoleDecode),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -392,12 +382,7 @@ func TestStatusProgressingWhenUnderDesiredCount(t *testing.T) {
 		partialLWS(testControllerRolePrefill, 1),
 		partialLWS(testControllerRoleDecode, 2),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -425,12 +410,7 @@ func TestStatusAvailableWhenPausedAtZero(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -461,12 +441,7 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "first reconcile should succeed")
@@ -539,15 +514,17 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, foreignScaler).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed even though the scaler couldn't be created")
+	assert.NotZero(t, result.RequeueAfter, "the controller must retry until every role target is known")
+
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	desiredLWSName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill)
+	var desiredLWS leaderworkersetv1.LeaderWorkerSet
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: desiredLWSName, Namespace: disaggregatedSet.Namespace}, &desiredLWS)
+	require.True(t, apierrors.IsNotFound(err), "an unknown target must prevent creation of the desired-revision LWS")
 
 	var got disaggregatedsetv1.DisaggregatedSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
@@ -555,7 +532,28 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 	progressing := meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
 	require.NotNil(t, progressing, "a role with an unknown (missing/uncreatable) scaler target must read Progressing")
 	assert.Equal(t, metav1.ConditionTrue, progressing.Status)
+	assert.Equal(t, "ReplicaTargetsUnresolved", progressing.Reason)
+	assert.Equal(t, "DisaggregatedSetRoleScaler could not be created or adopted for roles: prefill", progressing.Message)
 	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "must not read Available just because the role also has 0 actual replicas")
+
+	// An existing old revision must also remain untouched while the target is
+	// unknown: in particular, it must not be prepared for or advanced through a rollout.
+	oldLWS := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, "old12345", 3)
+	require.NoError(t, fakeClient.Create(ctx, oldLWS))
+
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+	assert.NotZero(t, result.RequeueAfter)
+
+	var storedOld leaderworkersetv1.LeaderWorkerSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: oldLWS.Name, Namespace: oldLWS.Namespace}, &storedOld))
+	require.NotNil(t, storedOld.Spec.Replicas)
+	assert.EqualValues(t, 3, *storedOld.Spec.Replicas, "the old revision must not be drained")
+	_, hasInitialReplicas := storedOld.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
+	assert.False(t, hasInitialReplicas, "the old revision must not be mutated while its replacement target is unknown")
+
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: desiredLWSName, Namespace: disaggregatedSet.Namespace}, &desiredLWS)
+	require.True(t, apierrors.IsNotFound(err), "the desired-revision LWS must remain absent")
 }
 
 // TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains: roleStatuses mirrors the
@@ -577,12 +575,7 @@ func TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
@@ -631,12 +624,7 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 		createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision, 2),
 		createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, oldRevision, 2),
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:     fakeClient,
-		Scheme:     scheme,
-		LWSManager: controller.NewLeaderWorkerSetManager(fakeClient),
-		Record:     events.NewFakeRecorder(100),
-	}
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err, "Reconcile should succeed")
