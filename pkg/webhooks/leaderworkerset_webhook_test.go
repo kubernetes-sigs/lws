@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -252,6 +253,116 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 				t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
 			}
 		})
+	}
+}
+
+func TestGeneralValidateRestartBackoff(t *testing.T) {
+	tests := []struct {
+		name      string
+		lws       *v1.LeaderWorkerSet
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil RestartBackoff is always allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with RecreateGroupOnPodRestart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with RecreateGroupAfterStart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupAfterStart).
+				RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 1 * time.Minute}).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with None policy is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "restartBackoff is only supported when restartPolicy recreates the group",
+		},
+		{
+			name: "RestartBackoff with non-positive Base is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(&metav1.Duration{Duration: 0}, &metav1.Duration{Duration: 5 * time.Minute}).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "must be greater than 0",
+		},
+		{
+			name: "RestartBackoff with non-positive Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: -1 * time.Second}).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "must be greater than 0",
+		},
+		{
+			name: "RestartBackoff with Base > Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(&metav1.Duration{Duration: 10 * time.Minute}, &metav1.Duration{Duration: 5 * time.Minute}).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "base must not be greater than cap",
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := r.generalValidate(tc.lws)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatalf("expected validation error, got none")
+				}
+				joined := ""
+				for _, e := range errs {
+					joined += e.Error() + "\n"
+				}
+				if !strings.Contains(joined, tc.errSubstr) {
+					t.Fatalf("expected error to contain %q, got %q", tc.errSubstr, joined)
+				}
+			} else if len(errs) != 0 {
+				t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
+			}
+		})
+	}
+}
+
+func TestRestartBackoffDefaulting(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		RestartPolicy(v1.RecreateGroupOnPodRestart).
+		Obj()
+	lws.Spec.LeaderWorkerTemplate.RestartBackoff = &v1.RestartBackoff{}
+
+	if err := r.Default(context.Background(), lws); err != nil {
+		t.Fatalf("unexpected defaulting error: %v", err)
+	}
+
+	backoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff
+	if backoff.Base == nil || backoff.Base.Duration != 10*time.Second {
+		t.Errorf("expected default Base 10s, got %v", backoff.Base)
+	}
+	if backoff.Cap == nil || backoff.Cap.Duration != 5*time.Minute {
+		t.Errorf("expected default Cap 5m, got %v", backoff.Cap)
 	}
 }
 

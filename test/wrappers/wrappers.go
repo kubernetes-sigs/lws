@@ -151,6 +151,14 @@ func (lwsWrapper *LeaderWorkerSetWrapper) MaxGroupRestarts(n int32) *LeaderWorke
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) RestartBackoff(base, cap *metav1.Duration) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
+		Base: base,
+		Cap:  cap,
+	}
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainNil() *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.NetworkConfig = nil
 	return lwsWrapper

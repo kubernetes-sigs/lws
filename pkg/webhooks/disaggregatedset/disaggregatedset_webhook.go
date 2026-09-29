@@ -76,6 +76,7 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		// Reject hash-mode and restart-budget feature combinations the LWS webhook
 		// would reject, so they fail at DisaggregatedSet admission instead of at LWS creation time.
 		allErrs = append(allErrs, webhooks.ValidateMaxGroupRestarts(rolePath.Child("spec"), &role.Spec)...)
+		allErrs = append(allErrs, webhooks.ValidateRestartBackoff(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {

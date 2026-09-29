@@ -188,6 +188,10 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 		value := *maxGroupRestarts
 		restoredLws.Spec.LeaderWorkerTemplate.MaxGroupRestarts = &value
 	}
+	restoredLws.Spec.LeaderWorkerTemplate.RestartBackoff = nil
+	if restartBackoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff; restartBackoff != nil {
+		restoredLws.Spec.LeaderWorkerTemplate.RestartBackoff = restartBackoff.DeepCopy()
+	}
 	return restoredLws, nil
 }
 
@@ -303,6 +307,7 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	// maxGroupRestarts is a live recovery budget and must not affect revision
 	// identity or be restored from a historical revision.
 	delete(template, "maxGroupRestarts")
+	delete(template, "restartBackoff")
 	objCopy["spec"] = specCopy
 	return json.Marshal(objCopy)
 }

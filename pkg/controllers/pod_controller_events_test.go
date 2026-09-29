@@ -1086,7 +1086,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			recorder := events.NewFakeRecorder(10)
 			reconciler := &PodReconciler{Client: c, Scheme: scheme, Record: recorder}
 
-			leaderDeleted, err := reconciler.handleRestartPolicy(context.Background(), *tc.pod, *tc.lws.DeepCopy())
+			leaderDeleted, _, err := reconciler.handleRestartPolicy(context.Background(), *tc.pod, *tc.lws.DeepCopy())
 			switch {
 			case tc.wantErrContains == "" && err != nil:
 				t.Fatalf("handleRestartPolicy() error = %v, want nil", err)
