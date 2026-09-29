@@ -1,0 +1,19 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: leaderworkerset-default-termination
+spec:
+  podTerminationPolicy: Default
+  replicas: 2
+  leaderWorkerTemplate:
+    size: 4
+    leaderTemplate:
+      spec:
+        containers:
+        - name: leader
+          image: nginx:latest
+    workerTemplate:
+      spec:
+        containers:
+        - name: worker
+          image: nginx:latest
