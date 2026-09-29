@@ -53,6 +53,13 @@ type RollingUpdateExecutor struct {
 	LWSManager *LeaderWorkerSetManager
 }
 
+type rolloutInputs struct {
+	targetRoleNames []string
+	allRoleNames    []string
+	targetReplicas  RoleReplicaState
+	config          []RollingUpdateConfig
+}
+
 // ReconcileRevisionTransition is the entry point for rolling update reconciliation.
 // It fetches current cluster state, ensures every role exists in the target
 // revision, and then continues the rollout by computing and executing its next
@@ -153,44 +160,87 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	oldRevisions disaggregatedsetutils.RevisionRolesList,
-	newRevision disaggregatedsetutils.RevisionRoles,
+	targetRevision disaggregatedsetutils.RevisionRoles,
 	desiredReplicasByRole map[string]int,
 ) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
-	specRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
-	desiredRoles, oldRoles := collectDesiredAndOldRoles(specRoleNames, oldRevisions)
-	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
-	allRoleNames := append(slices.Clone(specRoleNames), removedRoleNames...)
-	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
-	targetReplicas := rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, newRevision, desiredReplicasByRole)
-	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, allRoleNames, newRevision, targetReplicas); err != nil {
+	inputs := buildRolloutInputs(disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole)
+	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, inputs.allRoleNames, targetRevision, inputs.targetReplicas); err != nil {
 		return ctrl.Result{}, false, err
 	}
 
-	if isRolloutSpecComplete(oldRevisions, newRevision, allRoleNames, targetReplicas) {
-		if !isRolloutReady(oldRevisions, newRevision, allRoleNames, targetReplicas) {
+	if isRolloutSpecComplete(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas) {
+		if !isRolloutReady(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas) {
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: time.Second}, false, nil
 		}
 		log.Info("Rolling update complete")
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted,
-			"Update", "Completed rolling update to revision %s", newRevision.Revision)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
 		return ctrl.Result{}, true, nil
 	}
 	candidates := orderedRevisionCandidates(oldRevisions)
 	if len(candidates) == 0 {
-		if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, newRevision, specRoleNames, targetReplicas); err != nil {
+		if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, inputs.targetReplicas); err != nil {
 			return ctrl.Result{}, false, err
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
+	selectedRevision, selectedState, selectedStep, err := executor.selectNextRolloutStep(ctx, candidates, oldRevisions, targetRevision, inputs)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if selectedStep == nil {
+		reason := "no feasible replica change is currently available within the rollout constraints"
+		log.Info("Rolling update is temporarily blocked; waiting for state to change", "reason", reason)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked, "Wait", "Waiting to retire an old revision: %s", reason)
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	}
+
+	if err := executor.applyRolloutStep(ctx, disaggregatedSet, targetRevision, inputs, selectedRevision, selectedState, selectedStep); err != nil {
+		return ctrl.Result{}, false, err
+	}
+
+	// Object updates normally trigger the next reconcile immediately. The
+	// timer also lets the planner retry when pending replicas become Ready.
+	return ctrl.Result{RequeueAfter: time.Second}, false, nil
+}
+
+func buildRolloutInputs(
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	oldRevisions disaggregatedsetutils.RevisionRolesList,
+	targetRevision disaggregatedsetutils.RevisionRoles,
+	desiredReplicasByRole map[string]int,
+) rolloutInputs {
+	targetRoleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
+	desiredRoles, oldRoles := collectDesiredAndOldRoles(targetRoleNames, oldRevisions)
+	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
+	allRoleNames := append(slices.Clone(targetRoleNames), removedRoleNames...)
+	return rolloutInputs{
+		targetRoleNames: targetRoleNames,
+		allRoleNames:    allRoleNames,
+		targetReplicas:  rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole),
+		config:          extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole),
+	}
+}
+
+// selectNextRolloutStep asks the planner about old revisions in preference
+// order. Ordinary progress wins over bootstrap surge. Scheduler-unschedulable
+// recovery is considered only when neither ordinary nor bootstrap progress is
+// available.
+func (executor *RollingUpdateExecutor) selectNextRolloutStep(
+	ctx context.Context,
+	candidates disaggregatedsetutils.RevisionRolesList,
+	oldRevisions disaggregatedsetutils.RevisionRolesList,
+	targetRevision disaggregatedsetutils.RevisionRoles,
+	inputs rolloutInputs,
+) (disaggregatedsetutils.RevisionRoles, RolloutState, *UpdateStep, error) {
 	var selectedRevision disaggregatedsetutils.RevisionRoles
 	var selectedState RolloutState
 	var selectedStep *UpdateStep
 	candidateStates := make([]RolloutState, len(candidates))
 	for i, candidate := range candidates {
-		state := rolloutStateForRevision(allRoleNames, oldRevisions, candidate, newRevision, targetReplicas, config)
+		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.config)
 		candidateStates[i] = state
 		step := ComputeNextStep(state)
 		if step == nil {
@@ -207,60 +257,62 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		selectedRevision, selectedState, selectedStep = candidate, state, step
 		break
 	}
-	if selectedStep == nil {
-		unschedulableRoles, err := executor.targetUnschedulableRoles(ctx, newRevision, allRoleNames)
-		if err != nil {
-			return ctrl.Result{}, false, err
-		}
-		for i, candidate := range candidates {
-			state := candidateStates[i]
-			state.Target.UnschedulableRoles = slices.Clone(unschedulableRoles)
-			step := ComputeNextStep(state)
-			if step == nil {
-				continue
-			}
-			selectedRevision, selectedState, selectedStep = candidate, state, step
-			break
-		}
-	}
-	if selectedStep == nil {
-		reason := "no feasible replica change is currently available within the rollout constraints"
-		log.Info("Rolling update is temporarily blocked; waiting for state to change", "reason", reason)
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked,
-			"Wait", "Waiting to retire an old revision: %s", reason)
-		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	if selectedStep != nil {
+		return selectedRevision, selectedState, selectedStep, nil
 	}
 
-	if err := validateUpdateStep(selectedState, selectedStep); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("planner returned an invalid rollout step: %w", err)
+	unschedulableRoles, err := executor.targetUnschedulableRoles(ctx, targetRevision, inputs.allRoleNames)
+	if err != nil {
+		return selectedRevision, selectedState, nil, err
 	}
-	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(allRoleNames, selectedStep)...)
+	for i, candidate := range candidates {
+		state := candidateStates[i]
+		state.Target.UnschedulableRoles = slices.Clone(unschedulableRoles)
+		step := ComputeNextStep(state)
+		if step == nil {
+			continue
+		}
+		return candidate, state, step, nil
+	}
+	return selectedRevision, selectedState, nil, nil
+}
+
+// applyRolloutStep validates and applies one planner decision, then records any
+// emergency behavior used by that decision.
+func (executor *RollingUpdateExecutor) applyRolloutStep(
+	ctx context.Context,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	targetRevision disaggregatedsetutils.RevisionRoles,
+	inputs rolloutInputs,
+	selectedRevision disaggregatedsetutils.RevisionRoles,
+	selectedState RolloutState,
+	selectedStep *UpdateStep,
+) error {
+	if err := validateUpdateStep(selectedState, selectedStep); err != nil {
+		return fmt.Errorf("planner returned an invalid rollout step: %w", err)
+	}
+	log := logf.FromContext(ctx)
+	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(inputs.allRoleNames, selectedStep)...)
 	log.Info("Next rollout step computed", logArgs...)
 	// Apply drains before growth so ordinary steps cannot transiently exceed
 	// their surge ceilings. A marked bootstrap step is the sole exception.
-	if err := executor.scaleDownActiveRevision(ctx, disaggregatedSet, selectedRevision, allRoleNames, selectedStep.Past); err != nil {
-		return ctrl.Result{}, false, err
+	if err := executor.scaleDownActiveRevision(ctx, disaggregatedSet, selectedRevision, inputs.allRoleNames, selectedStep.Past); err != nil {
+		return err
 	}
-	if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, newRevision, specRoleNames, selectedStep.New); err != nil {
-		return ctrl.Result{}, false, err
+	if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, selectedStep.New); err != nil {
+		return err
 	}
 	if selectedStep.UsesBootstrapSurge {
-		roles := bootstrapSurgeRoleNames(allRoleNames, selectedState, selectedStep)
+		roles := bootstrapSurgeRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used bootstrap surge to unblock rolling update", "roles", roles)
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge,
-			"Bootstrap", "Created one bootstrap replica for roles %v without a free maxSurge slot to preserve revision completeness", roles)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge, "Bootstrap", "Created one bootstrap replica for roles %v without a free maxSurge slot to preserve revision completeness", roles)
 	}
 	if selectedStep.UsesUnavailableFallback {
-		roles := unavailableFallbackRoleNames(allRoleNames, selectedState, selectedStep)
+		roles := unavailableFallbackRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used availability fallback for scheduler-unschedulable target Pods", "roles", roles)
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback,
-			"ReleaseCapacity", "Temporarily allowed one additional unavailable replica per role while retiring revision %s to release capacity for scheduler-unschedulable target roles %v",
-			selectedRevision.Revision, roles)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily allowed one additional unavailable replica per role while retiring revision %s to release capacity for scheduler-unschedulable target roles %v", selectedRevision.Revision, roles)
 	}
-
-	// Object updates normally trigger the next reconcile immediately. The
-	// timer also lets the planner retry when pending replicas become Ready.
-	return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	return nil
 }
 
 // targetUnschedulableRoles reports target roles with a Pod that the scheduler
