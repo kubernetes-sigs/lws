@@ -550,12 +550,9 @@ func extractRollingUpdateConfig(
 			// For maxSurge, round up (true); for maxUnavailable, round down (false).
 			surge, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxSurge, replicas, true)
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
-			cfg := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 0}
-			if unavail > 0 {
-				cfg.MaxUnavailable = unavail
-				cfg.MaxSurge = surge
-			} else if surge > 0 {
-				cfg.MaxSurge = surge
+			cfg := RollingUpdateConfig{MaxSurge: surge, MaxUnavailable: unavail}
+			if surge == 0 && unavail == 0 {
+				cfg.MaxSurge = 1
 			}
 			config[roleIndex[role.Name]] = cfg
 		}
