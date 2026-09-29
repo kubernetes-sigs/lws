@@ -8588,6 +8588,26 @@ spec:
                             the replica count to be deleted.
                           type: string
                       type: object
+                    restartBackoff:
+                      description: |-
+                        restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+                        or RecreateGroupAfterStart. When specified, the controller applies an exponential
+                        backoff delay between group recreations.
+                        It is opt-in: when unset (nil), group recreation happens immediately.
+                      properties:
+                        base:
+                          default: 10s
+                          description: |-
+                            base is the initial backoff delay before group recreation.
+                            Defaults to 10s.
+                          type: string
+                        cap:
+                          default: 5m
+                          description: |-
+                            cap is the maximum backoff delay before group recreation.
+                            Defaults to 5m.
+                          type: string
+                      type: object
                     restartPolicy:
                       default: RecreateGroupOnPodRestart
                       description: |-

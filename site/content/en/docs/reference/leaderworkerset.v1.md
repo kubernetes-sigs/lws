@@ -516,6 +516,16 @@ relies on deleted Pods reaching a terminal phase while finalizers retain
 their API objects.</p>
 </td>
 </tr>
+<tr><td><code>restartBackoff</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-RestartBackoff"><code>RestartBackoff</code></a>
+</td>
+<td>
+   <p>restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+or RecreateGroupAfterStart. When specified, the controller applies an exponential
+backoff delay between group recreations.
+It is opt-in: when unset (nil), group recreation happens immediately.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
@@ -565,6 +575,41 @@ the VolumeClaimTemplates.</p>
 <td>
    <p>subdomainPolicy determines the policy that will be used when creating
 the headless service, defaults to shared</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `RestartBackoff`     {#leaderworkerset-x-k8s-io-v1-RestartBackoff}
+    
+
+**Appears in:**
+
+- [LeaderWorkerTemplate](#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate)
+
+
+<p>RestartBackoff defines the exponential backoff configuration for group recreation.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>base</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#duration-v1-meta"><code>k8s.io/apimachinery/pkg/apis/meta/v1.Duration</code></a>
+</td>
+<td>
+   <p>base is the initial backoff delay before group recreation.
+Defaults to 10s.</p>
+</td>
+</tr>
+<tr><td><code>cap</code><br/>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#duration-v1-meta"><code>k8s.io/apimachinery/pkg/apis/meta/v1.Duration</code></a>
+</td>
+<td>
+   <p>cap is the maximum backoff delay before group recreation.
+Defaults to 5m.</p>
 </td>
 </tr>
 </tbody>
