@@ -60,6 +60,13 @@ type rolloutInputs struct {
 	config          []RollingUpdateConfig
 }
 
+type scaleDirection string
+
+const (
+	scaleUp   scaleDirection = "up"
+	scaleDown scaleDirection = "down"
+)
+
 // ReconcileRevisionTransition is the entry point for rolling update reconciliation.
 // It fetches current cluster state, ensures every role exists in the target
 // revision, and then continues the rollout by computing and executing its next
@@ -181,7 +188,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	}
 	candidates := orderedRevisionCandidates(oldRevisions)
 	if len(candidates) == 0 {
-		if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, inputs.targetReplicas); err != nil {
+		if err := executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, inputs.targetReplicas, scaleUp); err != nil {
 			return ctrl.Result{}, false, err
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
@@ -299,10 +306,10 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	log.Info("Next rollout step computed", logArgs...)
 	// Apply drains before growth so ordinary steps cannot transiently exceed
 	// their surge ceilings. A marked bootstrap step is the sole exception.
-	if err := executor.scaleDownActiveRevision(ctx, disaggregatedSet, selectedRevision, inputs.allRoleNames, selectedStep.Past); err != nil {
+	if err := executor.scaleRevision(ctx, disaggregatedSet, selectedRevision, inputs.allRoleNames, selectedStep.Past, scaleDown); err != nil {
 		return err
 	}
-	if err := executor.scaleUpTargetRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, selectedStep.New); err != nil {
+	if err := executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, selectedStep.New, scaleUp); err != nil {
 		return err
 	}
 	if selectedStep.UsesBootstrapSurge {
@@ -601,60 +608,45 @@ func rolloutCompletionStatus(
 
 // --- Scaling operations ---
 
-func (executor *RollingUpdateExecutor) scaleUpTargetRevision(
+// scaleRevision applies targets only in the requested direction. This prevents
+// the target revision from shrinking and old revisions from growing.
+func (executor *RollingUpdateExecutor) scaleRevision(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	targetRevision disaggregatedsetutils.RevisionRoles,
+	revision disaggregatedsetutils.RevisionRoles,
 	roleNames []string,
 	targets RoleReplicaState,
+	direction scaleDirection,
 ) error {
-	log := logf.FromContext(ctx)
-	for i, name := range roleNames {
-		lws := targetRevision.Roles[name]
-		if lws == nil {
-			continue
-		}
-		currentSpec := int(getLWSReplicas(lws))
-		desiredSpec := targets[i]
-		if currentSpec >= desiredSpec {
-			continue
-		}
-		lwsName := lws.Name
-		log.Info("Scaling up", "lws", lwsName, "from_spec", currentSpec, "from_ready", committedReadyReplicas(lws), "to", desiredSpec)
-		if err := executor.LWSManager.Scale(ctx, ds, lwsName, desiredSpec); err != nil {
-			return fmt.Errorf("failed to scale %s: %w", lwsName, err)
-		}
-		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingUp,
-			"Update", "Scaling up %s LWS %s from %d to %d replicas", name, lwsName, currentSpec, desiredSpec)
+	eventReason := EventReasonScalingUp
+	if direction == scaleDown {
+		eventReason = EventReasonScalingDown
+	} else if direction != scaleUp {
+		return fmt.Errorf("unknown scale direction %q", direction)
 	}
-	return nil
-}
+	action := "Scaling " + string(direction)
 
-// scaleDownActiveRevision applies the planner's old-revision targets verbatim.
-func (executor *RollingUpdateExecutor) scaleDownActiveRevision(
-	ctx context.Context,
-	ds *disaggregatedsetv1.DisaggregatedSet,
-	activeRevision disaggregatedsetutils.RevisionRoles,
-	roleNames []string,
-	targets RoleReplicaState,
-) error {
 	log := logf.FromContext(ctx)
 	for i, name := range roleNames {
-		lws := activeRevision.Roles[name]
+		lws := revision.Roles[name]
 		if lws == nil {
 			continue
 		}
 		currentSpec := int(getLWSReplicas(lws))
 		desiredSpec := targets[i]
-		if desiredSpec >= currentSpec {
+		if direction == scaleUp && currentSpec >= desiredSpec {
 			continue
 		}
-		log.Info("Scaling down", "lws", lws.Name, "from", currentSpec, "to", desiredSpec)
+		if direction == scaleDown && desiredSpec >= currentSpec {
+			continue
+		}
+
+		log.Info(action, "lws", lws.Name, "from_spec", currentSpec, "from_ready", committedReadyReplicas(lws), "to", desiredSpec)
 		if err := executor.LWSManager.Scale(ctx, ds, lws.Name, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lws.Name, err)
 		}
-		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalingDown,
-			"Update", "Scaling down %s LWS %s from %d to %d replicas", name, lws.Name, currentSpec, desiredSpec)
+		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, eventReason,
+			"Update", "%s %s LWS %s from %d to %d replicas", action, name, lws.Name, currentSpec, desiredSpec)
 	}
 	return nil
 }
