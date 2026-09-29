@@ -30,7 +30,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -40,7 +39,6 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -586,16 +584,8 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 // are conflicts in the fields owned by the lws controller, lws obtains the
 // ownership and force overrides them to the desired values.
 // TODO b/316776287 add E2E test for SSA
-// TODO: Deprecated: Use client.Client.Apply() and client.Client.SubResource("subrsource").Apply() instead.
-func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyConfig any) error {
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applyConfig)
-	if err != nil {
-		return err
-	}
-	return r.Patch(ctx, &unstructured.Unstructured{Object: obj}, client.Apply, &client.PatchOptions{ //nolint
-		FieldManager: fieldManager,
-		Force:        ptr.To[bool](true),
-	})
+func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyConfig runtime.ApplyConfiguration) error {
+	return r.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership)
 }
 
 // updates the condition of the leaderworkerset to either Progressing or Available.

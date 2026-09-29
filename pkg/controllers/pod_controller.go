@@ -1207,7 +1207,7 @@ func controllerOwnerReference(owner metav1.Object, scheme *runtime.Scheme) (*met
 		WithController(true), nil
 }
 
-// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
+// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the worker StatefulSet
 func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
 	if err != nil {
