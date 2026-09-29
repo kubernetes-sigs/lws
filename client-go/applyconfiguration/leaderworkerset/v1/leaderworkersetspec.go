@@ -77,6 +77,12 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// creates them, overlapping with the teardown of the old group. Only
 	// supported with groupIdentity Hash.
 	GroupReplacementPolicy *leaderworkersetv1.GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
+	// podTerminationPolicy determines the termination policy for pods in a group.
+	// Default (default) keeps the sequential termination behavior: worker pods wait for the
+	// leader pod to be fully deleted before terminating.
+	// Parallel terminates leader and worker pods concurrently when a group is deleted,
+	// recreated, or when the LeaderWorkerSet is deleted.
+	PodTerminationPolicy *leaderworkersetv1.PodTerminationPolicyType `json:"podTerminationPolicy,omitempty"`
 }
 
 // LeaderWorkerSetSpecApplyConfiguration constructs a declarative configuration of the LeaderWorkerSetSpec type for use with
@@ -146,5 +152,13 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupIdentity(value leaderwo
 // If called multiple times, the GroupReplacementPolicy field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithGroupReplacementPolicy(value leaderworkersetv1.GroupReplacementPolicyType) *LeaderWorkerSetSpecApplyConfiguration {
 	b.GroupReplacementPolicy = &value
+	return b
+}
+
+// WithPodTerminationPolicy sets the PodTerminationPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PodTerminationPolicy field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithPodTerminationPolicy(value leaderworkersetv1.PodTerminationPolicyType) *LeaderWorkerSetSpecApplyConfiguration {
+	b.PodTerminationPolicy = &value
 	return b
 }
