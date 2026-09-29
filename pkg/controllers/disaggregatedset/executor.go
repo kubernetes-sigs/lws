@@ -225,9 +225,11 @@ func buildRolloutInputs(
 }
 
 // selectNextRolloutStep asks the planner about old revisions in preference
-// order. Ordinary progress wins over bootstrap surge. Scheduler-unschedulable
-// recovery is considered only when neither ordinary nor bootstrap progress is
-// available.
+// order. Each candidate is one whole old revision with at least one non-zero
+// role Spec. For A -> B -> C, the candidates slice contains B and A while both
+// still have replicas; a fully drained B is omitted. Ordinary progress wins
+// over bootstrap surge. Scheduler-unschedulable recovery is considered only
+// when neither ordinary nor bootstrap progress is available.
 func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	ctx context.Context,
 	candidates disaggregatedsetutils.RevisionRolesList,
@@ -670,65 +672,90 @@ func (executor *RollingUpdateExecutor) scaleDownActiveRevision(
 }
 
 func validateUpdateStep(state RolloutState, step *UpdateStep) error {
+	if err := validateStepStructure(state, step); err != nil {
+		return err
+	}
+
+	snapshot := snapshotForRolloutState(state)
+	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	normalLimits := hardNewReplicaLimits(snapshot)
+	newLimits, availabilitySnapshot, err := validateFallbackSelection(state, step, snapshot, phaseTargets, normalLimits)
+	if err != nil {
+		return err
+	}
+	if err := validateReplicaTargets(state, step, snapshot, phaseTargets, normalLimits, newLimits); err != nil {
+		return err
+	}
+	if !availabilityPreserved(availabilitySnapshot, step.Past, state.ActiveOld.RequiredRoles) {
+		return fmt.Errorf("old targets reduce usable readiness below its safe bound")
+	}
+	return nil
+}
+
+// validateStepStructure checks that the planner output matches the role layout
+// and does not leave only part of the active revision running.
+func validateStepStructure(state RolloutState, step *UpdateStep) error {
 	if step == nil {
 		return fmt.Errorf("step is nil")
 	}
 	if len(step.Past) != len(state.Config) || len(step.New) != len(state.Config) {
 		return fmt.Errorf("target lengths do not match role count")
 	}
-	if bounded := boundOldTargetsByRevisionCompleteness(
-		state.ActiveOld.SpecReplicas,
-		step.Past,
-		state.ActiveOld.RequiredRoles,
-	); !slices.Equal(bounded, step.Past) {
+	if bounded := boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, step.Past, state.ActiveOld.RequiredRoles); !slices.Equal(bounded, step.Past) {
 		return fmt.Errorf("old targets leave required roles incomplete")
 	}
+	return nil
+}
 
-	snapshot := snapshotForRolloutState(state)
-	phaseTargets := targetReplicasForActiveRevision(snapshot)
+// validateFallbackSelection verifies that an emergency policy is used only
+// when safer progress is unavailable and returns the bounds for that policy.
+func validateFallbackSelection(
+	state RolloutState,
+	step *UpdateStep,
+	snapshot rolloutSnapshot,
+	phaseTargets RoleReplicaState,
+	normalLimits RoleReplicaState,
+) (RoleReplicaState, rolloutSnapshot, error) {
 	ordinaryPast := furthestOldTargets(snapshot, state.ActiveOld.RequiredRoles)
 	ordinaryNew := furthestNewTargets(snapshot, phaseTargets)
-	ordinaryStepAvailable := anyChange(
-		ordinaryPast, ordinaryNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas,
-	)
+	ordinaryStepAvailable := anyChange(ordinaryPast, ordinaryNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas)
 	bootstrapSnapshot, bootstrapSurgeAvailable := snapshotWithBootstrapSurge(snapshot, phaseTargets)
-	bootstrapStepAvailable := bootstrapSurgeAvailable && anyChange(
-		ordinaryPast, furthestNewTargets(bootstrapSnapshot, phaseTargets),
-		state.ActiveOld.SpecReplicas, state.Target.SpecReplicas,
-	)
-	normalLimits := hardNewReplicaLimits(snapshot)
+	bootstrapStepAvailable := bootstrapSurgeAvailable && anyChange(ordinaryPast, furthestNewTargets(bootstrapSnapshot, phaseTargets), state.ActiveOld.SpecReplicas, state.Target.SpecReplicas)
 	newLimits := normalLimits
 	availabilitySnapshot := snapshot
 	if step.UsesBootstrapSurge && step.UsesUnavailableFallback {
-		return fmt.Errorf("bootstrap surge and availability fallback cannot be used together")
+		return nil, nil, fmt.Errorf("bootstrap surge and availability fallback cannot be used together")
 	}
 	if step.UsesBootstrapSurge {
 		if err := validateBootstrapSurgeStep(ordinaryStepAvailable, bootstrapSurgeAvailable); err != nil {
-			return err
+			return nil, nil, err
 		}
 		newLimits = hardNewReplicaLimits(bootstrapSnapshot)
 	}
 	if step.UsesUnavailableFallback {
 		fallbackSnapshot := snapshotWithUnavailableFallback(snapshot)
-		if err := validateUnavailableFallbackStep(
-			state, step, fallbackSnapshot, ordinaryStepAvailable, bootstrapStepAvailable,
-		); err != nil {
-			return err
+		if err := validateUnavailableFallbackStep(state, step, fallbackSnapshot, ordinaryStepAvailable, bootstrapStepAvailable); err != nil {
+			return nil, nil, err
 		}
 		availabilitySnapshot = fallbackSnapshot
 	}
-	if bounded := boundDrainingRoleTargetsToWindow(
-		state.ActiveOld.SpecReplicas,
-		state.ActiveOld.InitialReplicas,
-		step.Past,
-	); !slices.Equal(bounded, step.Past) {
+	return newLimits, availabilitySnapshot, nil
+}
+
+// validateReplicaTargets checks the fractional window and per-role replica
+// bounds, and rejects an incorrectly marked or no-op step.
+func validateReplicaTargets(
+	state RolloutState,
+	step *UpdateStep,
+	snapshot rolloutSnapshot,
+	phaseTargets RoleReplicaState,
+	normalLimits RoleReplicaState,
+	newLimits RoleReplicaState,
+) error {
+	if bounded := boundDrainingRoleTargetsToWindow(state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, step.Past); !slices.Equal(bounded, step.Past) {
 		return fmt.Errorf("old targets exceed the fractional coordination window")
 	}
-	if bounded := boundGrowingRoleTargetsToWindow(
-		state.Target.SpecReplicas,
-		phaseTargets,
-		step.New,
-	); !slices.Equal(bounded, step.New) {
+	if bounded := boundGrowingRoleTargetsToWindow(state.Target.SpecReplicas, phaseTargets, step.New); !slices.Equal(bounded, step.New) {
 		return fmt.Errorf("new targets exceed the fractional coordination window")
 	}
 	changed := false
@@ -749,9 +776,6 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 	}
 	if !changed {
 		return fmt.Errorf("plan makes no API change")
-	}
-	if !availabilityPreserved(availabilitySnapshot, step.Past, state.ActiveOld.RequiredRoles) {
-		return fmt.Errorf("old targets reduce usable readiness below its safe bound")
 	}
 	return nil
 }
