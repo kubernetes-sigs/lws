@@ -141,12 +141,12 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 		}
 	}
 
-	// A target Pod that the scheduler cannot place may need capacity held by an
-	// old replica of the same role. As a last resort, permit exactly one more
-	// unavailable replica while keeping the old revision complete.
+	// A bootstrap Pod that the scheduler cannot place may need capacity held by
+	// an old replica of the same role. As a last resort, permit one more
+	// unavailable replica without reducing a positive availability floor to zero.
 	fallbackSnapshot := snapshotWithUnavailableFallback(snapshot)
 	fallbackPast := furthestOldTargets(fallbackSnapshot, state.ActiveOld.RequiredRoles)
-	if !drainsUnschedulableRole(currentOld, fallbackPast, state.Target.UnschedulableRoles) {
+	if !drainsOverSurgeUnschedulableRole(snapshot, currentOld, fallbackPast, state.Target.UnschedulableRoles) {
 		return nil
 	}
 	return &UpdateStep{
@@ -156,12 +156,21 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 	}
 }
 
-func drainsUnschedulableRole(current, target RoleReplicaState, unschedulable []bool) bool {
-	if len(unschedulable) != len(current) {
+// drainsOverSurgeUnschedulableRole reports whether the fallback releases an
+// old replica for an unschedulable target role whose bootstrap replica still
+// exceeds the configured surge ceiling.
+func drainsOverSurgeUnschedulableRole(
+	snapshot rolloutSnapshot,
+	current, target RoleReplicaState,
+	unschedulable []bool,
+) bool {
+	if len(snapshot) != len(current) || len(target) != len(current) || len(unschedulable) != len(current) {
 		return false
 	}
-	for i, blocked := range unschedulable {
-		if blocked && target[i] < current[i] {
+	for i, role := range snapshot {
+		roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
+		surgeCeiling := roleReplicaCount + role.Config.MaxSurge
+		if unschedulable[i] && role.OldSpecReplicas+role.NewSpecReplicas > surgeCeiling && target[i] < current[i] {
 			return true
 		}
 	}
@@ -455,12 +464,15 @@ func snapshotWithBootstrapSurge(
 }
 
 // snapshotWithUnavailableFallback temporarily adds one MaxUnavailable replica
-// per role. The planner uses this view only after a sustained scheduler
-// rejection and only when ordinary and bootstrap steps are both blocked.
+// where doing so preserves at least one available replica. The planner uses
+// this view only after a sustained scheduler rejection and only when ordinary
+// and bootstrap steps are both blocked.
 func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 	fallback := append(rolloutSnapshot(nil), snapshot...)
-	for i := range fallback {
-		fallback[i].Config.MaxUnavailable++
+	for i, role := range fallback {
+		if availabilityFloor(role) > 1 {
+			fallback[i].Config.MaxUnavailable++
+		}
 	}
 	return fallback
 }

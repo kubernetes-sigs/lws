@@ -215,6 +215,45 @@ func TestComputeNextStepReleasesCapacityForUnschedulableTargetRole(t *testing.T)
 	assert.False(t, step.UsesUnavailableFallback)
 }
 
+func TestUnavailableFallbackRequiresExcessBootstrapCapacity(t *testing.T) {
+	tests := []struct {
+		name  string
+		state RolloutState
+	}{
+		{
+			name: "ordinary singleton rollout keeps its serving revision",
+			state: rolloutState(
+				[]int{1, 1}, []int{1, 1}, []int{1, 1}, nil, nil,
+				[]int{1, 1}, []int{0, 0}, []int{1, 1},
+				configs([]int{1, 1}, []int{0, 0}),
+			),
+		},
+		{
+			name: "ordinary rollout at its surge ceiling",
+			state: rolloutState(
+				[]int{4, 4}, []int{4, 4}, []int{4, 4}, nil, nil,
+				[]int{1, 1}, []int{0, 0}, []int{4, 4},
+				configs([]int{1, 1}, []int{0, 0}),
+			),
+		},
+		{
+			name: "excess surge cannot lower a positive floor to zero",
+			state: rolloutState(
+				[]int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{0, 0},
+				[]int{1, 1}, []int{0, 0}, []int{1, 1},
+				configs([]int{1, 1}, []int{0, 0}),
+			),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.state.Target.UnschedulableRoles = []bool{true, false}
+			assert.Nil(t, ComputeNextStep(tc.state))
+		})
+	}
+}
+
 func TestUsableReadyReplicasRequiresEveryRequiredRole(t *testing.T) {
 	required := []bool{true, true}
 	assert.Equal(t, RoleReplicaState{0, 0}, usableReadyReplicas(required, RoleReplicaState{0, 2}))

@@ -320,7 +320,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	if selectedStep.UsesUnavailableFallback {
 		roles := unavailableFallbackRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used availability fallback for scheduler-unschedulable target Pods", "roles", roles)
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily allowed one additional unavailable replica per role while retiring revision %s to release capacity for scheduler-unschedulable target roles %v", selectedRevision.Revision, roles)
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily relaxed availability by at most one replica per role while retiring revision %s to release excess bootstrap capacity for scheduler-unschedulable target roles %v", selectedRevision.Revision, roles)
 	}
 	return nil
 }
@@ -789,12 +789,13 @@ func validateUnavailableFallbackStep(
 	if !slices.Equal(step.Past, expectedPast) || !slices.Equal(step.New, state.Target.SpecReplicas) {
 		return fmt.Errorf("availability fallback does not match the bounded planner target")
 	}
-	if !drainsUnschedulableRole(
+	if !drainsOverSurgeUnschedulableRole(
+		fallbackSnapshot,
 		state.ActiveOld.SpecReplicas,
 		step.Past,
 		state.Target.UnschedulableRoles,
 	) {
-		return fmt.Errorf("availability fallback does not release an unschedulable target role")
+		return fmt.Errorf("availability fallback does not release excess surge for an unschedulable target role")
 	}
 	return nil
 }
