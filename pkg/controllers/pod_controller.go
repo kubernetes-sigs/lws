@@ -231,7 +231,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// stamped this leader pod, so its PodGroups are created here, ahead of the
 	// gate that keeps the leader unschedulable.
 	if r.SchedulerProvider != nil {
-		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
+		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, groupLws, &pod)
 		if err != nil {
 			if errors.Is(err, schedulerprovider.ErrUnexpectedPodGroupOwner) {
 				r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, UnexpectedPodGroupOwner, Create, "%s", err.Error())
@@ -287,7 +287,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if pod.Spec.Hostname == "" || pod.Spec.Subdomain == "" {
 		return ctrl.Result{}, fmt.Errorf("leader pod %s/%s has no hostname or subdomain", pod.Namespace, pod.Name)
 	}
-	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, leaderWorkerSet, revision)
+	statefulSet, err := constructWorkerStatefulSetApplyConfiguration(pod, *groupLws)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -334,12 +334,14 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	workerStsName := workerStatefulSetName(&pod, &leaderWorkerSet)
 	err = r.Get(ctx, types.NamespacedName{Name: workerStsName, Namespace: leaderWorkerSet.Namespace}, &workerSts)
 	if apierrors.IsNotFound(err) && workerStsName != pod.Name {
-		// Hash groups created before v0.12 named their workers after the leader pod.
+		// Hash groups created by earlier releases named their workers after the leader pod.
 		err = r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts)
 	}
 	if err == nil && hashIdentity && !metav1.IsControlledBy(&workerSts, &pod) {
 		// Two groups whose keys share an 8 character prefix get the same host name.
-		return ctrl.Result{}, fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
+		err = fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
+		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, "%s", err.Error())
+		return ctrl.Result{}, err
 	}
 	if err != nil {
 		if client.IgnoreNotFound(err) != nil {
@@ -1061,7 +1063,8 @@ func countTearingDownGroups(pods []corev1.Pod) int {
 		p := &pods[i]
 		key := p.Labels[leaderworkerset.GroupIndexLabelKey]
 		if key == "" {
-			// Fall back to the leader name, which is also the worker statefulset name.
+			// Fall back to the leader name, which is also the worker statefulset
+			// name in ordinal mode. Hash pods always carry the group index label.
 			key = p.Name
 			if owner := metav1.GetControllerOf(p); owner != nil && !podutils.LeaderPod(*p) {
 				key = owner.Name
@@ -1240,12 +1243,10 @@ func workerStatefulSetName(leaderPod *corev1.Pod, lws *leaderworkerset.LeaderWor
 	return leaderPod.Name
 }
 
-// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
-	if err != nil {
-		return nil, err
-	}
+// constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the worker StatefulSet.
+// lws must already have the group's revision applied.
+func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
+	currentLws := &lws
 	podTemplateSpec := *currentLws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)

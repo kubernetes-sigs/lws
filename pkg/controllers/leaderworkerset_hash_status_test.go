@@ -181,6 +181,8 @@ func TestUpdateStatusHash(t *testing.T) {
 		wantReadyReplicas   int32
 		wantUpdatedReplicas int32
 		wantConditions      []string
+		// staleUpdateInProgress starts the set with UpdateInProgress=True.
+		staleUpdateInProgress bool
 	}{
 		{
 			name: "deployment fully rolled out, the set is Available",
@@ -227,12 +229,26 @@ func TestUpdateStatusHash(t *testing.T) {
 			wantUpdatedReplicas: 2,
 			wantConditions:      []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
 		},
+		{
+			name: "a finished rollout clears UpdateInProgress while groups are not ready",
+			deployStatus: appsv1.DeploymentStatus{
+				Replicas: 2, ReadyReplicas: 0, UpdatedReplicas: 2,
+			},
+			staleUpdateInProgress: true,
+			wantAvailable:         false,
+			wantReadyReplicas:     0,
+			wantUpdatedReplicas:   2,
+			wantConditions:        []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lws := lwsStatusHashLWS(2)
 			lws.Generation = 4
+			if tc.staleUpdateInProgress {
+				lws.Status.Conditions = []metav1.Condition{makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws)}
+			}
 			deploy := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: lws.Name, Namespace: lws.Namespace},
 				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},

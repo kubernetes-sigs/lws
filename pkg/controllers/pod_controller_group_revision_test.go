@@ -60,6 +60,12 @@ func TestReconcilePodUsesGroupRevision(t *testing.T) {
 			},
 		},
 		{
+			name: "size increased",
+			update: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](4)
+			},
+		},
+		{
 			name: "subdomainPolicy changed to UniquePerReplica",
 			update: func(lws *leaderworkerset.LeaderWorkerSet) {
 				policy := leaderworkerset.SubdomainUniquePerReplica
@@ -116,9 +122,13 @@ func TestReconcilePodUsesGroupRevision(t *testing.T) {
 				}
 			}
 
-			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}}
+			provider := &stubSchedulerProvider{}
+			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}, SchedulerProvider: provider}
 			if _, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(leader, false)); err != nil {
 				t.Fatalf("reconcilePod() error = %v", err)
+			}
+			if got := *provider.lws.Spec.LeaderWorkerTemplate.Size; got != 2 {
+				t.Errorf("PodGroup sized for %d pods, want 2 (old group size)", got)
 			}
 
 			var workers appsv1.StatefulSet

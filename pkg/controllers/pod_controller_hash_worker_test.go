@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -65,7 +67,7 @@ func TestReconcilePodNamesHashWorkersAfterHostname(t *testing.T) {
 			wantMissing: leaderName,
 		},
 		{
-			name: "group created before v0.12 keeps its worker statefulset",
+			name: "group created by an earlier release keeps its worker statefulset",
 			existing: func(leader *corev1.Pod) []client.Object {
 				return []client.Object{workerSts(leaderName, leader)}
 			},
@@ -118,11 +120,20 @@ func TestReconcilePodNamesHashWorkersAfterHostname(t *testing.T) {
 				}
 			}
 
-			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}}
+			recorder := events.NewFakeRecorder(10)
+			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: recorder}
 			_, err = reconciler.reconcilePod(ctx, podReconcileRequestForPod(leader, false))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("reconcilePod() error = nil, want an ownership error")
+				}
+				select {
+				case event := <-recorder.Events:
+					if !strings.Contains(event, "Warning FailedCreate") {
+						t.Errorf("event = %q, want a FailedCreate warning", event)
+					}
+				default:
+					t.Error("no event recorded for the host name collision")
 				}
 				return
 			}

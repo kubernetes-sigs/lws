@@ -134,6 +134,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 			}
 			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
 		}
+		// Earlier releases made hash PodGroups LWS-owned.
+		if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && owner != nil && owner.Kind == "LeaderWorkerSet" && owner.UID == lws.UID {
+			return nil
+		}
 
 		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
 		// normal reconciliation, so fail without modifying a same-name PodGroup with an unexpected owner.

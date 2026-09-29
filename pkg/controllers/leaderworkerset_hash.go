@@ -406,6 +406,7 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		conditions = endUpdateInProgress(conditions, lws)
 	}
 	if degraded {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws))

@@ -604,6 +604,20 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	t.Run("hash identity accepts LWS-owned PodGroup from earlier releases", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityHash, true)
+		leader := createTestLeaderPod("leader-hash", lws.Namespace, lws.Name, "hash123", "rev1")
+		pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            GetPodGroupName(lws.Name, "hash123", "rev1"),
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, pg).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	})
+
 	t.Run("ordinal identity with typed scheduling validates pre-created LWS-owned PodGroup", func(t *testing.T) {
 		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()

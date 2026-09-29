@@ -373,6 +373,14 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
 	}
+	// Each hash group needs its own leader host name.
+	leaderTemplate := &spec.LeaderWorkerTemplate.WorkerTemplate
+	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		leaderTemplate = spec.LeaderWorkerTemplate.LeaderTemplate
+	}
+	if leaderTemplate.Spec.Hostname != "" {
+		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "a leader pod hostname is not supported with groupIdentity Hash"))
+	}
 	return allErrs
 }
 
@@ -381,7 +389,7 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 // of the group key. The worker StatefulSet is named after it, and its pods get
 // a controller-revision-hash label that adds another "-" plus up to 10.
 func HashNameSuffixLen(spec *v1.LeaderWorkerSetSpec) int {
-	const hostnameSuffixLen, revisionLabelSuffixLen = 9, 11
+	const hostnameSuffixLen, revisionLabelSuffixLen = 1 + hashDNSPrefixLength, 11
 	if spec.LeaderWorkerTemplate.Size != nil && *spec.LeaderWorkerTemplate.Size > 1 {
 		return hostnameSuffixLen + revisionLabelSuffixLen
 	}

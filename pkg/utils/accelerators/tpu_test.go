@@ -176,7 +176,7 @@ func TestAddTPUVariables(t *testing.T) {
 			expectedTpuProcessPort:      "8476",
 		},
 		{
-			// Hash groups created before v0.12 named their workers after the leader pod.
+			// Hash groups created by earlier releases named their workers after the leader pod.
 			name: "Hash identity, worker pod with leader address annotation",
 			pod: &corev1.Pod{
 				Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),

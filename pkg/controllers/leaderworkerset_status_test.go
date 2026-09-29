@@ -401,6 +401,26 @@ func TestUpdateConditions(t *testing.T) {
 			wantConditions:      []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
 		},
 		{
+			name: "a finished rollout clears UpdateInProgress while a group is not ready",
+			lws: func() *leaderworkerset.LeaderWorkerSet {
+				lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(2).Obj()
+				lws.Status.Conditions = []metav1.Condition{makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws)}
+				return lws
+			}(),
+			objs: func() []client.Object {
+				lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+				return []client.Object{
+					lwsStatusLeaderPod(lws, 0, currentRevision, true), lwsStatusWorkerSts(lws, 0, currentRevision, true),
+					lwsStatusLeaderPod(lws, 1, currentRevision, true), lwsStatusWorkerSts(lws, 1, currentRevision, false),
+				}
+			}(),
+			wantUpdate:          true,
+			wantUpdateDone:      false,
+			wantReadyReplicas:   1,
+			wantUpdatedReplicas: 2,
+			wantConditions:      []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
+		},
+		{
 			name: "size one means no worker statefulsets, leader pods alone decide readiness",
 			lws:  wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(1).Obj(),
 			objs: func() []client.Object {
