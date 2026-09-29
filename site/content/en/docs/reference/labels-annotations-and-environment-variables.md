@@ -41,14 +41,18 @@ description:  A reference for all labels, annotations, and environment variables
 
 # Environment Variables
 
-| Key                    | Description                                         | Example                                                                                         | Applies to                |
-| ---------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------- |
-| `LWS_LEADER_ADDRESS`   | The address of the leader via the headless service. | leaderworkerset-multi-template-0.leaderworkerset-multi-template.default                         | Pod                       |
-| `LWS_GROUP_SIZE`       | Tracks the size of the LWS group.                   | 4                                                                                               | Pod                       |
-| `LWS_WORKER_INDEX`     | The index or identity of the pod within the group.  | 2                                                                                               | Pod                       |
-| `TPU_WORKER_HOSTNAMES` | Hostnames of TPU workers only in the same subgroup. | test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default | Pod (only if TPU enabled) |
-| `TPU_WORKER_ID`        | ID of the TPU worker.                               | 0                                                                                               | Pod (only if TPU enabled) |
-| `TPU_NAME`             | Name of the TPU.                                    | test-sample-1                                                                                   | Pod (only if TPU enabled) |
+| Key                          | Description                                                    | Example                                                                                         | Applies to                         |
+| ---------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `LWS_LEADER_ADDRESS`         | The address of the leader via the headless service.            | leaderworkerset-multi-template-0.leaderworkerset-multi-template.default                         | Pod                                |
+| `LWS_GROUP_SIZE`             | Tracks the size of the LWS group.                              | 4                                                                                               | Pod                                |
+| `LWS_WORKER_INDEX`           | The index or identity of the pod within the group.             | 2                                                                                               | Pod                                |
+| `DISAGGREGATEDSET_NAME`      | The name of the parent DisaggregatedSet.                       | disaggregatedset-sample                                                                        | Pod (only if managed by a DisaggregatedSet) |
+| `DISAGGREGATEDSET_ROLE`      | The role of the pod within the DisaggregatedSet.               | prefill                                                                                         | Pod (only if managed by a DisaggregatedSet) |
+| `DISAGGREGATEDSET_SLICE`     | The slice index of the pod within the DisaggregatedSet.        | 0                                                                                               | Pod (only if managed by a DisaggregatedSet) |
+| `DISAGGREGATEDSET_REVISION`  | The revision hash used to identify the DisaggregatedSet rollout. | a1b2c3d4                                                                                      | Pod (only if managed by a DisaggregatedSet) |
+| `TPU_WORKER_HOSTNAMES`       | Hostnames of TPU workers only in the same subgroup.            | test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default | Pod (only if TPU enabled)          |
+| `TPU_WORKER_ID`              | ID of the TPU worker.                                          | 0                                                                                               | Pod (only if TPU enabled)          |
+| `TPU_NAME`                   | Name of the TPU.                                               | test-sample-1                                                                                   | Pod (only if TPU enabled)          |
 
-If you want to use more environment variables, they are available in the labels or annotations but not listed in the Environment Variables section.
-We can obtain the index by using the [Downward API](https://kubernetes.io/docs/concepts/workloads/pods/downward-api/) to pass the Pod's label as an environment variable to the container.
+Other labels and annotations can be exposed to a container with the
+[Downward API](https://kubernetes.io/docs/concepts/workloads/pods/downward-api/).

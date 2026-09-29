@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
@@ -830,6 +831,45 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				}
 				if err := testutils.IsContainerFirstEnvVarLWSLeaderAddress(got); err != nil {
 					return err
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("DisaggregatedSet identity env vars should be populated", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-0-abcd1234-prefill-0-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample-0-abcd1234-prefill",
+							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "0",
+							disaggregatedset.SetNameLabelKey:    "test-sample",
+							disaggregatedset.RoleLabelKey:       "prefill",
+							disaggregatedset.SliceLabelKey:      "0",
+							disaggregatedset.RevisionLabelKey:   "abcd1234",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
+					},
+					Spec: wrappers.MakePodSpecWithInitContainer(),
+				}
+			},
+			checkExpectedPod: func(_ corev1.Pod, got corev1.Pod) error {
+				if !testutils.HasDisaggregatedSetEnvVarsPopulated(got) {
+					return fmt.Errorf("expected DisaggregatedSet env vars for pod %s", got.Name)
+				}
+				for name, value := range map[string]string{
+					disaggregatedset.SetNameEnv:  "test-sample",
+					disaggregatedset.RoleEnv:     "prefill",
+					disaggregatedset.SliceEnv:    "0",
+					disaggregatedset.RevisionEnv: "abcd1234",
+				} {
+					if err := testutils.CheckContainerHasCorrectEnvVar(got, corev1.EnvVar{Name: name, Value: value}); err != nil {
+						return err
+					}
 				}
 				return nil
 			},

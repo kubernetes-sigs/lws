@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
@@ -138,7 +139,19 @@ func addEnvVarsIfNotExists(c *corev1.Container, firstEnv corev1.EnvVar, e ...cor
 	c.Env = newEnvVars
 }
 
-// AddLWSVariables adds environment variable to every container. leaderAddress
+func addEnvVarsToPod(pod *corev1.Pod, envVars ...corev1.EnvVar) {
+	if len(envVars) == 0 {
+		return
+	}
+	for i := range pod.Spec.Containers {
+		addEnvVarsIfNotExists(&pod.Spec.Containers[i], envVars[0], envVars[1:]...)
+	}
+	for i := range pod.Spec.InitContainers {
+		addEnvVarsIfNotExists(&pod.Spec.InitContainers[i], envVars[0], envVars[1:]...)
+	}
+}
+
+// AddLWSVariables adds environment variables to every container. leaderAddress
 // is the DNS address of the group's leader pod.
 func AddLWSVariables(pod *corev1.Pod, leaderAddress string) error {
 	leaderAddressEnvVar := corev1.EnvVar{
@@ -169,14 +182,32 @@ func AddLWSVariables(pod *corev1.Pod, leaderAddress string) error {
 
 	// The order of injection needs attention, see
 	// https://github.com/kubernetes-sigs/lws/pull/152
-	for i := range pod.Spec.Containers {
-		addEnvVarsIfNotExists(&pod.Spec.Containers[i], leaderAddressEnvVar, sizeEnvVar, workerIndexEnvVar)
-	}
-	for i := range pod.Spec.InitContainers {
-		addEnvVarsIfNotExists(&pod.Spec.InitContainers[i], leaderAddressEnvVar, sizeEnvVar, workerIndexEnvVar)
-	}
+	addEnvVarsToPod(pod, leaderAddressEnvVar, sizeEnvVar, workerIndexEnvVar)
 
 	return nil
+}
+
+// AddDisaggregatedSetVariables mirrors the controller-owned DisaggregatedSet
+// identity labels into every container of a child LWS Pod. Labels that are not
+// present are skipped so standalone LeaderWorkerSets are unaffected.
+func AddDisaggregatedSetVariables(pod *corev1.Pod) {
+	labelEnvVars := []struct {
+		label string
+		env   string
+	}{
+		{label: disaggregatedset.SetNameLabelKey, env: disaggregatedset.SetNameEnv},
+		{label: disaggregatedset.RoleLabelKey, env: disaggregatedset.RoleEnv},
+		{label: disaggregatedset.SliceLabelKey, env: disaggregatedset.SliceEnv},
+		{label: disaggregatedset.RevisionLabelKey, env: disaggregatedset.RevisionEnv},
+	}
+
+	envVars := make([]corev1.EnvVar, 0, len(labelEnvVars))
+	for _, item := range labelEnvVars {
+		if value, found := pod.Labels[item.label]; found {
+			envVars = append(envVars, corev1.EnvVar{Name: item.env, Value: value})
+		}
+	}
+	addEnvVarsToPod(pod, envVars...)
 }
 
 // IsPodReady returns true if a pod is ready; false otherwise.
