@@ -216,7 +216,9 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// The leaf PodGroup has to exist before any member pod can be scheduled.
 	// With groupIdentity Hash the group key is only known once admission has
 	// stamped this leader pod, so its PodGroups are created here, ahead of the
-	// gate that keeps the leader unschedulable.
+	// gate that keeps the leader unschedulable. With Ordinal identity this
+	// recreates the PodGroup of a replica held at an older revision, which the
+	// LeaderWorkerSet controller does not enumerate.
 	if r.SchedulerProvider != nil {
 		err = r.SchedulerProvider.CreatePodGroupIfNotExists(ctx, &leaderWorkerSet, &pod)
 		if err != nil {

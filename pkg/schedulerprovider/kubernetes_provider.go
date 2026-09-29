@@ -140,8 +140,11 @@ func NewKubernetesProvider(c client.Client) *KubernetesProvider {
 // With groupIdentity Hash the per-replica instances are not known here: a group
 // is identified by a key that admission draws for every leader pod, so those
 // PodGroups are materialized by CreatePodGroupIfNotExists while the leader is
-// still scheduling gated. Cleanup keeps every group that still has member pods,
-// so it stays safe even though those names are not in the desired set.
+// still scheduling gated. With Ordinal identity only the target revision is
+// enumerated, so replicas held at an older revision by a partition or an
+// in-progress rollout get their PodGroups from CreatePodGroupIfNotExists too.
+// Cleanup keeps every group that still has member pods or a live leader, so it
+// stays safe even though those names are not in the desired set.
 func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
@@ -632,28 +635,27 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	for k, v := range desired {
 		desiredGroups[k] = v
 	}
-	// Under Hash identity, replica instances cannot be enumerated from replica
-	// count alone at reconcile start, but each active leader pod represents an
-	// active replica whose PodGroups must be preserved. Deriving their names
-	// from the leader's labels matches CreatePodGroupIfNotExists and prevents
-	// cleanup from racing before member pods have spec.schedulingGroup populated
-	// (such as worker PodGroups in role mode before workers are created).
-	if hashGroupIdentity(lws) {
-		mode, err := SchedulingModeFor(lws)
-		if err == nil && (mode == SchedulingModeReplica || mode == SchedulingModeRole) {
-			for i := range pods.Items {
-				pod := &pods.Items[i]
-				if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" || !pod.DeletionTimestamp.IsZero() {
-					continue
-				}
-				groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-				revision := pod.Labels[leaderworkerset.RevisionKey]
-				if groupIndex == "" || revision == "" {
-					continue
-				}
-				for _, group := range replicaPodGroups(lws, mode, groupIndex, revision) {
-					desiredGroups[group.name] = struct{}{}
-				}
+	// The desired set does not cover every active replica: Hash identity cannot
+	// enumerate replica instances from the replica count, and Ordinal identity
+	// only enumerates the target revision while a partition or rollout keeps
+	// replicas on an older one. Each active leader pod represents an active
+	// replica whose PodGroups must be preserved. Deriving their names from the
+	// leader's labels matches CreatePodGroupIfNotExists and prevents cleanup
+	// from racing before member pods have spec.schedulingGroup populated (such
+	// as worker PodGroups in role mode before workers are created).
+	if mode, err := SchedulingModeFor(lws); err == nil && (mode == SchedulingModeReplica || mode == SchedulingModeRole) {
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" || !pod.DeletionTimestamp.IsZero() {
+				continue
+			}
+			groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
+			revision := pod.Labels[leaderworkerset.RevisionKey]
+			if groupIndex == "" || revision == "" {
+				continue
+			}
+			for _, group := range replicaPodGroups(lws, mode, groupIndex, revision) {
+				desiredGroups[group.name] = struct{}{}
 			}
 		}
 	}
@@ -682,10 +684,14 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	return nil
 }
 
-// CreatePodGroupIfNotExists materializes the PodGroups of a single replica for
-// a groupIdentity Hash LeaderWorkerSet. With Ordinal identity every instance is
-// known up front and ReconcileScheduling has already created it, so this is a
-// no-op there.
+// CreatePodGroupIfNotExists materializes the PodGroups of the replica led by
+// leaderPod, at the leader's own revision. With groupIdentity Hash this is the
+// only place those PodGroups are created. With Ordinal identity
+// ReconcileScheduling already creates them for the target revision, but a
+// replica kept at an older revision by a partition or an in-progress rollout
+// can be recreated after its PodGroup was collected, for example by a
+// partitioned scale-down and scale-up or a leader restart, and only this path
+// brings that PodGroup back.
 //
 // The pod controller calls this while the leader pod still carries the group
 // replacement scheduling gate, which keeps the KEP-666 ordering: the leaf
@@ -710,7 +716,7 @@ func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws 
 // leaderPodGroups returns the PodGroups that back the group of leaderPod, or
 // nothing when the LWS does not need pod-driven materialization.
 func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) ([]desiredPodGroup, error) {
-	if lws.Spec.Scheduling == nil || !hashGroupIdentity(lws) {
+	if lws.Spec.Scheduling == nil {
 		return nil, nil
 	}
 	mode, err := SchedulingModeFor(lws)
@@ -723,10 +729,16 @@ func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod
 		return nil, nil
 	}
 	groupIndex := leaderPod.Labels[leaderworkerset.GroupIndexLabelKey]
+	revision := leaderPod.Labels[leaderworkerset.RevisionKey]
+	// With Ordinal identity ReconcileScheduling already covers the target
+	// revision, so a leader without group labels is left to it rather than
+	// blocking the worker StatefulSet. Hash identity has no other source.
+	if !hashGroupIdentity(lws) && (groupIndex == "" || revision == "") {
+		return nil, nil
+	}
 	if groupIndex == "" {
 		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.GroupIndexLabelKey)
 	}
-	revision := leaderPod.Labels[leaderworkerset.RevisionKey]
 	if revision == "" {
 		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.RevisionKey)
 	}

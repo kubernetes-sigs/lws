@@ -250,7 +250,7 @@ func TestKubernetesProviderHashRequiresWorkloadBeforeLeaderGroups(t *testing.T) 
 	assert.Empty(t, groups.Items)
 }
 
-func TestKubernetesProviderCreatePodGroupIfNotExistsIsNoopForOrdinal(t *testing.T) {
+func TestKubernetesProviderCreatePodGroupIfNotExistsReusesOrdinalTargetGroup(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
 	fakeClient := newKubernetesFakeClientBuilder().Build()
@@ -263,7 +263,7 @@ func TestKubernetesProviderCreatePodGroupIfNotExistsIsNoopForOrdinal(t *testing.
 
 	groups := &schedulingv1beta1.PodGroupList{}
 	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
-	assert.Len(t, groups.Items, 1, "ordinal instances are pre-created by the LWS controller only")
+	assert.Len(t, groups.Items, 1, "a leader at the target revision reuses the PodGroup the LWS controller created")
 }
 
 func TestKubernetesProviderHashRejectsLeaderWithoutGroupLabels(t *testing.T) {

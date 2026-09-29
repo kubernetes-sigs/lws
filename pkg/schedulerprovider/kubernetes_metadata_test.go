@@ -133,8 +133,8 @@ func TestKubernetesProvider_InjectPodGroupMetadata(t *testing.T) {
 }
 
 func TestKubernetesProvider_CreatePodGroupIfNotExists(t *testing.T) {
-	// The Kubernetes provider pre-creates scheduling objects in
-	// ReconcileScheduling, so the pod-driven hook is a no-op.
+	// With Ordinal identity ReconcileScheduling pre-creates the target revision's
+	// scheduling objects, so a leader without group labels is a no-op.
 	provider := NewKubernetesProvider(fake.NewClientBuilder().Build())
 	assert.NoError(t, provider.CreatePodGroupIfNotExists(context.Background(), testScheduledLWS(), &corev1.Pod{}))
 }
