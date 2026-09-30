@@ -17,21 +17,17 @@ limitations under the License.
 
 package v1
 
-import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
 // RestartBackoffApplyConfiguration represents a declarative configuration of the RestartBackoff type for use
 // with apply.
 //
 // RestartBackoff defines the exponential backoff configuration for group recreation.
 type RestartBackoffApplyConfiguration struct {
-	// base is the initial backoff delay before group recreation.
-	// Defaults to 10s.
-	Base *metav1.Duration `json:"base,omitempty"`
-	// cap is the maximum backoff delay before group recreation.
-	// Defaults to 5m.
-	Cap *metav1.Duration `json:"cap,omitempty"`
+	// baseSeconds is the initial backoff delay in seconds before group recreation.
+	// Defaults to 10.
+	BaseSeconds *int32 `json:"baseSeconds,omitempty"`
+	// capSeconds is the maximum backoff delay in seconds before group recreation.
+	// Defaults to 300.
+	CapSeconds *int32 `json:"capSeconds,omitempty"`
 }
 
 // RestartBackoffApplyConfiguration constructs a declarative configuration of the RestartBackoff type for use with
@@ -40,18 +36,18 @@ func RestartBackoff() *RestartBackoffApplyConfiguration {
 	return &RestartBackoffApplyConfiguration{}
 }
 
-// WithBase sets the Base field in the declarative configuration to the given value
+// WithBaseSeconds sets the BaseSeconds field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Base field is set to the value of the last call.
-func (b *RestartBackoffApplyConfiguration) WithBase(value metav1.Duration) *RestartBackoffApplyConfiguration {
-	b.Base = &value
+// If called multiple times, the BaseSeconds field is set to the value of the last call.
+func (b *RestartBackoffApplyConfiguration) WithBaseSeconds(value int32) *RestartBackoffApplyConfiguration {
+	b.BaseSeconds = &value
 	return b
 }
 
-// WithCap sets the Cap field in the declarative configuration to the given value
+// WithCapSeconds sets the CapSeconds field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Cap field is set to the value of the last call.
-func (b *RestartBackoffApplyConfiguration) WithCap(value metav1.Duration) *RestartBackoffApplyConfiguration {
-	b.Cap = &value
+// If called multiple times, the CapSeconds field is set to the value of the last call.
+func (b *RestartBackoffApplyConfiguration) WithCapSeconds(value int32) *RestartBackoffApplyConfiguration {
+	b.CapSeconds = &value
 	return b
 }

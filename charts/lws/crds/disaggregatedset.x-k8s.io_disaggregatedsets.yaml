@@ -8645,18 +8645,22 @@ spec:
                                   backoff delay between group recreations.
                                   It is opt-in: when unset (nil), group recreation happens immediately.
                                 properties:
-                                  base:
-                                    default: 10s
+                                  baseSeconds:
+                                    default: 10
                                     description: |-
-                                      base is the initial backoff delay before group recreation.
-                                      Defaults to 10s.
-                                    type: string
-                                  cap:
-                                    default: 5m
+                                      baseSeconds is the initial backoff delay in seconds before group recreation.
+                                      Defaults to 10.
+                                    format: int32
+                                    minimum: 1
+                                    type: integer
+                                  capSeconds:
+                                    default: 300
                                     description: |-
-                                      cap is the maximum backoff delay before group recreation.
-                                      Defaults to 5m.
-                                    type: string
+                                      capSeconds is the maximum backoff delay in seconds before group recreation.
+                                      Defaults to 300.
+                                    format: int32
+                                    minimum: 1
+                                    type: integer
                                 type: object
                               restartPolicy:
                                 default: RecreateGroupOnPodRestart
