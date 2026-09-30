@@ -596,20 +596,20 @@ the headless service, defaults to shared</p>
 <tbody>
     
   
-<tr><td><code>base</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#duration-v1-meta"><code>k8s.io/apimachinery/pkg/apis/meta/v1.Duration</code></a>
+<tr><td><code>baseSeconds</code><br/>
+<code>int32</code>
 </td>
 <td>
-   <p>base is the initial backoff delay before group recreation.
-Defaults to 10s.</p>
+   <p>baseSeconds is the initial backoff delay in seconds before group recreation.
+Defaults to 10.</p>
 </td>
 </tr>
-<tr><td><code>cap</code><br/>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#duration-v1-meta"><code>k8s.io/apimachinery/pkg/apis/meta/v1.Duration</code></a>
+<tr><td><code>capSeconds</code><br/>
+<code>int32</code>
 </td>
 <td>
-   <p>cap is the maximum backoff delay before group recreation.
-Defaults to 5m.</p>
+   <p>capSeconds is the maximum backoff delay in seconds before group recreation.
+Defaults to 300.</p>
 </td>
 </tr>
 </tbody>
