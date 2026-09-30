@@ -90,8 +90,8 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	if revisionInitialized {
-		// The status update will enqueue the object again after the cache observes
-		// the marker. Do not create children from an object that is still
+		// The annotation update will enqueue the object again after the cache
+		// observes the marker. Do not create children from an object that is still
 		// unversioned in the cache.
 		return ctrl.Result{}, nil
 	}
@@ -167,9 +167,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // resolveRevision selects the revision hash generation for a DisaggregatedSet.
-// Legacy objects are identified by an empty status.revisionHashVersion and an
-// existing owned LWS. They remain on v1 indefinitely, while a new object is
-// durably marked with the current version before its first LWS is created.
+// Legacy objects are identified by a missing revision-hash-version annotation
+// and an existing owned LWS. They remain on v1 indefinitely, while a new object
+// is durably marked with the current version before its first LWS is created.
 // initialized reports that the marker was just persisted; the caller must stop
 // reconciliation until the cache observes that update, so an LWS event cannot
 // race ahead and make the new object appear legacy.
@@ -178,7 +178,8 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	existingLWS []*leaderworkersetv1.LeaderWorkerSet,
 ) (revision string, initialized bool, err error) {
-	switch disaggregatedSet.Status.RevisionHashVersion {
+	revisionHashVersion := disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey]
+	switch revisionHashVersion {
 	case disaggregatedsetv1.RevisionHashVersion:
 		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), false, nil
 	case "":
@@ -186,13 +187,17 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), false, nil
 		}
 
-		disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
-		if err := r.Status().Update(ctx, disaggregatedSet); err != nil {
+		before := disaggregatedSet.DeepCopy()
+		if disaggregatedSet.Annotations == nil {
+			disaggregatedSet.Annotations = make(map[string]string, 1)
+		}
+		disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey] = disaggregatedsetv1.RevisionHashVersion
+		if err := r.Patch(ctx, disaggregatedSet, client.MergeFrom(before)); err != nil {
 			return "", false, fmt.Errorf("failed to initialize revision hash version: %w", err)
 		}
 		return "", true, nil
 	default:
-		return "", false, fmt.Errorf("unsupported revision hash version %q", disaggregatedSet.Status.RevisionHashVersion)
+		return "", false, fmt.Errorf("unsupported revision hash version %q", revisionHashVersion)
 	}
 }
 

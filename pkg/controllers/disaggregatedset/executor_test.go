@@ -350,11 +350,13 @@ func setupABCScenario(
 	revisionC := disaggregatedsetutils.ComputeRevision(rolesC)
 
 	deployment := &disaggregatedsetv1.DisaggregatedSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid"},
-		Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: rolesC},
-		Status: disaggregatedsetv1.DisaggregatedSetStatus{
-			RevisionHashVersion: disaggregatedsetv1.RevisionHashVersion,
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test", Namespace: "default", UID: "uid",
+			Annotations: map[string]string{
+				disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion,
+			},
 		},
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: rolesC},
 	}
 
 	objects := []client.Object{deployment}
@@ -489,11 +491,13 @@ func TestReconcilerIntegration(t *testing.T) {
 			}
 
 			deployment := &disaggregatedsetv1.DisaggregatedSet{
-				ObjectMeta: metav1.ObjectMeta{Name: tc.deployName, Namespace: "default", UID: "uid"},
-				Spec:       disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
-				Status: disaggregatedsetv1.DisaggregatedSetStatus{
-					RevisionHashVersion: disaggregatedsetv1.RevisionHashVersion,
+				ObjectMeta: metav1.ObjectMeta{
+					Name: tc.deployName, Namespace: "default", UID: "uid",
+					Annotations: map[string]string{
+						disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion,
+					},
 				},
+				Spec: disaggregatedsetv1.DisaggregatedSetSpec{Roles: roles},
 			}
 			require.NoError(t, fakeClient.Create(context.TODO(), deployment))
 
