@@ -275,7 +275,14 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	workerStsReady := false
 	var workerSts appsv1.StatefulSet
-	if err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: leaderWorkerSet.Namespace}, &workerSts); err != nil {
+	err = r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(&pod), Namespace: leaderWorkerSet.Namespace}, &workerSts)
+	if err == nil && hashIdentity && !metav1.IsControlledBy(&workerSts, &pod) {
+		// Two groups whose keys share an 8 character prefix get the same host name.
+		err = fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
+		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, "%s", err.Error())
+		return ctrl.Result{}, err
+	}
+	if err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, err
 		}
@@ -642,6 +649,15 @@ func controllerOwnerReference(owner metav1.Object, scheme *runtime.Scheme) (*met
 		WithController(true), nil
 }
 
+// workerStatefulSetName is the leader's host name. It equals the pod name in
+// ordinal mode, and in hash mode it is known at admission, before the pod name.
+func workerStatefulSetName(leaderPod *corev1.Pod) string {
+	if leaderPod.Spec.Hostname != "" {
+		return leaderPod.Spec.Hostname
+	}
+	return leaderPod.Name
+}
+
 // constructWorkerStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
 func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws leaderworkerset.LeaderWorkerSet, currentRevision *appsv1.ControllerRevision) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	currentLws, err := revisionutils.ApplyRevision(&lws, currentRevision)
@@ -702,7 +718,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// construct statefulset apply configuration
 	statefulSetLabels := mergeMetadata(lws.Labels, labelMap)
 	statefulSetLabels[leaderworkerset.RoleLabelKey] = leaderworkerset.RoleWorker
-	statefulSetConfig := appsapplyv1.StatefulSet(leaderPod.Name, leaderPod.Namespace).
+	statefulSetConfig := appsapplyv1.StatefulSet(workerStatefulSetName(&leaderPod), leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
 			WithReplicas(*currentLws.Spec.LeaderWorkerTemplate.Size - 1).

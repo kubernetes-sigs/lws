@@ -123,7 +123,9 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 		}
 	}
 
-	leaderName := pod.Name
+	// Workers are named after the leader's host name, which a hash leader has
+	// at admission even though its pod name is still empty.
+	leaderName := leaderDNSHostname(pod, pod.Name)
 	subGroupSize, err := strconv.Atoi(pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey])
 	if err != nil {
 		return err
@@ -238,7 +240,9 @@ func AddTPUVariables(pod *corev1.Pod, size int) error {
 	var podWorkerIndex int
 	if pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
 		// If this is a leader, then we know it is requesting TPUs, and the leader will get TPU_WORKER_ID=0.
-		leaderPodName = pod.Name
+		// Workers are named after the leader's host name, which a hash leader
+		// has at admission even though its pod name is still empty.
+		leaderPodName = leaderDNSHostname(pod, pod.Name)
 		podWorkerIndex = 0
 	} else {
 		leaderPodName, podWorkerIndex = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
