@@ -506,7 +506,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, 3, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, 3)
 		require.NoError(t, err) // Should not error, creation is idempotent
 	})
 
@@ -526,7 +526,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, 3, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, 3)
 		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
@@ -536,7 +536,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, 0, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 0, 3)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -557,7 +557,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Annotations = map[string]string{"note": "val"}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -582,7 +582,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 1, 2, 2)
+		err := manager.Create(context.Background(), ds, role, 1, revision, 2, 2)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -620,7 +620,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, 1, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -898,7 +898,7 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
 	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-	require.NoError(t, manager.Create(context.Background(), ds, role, 0, 2, 2))
+	require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2, 2))
 
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name)
 	lws, err := manager.Get(context.Background(), ds, lwsName)
@@ -926,8 +926,8 @@ func TestComputeRevisionGroupIdentity(t *testing.T) {
 		// Objects persisted before the field existed must keep their revision
 		// once the API server starts defaulting groupIdentity to Ordinal.
 		require.Equal(t,
-			disaggregatedsetutils.ComputeRevision(buildRoles("")),
-			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)))
+			disaggregatedsetutils.ComputeRevisionV1(buildRoles("")),
+			disaggregatedsetutils.ComputeRevisionV1(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)))
 	})
 
 	t.Run("Hash produces a different revision", func(t *testing.T) {

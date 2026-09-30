@@ -77,14 +77,28 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// 3. Reconcile LWS objects — either a rolling update (if old revisions with
 	//    replicas exist) or direct reconciliation of the current revision.
 
-	// Step 1: Compute the target revision hash from the spec's role templates.
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
-	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
-
 	allLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Step 1: Compute the target revision with the hash generation selected for
+	// this DisaggregatedSet. Existing, unversioned objects retain the legacy hash
+	// so a controller upgrade cannot trigger an otherwise unnecessary rollout.
+	revision, revisionMarkerPendingObservation, err := r.resolveRevision(ctx, disaggregatedSet, allLWS)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if revisionMarkerPendingObservation {
+		// DisaggregatedSets and their LWS children are observed by separate
+		// informers. If children were created now, the LWS informer could observe
+		// them before the DisaggregatedSet informer observes the annotation. The
+		// next reconcile would then mistake this new set for an unversioned legacy
+		// set. The annotation event will enqueue the set again once its informer
+		// cache contains the marker.
+		return ctrl.Result{}, nil
+	}
+	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
 
 	// Step 2: Delete LWS for slices beyond the desired count (slice scale-down).
 	// Do this before reconciling retained slices so removed slices cannot
@@ -153,6 +167,40 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return result, reconcileErr
+}
+
+// resolveRevision selects the revision hash generation for a DisaggregatedSet.
+// Legacy objects are identified by a missing revision-hash-version annotation
+// and an existing owned LWS. They remain on v1 indefinitely, while a new object
+// is durably marked with the current version before its first LWS is created.
+// revisionMarkerPendingObservation reports that the marker was just persisted;
+// the caller must stop reconciliation until the cache observes that update.
+func (r *DisaggregatedSetReconciler) resolveRevision(
+	ctx context.Context,
+	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
+	existingLWS []*leaderworkersetv1.LeaderWorkerSet,
+) (revision string, revisionMarkerPendingObservation bool, err error) {
+	revisionHashVersion := disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey]
+	switch revisionHashVersion {
+	case disaggregatedsetv1.RevisionHashVersion:
+		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), false, nil
+	case "":
+		if len(existingLWS) > 0 {
+			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), false, nil
+		}
+
+		before := disaggregatedSet.DeepCopy()
+		if disaggregatedSet.Annotations == nil {
+			disaggregatedSet.Annotations = make(map[string]string, 1)
+		}
+		disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey] = disaggregatedsetv1.RevisionHashVersion
+		if err := r.Patch(ctx, disaggregatedSet, client.MergeFrom(before)); err != nil {
+			return "", false, fmt.Errorf("failed to initialize revision hash version: %w", err)
+		}
+		return "", true, nil
+	default:
+		return "", false, fmt.Errorf("unsupported revision hash version %q", revisionHashVersion)
+	}
 }
 
 // updateStatus recomputes per-role replica counts and the Available/Progressing
@@ -481,7 +529,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// With no old revision to replace, create a missing LWS directly at its
 	// desired size; no rolling update is needed.
 	if existing == nil {
-		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, int(desiredReplicas), int(desiredReplicas))
+		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas), int(desiredReplicas))
 	}
 
 	// This revision remains the current target outside a revision transition, so

@@ -145,7 +145,7 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 			continue
 		}
 		initialReplicas := desiredReplicasByRole[roleName]
-		if err := executor.LWSManager.Create(ctx, disaggregatedSet, roleConfigs[roleName], slice, 0, initialReplicas); err != nil {
+		if err := executor.LWSManager.Create(ctx, disaggregatedSet, roleConfigs[roleName], slice, revision, 0, initialReplicas); err != nil {
 			return false, err
 		}
 		created = true

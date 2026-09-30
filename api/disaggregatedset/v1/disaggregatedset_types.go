@@ -22,6 +22,13 @@ import (
 )
 
 const (
+	// RevisionHashVersion identifies the current revision hash algorithm, which
+	// covers all generated LeaderWorkerSet fields that require a rollout.
+	RevisionHashVersion = "v2"
+	// RevisionHashVersionAnnotationKey records which revision hash algorithm a
+	// DisaggregatedSet uses. Its absence identifies a legacy set.
+	RevisionHashVersionAnnotationKey = "disaggregatedset.x-k8s.io/revision-hash-version"
+
 	// SetNameLabelKey records the DisaggregatedSet name that resources belong to.
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	SetNameLabelKey string = "disaggregatedset.x-k8s.io/name"

@@ -62,9 +62,11 @@ func (manager *LeaderWorkerSetManager) Create(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	role *disaggregatedsetv1.DisaggregatedRoleSpec,
 	slice int,
+	revision string,
 	startingReplicas, initialReplicas int,
 ) error {
-	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	// The reconciler selects the hash generation. Recomputing here would assign
+	// current-version names and labels to children of a legacy DisaggregatedSet.
 	lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role.Name)
 	labels := disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, slice, revision, role.Name)
 	replicas := int32(startingReplicas)

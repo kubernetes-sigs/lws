@@ -17,6 +17,7 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -103,7 +105,11 @@ func GetSlices(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) int32 {
 
 const revisionLength = 8
 
-func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
+// ComputeRevisionV1 implements the original DisaggregatedSet revision hash.
+// Keep this function stable: existing unversioned DisaggregatedSets continue to
+// use it so upgrading the controller does not replace otherwise unchanged LWS
+// objects.
+func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	type roleTemplate struct {
 		Name string `json:"name"`
 		// GroupIdentity is normalized so "" and the CRD default Ordinal hash
@@ -126,7 +132,48 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 		})
 	}
 
-	jsonData, err := json.Marshal(templates)
+	return computeRevision(templates)
+}
+
+// ComputeRevision returns the current revision hash. Unlike the legacy
+// algorithm, it covers every generated LWS field that requires a coordinated
+// rollout and treats the map-style role list as order independent.
+func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
+	revisionRoles := slices.Clone(roles)
+	for i := range revisionRoles {
+		role := &revisionRoles[i]
+
+		// Scaling only selects where the desired replica count comes from.
+		role.Scaling = nil
+
+		// The LWS manager propagates only labels and annotations from template
+		// metadata. Fields such as name, namespace, and finalizers are ignored.
+		role.ObjectMeta = metav1.ObjectMeta{
+			Labels:      role.Labels,
+			Annotations: role.Annotations,
+		}
+
+		// Replicas is reconciled in place and does not identify a workload revision.
+		role.Spec.Replicas = nil
+		// RolloutStrategy is consumed by the DisaggregatedSet rollout planner; a
+		// policy change adjusts rollout pacing rather than workload identity.
+		role.Spec.RolloutStrategy = leaderworkersetv1.RolloutStrategy{}
+
+		// GroupReplacementPolicy is patched onto existing LWS objects in place.
+		role.Spec.GroupReplacementPolicy = ""
+	}
+
+	// spec.roles is a map-style list keyed by name, so its order has no
+	// semantic meaning and must not trigger a rollout.
+	slices.SortFunc(revisionRoles, func(a, b disaggregatedsetv1.DisaggregatedRoleSpec) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	return computeRevision(revisionRoles)
+}
+
+func computeRevision(value any) string {
+	jsonData, err := json.Marshal(value)
 	if err != nil {
 		return ""
 	}
