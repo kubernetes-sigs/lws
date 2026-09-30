@@ -97,7 +97,8 @@ type roleRolloutSnapshot struct {
 	OldSpecReplicas                 int                 // Current Spec replicas summed across all old revisions.
 	OldUsableReadyReplicas          int                 // Ready replicas from complete old revisions only.
 	ObservedUsableReadyReplicas     int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
-	ObservedPerRoleReadyReplicas    int                 // Raw Ready from structurally complete active and complete replacement revisions.
+	ObservedPerRoleReadyReplicas    int                 // Raw Ready from all structurally complete revisions.
+	ReplacementPerRoleReadyReplicas int                 // Committed per-role Ready from structurally complete parked and target revisions.
 	NewSpecReplicas                 int                 // Current Spec replicas of the target revision.
 	NewCommittedReadyReplicas       int                 // Target Ready replicas excluding replicas committed to termination.
 	NewUsableReadyReplicas          int                 // Target Ready replicas, or zero when a required role is not Ready.
@@ -211,22 +212,37 @@ func validRolloutState(state RolloutState) bool {
 func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 	activeUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.ReadyReplicas)
 	activeObservedUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.RawReadyReplicas)
-	activePerRoleReady := make(RoleReplicaState, len(state.Config))
-	if allRequiredRolesPresent(state.ActiveOld.RequiredRoles, state.ActiveOld.SpecReplicas) {
-		copy(activePerRoleReady, state.ActiveOld.RawReadyReplicas)
-	}
+	activeObservedPerRoleReady := structurallyCompleteReadyReplicas(
+		state.ActiveOld.RequiredRoles, state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas,
+	)
 	targetUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.ReadyReplicas)
 	targetObservedUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.RawReadyReplicas)
+	targetPerRoleReady := structurallyCompleteReadyReplicas(
+		state.Target.RequiredRoles, state.Target.SpecReplicas, state.Target.ReadyReplicas,
+	)
+	targetObservedPerRoleReady := structurallyCompleteReadyReplicas(
+		state.Target.RequiredRoles, state.Target.SpecReplicas, state.Target.RawReadyReplicas,
+	)
 	parkedSpec := make(RoleReplicaState, len(state.Config))
 	parkedUsableReady := make(RoleReplicaState, len(state.Config))
 	parkedObservedUsableReady := make(RoleReplicaState, len(state.Config))
+	parkedPerRoleReady := make(RoleReplicaState, len(state.Config))
+	parkedObservedPerRoleReady := make(RoleReplicaState, len(state.Config))
 	for _, revision := range state.ParkedOld {
 		ready := usableReadyReplicas(revision.RequiredRoles, revision.ReadyReplicas)
 		observedReady := usableReadyReplicas(revision.RequiredRoles, revision.RawReadyReplicas)
+		perRoleReady := structurallyCompleteReadyReplicas(
+			revision.RequiredRoles, revision.SpecReplicas, revision.ReadyReplicas,
+		)
+		observedPerRoleReady := structurallyCompleteReadyReplicas(
+			revision.RequiredRoles, revision.SpecReplicas, revision.RawReadyReplicas,
+		)
 		for i := range parkedSpec {
 			parkedSpec[i] += revision.SpecReplicas[i]
 			parkedUsableReady[i] += ready[i]
 			parkedObservedUsableReady[i] += observedReady[i]
+			parkedPerRoleReady[i] += perRoleReady[i]
+			parkedObservedPerRoleReady[i] += observedPerRoleReady[i]
 		}
 	}
 
@@ -242,16 +258,30 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 			OldUsableReadyReplicas:          activeUsableReady[i] + parkedUsableReady[i],
 			ObservedUsableReadyReplicas: activeObservedUsableReady[i] + parkedObservedUsableReady[i] +
 				targetObservedUsableReady[i],
-			ObservedPerRoleReadyReplicas: activePerRoleReady[i] +
-				parkedObservedUsableReady[i] + targetObservedUsableReady[i],
-			NewSpecReplicas:           state.Target.SpecReplicas[i],
-			NewCommittedReadyReplicas: state.Target.ReadyReplicas[i],
-			NewUsableReadyReplicas:    targetUsableReady[i],
-			NewTargetReplicas:         state.Target.DesiredReplicas[i],
-			Config:                    state.Config[i],
+			ObservedPerRoleReadyReplicas: activeObservedPerRoleReady[i] +
+				parkedObservedPerRoleReady[i] + targetObservedPerRoleReady[i],
+			ReplacementPerRoleReadyReplicas: parkedPerRoleReady[i] + targetPerRoleReady[i],
+			NewSpecReplicas:                 state.Target.SpecReplicas[i],
+			NewCommittedReadyReplicas:       state.Target.ReadyReplicas[i],
+			NewUsableReadyReplicas:          targetUsableReady[i],
+			NewTargetReplicas:               state.Target.DesiredReplicas[i],
+			Config:                          state.Config[i],
 		}
 	}
 	return snapshot
+}
+
+// structurallyCompleteReadyReplicas keeps per-role readiness independent while
+// excluding orphaned roles from revisions that can no longer become usable.
+func structurallyCompleteReadyReplicas(
+	requiredRoles []bool,
+	specReplicas, readyReplicas RoleReplicaState,
+) RoleReplicaState {
+	ready := make(RoleReplicaState, len(readyReplicas))
+	if allRequiredRolesPresent(requiredRoles, specReplicas) {
+		copy(ready, readyReplicas)
+	}
+	return ready
 }
 
 // usableReadyReplicas returns no capacity until every required role has at
@@ -337,7 +367,6 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 		}
 
 		for i, role := range snapshot {
-			replacementReady := replacementReadyReplicas(role)
 			if activeMustRemainUsable && requiredRoles[i] && current[i] > 0 {
 				activeUsableReadyToPreserve[i] = max(1, activeUsableReadyToPreserve[i])
 			}
@@ -353,7 +382,7 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 				role.ObservedPerRoleReadyReplicas,
 				availabilityFloor(role),
 			)
-			activeRoleReadyToPreserve := max(0, minimumRoleReady-replacementReady)
+			activeRoleReadyToPreserve := max(0, minimumRoleReady-role.ReplacementPerRoleReadyReplicas)
 			minimumRoleSpec := minimumSpecToPreserveReady(
 				current[i], role.ActiveOldCommittedReadyReplicas, activeRoleReadyToPreserve,
 			)
@@ -559,7 +588,7 @@ func availabilityPreserved(
 			availabilityFloor(role),
 		)
 		// Only draining this role can reduce its own Ready replica count.
-		if drain > 0 && replacementReady+activeRoleReadyAfter < minimumRoleReadyAfter {
+		if drain > 0 && role.ReplacementPerRoleReadyReplicas+activeRoleReadyAfter < minimumRoleReadyAfter {
 			return false
 		}
 	}

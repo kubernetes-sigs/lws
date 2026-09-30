@@ -262,6 +262,11 @@ The target revision does not need to be complete for its committed Ready count t
 
 For an old drain, the planner assumes every removed Spec replica could have been Ready. If any surviving required role is absent or could lose its last Ready replica, the entire active revision becomes unusable for every role. Raw Ready capacity determines how much currently serving capacity must be preserved, capped at the rollout-wide availability floor. The proposed post-drain state is checked with committed Ready capacity, so replicas already pending deletion cannot be counted as survivors. This also prevents an interrupted revision from being retired while its still-running replicas are needed to hold the floor; the controller waits for pending deletions to settle or for another revision to replace that capacity.
 
+Per-role readiness is protected separately across all structurally complete
+revisions. A revision with an unready role cannot serve, but its other Ready
+roles may still satisfy their own availability floors while that revision is
+retired as one unit.
+
 Revision completeness is a separate hard constraint. For required roles that are still present in the active old revision, either every role remains at one or more Spec replicas, or every role reaches zero in the same plan. This allows ordinary partial drains and coordinated retirement without a fallback that leaves only part of a revision running.
 
 #### Bootstrap surge

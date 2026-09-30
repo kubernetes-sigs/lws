@@ -285,6 +285,23 @@ func TestStructurallyIncompleteOldRevisionCanRetire(t *testing.T) {
 	require.NoError(t, validateUpdateStep(state, step))
 }
 
+func TestReadinessIncompleteOldRevisionCanRetire(t *testing.T) {
+	// A and B both still contain Prefill and Decode, but neither can serve
+	// because its Prefill is unready. Retiring A preserves C's usable capacity
+	// and B+C still provide the two Ready Decode replicas required globally.
+	state := rolloutState(
+		[]int{1, 2}, []int{1, 1}, []int{0, 1}, []int{1, 1}, []int{0, 1},
+		[]int{1, 1}, []int{1, 1}, []int{1, 2},
+		configs([]int{1, 1}, []int{0, 0}),
+	)
+
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{0, 0}, step.Past)
+	assert.Equal(t, RoleReplicaState{1, 1}, step.New)
+	require.NoError(t, validateUpdateStep(state, step))
+}
+
 func TestAvailabilityFloorDoesNotChangeWithDrainCandidate(t *testing.T) {
 	// A was created for 2P/2D but is now parked at 1P/1D. The newer B
 	// candidate has a 1P/1D baseline. Selecting B must not lower the rollout's
