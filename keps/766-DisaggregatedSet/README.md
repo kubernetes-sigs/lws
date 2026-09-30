@@ -224,6 +224,11 @@ committedReady = min(spec.replicas,
 
 This prevents a replica already committed to deletion from authorizing another drain. The controller guarantees that a drain is safe for the snapshot it observed. It cannot prevent an unrelated pod from losing readiness after that observation.
 
+If a rollback makes a draining revision the target again, the controller waits
+for `status.replicas` to settle to Spec before continuing. Otherwise a later
+Spec increase could make an already terminating Ready replica appear committed
+again.
+
 Readiness is also revision-aware. A revision contributes its committed Ready counts only when every required role has at least one; otherwise it contributes zero for every role.
 
 For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable capacity. Its Decode replicas cannot authorize retirement of an old Prefill/Decode revision. Once the target reaches `1P/2D` Ready, both role counts become usable together.

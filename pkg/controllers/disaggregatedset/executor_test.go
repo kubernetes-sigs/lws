@@ -1585,6 +1585,51 @@ func TestTwoReadinessIncompleteOldRevisionsConverge(t *testing.T) {
 	assertRevisionReplicas(t, fakeClient, "C", [2]int32{1, 2})
 }
 
+func TestRollbackWaitsForTargetDrainBeforeGrowing(t *testing.T) {
+	ctx := context.Background()
+	createdAt := time.Now()
+	objects := revisionLWSObjects("A", [2]int32{2, 2}, [2]int32{4, 4}, [2]int32{4, 4}, createdAt)
+	for _, object := range objects {
+		object.(*leaderworkersetv1.LeaderWorkerSet).Status.Replicas = 4
+	}
+	objects = append(objects, revisionLWSObjects("B", [2]int32{2, 2}, [2]int32{2, 2}, [2]int32{4, 4}, createdAt.Add(time.Hour))...)
+	fakeClient := newTestClient(objects...)
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 4}, [2]int{1, 1}, [2]int{})
+	desired := resolveDesiredReplicasByRole(ds, nil)
+
+	// A was previously drained from four replicas to two. Rolling back to A
+	// must wait while its two prior deletions are still reflected in status.
+	for range 2 {
+		_, complete, err := newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "A", desired)
+		require.NoError(t, err)
+		require.False(t, complete)
+		assertRevisionReplicas(t, fakeClient, "A", [2]int32{2, 2})
+		assertRevisionReplicas(t, fakeClient, "B", [2]int32{2, 2})
+	}
+
+	// Once the old drain settles, A may grow. Until that new replica becomes
+	// Ready, B still cannot be drained under maxUnavailable=0.
+	var list leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, fakeClient.List(ctx, &list))
+	for i := range list.Items {
+		lws := &list.Items[i]
+		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] != "A" {
+			continue
+		}
+		lws.Status.Replicas = 2
+		lws.Status.ReadyReplicas = 2
+		require.NoError(t, fakeClient.Status().Update(ctx, lws))
+	}
+	_, _, err := newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "A", desired)
+	require.NoError(t, err)
+	assertRevisionReplicas(t, fakeClient, "A", [2]int32{3, 3})
+	assertRevisionReplicas(t, fakeClient, "B", [2]int32{2, 2})
+
+	_, _, err = newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "A", desired)
+	require.NoError(t, err)
+	assertRevisionReplicas(t, fakeClient, "B", [2]int32{2, 2})
+}
+
 func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) {
 	ctx := context.Background()
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 4}, [2]int{1, 1}, [2]int{})

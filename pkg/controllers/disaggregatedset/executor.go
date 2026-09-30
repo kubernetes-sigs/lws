@@ -183,6 +183,10 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, inputs.allRoleNames, targetRevision, inputs.targetReplicas); err != nil {
 		return ctrl.Result{}, false, err
 	}
+	if roleName, waiting := targetRoleWithPendingDrain(targetRevision, inputs.targetRoleNames); waiting {
+		log.V(1).Info("Waiting for previous target drain to finish before continuing rollback", "role", roleName)
+		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+	}
 
 	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas)
 	if specComplete {
@@ -601,6 +605,26 @@ func committedReadyReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
 	pendingDrain := max(0, int(lws.Status.Replicas)-specReplicas)
 	readyAfterPendingDrain := max(0, int(lws.Status.ReadyReplicas)-pendingDrain)
 	return min(specReplicas, readyAfterPendingDrain)
+}
+
+// targetRoleWithPendingDrain detects a rollback target whose earlier
+// scale-down has not finished. Continuing now could reuse the readiness of a
+// terminating replica after the target Spec grows.
+func targetRoleWithPendingDrain(
+	target disaggregatedsetutils.RevisionRoles,
+	roleNames []string,
+) (string, bool) {
+	for _, roleName := range roleNames {
+		lws := target.Roles[roleName]
+		if lws == nil {
+			continue
+		}
+		specReplicas := int(getLWSReplicas(lws))
+		if int(lws.Status.Replicas) > specReplicas {
+			return roleName, true
+		}
+	}
+	return "", false
 }
 
 func rolloutTargetReplicas(
