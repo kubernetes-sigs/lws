@@ -99,8 +99,20 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err, "Reconcile should succeed")
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}}
+	_, err := reconciler.Reconcile(ctx, request)
+	require.NoError(t, err, "revision initialization should succeed")
+
+	var initialLWSList leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, fakeClient.List(ctx, &initialLWSList))
+	assert.Empty(t, initialLWSList.Items, "children must not be created before the revision marker is observed")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+	assert.Equal(t, disaggregatedsetv1.RevisionHashVersion, got.Status.RevisionHashVersion)
+
+	_, err = reconciler.Reconcile(ctx, request)
+	require.NoError(t, err, "child reconciliation should succeed")
 
 	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
@@ -113,7 +125,6 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	require.NotNil(t, decodeInfo, "decode LWS should exist")
 	assert.Equal(t, 2, int(*decodeInfo.Spec.Replicas), "decode replicas")
 
-	var got disaggregatedsetv1.DisaggregatedSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
 	assert.Equal(t, disaggregatedsetv1.RevisionHashVersion, got.Status.RevisionHashVersion)
 }
@@ -317,6 +328,7 @@ func TestSlicesCreateOneSetPerSlice(t *testing.T) {
 		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 3, "nginx:1.0").
 		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
@@ -399,7 +411,9 @@ func TestStatusPopulatedOnFreshDeployment(t *testing.T) {
 	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err, "Reconcile should succeed")
+	require.NoError(t, err, "revision initialization should succeed")
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "child reconciliation should succeed")
 
 	var got disaggregatedsetv1.DisaggregatedSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
@@ -547,6 +561,7 @@ func TestStatusAvailableWhenPausedAtZero(t *testing.T) {
 		WithRole(testControllerRolePrefill, 0, "nginx:1.0").
 		WithRole(testControllerRoleDecode, 0, "nginx:1.0").
 		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
@@ -577,6 +592,7 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 		WithRole(testControllerRolePrefill, 5, "nginx:1.0"). // inline 5 must be ignored: External mode.
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
@@ -630,6 +646,7 @@ func TestStatusProgressingWhenExternalRoleScalerMissing(t *testing.T) {
 	disaggregatedSet := wrappers.BuildDisaggregatedSet("scaler-collision", "default").
 		WithRole(testControllerRolePrefill, 1, "nginx:1.0").
 		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
 
 	// A scaler already occupies the name this role would generate, but it's
@@ -712,6 +729,7 @@ func TestStatusDropsRemovedRoleEvenWhileItsLWSStillDrains(t *testing.T) {
 		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
 		WithRole("extra", 2, "nginx:1.0").
 		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
