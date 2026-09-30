@@ -516,7 +516,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// With no old revision to replace, create a missing LWS directly at its
 	// desired size; no rolling update is needed.
 	if existing == nil {
-		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, int(desiredReplicas), int(desiredReplicas))
+		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas), int(desiredReplicas))
 	}
 
 	// This revision remains the current target outside a revision transition, so

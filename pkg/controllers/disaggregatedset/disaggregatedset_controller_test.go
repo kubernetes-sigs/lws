@@ -152,6 +152,42 @@ func TestLegacyRevisionHashDoesNotTriggerRollout(t *testing.T) {
 	assert.Empty(t, got.Status.RevisionHashVersion, "an existing unversioned set must remain on the legacy hash")
 }
 
+func TestLegacyRevisionHashRecreatesMissingLWSWithLegacyRevision(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("legacy-missing-lws", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	legacyRevision := disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles)
+	currentRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	require.NotEqual(t, legacyRevision, currentRevision, "the fixture must exercise a hash-generation change")
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, legacyRevision, 2),
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+
+	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
+	recreated, err := lwsManager.GetForRole(ctx, disaggregatedSet, 0, legacyRevision, testControllerRoleDecode)
+	require.NoError(t, err)
+	require.NotNil(t, recreated, "the missing role must be recreated under the resolved legacy revision")
+	assert.Equal(t, legacyRevision, recreated.Labels[disaggregatedsetv1.RevisionLabelKey])
+
+	incorrectlyVersioned, err := lwsManager.GetForRole(ctx, disaggregatedSet, 0, currentRevision, testControllerRoleDecode)
+	require.NoError(t, err)
+	assert.Nil(t, incorrectlyVersioned, "a legacy DisaggregatedSet must not create a current-version LWS")
+
+	var got disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
+	assert.Empty(t, got.Status.RevisionHashVersion, "recreating a child must not migrate a legacy DisaggregatedSet")
+}
+
 func TestVersionedRevisionHashRollsOutStartupPolicyChange(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
