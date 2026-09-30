@@ -1060,7 +1060,9 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(lws)
 		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(lws)
 	}
-	if lws.Spec.PodTerminationPolicy != "" {
+	// Default is the historical sequential behavior. Stamping it onto the leader
+	// pod template would change the StatefulSet and roll existing groups on upgrade.
+	if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 		podAnnotations[leaderworkerset.PodTerminationPolicyAnnotationKey] = string(lws.Spec.PodTerminationPolicy)
 	}
 

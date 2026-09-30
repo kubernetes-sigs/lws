@@ -2863,4 +2863,3 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 		}
 	})
 }
-

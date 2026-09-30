@@ -1927,7 +1927,7 @@ func TestRollingUpdatePartition(t *testing.T) {
 func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 	ctx := context.TODO()
 
-	t.Run("leader pod template gets termination policy annotation", func(t *testing.T) {
+	t.Run("parallel policy annotates the leader pod template", func(t *testing.T) {
 		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 			Size(2).
@@ -1943,6 +1943,27 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 				leaderworkerset.PodTerminationPolicyAnnotationKey,
 				leaderworkerset.ParallelPodTerminationPolicy,
 				template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey])
+		}
+	})
+
+	t.Run("default and empty policies do not annotate the leader pod template", func(t *testing.T) {
+		for _, policy := range []leaderworkerset.PodTerminationPolicyType{"", leaderworkerset.DefaultPodTerminationPolicy} {
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Size(2).
+				Obj()
+			lws.Spec.PodTerminationPolicy = policy
+
+			template, err := buildLeaderPodTemplateApplyConfiguration(lws, "rev-1")
+			if err != nil {
+				t.Fatalf("buildLeaderPodTemplateApplyConfiguration() failed for policy %q: %v", policy, err)
+			}
+			if _, ok := template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey]; ok {
+				t.Errorf("policy %q should not set %s, got %s",
+					policy,
+					leaderworkerset.PodTerminationPolicyAnnotationKey,
+					template.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey])
+			}
 		}
 	})
 
@@ -2048,4 +2069,3 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		}
 	})
 }
-
