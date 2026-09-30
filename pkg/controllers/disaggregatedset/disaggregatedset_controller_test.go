@@ -188,6 +188,36 @@ func TestLegacyRevisionHashRecreatesMissingLWSWithLegacyRevision(t *testing.T) {
 	assert.Empty(t, got.Status.RevisionHashVersion, "recreating a child must not migrate a legacy DisaggregatedSet")
 }
 
+func TestVersionedRevisionHashRoleReorderDoesNotTriggerRollout(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("role-reorder", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Status.RevisionHashVersion = disaggregatedsetv1.RevisionHashVersion
+	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
+	prefill := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, revision, 2)
+	decode := createOldLeaderWorkerSet(disaggregatedSet, testControllerRoleDecode, revision, 2)
+
+	disaggregatedSet.Spec.Roles[0], disaggregatedSet.Spec.Roles[1] = disaggregatedSet.Spec.Roles[1], disaggregatedSet.Spec.Roles[0]
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, prefill, decode).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+
+	var lwsList leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, fakeClient.List(ctx, &lwsList))
+	require.Len(t, lwsList.Items, 2, "reordering map-style roles must not create a new revision")
+	for i := range lwsList.Items {
+		assert.Equal(t, revision, lwsList.Items[i].Labels[disaggregatedsetv1.RevisionLabelKey])
+	}
+}
+
 func TestVersionedRevisionHashRollsOutStartupPolicyChange(t *testing.T) {
 	ctx := context.Background()
 	scheme := wrappers.DisaggregatedSetTestScheme()
