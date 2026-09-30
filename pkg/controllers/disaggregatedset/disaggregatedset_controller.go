@@ -85,14 +85,17 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Step 1: Compute the target revision with the hash generation selected for
 	// this DisaggregatedSet. Existing, unversioned objects retain the legacy hash
 	// so a controller upgrade cannot trigger an otherwise unnecessary rollout.
-	revision, revisionInitialized, err := r.resolveRevision(ctx, disaggregatedSet, allLWS)
+	revision, revisionMarkerPendingObservation, err := r.resolveRevision(ctx, disaggregatedSet, allLWS)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if revisionInitialized {
-		// The annotation update will enqueue the object again after the cache
-		// observes the marker. Do not create children from an object that is still
-		// unversioned in the cache.
+	if revisionMarkerPendingObservation {
+		// DisaggregatedSets and their LWS children are observed by separate
+		// informers. If children were created now, the LWS informer could observe
+		// them before the DisaggregatedSet informer observes the annotation. The
+		// next reconcile would then mistake this new set for an unversioned legacy
+		// set. The annotation event will enqueue the set again once its informer
+		// cache contains the marker.
 		return ctrl.Result{}, nil
 	}
 	sliceCount := int(disaggregatedsetutils.GetSlices(disaggregatedSet))
@@ -170,14 +173,13 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // Legacy objects are identified by a missing revision-hash-version annotation
 // and an existing owned LWS. They remain on v1 indefinitely, while a new object
 // is durably marked with the current version before its first LWS is created.
-// initialized reports that the marker was just persisted; the caller must stop
-// reconciliation until the cache observes that update, so an LWS event cannot
-// race ahead and make the new object appear legacy.
+// revisionMarkerPendingObservation reports that the marker was just persisted;
+// the caller must stop reconciliation until the cache observes that update.
 func (r *DisaggregatedSetReconciler) resolveRevision(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	existingLWS []*leaderworkersetv1.LeaderWorkerSet,
-) (revision string, initialized bool, err error) {
+) (revision string, revisionMarkerPendingObservation bool, err error) {
 	revisionHashVersion := disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey]
 	switch revisionHashVersion {
 	case disaggregatedsetv1.RevisionHashVersion:
