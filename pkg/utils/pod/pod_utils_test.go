@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -182,6 +183,45 @@ func TestAddLWSVariables(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAddDisaggregatedSetVariables(t *testing.T) {
+	pod := wrappers.MakePodWithLabels("test-sample-0-abcd1234-prefill", "0", "1", "default", 2)
+	pod.Labels[disaggregatedset.SetNameLabelKey] = "test-sample"
+	pod.Labels[disaggregatedset.RoleLabelKey] = "prefill"
+	pod.Labels[disaggregatedset.SliceLabelKey] = "0"
+	pod.Labels[disaggregatedset.RevisionLabelKey] = "abcd1234"
+
+	AddDisaggregatedSetVariables(pod)
+
+	want := map[string]string{
+		disaggregatedset.SetNameEnv:  "test-sample",
+		disaggregatedset.RoleEnv:     "prefill",
+		disaggregatedset.SliceEnv:    "0",
+		disaggregatedset.RevisionEnv: "abcd1234",
+	}
+	containers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
+	for _, container := range containers {
+		for name, value := range want {
+			found, got := GetEnvVarValueIfInContainer(&container, name)
+			if !found {
+				t.Errorf("container %q is missing %s", container.Name, name)
+			} else if got != value {
+				t.Errorf("container %q has %s=%q, want %q", container.Name, name, got, value)
+			}
+		}
+	}
+}
+
+func TestAddDisaggregatedSetVariablesSkipsStandaloneLWS(t *testing.T) {
+	pod := wrappers.MakePodWithLabels("test-sample", "0", "1", "default", 2)
+	want := pod.DeepCopy()
+
+	AddDisaggregatedSetVariables(pod)
+
+	if diff := cmp.Diff(want.Spec, pod.Spec); diff != "" {
+		t.Errorf("standalone LWS Pod spec changed (-want,+got):\n%s", diff)
 	}
 }
 

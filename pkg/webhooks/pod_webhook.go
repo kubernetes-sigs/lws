@@ -222,6 +222,7 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 	if err := podutils.AddLWSVariables(pod, leaderAddress); err != nil {
 		return err
 	}
+	podutils.AddDisaggregatedSetVariables(pod)
 
 	return nil
 }

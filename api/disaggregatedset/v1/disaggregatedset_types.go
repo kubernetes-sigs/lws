@@ -37,6 +37,18 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RevisionLabelKey string = "disaggregatedset.x-k8s.io/revision"
 
+	// SetNameEnv is injected into every container of Pods managed by a DisaggregatedSet.
+	SetNameEnv string = "DISAGGREGATEDSET_NAME"
+
+	// RoleEnv is injected into every container of Pods managed by a DisaggregatedSet.
+	RoleEnv string = "DISAGGREGATEDSET_ROLE"
+
+	// SliceEnv is injected into every container of Pods managed by a DisaggregatedSet.
+	SliceEnv string = "DISAGGREGATEDSET_SLICE"
+
+	// RevisionEnv is injected into every container of Pods managed by a DisaggregatedSet.
+	RevisionEnv string = "DISAGGREGATEDSET_REVISION"
+
 	// InitialReplicasAnnotationKey records this LWS revision's intended replica
 	// count. While the revision is current, the controller keeps it aligned with
 	// the target. When a newer revision makes it old, the value freezes and is

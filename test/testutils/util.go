@@ -38,6 +38,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
@@ -502,6 +503,15 @@ func hasAllEnvVarPopulated(pod corev1.Pod, envVars []string) bool {
 
 func HasLWSEnvVarsPopulated(pod corev1.Pod) bool {
 	return hasAllEnvVarPopulated(pod, []string{leaderworkerset.LwsLeaderAddress, leaderworkerset.LwsGroupSize, leaderworkerset.LwsWorkerIndex})
+}
+
+func HasDisaggregatedSetEnvVarsPopulated(pod corev1.Pod) bool {
+	return hasAllEnvVarPopulated(pod, []string{
+		disaggregatedset.SetNameEnv,
+		disaggregatedset.RoleEnv,
+		disaggregatedset.SliceEnv,
+		disaggregatedset.RevisionEnv,
+	})
 }
 
 func CheckAnnotation(pod corev1.Pod, key, val string) error {
