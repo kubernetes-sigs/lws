@@ -357,6 +357,65 @@ func setInitialReplicasAnnotation(leaderWorkerSet *leaderworkersetv1.LeaderWorke
 	leaderWorkerSet.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = strconv.Itoa(replicas)
 }
 
+// UpdateRolloutAvailabilityBaseline persists the rollout generation and the
+// role's availability baseline on a target LWS.
+func (manager *LeaderWorkerSetManager) UpdateRolloutAvailabilityBaseline(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
+	generation int64,
+	replicas int,
+) error {
+	current, err := manager.Get(ctx, ds, leaderWorkerSet.Name)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return fmt.Errorf("LeaderWorkerSet %s is not controlled by DisaggregatedSet %s", leaderWorkerSet.Name, ds.Name)
+	}
+	value := fmt.Sprintf("%d:%d", generation, replicas)
+	if current.Annotations[rolloutAvailabilityAnnotationKey] != value {
+		patch := client.MergeFrom(current.DeepCopy())
+		if current.Annotations == nil {
+			current.Annotations = make(map[string]string)
+		}
+		current.Annotations[rolloutAvailabilityAnnotationKey] = value
+		if err := manager.client.Patch(ctx, current, patch); err != nil {
+			return fmt.Errorf("failed to update rollout availability baseline on %s: %w", current.Name, err)
+		}
+	}
+	if leaderWorkerSet.Annotations == nil {
+		leaderWorkerSet.Annotations = make(map[string]string)
+	}
+	leaderWorkerSet.Annotations[rolloutAvailabilityAnnotationKey] = value
+	return nil
+}
+
+// ClearRolloutAvailabilityBaseline removes state belonging to a completed
+// rollout so the LWS can safely become a future rollback target.
+func (manager *LeaderWorkerSetManager) ClearRolloutAvailabilityBaseline(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet,
+) error {
+	current, err := manager.Get(ctx, ds, leaderWorkerSet.Name)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return fmt.Errorf("LeaderWorkerSet %s is not controlled by DisaggregatedSet %s", leaderWorkerSet.Name, ds.Name)
+	}
+	if _, ok := current.Annotations[rolloutAvailabilityAnnotationKey]; ok {
+		patch := client.MergeFrom(current.DeepCopy())
+		delete(current.Annotations, rolloutAvailabilityAnnotationKey)
+		if err := manager.client.Patch(ctx, current, patch); err != nil {
+			return fmt.Errorf("failed to clear rollout availability baseline on %s: %w", current.Name, err)
+		}
+	}
+	delete(leaderWorkerSet.Annotations, rolloutAvailabilityAnnotationKey)
+	return nil
+}
+
 // UpdateInitialReplicas persists the initial-replicas annotation and keeps the
 // supplied LWS object synchronized for the remainder of the reconciliation.
 func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(

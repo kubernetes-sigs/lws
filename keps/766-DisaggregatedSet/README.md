@@ -234,7 +234,7 @@ For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable cap
 
 ```
 roleReplicaCount    = max(initialOld, target)
-availabilityBaseline = max(initial-replicas across non-drained old revisions)
+availabilityBaseline = max(initial-replicas across old revisions when the rollout starts)
 surgeCeiling        = roleReplicaCount + MaxSurge
 availabilityFloor   = max(0, min(availabilityBaseline, target) - MaxUnavailable)
 
@@ -242,6 +242,9 @@ oldSpec + newSpec <= surgeCeiling
 ```
 
 `oldSpec` includes active and parked old revisions. Existing out-of-bound Spec is never increased.
+The availability baseline is stored on the target revision for the lifetime of
+the rollout. It therefore remains fixed as old revisions drain and are deleted,
+and is cleared once the target is fully Ready.
 
 For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase. However, each role required by the final target keeps a phase target of at least one replica. This lets the target revision form a complete same-revision unit instead of depending on a counterpart from a parked revision: `phaseTarget = max(currentNewSpec, target - parkedUsableReady, 1)` for required roles.
 
