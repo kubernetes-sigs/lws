@@ -3,8 +3,8 @@ title: "LeaderWorkerSet"
 linkTitle: "LeaderWorkerSet"
 weight: 1
 description: >
-  Multi-node inference with LeaderWorkerSet, including autoscaling and
-  topology-aware placement.
+  LeaderWorkerSet examples, including multi-node inference, autoscaling,
+  topology-aware placement, and native gang scheduling.
 ---
 
 These guides deploy a distributed, multi-node inference service with
@@ -16,3 +16,5 @@ worker pods. Each guide isolates one feature and ships both a `vllm.yaml` and a
 - [Autoscaling](autoscaling/): scale replica groups with a HorizontalPodAutoscaler.
 - [Topology-aware scheduling](topology-aware-scheduling/): pin each group to one
   topology domain with `exclusive-topology`.
+- [Gang scheduling](gang-scheduling/): schedule each leader-worker replica as
+  an all-or-nothing gang with native Kubernetes scheduling.

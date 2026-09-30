@@ -1,0 +1,18 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: lws-gang
+spec:
+  replicas: 2
+  scheduling: {}
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      spec:
+        containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi

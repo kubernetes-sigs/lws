@@ -64,3 +64,73 @@ This issue occurs because StatefulSet names exceeding 57 characters prevent pods
 ### Solution
 
 The name limit for LWS objects is calculated as `(51 - int(replicas / 10))`. This is because the worker StatefulSet name grows by one character for replicas above 9, another character for replicas above 99, and so on. Ensure that the LWS object name adheres to this limit to avoid issues.
+
+---
+
+## 4. Native Gang Scheduling Does Not Progress
+
+### Check for an admission error
+
+If `kubectl apply` rejects a LeaderWorkerSet that has `spec.scheduling`, read
+the admission error before looking for a status condition. The object does not
+exist when admission fails. Common errors report that:
+
+- the `WorkloadAwareScheduling` feature gate is not enabled;
+- a scheduler provider is not configured; or
+- the `scheduling.k8s.io/v1beta1` `Workload` or `PodGroup` API is not
+  available.
+
+Confirm that the cluster serves both APIs and that the controller is configured
+for native scheduling:
+
+```shell
+kubectl api-resources --api-group=scheduling.k8s.io | grep -E 'workloads|podgroups'
+kubectl logs deployment/lws-controller-manager -n lws-system
+```
+
+See the [installation prerequisites](../installation/#enable-native-gang-scheduling)
+for the required cluster and controller settings.
+
+### Verify scheduling object creation
+
+After admission succeeds, check the LWS scheduling condition:
+
+```shell
+kubectl get leaderworkerset <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="WorkloadSchedulingCreated")]}{"\n"}'
+```
+
+If the condition is `False`, its reason is one of `APINotAvailable`,
+`UnsupportedProviderCapability`, `InvalidSchedulingConfiguration`,
+`WorkloadCreateFailed`, `PodGroupCreateFailed`, `ParentWorkloadNotReady`,
+or `PodGroupCleanupBlocked`. Its message contains the underlying
+reconciliation error. If the condition is absent, inspect the controller
+logs.
+
+Then list the objects owned by the LWS:
+
+```shell
+kubectl get workloads,podgroups,pods \
+  -l leaderworkerset.sigs.k8s.io/name=<name>
+```
+
+### Diagnose a pending gang
+
+A gang remaining `Pending` is expected when kube-scheduler cannot place all
+`minCount` members together. Inspect the PodGroup, pods, and recent events:
+
+```shell
+kubectl describe podgroup <podgroup-name>
+kubectl describe pods \
+  -l leaderworkerset.sigs.k8s.io/name=<name>
+kubectl get events --sort-by=.lastTimestamp
+```
+
+Check that one replica's combined CPU, memory, and extended-resource requests
+fit the available nodes. Also check node selectors, affinity, taints and
+tolerations, unbound volumes, and resource quotas. Adding capacity or relaxing
+the blocking constraint lets kube-scheduler retry the whole gang.
+
+`PodGroupInitiallyScheduled=True` records that the group completed its initial
+placement once. It is not current replica health; use the LeaderWorkerSet
+`Available`/`Progressing` conditions and pod readiness for that.

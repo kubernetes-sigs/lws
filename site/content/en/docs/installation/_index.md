@@ -10,6 +10,10 @@ description: >
 - [Before you begin](#before-you-begin)
 - [Install a released version](#install-a-released-version)
   - [Uninstall](#uninstall)
+- [Enable native gang scheduling](#enable-native-gang-scheduling)
+  - [Configure Kubernetes](#configure-kubernetes)
+  - [Configure LeaderWorkerSet](#configure-leaderworkerset)
+  - [Verify the prerequisites](#verify-the-prerequisites)
 - [Install the latest development version](#install-the-latest-development-version)
   - [Uninstall](#uninstall-1)
 - [Build and install from source](#build-and-install-from-source)
@@ -135,6 +139,82 @@ To uninstall a released version of LeaderWorkerSet from your cluster by Helm, ru
 ```shell
 helm uninstall lws --namespace lws-system
 ```
+
+## Enable native gang scheduling
+
+Native gang scheduling is available in LWS v0.11.0 and later. It is supported
+on Kubernetes 1.37, where LWS creates the
+`scheduling.k8s.io/v1beta1` `Workload` and `PodGroup` resources introduced in
+that Kubernetes release. Earlier supported Kubernetes minors do not provide
+these API versions.
+
+The LWS integration is alpha, and its required switches are disabled by
+default in both Kubernetes and LWS. Configure the cluster and the LWS
+controller before creating a LeaderWorkerSet with `spec.scheduling`.
+
+### Configure Kubernetes
+
+Enable the `GenericWorkload` feature gate on all three control-plane
+components:
+
+- `kube-apiserver`
+- `kube-controller-manager`
+- `kube-scheduler`
+
+Also enable the scheduling API on kube-apiserver with
+`--runtime-config=scheduling.k8s.io/v1beta1=true`. How these settings are
+configured depends on your Kubernetes provider. For example, a Kind cluster
+configuration contains:
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  GenericWorkload: true
+runtimeConfig:
+  scheduling.k8s.io/v1beta1: true
+```
+
+### Configure LeaderWorkerSet
+
+Enable the LWS `WorkloadAwareScheduling` feature gate and select the native
+Kubernetes scheduler provider. With Helm, add these values to the install or
+upgrade command shown above:
+
+```shell
+--set featureGates.WorkloadAwareScheduling=true \
+--set gangSchedulingManagement.schedulerProvider=kubernetes
+```
+
+For a configuration-file installation, edit the `lws-manager-config`
+ConfigMap in the controller namespace and add the equivalent settings to the
+controller manager configuration:
+
+```yaml
+featureGates:
+  WorkloadAwareScheduling: true
+gangSchedulingManagement:
+  schedulerProvider: kubernetes
+```
+
+Restart the `lws-controller-manager` Deployment after changing an existing
+configuration ConfigMap:
+
+```shell
+kubectl rollout restart deployment/lws-controller-manager -n lws-system
+kubectl rollout status deployment/lws-controller-manager -n lws-system --timeout=5m
+```
+
+### Verify the prerequisites
+
+Confirm that Kubernetes serves both required APIs:
+
+```shell
+kubectl api-resources --api-group=scheduling.k8s.io | grep -E 'workloads|podgroups'
+```
+
+The output must include `workloads` and `podgroups` at version `v1beta1`.
+Then follow the [native gang scheduling quickstart](../examples/leaderworkerset/gang-scheduling/).
 
 ## Install the latest development version
 
