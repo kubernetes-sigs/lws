@@ -51,7 +51,7 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		gomega.Expect(testing.DeleteNamespace(ctx, k8sClient, ns)).To(gomega.Succeed())
 	})
 
-	ginkgo.It("creates replica Workload and PodGroups before releasing the leader StatefulSet", func() {
+	ginkgo.It("creates replica Workload before releasing the leader StatefulSet and materializes PodGroups per leader", func() {
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
 			Name("was-replica").
 			Replica(2).
@@ -60,14 +60,30 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
 		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
 
+		var workload *schedulingv1beta1.Workload
+		leaderStatefulSet := &appsv1.StatefulSet{}
 		gomega.Eventually(func(g gomega.Gomega) {
-			workload := &schedulingv1beta1.Workload{}
+			workload = &schedulingv1beta1.Workload{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesWorkloadName(lws)}, workload)).To(gomega.Succeed())
 			g.Expect(workload.Spec.PodGroupTemplates).To(gomega.HaveLen(1))
 			g.Expect(workload.Spec.PodGroupTemplates[0].Name).To(gomega.Equal("replica"))
 			g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang).NotTo(gomega.BeNil())
 			g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(3)))
 
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey]).To(gomega.Equal(string(schedulerprovider.SchedulingModeReplica)))
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.Equal(schedulerprovider.KubernetesWorkloadName(lws)))
+
+			persistedLWS := &leaderworkerset.LeaderWorkerSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
+			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, lws, 0, 2, func(pod *corev1.Pod) {
+			pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+		})).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
 			groups := &schedulingv1beta1.PodGroupList{}
 			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
 				leaderworkerset.SetNameLabelKey: lws.Name,
@@ -95,15 +111,6 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 				g.Expect(workloadOwner.UID).To(gomega.Equal(workload.UID))
 				g.Expect(workloadOwner.Controller).To(gomega.Equal(ptr.To(false)))
 			}
-
-			leaderStatefulSet := &appsv1.StatefulSet{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
-			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey]).To(gomega.Equal(string(schedulerprovider.SchedulingModeReplica)))
-			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.Equal(schedulerprovider.KubernetesWorkloadName(lws)))
-
-			persistedLWS := &leaderworkerset.LeaderWorkerSet{}
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
-			g.Expect(apimeta.IsStatusConditionTrue(persistedLWS.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 
@@ -151,6 +158,13 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		lws.Annotations = map[string]string{schedulerprovider.GroupTemplateNameAnnotation: "child-template"}
 		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
 		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		gomega.Expect(testing.CreateLeaderPods(ctx, *leaderStatefulSet, k8sClient, lws, 0, 1)).To(gomega.Succeed())
 
 		gomega.Eventually(func(g gomega.Gomega) {
 			groups := &schedulingv1beta1.PodGroupList{}
@@ -292,15 +306,14 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
 		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
 
-		var podGroupName string
+		leaderStatefulSet := &appsv1.StatefulSet{}
 		gomega.Eventually(func(g gomega.Gomega) {
-			groups := &schedulingv1beta1.PodGroupList{}
-			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
-				leaderworkerset.SetNameLabelKey: lws.Name,
-			})).To(gomega.Succeed())
-			g.Expect(groups.Items).To(gomega.HaveLen(1))
-			podGroupName = groups.Items[0].Name
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(leaderStatefulSet.Labels[leaderworkerset.RevisionKey]).NotTo(gomega.BeEmpty())
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		revision := leaderStatefulSet.Labels[leaderworkerset.RevisionKey]
+		podGroupName := schedulerprovider.KubernetesPodGroupName(lws, "0", revision)
 
 		leaderPod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -310,6 +323,7 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 					leaderworkerset.SetNameLabelKey:     lws.Name,
 					leaderworkerset.WorkerIndexLabelKey: "0",
 					leaderworkerset.GroupIndexLabelKey:  "0",
+					leaderworkerset.RevisionKey:         revision,
 				},
 				Annotations: map[string]string{
 					schedulerprovider.WorkloadSchedulingAnnotationKey: string(schedulerprovider.SchedulingModeReplica),
@@ -328,6 +342,15 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			},
 		}
 		gomega.Expect(k8sClient.Create(ctx, leaderPod)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(1))
+			g.Expect(groups.Items[0].Name).To(gomega.Equal(podGroupName))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 
 		workerPod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{

@@ -512,9 +512,10 @@ func createTestLeaderPod(name, namespace, lwsName, groupIndex, revision string) 
 }
 
 // TestVolcanoProviderReconcileSchedulingGroupIdentity covers both identity
-// modes: Ordinal instances are named after contiguous indexes and can be
-// pre-created, while Hash group names only exist once admission stamps a
-// leader pod, so the pod-driven path owns them.
+// TestVolcanoProviderReconcileSchedulingGroupIdentity pins the contract between
+// the LWS-level scheduling pass and the leader-pod pass across groupIdentity
+// modes: both Ordinal and Hash defer replica PodGroup creation to the leader-pod
+// pass (CreatePodGroupIfNotExists) while the leader pod is scheduling-gated.
 func TestVolcanoProviderReconcileSchedulingGroupIdentity(t *testing.T) {
 	ctx := context.Background()
 	newLWS := func(identity leaderworkerset.GroupIdentityType) *leaderworkerset.LeaderWorkerSet {
@@ -535,11 +536,10 @@ func TestVolcanoProviderReconcileSchedulingGroupIdentity(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name       string
-		identity   leaderworkerset.GroupIdentityType
-		wantGroups int
+		name     string
+		identity leaderworkerset.GroupIdentityType
 	}{
-		{name: "ordinal pre-creates one PodGroup per replica", identity: leaderworkerset.GroupIdentityOrdinal, wantGroups: 2},
+		{name: "ordinal defers PodGroups to the leader pods", identity: leaderworkerset.GroupIdentityOrdinal},
 		{name: "hash defers PodGroups to the leader pods", identity: leaderworkerset.GroupIdentityHash},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -551,7 +551,7 @@ func TestVolcanoProviderReconcileSchedulingGroupIdentity(t *testing.T) {
 
 			groups := &volcanov1beta1.PodGroupList{}
 			assert.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
-			assert.Len(t, groups.Items, tc.wantGroups)
+			assert.Empty(t, groups.Items)
 		})
 	}
 }
@@ -602,12 +602,11 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("ordinal identity with typed scheduling validates pre-created LWS-owned PodGroup", func(t *testing.T) {
+	t.Run("ordinal identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
 		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 		provider := NewVolcanoProvider(fakeClient)
 
-		// Pre-create PodGroups via ReconcileScheduling.
 		err := provider.ReconcileScheduling(ctx, lws, 2, "rev1")
 		assert.NoError(t, err)
 
@@ -624,6 +623,10 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
 		assert.Equal(t, lws.Name, owner.Name)
 		assert.Equal(t, lws.UID, owner.UID)
+
+		// Subsequent call succeeds idempotently.
+		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.NoError(t, err)
 	})
 
 	t.Run("legacy mode creates leader-pod-owned PodGroup", func(t *testing.T) {

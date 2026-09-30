@@ -250,20 +250,23 @@ func TestKubernetesProviderHashRequiresWorkloadBeforeLeaderGroups(t *testing.T) 
 	assert.Empty(t, groups.Items)
 }
 
-func TestKubernetesProviderCreatePodGroupIfNotExistsIsNoopForOrdinal(t *testing.T) {
+func TestKubernetesProviderCreatePodGroupIfNotExistsMaterializesForOrdinal(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
 	fakeClient := newKubernetesFakeClientBuilder().Build()
 	provider := NewKubernetesProvider(fakeClient)
 	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
 
+	groups := &schedulingv1beta1.PodGroupList{}
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	assert.Empty(t, groups.Items, "ordinal replica PodGroups are deferred until leader pod reconciliation")
+
 	leader := hashLeaderPod(lws, "0")
 	delete(leader.Annotations, leaderworkerset.GroupIdentityAnnotationKey)
 	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
 
-	groups := &schedulingv1beta1.PodGroupList{}
 	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
-	assert.Len(t, groups.Items, 1, "ordinal instances are pre-created by the LWS controller only")
+	assert.Len(t, groups.Items, 1, "ordinal replica PodGroups are materialized when the gated leader is reconciled")
 }
 
 func TestKubernetesProviderHashRejectsLeaderWithoutGroupLabels(t *testing.T) {

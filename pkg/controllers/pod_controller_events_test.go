@@ -415,6 +415,10 @@ func TestPodCtrlReconcilePodEarlyReturns(t *testing.T) {
 		l.Spec.StartupPolicy = leaderworkerset.LeaderReadyStartupPolicy
 	})
 	lwsPostTermination := withLWS(func(l *leaderworkerset.LeaderWorkerSet) {
+		l.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		l.Spec.GroupReplacementPolicy = leaderworkerset.GroupReplacementPostTermination
+	})
+	lwsOrdinalPostTermination := withLWS(func(l *leaderworkerset.LeaderWorkerSet) {
 		l.Spec.GroupReplacementPolicy = leaderworkerset.GroupReplacementPostTermination
 	})
 
@@ -493,6 +497,23 @@ func TestPodCtrlReconcilePodEarlyReturns(t *testing.T) {
 				p.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
 			}),
 			extraObjects:      []client.Object{terminatingLeader(lwsPostTermination)},
+			wantResult:        ctrl.Result{RequeueAfter: groupReplacementRequeueDelay},
+			wantEventContains: GroupReplacementDeferred,
+		},
+		{
+			name: "an ordinal gated leader waits while a previous pod of the same ordinal tears down",
+			lws:  lwsOrdinalPostTermination,
+			pod: withPod(lwsOrdinalPostTermination, func(p *corev1.Pod) {
+				p.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+			}),
+			extraObjects: []client.Object{withPod(lwsOrdinalPostTermination, func(p *corev1.Pod) {
+				p.Name = "test-lws-0-1"
+				p.UID = "old-worker-uid"
+				p.Labels[leaderworkerset.WorkerIndexLabelKey] = "1"
+				now := metav1.Now()
+				p.DeletionTimestamp = &now
+				p.Finalizers = []string{"foregroundDeletion"}
+			})},
 			wantResult:        ctrl.Result{RequeueAfter: groupReplacementRequeueDelay},
 			wantEventContains: GroupReplacementDeferred,
 		},

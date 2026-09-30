@@ -133,10 +133,25 @@ func TestKubernetesProvider_InjectPodGroupMetadata(t *testing.T) {
 }
 
 func TestKubernetesProvider_CreatePodGroupIfNotExists(t *testing.T) {
-	// The Kubernetes provider pre-creates scheduling objects in
-	// ReconcileScheduling, so the pod-driven hook is a no-op.
-	provider := NewKubernetesProvider(fake.NewClientBuilder().Build())
-	assert.NoError(t, provider.CreatePodGroupIfNotExists(context.Background(), testScheduledLWS(), &corev1.Pod{}))
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+
+	leader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-0",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.GroupIndexLabelKey:  "0",
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.RevisionKey:         "revision-1",
+			},
+		},
+	}
+	assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
 }
 
 func TestWorkloadAPIError(t *testing.T) {
