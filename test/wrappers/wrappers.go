@@ -151,10 +151,10 @@ func (lwsWrapper *LeaderWorkerSetWrapper) MaxGroupRestarts(n int32) *LeaderWorke
 	return lwsWrapper
 }
 
-func (lwsWrapper *LeaderWorkerSetWrapper) RestartBackoff(base, cap *metav1.Duration) *LeaderWorkerSetWrapper {
+func (lwsWrapper *LeaderWorkerSetWrapper) RestartBackoff(baseSeconds, capSeconds *int32) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
-		Base: base,
-		Cap:  cap,
+		BaseSeconds: baseSeconds,
+		CapSeconds:  capSeconds,
 	}
 	return lwsWrapper
 }

@@ -20,7 +20,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -930,8 +929,8 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					RestartBackoff: &leaderworkerset.RestartBackoff{
-						Base: &metav1.Duration{Duration: 10 * time.Second},
-						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+						BaseSeconds: ptr.To(int32(10)),
+						CapSeconds:  ptr.To(int32(300)),
 					},
 				},
 			}),
@@ -944,8 +943,8 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					RestartBackoff: &leaderworkerset.RestartBackoff{
-						Base: &metav1.Duration{Duration: 10 * time.Second},
-						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+						BaseSeconds: ptr.To(int32(10)),
+						CapSeconds:  ptr.To(int32(300)),
 					},
 					RestartPolicy: leaderworkerset.NoneRestartPolicy,
 				},
@@ -959,13 +958,13 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				Replicas: ptr.To(int32(2)),
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 					RestartBackoff: &leaderworkerset.RestartBackoff{
-						Base: &metav1.Duration{Duration: 10 * time.Minute},
-						Cap:  &metav1.Duration{Duration: 5 * time.Minute},
+						BaseSeconds: ptr.To(int32(600)),
+						CapSeconds:  ptr.To(int32(300)),
 					},
 				},
 			}),
 			expectError: true,
-			errorMsg:    "base must not be greater than cap",
+			errorMsg:    "baseSeconds must not be greater than capSeconds",
 		},
 	}
 

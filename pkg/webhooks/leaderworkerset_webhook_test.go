@@ -20,7 +20,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
@@ -276,7 +275,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with RecreateGroupOnPodRestart is allowed",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.RecreateGroupOnPodRestart).
-				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 				Obj(),
 			wantErr: false,
 		},
@@ -284,7 +283,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with RecreateGroupAfterStart is allowed",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.RecreateGroupAfterStart).
-				RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 1 * time.Minute}).
+				RestartBackoff(ptr.To(int32(5)), ptr.To(int32(60))).
 				Obj(),
 			wantErr: false,
 		},
@@ -292,7 +291,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with None policy is rejected",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.NoneRestartPolicy).
-				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 				Obj(),
 			wantErr:   true,
 			errSubstr: "restartBackoff is only supported when restartPolicy recreates the group",
@@ -301,7 +300,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with non-positive Base is rejected",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.RecreateGroupOnPodRestart).
-				RestartBackoff(&metav1.Duration{Duration: 0}, &metav1.Duration{Duration: 5 * time.Minute}).
+				RestartBackoff(ptr.To(int32(0)), ptr.To(int32(300))).
 				Obj(),
 			wantErr:   true,
 			errSubstr: "must be greater than 0",
@@ -310,7 +309,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with non-positive Cap is rejected",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.RecreateGroupOnPodRestart).
-				RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: -1 * time.Second}).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(-1))).
 				Obj(),
 			wantErr:   true,
 			errSubstr: "must be greater than 0",
@@ -319,10 +318,10 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			name: "RestartBackoff with Base > Cap is rejected",
 			lws: wrappers.BuildLeaderWorkerSet("default").
 				RestartPolicy(v1.RecreateGroupOnPodRestart).
-				RestartBackoff(&metav1.Duration{Duration: 10 * time.Minute}, &metav1.Duration{Duration: 5 * time.Minute}).
+				RestartBackoff(ptr.To(int32(600)), ptr.To(int32(300))).
 				Obj(),
 			wantErr:   true,
-			errSubstr: "base must not be greater than cap",
+			errSubstr: "baseSeconds must not be greater than capSeconds",
 		},
 	}
 
@@ -360,11 +359,11 @@ func TestRestartBackoffDefaulting(t *testing.T) {
 	}
 
 	backoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff
-	if backoff.Base == nil || backoff.Base.Duration != 10*time.Second {
-		t.Errorf("expected default Base 10s, got %v", backoff.Base)
+	if backoff.BaseSeconds == nil || *backoff.BaseSeconds != v1.DefaultRestartBackoffBaseSeconds {
+		t.Errorf("expected default BaseSeconds %d, got %v", v1.DefaultRestartBackoffBaseSeconds, backoff.BaseSeconds)
 	}
-	if backoff.Cap == nil || backoff.Cap.Duration != 5*time.Minute {
-		t.Errorf("expected default Cap 5m, got %v", backoff.Cap)
+	if backoff.CapSeconds == nil || *backoff.CapSeconds != v1.DefaultRestartBackoffCapSeconds {
+		t.Errorf("expected default CapSeconds %d, got %v", v1.DefaultRestartBackoffCapSeconds, backoff.CapSeconds)
 	}
 }
 

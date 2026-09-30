@@ -17,8 +17,6 @@ limitations under the License.
 package v1
 
 import (
-	"time"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
@@ -27,10 +25,10 @@ import (
 )
 
 const (
-	// DefaultRestartBackoffBase is the default base interval for group restart backoff.
-	DefaultRestartBackoffBase = 10 * time.Second
-	// DefaultRestartBackoffCap is the default maximum interval for group restart backoff.
-	DefaultRestartBackoffCap = 5 * time.Minute
+	// DefaultRestartBackoffBaseSeconds is the default base interval in seconds for group restart backoff.
+	DefaultRestartBackoffBaseSeconds int32 = 10
+	// DefaultRestartBackoffCapSeconds is the default maximum interval in seconds for group restart backoff.
+	DefaultRestartBackoffCapSeconds int32 = 300
 )
 
 const (
@@ -419,17 +417,19 @@ type LeaderWorkerTemplate struct {
 
 // RestartBackoff defines the exponential backoff configuration for group recreation.
 type RestartBackoff struct {
-	// base is the initial backoff delay before group recreation.
-	// Defaults to 10s.
-	// +kubebuilder:default="10s"
+	// baseSeconds is the initial backoff delay in seconds before group recreation.
+	// Defaults to 10.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
 	// +optional
-	Base *metav1.Duration `json:"base,omitempty"`
+	BaseSeconds *int32 `json:"baseSeconds,omitempty"`
 
-	// cap is the maximum backoff delay before group recreation.
-	// Defaults to 5m.
-	// +kubebuilder:default="5m"
+	// capSeconds is the maximum backoff delay in seconds before group recreation.
+	// Defaults to 300.
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=1
 	// +optional
-	Cap *metav1.Duration `json:"cap,omitempty"`
+	CapSeconds *int32 `json:"capSeconds,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller

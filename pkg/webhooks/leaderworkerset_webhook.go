@@ -111,11 +111,11 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.RestartBackoff != nil {
-		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.Base == nil {
-			lws.Spec.LeaderWorkerTemplate.RestartBackoff.Base = &metav1.Duration{Duration: v1.DefaultRestartBackoffBase}
+		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.BaseSeconds == nil {
+			lws.Spec.LeaderWorkerTemplate.RestartBackoff.BaseSeconds = ptr.To(v1.DefaultRestartBackoffBaseSeconds)
 		}
-		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.Cap == nil {
-			lws.Spec.LeaderWorkerTemplate.RestartBackoff.Cap = &metav1.Duration{Duration: v1.DefaultRestartBackoffCap}
+		if lws.Spec.LeaderWorkerTemplate.RestartBackoff.CapSeconds == nil {
+			lws.Spec.LeaderWorkerTemplate.RestartBackoff.CapSeconds = ptr.To(v1.DefaultRestartBackoffCapSeconds)
 		}
 	}
 
@@ -375,7 +375,7 @@ func ValidateMaxGroupRestarts(specPath *field.Path, spec *v1.LeaderWorkerSetSpec
 }
 
 // ValidateRestartBackoff validates that restartBackoff is only configured
-// with a restartPolicy that recreates the group, and that its duration fields are positive.
+// with a restartPolicy that recreates the group, and that baseSeconds and capSeconds are positive.
 // Exported for DisaggregatedSet webhook reuse.
 func ValidateRestartBackoff(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	allErrs := field.ErrorList{}
@@ -394,27 +394,27 @@ func ValidateRestartBackoff(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 			"restartBackoff is only supported when restartPolicy recreates the group",
 		))
 	}
-	base := spec.LeaderWorkerTemplate.RestartBackoff.Base
-	cap := spec.LeaderWorkerTemplate.RestartBackoff.Cap
-	if base != nil && base.Duration <= 0 {
+	baseSeconds := spec.LeaderWorkerTemplate.RestartBackoff.BaseSeconds
+	capSeconds := spec.LeaderWorkerTemplate.RestartBackoff.CapSeconds
+	if baseSeconds != nil && *baseSeconds <= 0 {
 		allErrs = append(allErrs, field.Invalid(
-			backoffPath.Child("base"),
-			base.Duration.String(),
+			backoffPath.Child("baseSeconds"),
+			*baseSeconds,
 			"must be greater than 0",
 		))
 	}
-	if cap != nil && cap.Duration <= 0 {
+	if capSeconds != nil && *capSeconds <= 0 {
 		allErrs = append(allErrs, field.Invalid(
-			backoffPath.Child("cap"),
-			cap.Duration.String(),
+			backoffPath.Child("capSeconds"),
+			*capSeconds,
 			"must be greater than 0",
 		))
 	}
-	if base != nil && cap != nil && base.Duration > 0 && cap.Duration > 0 && base.Duration > cap.Duration {
+	if baseSeconds != nil && capSeconds != nil && *baseSeconds > 0 && *capSeconds > 0 && *baseSeconds > *capSeconds {
 		allErrs = append(allErrs, field.Invalid(
-			backoffPath.Child("base"),
-			base.Duration.String(),
-			"base must not be greater than cap",
+			backoffPath.Child("baseSeconds"),
+			*baseSeconds,
+			"baseSeconds must not be greater than capSeconds",
 		))
 	}
 	return allErrs
