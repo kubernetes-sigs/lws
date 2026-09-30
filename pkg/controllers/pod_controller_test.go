@@ -2430,8 +2430,8 @@ func TestComputeBackoffDelay(t *testing.T) {
 		{
 			name: "custom backoff base 2s, cap 10s, count 0",
 			backoff: &leaderworkerset.RestartBackoff{
-				Base: &metav1.Duration{Duration: 2 * time.Second},
-				Cap:  &metav1.Duration{Duration: 10 * time.Second},
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
 			},
 			count: 0,
 			want:  2 * time.Second,
@@ -2439,8 +2439,8 @@ func TestComputeBackoffDelay(t *testing.T) {
 		{
 			name: "custom backoff base 2s, cap 10s, count 2",
 			backoff: &leaderworkerset.RestartBackoff{
-				Base: &metav1.Duration{Duration: 2 * time.Second},
-				Cap:  &metav1.Duration{Duration: 10 * time.Second},
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
 			},
 			count: 2,
 			want:  8 * time.Second,
@@ -2448,8 +2448,8 @@ func TestComputeBackoffDelay(t *testing.T) {
 		{
 			name: "custom backoff base 2s, cap 10s, count 3 caps at 10s",
 			backoff: &leaderworkerset.RestartBackoff{
-				Base: &metav1.Duration{Duration: 2 * time.Second},
-				Cap:  &metav1.Duration{Duration: 10 * time.Second},
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
 			},
 			count: 3,
 			want:  10 * time.Second,
@@ -2475,7 +2475,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 	t.Run("within backoff window: delays recreation and returns RequeueAfter", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").
 			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-			RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 			Obj()
 
 		now := time.Now()
@@ -2516,7 +2516,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 	t.Run("after backoff window: deletes leader and increments restart count", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").
 			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-			RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 			Obj()
 
 		now := time.Now()
@@ -2556,7 +2556,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 	t.Run("exponential backoff for count 1", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").
 			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-			RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 			Obj()
 		lws.Annotations = map[string]string{
 			leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`,
@@ -2587,7 +2587,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 	t.Run("worker pod failure triggers backoff based on leader creation timestamp", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").
 			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-			RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 			Size(2).
 			Obj()
 
@@ -2622,7 +2622,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").
 			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
 			MaxGroupRestarts(1).
-			RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 			Obj()
 		lws.Annotations = map[string]string{
 			leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`,

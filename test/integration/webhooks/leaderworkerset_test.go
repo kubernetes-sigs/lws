@@ -17,7 +17,6 @@ package webhooks
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/onsi/ginkgo/v2"
@@ -188,18 +187,18 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: leaderworkerset.DefaultRestartBackoffBase}, &metav1.Duration{Duration: leaderworkerset.DefaultRestartBackoffCap})
+					RestartBackoff(ptr.To(leaderworkerset.DefaultRestartBackoffBaseSeconds), ptr.To(leaderworkerset.DefaultRestartBackoffCapSeconds))
 			},
 		}),
 		ginkgo.Entry("defaulting logic applies when restartBackoff is set with custom fields", &testDefaultingCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
-					RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 2 * time.Minute})
+					RestartBackoff(ptr.To(int32(5)), ptr.To(int32(120)))
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 5 * time.Second}, &metav1.Duration{Duration: 2 * time.Minute})
+					RestartBackoff(ptr.To(int32(5)), ptr.To(int32(120)))
 			},
 		}),
 	)
@@ -666,7 +665,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300)))
 			},
 			lwsCreationShouldFail: false,
 		}),
@@ -674,7 +673,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupAfterStart).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300)))
 			},
 			lwsCreationShouldFail: false,
 		}),
@@ -682,7 +681,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.NoneRestartPolicy).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300)))
 			},
 			lwsCreationShouldFail: true,
 		}),
@@ -690,7 +689,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 0}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(0)), ptr.To(int32(300)))
 			},
 			lwsCreationShouldFail: true,
 		}),
@@ -698,7 +697,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Minute}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(600)), ptr.To(int32(300)))
 			},
 			lwsCreationShouldFail: true,
 		}),
@@ -708,8 +707,8 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
-					Base: &metav1.Duration{Duration: 5 * time.Second},
-					Cap:  &metav1.Duration{Duration: 2 * time.Minute},
+					BaseSeconds: ptr.To(int32(5)),
+					CapSeconds:  ptr.To(int32(120)),
 				}
 			},
 			updateShouldFail: false,
@@ -718,7 +717,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300)))
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
@@ -729,7 +728,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
-					RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute})
+					RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300)))
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.RestartBackoff = nil

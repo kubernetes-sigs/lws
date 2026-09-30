@@ -519,25 +519,25 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 const maxBackoffExponent = 30
 
 func computeBackoffDelay(backoff *leaderworkerset.RestartBackoff, count int32) time.Duration {
-	base := leaderworkerset.DefaultRestartBackoffBase
-	if backoff.Base != nil && backoff.Base.Duration > 0 {
-		base = backoff.Base.Duration
+	baseSeconds := int64(leaderworkerset.DefaultRestartBackoffBaseSeconds)
+	if backoff.BaseSeconds != nil && *backoff.BaseSeconds > 0 {
+		baseSeconds = int64(*backoff.BaseSeconds)
 	}
-	maxCap := leaderworkerset.DefaultRestartBackoffCap
-	if backoff.Cap != nil && backoff.Cap.Duration > 0 {
-		maxCap = backoff.Cap.Duration
+	capSeconds := int64(leaderworkerset.DefaultRestartBackoffCapSeconds)
+	if backoff.CapSeconds != nil && *backoff.CapSeconds > 0 {
+		capSeconds = int64(*backoff.CapSeconds)
 	}
 	if count < 0 {
 		count = 0
 	}
 	if count >= maxBackoffExponent {
-		return maxCap
+		return time.Duration(capSeconds) * time.Second
 	}
-	delay := base * (1 << count)
-	if delay > maxCap || delay <= 0 {
-		return maxCap
+	delaySeconds := baseSeconds * (int64(1) << count)
+	if delaySeconds > capSeconds || delaySeconds <= 0 {
+		return time.Duration(capSeconds) * time.Second
 	}
-	return delay
+	return time.Duration(delaySeconds) * time.Second
 }
 
 func parseGroupRestartCounts(raw string) (map[string]int32, error) {

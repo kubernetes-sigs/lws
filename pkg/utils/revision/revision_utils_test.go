@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/lru"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -106,12 +106,12 @@ func TestNewRevisionIgnoresRestartBackoff(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
 	withoutBackoff := wrappers.BuildLeaderWorkerSet("default").
-		RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+		RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 		Obj()
 	withDifferentBackoff := withoutBackoff.DeepCopy()
 	withDifferentBackoff.Spec.LeaderWorkerTemplate.RestartBackoff = &leaderworkerset.RestartBackoff{
-		Base: &metav1.Duration{Duration: 20 * time.Second},
-		Cap:  &metav1.Duration{Duration: 10 * time.Minute},
+		BaseSeconds: ptr.To(int32(20)),
+		CapSeconds:  ptr.To(int32(600)),
 	}
 
 	first, err := NewRevision(context.TODO(), client, withoutBackoff, "")
@@ -138,7 +138,7 @@ func TestApplyRevisionPreservesRestartBackoff(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 
 	source := wrappers.BuildLeaderWorkerSet("default").
-		RestartBackoff(&metav1.Duration{Duration: 10 * time.Second}, &metav1.Duration{Duration: 5 * time.Minute}).
+		RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
 		Obj()
 	revision, err := NewRevision(context.TODO(), client, source, "")
 	if err != nil {
@@ -147,8 +147,8 @@ func TestApplyRevisionPreservesRestartBackoff(t *testing.T) {
 
 	live := source.DeepCopy()
 	currentBackoff := &leaderworkerset.RestartBackoff{
-		Base: &metav1.Duration{Duration: 15 * time.Second},
-		Cap:  &metav1.Duration{Duration: 3 * time.Minute},
+		BaseSeconds: ptr.To(int32(15)),
+		CapSeconds:  ptr.To(int32(180)),
 	}
 	live.Spec.LeaderWorkerTemplate.RestartBackoff = currentBackoff
 	restored, err := ApplyRevision(live, revision)
