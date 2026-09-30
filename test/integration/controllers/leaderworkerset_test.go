@@ -2881,7 +2881,10 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 
 	ginkgo.Context("with gang scheduling enabled", ginkgo.Ordered, func() {
 		ginkgo.Context("with volcano scheduler provider", ginkgo.Ordered, func() {
+			var previousProvider schedulerprovider.SchedulerProvider
+
 			ginkgo.BeforeAll(func() {
+				previousProvider = podController.SchedulerProvider
 				// Create Volcano provider for gang scheduling tests
 				sp, err := schedulerprovider.NewSchedulerProvider(schedulerprovider.Volcano, k8sClient)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -2889,8 +2892,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 			})
 
 			ginkgo.AfterAll(func() {
-				// Reset the SchedulerProvider to nil
-				podController.SchedulerProvider = nil
+				podController.SchedulerProvider = previousProvider
 			})
 
 			ginkgo.DescribeTable("retries a stale PodGroup until it can be recreated",

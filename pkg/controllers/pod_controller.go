@@ -892,48 +892,65 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 			log.V(2).Info("Deferring gated leader exceeding desired replica slots", "admittedOnRevision", admittedOnRevision, "exhaustedOnRevision", exhaustedOnRevision, "revisionRank", revisionRank, "replicas", lwsReplicas)
 			return false, nil
 		}
-	}
 
-	blockingGroups := countTearingDownGroups(pods.Items)
-	if lws.Spec.GroupReplacementPolicy == leaderworkerset.GroupReplacementImmediate {
-		blockingGroups = countExhaustedGroups(pods.Items)
-	}
-	if blockingGroups > 0 {
-		var gated []corev1.Pod
-		for _, p := range pods.Items {
-			if podutils.LeaderPod(p) && p.DeletionTimestamp == nil && podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
-				gated = append(gated, p)
-			}
+		blockingGroups := countTearingDownGroups(pods.Items)
+		if lws.Spec.GroupReplacementPolicy == leaderworkerset.GroupReplacementImmediate {
+			blockingGroups = countExhaustedGroups(pods.Items)
 		}
-		sort.Slice(gated, func(i, j int) bool {
-			if desiredRevision != "" {
-				iDesired := revisionutils.GetRevisionKey(&gated[i]) == desiredRevision
-				jDesired := revisionutils.GetRevisionKey(&gated[j]) == desiredRevision
-				if iDesired != jDesired {
-					return iDesired
+		if blockingGroups > 0 {
+			var gated []corev1.Pod
+			for _, p := range pods.Items {
+				if podutils.LeaderPod(p) && p.DeletionTimestamp == nil && podutils.HasSchedulingGate(&p, leaderworkerset.GroupReplacementSchedulingGate) {
+					gated = append(gated, p)
 				}
 			}
-			if !gated[i].CreationTimestamp.Equal(&gated[j].CreationTimestamp) {
-				return gated[i].CreationTimestamp.Before(&gated[j].CreationTimestamp)
+			sort.Slice(gated, func(i, j int) bool {
+				if desiredRevision != "" {
+					iDesired := revisionutils.GetRevisionKey(&gated[i]) == desiredRevision
+					jDesired := revisionutils.GetRevisionKey(&gated[j]) == desiredRevision
+					if iDesired != jDesired {
+						return iDesired
+					}
+				}
+				if !gated[i].CreationTimestamp.Equal(&gated[j].CreationTimestamp) {
+					return gated[i].CreationTimestamp.Before(&gated[j].CreationTimestamp)
+				}
+				return gated[i].Name < gated[j].Name
+			})
+			rank := -1
+			for i := range gated {
+				if gated[i].Name == pod.Name {
+					rank = i
+					break
+				}
 			}
-			return gated[i].Name < gated[j].Name
-		})
-		rank := -1
-		for i := range gated {
-			if gated[i].Name == pod.Name {
-				rank = i
-				break
+			if rank == -1 || rank >= len(gated)-blockingGroups {
+				log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", blockingGroups, "gatedLeaders", len(gated))
+				r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, blockingGroups))
+				return false, nil
 			}
 		}
-		if rank == -1 || rank >= len(gated)-blockingGroups {
-			log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", blockingGroups, "gatedLeaders", len(gated))
-			r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, blockingGroups))
-			return false, nil
+		if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+			if err := r.claimGroupRestartCountForHashLeader(ctx, lws, pod); err != nil {
+				return false, err
+			}
 		}
-	}
-	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
-		if err := r.claimGroupRestartCountForHashLeader(ctx, lws, pod); err != nil {
-			return false, err
+	} else {
+		// In Ordinal mode, StatefulSet guarantees at most one leader pod per
+		// ordinal at a time. Wait only if pods from a previous incarnation of
+		// the same ordinal (e.g. terminating workers after background deletion)
+		// are still present under PostTermination.
+		if lws.Spec.GroupReplacementPolicy != leaderworkerset.GroupReplacementImmediate {
+			groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
+			if groupIndex != "" {
+				for _, p := range pods.Items {
+					if p.UID != pod.UID && p.Labels[leaderworkerset.GroupIndexLabelKey] == groupIndex {
+						log.V(2).Info("Deferring group replacement until previous ordinal pods are removed", "groupIndex", groupIndex, "blockingPod", p.Name)
+						r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for previous group %s pods to be removed before scheduling", pod.Name, groupIndex))
+						return false, nil
+					}
+				}
+			}
 		}
 	}
 	newPod := pod.DeepCopy()

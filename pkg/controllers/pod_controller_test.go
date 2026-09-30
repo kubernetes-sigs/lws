@@ -142,10 +142,9 @@ func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 }
 
 // TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader pins the ordering
-// that workload-aware scheduling depends on with groupIdentity Hash: the group
-// key is only known once the leader pod exists, so the PodGroup is created
-// while the leader still carries the group replacement gate and can therefore
-// not be scheduled yet.
+// that workload-aware scheduling depends on in both Ordinal and Hash modes:
+// the PodGroup is created while the leader still carries the group replacement
+// gate and can therefore not be scheduled yet.
 func TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(testScheme); err != nil {
@@ -155,26 +154,27 @@ func TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newLWS := func(policy leaderworkerset.GroupReplacementPolicyType) *leaderworkerset.LeaderWorkerSet {
+	newLWS := func(identity leaderworkerset.GroupIdentityType, policy leaderworkerset.GroupReplacementPolicyType) *leaderworkerset.LeaderWorkerSet {
 		return &leaderworkerset.LeaderWorkerSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "hash-lws", Namespace: "default"},
 			Spec: leaderworkerset.LeaderWorkerSetSpec{
-				GroupIdentity:          leaderworkerset.GroupIdentityHash,
+				GroupIdentity:          identity,
 				GroupReplacementPolicy: policy,
 				Scheduling:             &leaderworkerset.LeaderWorkerSetScheduling{},
 				LeaderWorkerTemplate:   leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](1)},
 			},
 		}
 	}
-	newLeader := func(name string, gated, terminating bool) *corev1.Pod {
+	newLeader := func(name, groupIndex string, gated, terminating bool) *corev1.Pod {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: "default",
+				UID:       types.UID(name),
 				Labels: map[string]string{
 					leaderworkerset.SetNameLabelKey:     "hash-lws",
 					leaderworkerset.WorkerIndexLabelKey: "0",
-					leaderworkerset.GroupIndexLabelKey:  "group-key-" + name,
+					leaderworkerset.GroupIndexLabelKey:  groupIndex,
 				},
 			},
 		}
@@ -191,24 +191,44 @@ func TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader(t *testing.T) {
 
 	for _, tc := range []struct {
 		name        string
+		identity    leaderworkerset.GroupIdentityType
 		policy      leaderworkerset.GroupReplacementPolicyType
+		groupIndex  string
 		others      []client.Object
 		wantUngated bool
 	}{
 		{
-			name:        "gate is lifted after the PodGroup exists",
+			name:        "hash gate is lifted after the PodGroup exists",
+			identity:    leaderworkerset.GroupIdentityHash,
 			policy:      leaderworkerset.GroupReplacementImmediate,
+			groupIndex:  "group-key-new",
 			wantUngated: true,
 		},
 		{
-			name:   "PodGroup is created even while the replacement waits",
-			policy: leaderworkerset.GroupReplacementPostTermination,
-			others: []client.Object{newLeader("old", false, true)},
+			name:       "hash PodGroup is created even while the replacement waits",
+			identity:   leaderworkerset.GroupIdentityHash,
+			policy:     leaderworkerset.GroupReplacementPostTermination,
+			groupIndex: "group-key-new",
+			others:     []client.Object{newLeader("old", "group-key-old", false, true)},
+		},
+		{
+			name:        "ordinal gate is lifted after the PodGroup exists",
+			identity:    leaderworkerset.GroupIdentityOrdinal,
+			policy:      leaderworkerset.GroupReplacementPostTermination,
+			groupIndex:  "0",
+			wantUngated: true,
+		},
+		{
+			name:       "ordinal PodGroup is created while waiting for same-ordinal pod teardown",
+			identity:   leaderworkerset.GroupIdentityOrdinal,
+			policy:     leaderworkerset.GroupReplacementPostTermination,
+			groupIndex: "0",
+			others:     []client.Object{newLeader("old-worker", "0", false, true)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			lws := newLWS(tc.policy)
-			leader := newLeader("new", true, false)
+			lws := newLWS(tc.identity, tc.policy)
+			leader := newLeader("new", tc.groupIndex, true, false)
 			objs := append([]client.Object{lws, leader}, tc.others...)
 
 			var gatedAtCreate bool

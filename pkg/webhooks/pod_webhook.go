@@ -114,16 +114,6 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if pod.Spec.Hostname == "" {
 				pod.Spec.Hostname = hashLeaderHostname(pod.Labels[leaderworkerset.SetNameLabelKey], groupUniqueKey)
 			}
-			// Every hash leader starts gated. The pod controller lifts the gate
-			// according to the LeaderWorkerSet's groupReplacementPolicy, which it
-			// reads from the LWS object rather than from the pod template so that
-			// changing the policy does not roll the leaders.
-			if !podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate) {
-				pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: leaderworkerset.GroupReplacementSchedulingGate})
-				if _, exists := pod.Annotations[corev1.PodDeletionCost]; !exists {
-					pod.Annotations[corev1.PodDeletionCost] = "-100"
-				}
-			}
 		} else {
 			_, groupIndex := statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if groupIndex == -1 {
@@ -132,6 +122,20 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			pod.Labels[leaderworkerset.GroupIndexLabelKey] = fmt.Sprint(groupIndex)
 			groupUniqueKey = genGroupUniqueKey(pod.Namespace, pod.Name)
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
+		}
+		// Every leader starts gated. The pod controller creates any per-replica
+		// scheduling prerequisites (such as leaf PodGroups) while the leader is
+		// gated and lifts the gate according to the LeaderWorkerSet's
+		// groupReplacementPolicy, which it reads from the LWS object rather than
+		// from the pod template so that changing the policy does not roll the
+		// leaders.
+		if !podutils.HasSchedulingGate(pod, leaderworkerset.GroupReplacementSchedulingGate) {
+			pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: leaderworkerset.GroupReplacementSchedulingGate})
+			if hashIdentity {
+				if _, exists := pod.Annotations[corev1.PodDeletionCost]; !exists {
+					pod.Annotations[corev1.PodDeletionCost] = "-100"
+				}
+			}
 		}
 		subdomainPolicy, foundSubdomainPolicy := pod.Annotations[leaderworkerset.SubdomainPolicyAnnotationKey]
 		if foundSubdomainPolicy && subdomainPolicy == string(leaderworkerset.SubdomainUniquePerReplica) {

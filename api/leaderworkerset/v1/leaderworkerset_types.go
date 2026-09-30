@@ -140,9 +140,10 @@ const (
 const GroupReadyConditionType corev1.PodConditionType = "leaderworkerset.sigs.k8s.io/group-ready"
 
 // GroupReplacementSchedulingGate is the scheduling gate placed on every leader
-// pod when GroupIdentity=Hash. The pod controller lifts it according to the
-// groupReplacementPolicy, so a replacement group does not compete for capacity
-// before the group it replaces has been fully deleted.
+// pod. The pod controller lifts it once per-group scheduling prerequisites
+// (such as leaf PodGroups) exist and according to the groupReplacementPolicy,
+// so a replacement group does not compete for capacity before the group it
+// replaces has been fully deleted.
 const GroupReplacementSchedulingGate = "leaderworkerset.sigs.k8s.io/group-replacement"
 
 // One group consists of a single leader and M workers, and the total number of pods in a group is M+1.

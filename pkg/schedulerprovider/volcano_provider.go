@@ -19,11 +19,9 @@ package schedulerprovider
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -49,7 +47,9 @@ func NewVolcanoProvider(client client.Client) *VolcanoProvider {
 	}
 }
 
-// ReconcileScheduling pre-creates LWS-owned PodGroups for spec.scheduling.
+// ReconcileScheduling validates spec.scheduling for Volcano. Replica PodGroups
+// are materialized per leader pod via CreatePodGroupIfNotExists before the
+// leader pod's scheduling gate is lifted.
 func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, replicas int32, revision string) error {
 	if lws.Spec.Scheduling == nil {
 		return nil
@@ -64,43 +64,6 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 	if config := lws.Spec.Scheduling.Replica; config != nil {
 		if (config.SchedulingPolicy != nil && config.SchedulingPolicy.Basic != nil) || config.SchedulingConstraints != nil || config.DisruptionMode != nil {
 			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
-		}
-	}
-	// With groupIdentity Hash, group names are derived from the random group key
-	// drawn at leader pod admission time, so replica PodGroups cannot be pre-created
-	// from the replica count up front (identical to KubernetesProvider). Instead,
-	// CreatePodGroupIfNotExists creates the LWS-owned PodGroup when the leader pod
-	// is reconciled, before its scheduling gate is lifted.
-	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
-		return nil
-	}
-	minResources := utils.CalculatePGMinResources(lws)
-	for groupIndex := int32(0); groupIndex < replicas; groupIndex++ {
-		index := strconv.FormatInt(int64(groupIndex), 10)
-		pg := &volcanov1beta1.PodGroup{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        GetPodGroupName(lws.Name, index, revision),
-				Namespace:   lws.Namespace,
-				Annotations: inheritVolcanoAnnotations(lws),
-				Labels: map[string]string{
-					leaderworkerset.SetNameLabelKey:    lws.Name,
-					leaderworkerset.GroupIndexLabelKey: index,
-					leaderworkerset.RevisionKey:        revision,
-				},
-			},
-			Spec: volcanov1beta1.PodGroupSpec{
-				MinMember:    *lws.Spec.LeaderWorkerTemplate.Size,
-				MinResources: &minResources,
-			},
-		}
-		if queueName, ok := lws.Annotations[volcanov1beta1.QueueNameAnnotationKey]; ok {
-			pg.Spec.Queue = queueName
-		}
-		if err := ctrl.SetControllerReference(lws, pg, v.client.Scheme()); err != nil {
-			return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
-		}
-		if err := v.client.Create(ctx, pg); err != nil && !apierrors.IsAlreadyExists(err) {
-			return NewReconcileError(ReasonPodGroupCreateFailed, fmt.Errorf("create Volcano PodGroup %s/%s: %w", pg.Namespace, pg.Name, err))
 		}
 	}
 	return nil

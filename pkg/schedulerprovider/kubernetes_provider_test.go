@@ -59,12 +59,28 @@ func newKubernetesFakeClientBuilder() *fake.ClientBuilder {
 		})
 }
 
+func ordinalLeaderPod(lws *leaderworkerset.LeaderWorkerSet, groupIndex string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%s", lws.Name, groupIndex),
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.GroupIndexLabelKey:  groupIndex,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.RevisionKey:         "revision-1",
+			},
+		},
+	}
+}
+
 func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 	ctx := context.Background()
 	lws := testScheduledLWS()
 	fakeClient := newKubernetesFakeClientBuilder().Build()
+	provider := NewKubernetesProvider(fakeClient)
 
-	err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "revision-1")
+	err := provider.ReconcileScheduling(ctx, lws, 2, "revision-1")
 	require.NoError(t, err)
 
 	workload := &schedulingv1beta1.Workload{}
@@ -79,6 +95,7 @@ func TestKubernetesProviderReconcileScheduling(t *testing.T) {
 	assert.Equal(t, lws.Name, workload.Spec.ControllerRef.Name)
 
 	for groupIndex, name := range []string{KubernetesPodGroupName(lws, "0", "revision-1"), KubernetesPodGroupName(lws, "1", "revision-1")} {
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, fmt.Sprint(groupIndex))))
 		podGroup := &schedulingv1beta1.PodGroup{}
 		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, podGroup))
 		require.NotNil(t, podGroup.Spec.WorkloadRef)
@@ -170,7 +187,9 @@ func TestKubernetesProviderIsolatesRecreatedLWSByUID(t *testing.T) {
 	provider := NewKubernetesProvider(fakeClient)
 
 	require.NoError(t, provider.ReconcileScheduling(ctx, oldLWS, 1, "revision-1"))
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, oldLWS, ordinalLeaderPod(oldLWS, "0")))
 	require.NoError(t, provider.ReconcileScheduling(ctx, newLWS, 1, "revision-1"))
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, newLWS, ordinalLeaderPod(newLWS, "0")))
 	assert.NotEqual(t, KubernetesWorkloadName(oldLWS), KubernetesWorkloadName(newLWS))
 
 	for _, lws := range []*leaderworkerset.LeaderWorkerSet{oldLWS, newLWS} {
@@ -304,8 +323,9 @@ func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 		},
 	}
 	fakeClient := newKubernetesFakeClientBuilder().Build()
+	provider := NewKubernetesProvider(fakeClient)
 
-	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1"))
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
 	workload := &schedulingv1beta1.Workload{}
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
 	require.Len(t, workload.Spec.PodGroupTemplates, 2)
@@ -316,6 +336,7 @@ func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 	assert.Equal(t, int32(2), workload.Spec.PodGroupTemplates[1].SchedulingPolicy.Gang.MinCount)
 	assert.Equal(t, "high-priority", workload.Spec.PodGroupTemplates[1].PriorityClassName)
 
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0")))
 	for role, name := range map[string]string{
 		leaderWorkloadTemplateName: KubernetesRolePodGroupName(lws, "0", leaderWorkloadTemplateName, "revision-1"),
 		workerWorkloadTemplateName: KubernetesRolePodGroupName(lws, "0", workerWorkloadTemplateName, "revision-1"),
@@ -638,8 +659,13 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 			},
 		}).Build()
 
-	require.NoError(t, NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 4, "revision-1"))
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 4, "revision-1"))
 	assert.Equal(t, 1, workloadLists, "each owner level uses one UID-indexed Workload lookup")
+	assert.Equal(t, 0, parentGets, "must not GET the third-party parent or a CompositePodGroup after the Workload is found")
+	for i := 0; i < 4; i++ {
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, fmt.Sprint(i))))
+	}
 	assert.Equal(t, 0, parentGets, "must not GET the third-party parent or a CompositePodGroup after the Workload is found")
 	group := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, group))

@@ -193,7 +193,10 @@ func TestGroupReplacementGateInjection(t *testing.T) {
 	if err := webhook.Default(context.TODO(), ordinalLeader); err != nil {
 		t.Fatalf("defaulting ordinal leader: %v", err)
 	}
-	if podutils.HasSchedulingGate(ordinalLeader, leaderworkerset.GroupReplacementSchedulingGate) {
-		t.Error("expected ordinal leader not to be gated")
+	if !podutils.HasSchedulingGate(ordinalLeader, leaderworkerset.GroupReplacementSchedulingGate) {
+		t.Error("expected ordinal leader to carry the group replacement scheduling gate")
+	}
+	if _, hasCost := ordinalLeader.Annotations[corev1.PodDeletionCost]; hasCost {
+		t.Errorf("expected ordinal leader not to carry pod-deletion-cost annotation, got %q", ordinalLeader.Annotations[corev1.PodDeletionCost])
 	}
 }

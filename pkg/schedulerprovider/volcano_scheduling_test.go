@@ -61,13 +61,17 @@ func volcanoScheduledLWS() *leaderworkerset.LeaderWorkerSet {
 func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("creates one podgroup per replica", func(t *testing.T) {
+	t.Run("creates one podgroup per leader pod", func(t *testing.T) {
 		lws := volcanoScheduledLWS()
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		provider := NewVolcanoProvider(fakeClient)
 
-		require.NoError(t, NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "rev1"))
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "rev1"))
 
 		for _, index := range []string{"0", "1"} {
+			leader := createTestLeaderPod("test-lws-"+index, lws.Namespace, lws.Name, index, "rev1")
+			require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
 			var pg volcanov1beta1.PodGroup
 			name := GetPodGroupName(lws.Name, index, "rev1")
 			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lws.Namespace}, &pg))
@@ -112,6 +116,12 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 
 		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "rev1"))
 		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "rev1"))
+
+		for _, index := range []string{"0", "1"} {
+			leader := createTestLeaderPod("test-lws-"+index, lws.Namespace, lws.Name, index, "rev1")
+			require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+			require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+		}
 
 		var list volcanov1beta1.PodGroupList
 		require.NoError(t, fakeClient.List(ctx, &list))
