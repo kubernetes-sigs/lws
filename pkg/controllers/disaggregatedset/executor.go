@@ -20,8 +20,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,7 +46,6 @@ const (
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	unschedulablePodGracePeriod       = time.Minute
-	rolloutAvailabilityAnnotationKey  = "disaggregatedset.x-k8s.io/rollout-availability"
 )
 
 type RollingUpdateExecutor struct {
@@ -57,11 +54,10 @@ type RollingUpdateExecutor struct {
 }
 
 type rolloutInputs struct {
-	targetRoleNames      []string
-	allRoleNames         []string
-	targetReplicas       RoleReplicaState
-	availabilityBaseline RoleReplicaState
-	config               []RollingUpdateConfig
+	targetRoleNames []string
+	allRoleNames    []string
+	targetReplicas  RoleReplicaState
+	config          []RollingUpdateConfig
 }
 
 type scaleDirection string
@@ -114,6 +110,7 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if created || newRevision == nil {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+
 	// The slice was used above to discover the relevant LWS objects. Continuing
 	// the rollout updates those objects by their actual names, so the executor
 	// does not need the slice index below.
@@ -175,11 +172,6 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 ) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 	inputs := buildRolloutInputs(disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole)
-	var err error
-	inputs.availabilityBaseline, err = executor.ensureRolloutAvailabilityBaseline(ctx, disaggregatedSet, oldRevisions, targetRevision, inputs.allRoleNames)
-	if err != nil {
-		return ctrl.Result{}, false, err
-	}
 	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, inputs.allRoleNames, targetRevision, inputs.targetReplicas); err != nil {
 		return ctrl.Result{}, false, err
 	}
@@ -193,9 +185,6 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: time.Second}, false, nil
-		}
-		if err := executor.clearRolloutAvailabilityBaseline(ctx, disaggregatedSet, targetRevision); err != nil {
-			return ctrl.Result{}, false, err
 		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
@@ -265,7 +254,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	var selectedStep *UpdateStep
 	candidateStates := make([]RolloutState, len(candidates))
 	for i, candidate := range candidates {
-		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.availabilityBaseline, inputs.config)
+		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.config)
 		candidateStates[i] = state
 		step := ComputeNextStep(state)
 		if step == nil {
@@ -447,7 +436,6 @@ func rolloutStateForRevision(
 	active disaggregatedsetutils.RevisionRoles,
 	target disaggregatedsetutils.RevisionRoles,
 	targetReplicas RoleReplicaState,
-	availabilityBaseline RoleReplicaState,
 	config []RollingUpdateConfig,
 ) RolloutState {
 	initial, activeState := observeOldRevision(active, roleNames)
@@ -467,15 +455,23 @@ func rolloutStateForRevision(
 			DesiredReplicas:    slicesClone(targetReplicas),
 			UnschedulableRoles: make([]bool, len(roleNames)),
 		},
-		AvailabilityBaseline: slicesClone(availabilityBaseline),
+		AvailabilityBaseline: slicesClone(initial),
 		Config:               slices.Clone(config),
 	}
 	for _, revision := range oldRevisions {
 		if revision.Revision == active.Revision {
 			continue
 		}
-		_, parked := observeOldRevision(revision, roleNames)
+		parkedInitial, parked := observeOldRevision(revision, roleNames)
 		state.ParkedOld = append(state.ParkedOld, parked)
+		// All candidates share the non-drained old set's baseline. A fully
+		// drained revision leaves this set, so the next phase's floor may fall.
+		if replicaSum(parked.SpecReplicas) == 0 {
+			continue
+		}
+		for i := range state.AvailabilityBaseline {
+			state.AvailabilityBaseline[i] = max(state.AvailabilityBaseline[i], parkedInitial[i])
+		}
 	}
 	for i, roleName := range roleNames {
 		state.Target.RequiredRoles[i] = targetReplicas[i] > 0
@@ -487,83 +483,6 @@ func rolloutStateForRevision(
 		}
 	}
 	return state
-}
-
-func currentAvailabilityBaseline(
-	oldRevisions disaggregatedsetutils.RevisionRolesList,
-	roleNames []string,
-) RoleReplicaState {
-	baseline := make(RoleReplicaState, len(roleNames))
-	for _, revision := range oldRevisions {
-		initial, observed := observeOldRevision(revision, roleNames)
-		if replicaSum(observed.SpecReplicas) == 0 {
-			continue
-		}
-		for i := range baseline {
-			baseline[i] = max(baseline[i], initial[i])
-		}
-	}
-	return baseline
-}
-
-func storedRolloutAvailabilityBaseline(lws *leaderworkersetv1.LeaderWorkerSet, generation int64) (int, bool) {
-	if lws == nil || lws.Annotations == nil {
-		return 0, false
-	}
-	value, ok := lws.Annotations[rolloutAvailabilityAnnotationKey]
-	if !ok {
-		return 0, false
-	}
-	generationText, replicasText, ok := strings.Cut(value, ":")
-	if !ok {
-		return 0, false
-	}
-	storedGeneration, generationErr := strconv.ParseInt(generationText, 10, 64)
-	replicas, replicasErr := strconv.Atoi(replicasText)
-	if generationErr != nil || replicasErr != nil || storedGeneration != generation || replicas < 0 {
-		return 0, false
-	}
-	return replicas, true
-}
-
-func (executor *RollingUpdateExecutor) ensureRolloutAvailabilityBaseline(
-	ctx context.Context,
-	ds *disaggregatedsetv1.DisaggregatedSet,
-	oldRevisions disaggregatedsetutils.RevisionRolesList,
-	target disaggregatedsetutils.RevisionRoles,
-	roleNames []string,
-) (RoleReplicaState, error) {
-	baseline := currentAvailabilityBaseline(oldRevisions, roleNames)
-	for i, roleName := range roleNames {
-		lws := target.Roles[roleName]
-		if lws == nil {
-			continue
-		}
-		if stored, ok := storedRolloutAvailabilityBaseline(lws, ds.Generation); ok {
-			baseline[i] = stored
-			continue
-		}
-		if err := executor.LWSManager.UpdateRolloutAvailabilityBaseline(ctx, ds, lws, ds.Generation, baseline[i]); err != nil {
-			return nil, err
-		}
-	}
-	return baseline, nil
-}
-
-func (executor *RollingUpdateExecutor) clearRolloutAvailabilityBaseline(
-	ctx context.Context,
-	ds *disaggregatedsetv1.DisaggregatedSet,
-	target disaggregatedsetutils.RevisionRoles,
-) error {
-	for _, lws := range target.Roles {
-		if _, ok := lws.Annotations[rolloutAvailabilityAnnotationKey]; !ok {
-			continue
-		}
-		if err := executor.LWSManager.ClearRolloutAvailabilityBaseline(ctx, ds, lws); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func observeOldRevision(

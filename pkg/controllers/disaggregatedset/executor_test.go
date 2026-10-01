@@ -1493,7 +1493,6 @@ func TestRolloutStateUsesSharedAvailabilityBaseline(t *testing.T) {
 		b,
 		c,
 		RoleReplicaState{2, 2},
-		RoleReplicaState{2, 2},
 		configs([]int{1, 1}, []int{0, 0}),
 	)
 
@@ -1505,47 +1504,50 @@ func TestRolloutStateUsesSharedAvailabilityBaseline(t *testing.T) {
 	assert.Equal(t, RoleReplicaState{1, 1}, step.New)
 }
 
-func TestRolloutAvailabilityBaselineSurvivesRevisionCleanup(t *testing.T) {
-	ctx := context.Background()
-	createdAt := time.Now()
-	objects := revisionLWSObjects("A", [2]int32{1, 1}, [2]int32{}, [2]int32{2, 2}, createdAt)
-	objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt.Add(time.Hour))...)
-	objects = append(objects, revisionLWSObjects("C", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt.Add(2*time.Hour))...)
-	fakeClient := newTestClient(objects...)
-	ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{1, 1}, [2]int{})
-	ds.Generation = 7
-	desired := resolveDesiredReplicasByRole(ds, nil)
+func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
+	for _, cleanup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup=%t", cleanup), func(t *testing.T) {
+			ctx := context.Background()
+			createdAt := time.Unix(1000, 0)
+			objects := revisionLWSObjects("A", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt)
+			objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt.Add(time.Hour))...)
+			objects = append(objects, revisionLWSObjects("C", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt.Add(2*time.Hour))...)
+			fakeClient := newTestClient(objects...)
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{1, 1}, [2]int{})
+			desired := resolveDesiredReplicasByRole(ds, nil)
+			reconcile := func() bool {
+				// Reconstruct the executor each time; there is no carried baseline.
+				_, complete, err := newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
+				require.NoError(t, err)
+				return complete
+			}
 
-	_, complete, err := newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
-	require.NoError(t, err)
-	require.False(t, complete)
-	assertRevisionReplicas(t, fakeClient, "A", [2]int32{})
-	assertRevisionReplicas(t, fakeClient, "B", [2]int32{1, 1})
+			// B's baseline is two. Retiring B leaves A+C at two Ready per role.
+			require.False(t, reconcile())
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{1, 1})
+			assertRevisionReplicas(t, fakeClient, "B", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "C", [2]int32{1, 1})
+			if cleanup {
+				require.NoError(t, newTestReconciler(fakeClient).cleanupDrainedLWS(ctx, ds, 0, "C", false))
+			}
 
-	// Delete A and reconstruct the executor. C must retain A's 2/2 baseline
-	// instead of lowering the floor to B's 1/1 baseline.
-	reconciler := newTestReconciler(fakeClient)
-	require.NoError(t, reconciler.cleanupDrainedLWS(ctx, ds, 0, "C", false))
-	_, complete, err = newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
-	require.NoError(t, err)
-	require.False(t, complete)
-	assertRevisionReplicas(t, fakeClient, "B", [2]int32{1, 1})
-	assertRevisionReplicas(t, fakeClient, "C", [2]int32{2, 2})
+			// B's zero Spec, not object cleanup, starts the next phase. A's
+			// baseline is one, so it may retire before C's growth becomes Ready.
+			require.False(t, reconcile())
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "C", [2]int32{2, 2})
+			for _, roleName := range testRoleNames() {
+				target, err := newTestExecutor(fakeClient).LWSManager.GetForRole(ctx, ds, 0, "C", roleName)
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				assert.EqualValues(t, 1, target.Status.ReadyReplicas)
+				assert.Equal(t, 1, committedReadyReplicas(target))
+			}
 
-	// Once C is Ready and B is retired, the persisted rollout state is cleared.
-	for i := 0; i < 4 && !complete; i++ {
-		simulateAllReady(fakeClient)
-		_, complete, err = newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
-		require.NoError(t, err)
-	}
-	require.True(t, complete)
-	for _, roleName := range testRoleNames() {
-		var target leaderworkersetv1.LeaderWorkerSet
-		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
-			Namespace: testNamespace,
-			Name:      fmt.Sprintf("test-0-C-%s", roleName),
-		}, &target))
-		assert.NotContains(t, target.Annotations, rolloutAvailabilityAnnotationKey)
+			// Completion still requires the full target to become Ready.
+			simulateAllReady(fakeClient)
+			require.True(t, reconcile())
+		})
 	}
 }
 
@@ -1656,7 +1658,7 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	roleNames := testRoleNames()
 	config := extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole)
 	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole)
-	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, RoleReplicaState{2, 2}, config)
+	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.InitialReplicas)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.SpecReplicas)
@@ -1708,7 +1710,6 @@ func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {
 		disaggregatedsetutils.RevisionRolesList{parked, active},
 		active,
 		target,
-		RoleReplicaState{50, 25},
 		RoleReplicaState{50, 25},
 		configs([]int{5, 5}, []int{5, 5}),
 	)
