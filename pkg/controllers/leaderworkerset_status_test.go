@@ -1056,16 +1056,16 @@ func TestSSAWithStatefulsetOwnerReferenceError(t *testing.T) {
 	}
 }
 
-func TestServerSideApplyPropagatesPatchErrors(t *testing.T) {
+func TestServerSideApplyPropagatesApplyErrors(t *testing.T) {
 	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
 	lws.UID = types.UID("lws-uid")
 	reconciler, _ := lwsStatusNewReconcilerWithInterceptor(t, interceptor.Funcs{
-		Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+		Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
 			return apierrors.NewInternalError(errors.New("boom"))
 		},
 	}, lws)
 
 	if err := reconciler.SSAWithStatefulset(context.Background(), lws, 0, 2, "rev-1"); err == nil {
-		t.Fatal("SSAWithStatefulset() error = nil, want the patch error")
+		t.Fatal("SSAWithStatefulset() error = nil, want the apply error")
 	}
 }

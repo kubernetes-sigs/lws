@@ -544,7 +544,7 @@ func TestReconcileHash(t *testing.T) {
 	t.Run("applying the leader deployment fails, the error is propagated", func(t *testing.T) {
 		lws := lwsStatusHashLWS(2)
 		reconciler, _ := lwsStatusNewReconcilerWithInterceptor(t, interceptor.Funcs{
-			Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+			Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
 				return apierrors.NewInternalError(errors.New("boom"))
 			},
 		}, lws)
