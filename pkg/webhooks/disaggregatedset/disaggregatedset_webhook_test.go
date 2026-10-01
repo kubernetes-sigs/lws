@@ -922,6 +922,50 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 			}),
 			expectError: false,
 		},
+		{
+			name: "hash role with restartBackoff is accepted",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						BaseSeconds: ptr.To(int32(10)),
+						CapSeconds:  ptr.To(int32(300)),
+					},
+				},
+			}),
+			expectError: false,
+		},
+		{
+			name: "hash role with restartBackoff and NoneRestartPolicy is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas:      ptr.To(int32(2)),
+				GroupIdentity: leaderworkerset.GroupIdentityHash,
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						BaseSeconds: ptr.To(int32(10)),
+						CapSeconds:  ptr.To(int32(300)),
+					},
+					RestartPolicy: leaderworkerset.NoneRestartPolicy,
+				},
+			}),
+			expectError: true,
+			errorMsg:    "restartBackoff is only supported when restartPolicy recreates the group",
+		},
+		{
+			name: "role with invalid restartBackoff base > cap is rejected",
+			obj: buildDisaggregatedSet(leaderworkerset.LeaderWorkerSetSpec{
+				Replicas: ptr.To(int32(2)),
+				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					RestartBackoff: &leaderworkerset.RestartBackoff{
+						BaseSeconds: ptr.To(int32(600)),
+						CapSeconds:  ptr.To(int32(300)),
+					},
+				},
+			}),
+			expectError: true,
+			errorMsg:    "baseSeconds must not be greater than capSeconds",
+		},
 	}
 
 	for _, tc := range tests {

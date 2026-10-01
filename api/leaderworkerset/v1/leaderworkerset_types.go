@@ -25,6 +25,13 @@ import (
 )
 
 const (
+	// DefaultRestartBackoffBaseSeconds is the default base interval in seconds for group restart backoff.
+	DefaultRestartBackoffBaseSeconds int32 = 10
+	// DefaultRestartBackoffCapSeconds is the default maximum interval in seconds for group restart backoff.
+	DefaultRestartBackoffCapSeconds int32 = 300
+)
+
+const (
 	// Exclusive topology annotation is used to specify the topology which
 	// be used for 1:1 exclusive scheduling.
 	ExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-topology"
@@ -382,6 +389,14 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:validation:Minimum=0
 	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 
+	// restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+	// or RecreateGroupAfterStart. When specified, the controller applies an exponential
+	// backoff delay between group recreations.
+	// It is opt-in: when unset (nil), group recreation happens immediately.
+	//
+	// +optional
+	RestartBackoff *RestartBackoff `json:"restartBackoff,omitempty"`
+
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
 	// +optional
@@ -398,6 +413,23 @@ type LeaderWorkerTemplate struct {
 	// the VolumeClaimTemplates.
 	// +optional
 	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
+}
+
+// RestartBackoff defines the exponential backoff configuration for group recreation.
+type RestartBackoff struct {
+	// baseSeconds is the initial backoff delay in seconds before group recreation.
+	// Defaults to 10.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	BaseSeconds *int32 `json:"baseSeconds,omitempty"`
+
+	// capSeconds is the maximum backoff delay in seconds before group recreation.
+	// Defaults to 300.
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	CapSeconds *int32 `json:"capSeconds,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the leaderWorkerSet controller
