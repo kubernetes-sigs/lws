@@ -703,6 +703,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 	} else {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws))
+		conditions = endUpdateInProgress(conditions, lws)
 	}
 	if degraded {
 		conditions = append(conditions, makeCondition(leaderworkerset.LeaderWorkerSetDegraded, lws))
@@ -1108,6 +1109,19 @@ func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWor
 		statefulSetConfig.Spec.WithPersistentVolumeClaimRetentionPolicy(pvcRetentionPolicy)
 	}
 	return statefulSetConfig, nil
+}
+
+// endUpdateInProgress clears UpdateInProgress once a rollout finishes while
+// groups are still becoming ready. Otherwise only Available clears it, which
+// flips the status the same way.
+func endUpdateInProgress(conditions []metav1.Condition, lws *leaderworkerset.LeaderWorkerSet) []metav1.Condition {
+	if c := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetUpdateInProgress)); c != nil && c.Status == metav1.ConditionTrue {
+		ended := *c
+		ended.Status = metav1.ConditionFalse
+		ended.ObservedGeneration = lws.Generation
+		conditions = append(conditions, ended)
+	}
+	return conditions
 }
 
 func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet) metav1.Condition {
