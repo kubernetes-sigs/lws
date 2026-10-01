@@ -56,6 +56,7 @@ type DisaggregatedSetReconciler struct {
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -144,6 +145,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	} else {
 		for slice := range sliceCount {
 			sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, desiredReplicasByRole)
+			if errors.Is(err, errScaleDownPending) {
+				sliceResult, err = ctrl.Result{RequeueAfter: time.Second}, nil
+			}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("slice %d: %w", slice, err))
 				continue
@@ -636,6 +640,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.LWSManager == nil {
 		r.LWSManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}
+	r.LWSManager.apiReader = mgr.GetAPIReader()
 
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)

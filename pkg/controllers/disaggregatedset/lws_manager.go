@@ -18,10 +18,12 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,12 +38,15 @@ import (
 )
 
 type LeaderWorkerSetManager struct {
-	client client.Client
+	client    client.Client
+	apiReader client.Reader
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
-	return &LeaderWorkerSetManager{client: c}
+	return &LeaderWorkerSetManager{client: c, apiReader: c}
 }
+
+var errScaleDownPending = errors.New("previous scale-down has not settled")
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
 	merged := make(map[string]string, len(userLabels)+len(autoLabels))
@@ -111,6 +116,7 @@ func (manager *LeaderWorkerSetManager) Create(
 	// startingReplicas is the initial Spec value. initialReplicas is the revision's
 	// intended size, which may be larger when a rollout starts the LWS at zero.
 	setInitialReplicasAnnotation(leaderWorkerSet, initialReplicas)
+	delete(leaderWorkerSet.Annotations, disaggregatedsetv1.ScaleDownPendingAnnotationKey)
 
 	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -152,18 +158,106 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to scale it", name, ds.Name)
 	}
 
-	if int(getLWSReplicas(leaderWorkerSet)) == replicas {
+	currentReplicas := int(getLWSReplicas(leaderWorkerSet))
+	if currentReplicas == replicas {
 		return nil
+	}
+	if replicas > currentReplicas {
+		settled, err := manager.scaleDownSettled(ctx, leaderWorkerSet)
+		if err != nil {
+			return err
+		}
+		if !settled {
+			return fmt.Errorf("%w: %s", errScaleDownPending, name)
+		}
 	}
 
 	replicas32 := int32(replicas)
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	leaderWorkerSet.Spec.Replicas = &replicas32
+	if replicas < currentReplicas {
+		if leaderWorkerSet.Annotations == nil {
+			leaderWorkerSet.Annotations = make(map[string]string)
+		}
+		leaderWorkerSet.Annotations[disaggregatedsetv1.ScaleDownPendingAnnotationKey] = "true"
+	} else {
+		delete(leaderWorkerSet.Annotations, disaggregatedsetv1.ScaleDownPendingAnnotationKey)
+	}
 	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
 		return fmt.Errorf("failed to scale LeaderWorkerSet %s: %w", name, err)
 	}
 
 	return nil
+}
+
+// scaleDownSettled fences a change of scale direction, not ordinary pipelined
+// growth or drain. LWS status alone cannot prove that a prior shrink finished:
+// it can acknowledge the new generation while copying older child status.
+// Check the child generation and actual Pods without waiting for readiness.
+func (manager *LeaderWorkerSetManager) scaleDownSettled(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet) (bool, error) {
+	replicas := getLWSReplicas(lws)
+	if lws.Annotations[disaggregatedsetv1.ScaleDownPendingAnnotationKey] != "true" &&
+		lws.Status.Replicas <= replicas && lws.Status.ReadyReplicas <= replicas {
+		return true, nil
+	}
+	if lws.Status.ObservedGeneration < lws.Generation || lws.Status.Replicas != replicas || lws.Status.ReadyReplicas > replicas {
+		return false, nil
+	}
+	var workload client.Object = &appsv1.StatefulSet{}
+	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
+		workload = &appsv1.Deployment{}
+	}
+	if err := manager.apiReader.Get(ctx, client.ObjectKeyFromObject(lws), workload); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(workload, lws) || !workload.GetDeletionTimestamp().IsZero() {
+		return false, nil
+	}
+	var desired, observed int32
+	var observedGeneration int64
+	switch workload := workload.(type) {
+	case *appsv1.StatefulSet:
+		desired, observed, observedGeneration = ptr.Deref(workload.Spec.Replicas, 1), workload.Status.Replicas, workload.Status.ObservedGeneration
+	case *appsv1.Deployment:
+		desired, observed, observedGeneration = ptr.Deref(workload.Spec.Replicas, 1), workload.Status.Replicas, workload.Status.ObservedGeneration
+		// A Deployment acknowledges changes to ReplicaSet Specs, not their
+		// execution. Wait for the actual Pod controllers as well.
+		var replicaSets appsv1.ReplicaSetList
+		if err := manager.apiReader.List(ctx, &replicaSets, client.InNamespace(lws.Namespace)); err != nil {
+			return false, err
+		}
+		issued := int32(0)
+		for _, rs := range replicaSets.Items {
+			if !metav1.IsControlledBy(&rs, workload) {
+				continue
+			}
+			if !rs.DeletionTimestamp.IsZero() || rs.Status.ObservedGeneration < rs.Generation || rs.Status.Replicas != ptr.Deref(rs.Spec.Replicas, 1) {
+				return false, nil
+			}
+			issued += ptr.Deref(rs.Spec.Replicas, 1)
+		}
+		if issued != replicas {
+			return false, nil
+		}
+	}
+	if desired != replicas || observed != replicas || observedGeneration < workload.GetGeneration() {
+		return false, nil
+	}
+	var pods corev1.PodList
+	if err := manager.apiReader.List(ctx, &pods, client.InNamespace(lws.Namespace),
+		client.MatchingLabels{leaderworkersetv1.SetNameLabelKey: lws.Name}); err != nil {
+		return false, err
+	}
+	leaders := int32(0)
+	for _, pod := range pods.Items {
+		if !pod.DeletionTimestamp.IsZero() {
+			return false, nil
+		}
+		if pod.Labels[leaderworkersetv1.WorkerIndexLabelKey] == "0" {
+			leaders++
+		}
+	}
+	return leaders == replicas, nil
 }
 
 // SyncGroupReplacementPolicy patches leaderWorkerSet so its

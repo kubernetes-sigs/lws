@@ -64,6 +64,11 @@ const (
 	// the old revision finishes draining. A missing, non-integer, or negative
 	// value is treated as unset.
 	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
+
+	// ScaleDownPendingAnnotationKey marks a scale-down until growth safely
+	// reverses it. Written with the lower Spec, it survives stale status and
+	// controller restarts; it does not prevent further scale-downs.
+	ScaleDownPendingAnnotationKey string = "disaggregatedset.x-k8s.io/scale-down-pending"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
