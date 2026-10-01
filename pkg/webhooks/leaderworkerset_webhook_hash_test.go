@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -92,6 +93,17 @@ func TestValidateHashGroupIdentity(t *testing.T) {
 	scheduled.Spec.Scheduling = &v1.LeaderWorkerSetScheduling{}
 	if errs := ValidateGroupIdentity(field.NewPath("spec"), &scheduled.Spec); len(errs) > 0 {
 		t.Errorf("expected scheduling to be accepted with groupIdentity Hash: %v", errs)
+	}
+
+	hostname := hashLws("hostname")
+	hostname.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Hostname = "leader"
+	if _, err := webhook.ValidateCreate(context.TODO(), hostname); err == nil {
+		t.Error("expected a leader pod hostname to be rejected with groupIdentity Hash")
+	}
+	hostname.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: *hostname.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.DeepCopy()}
+	hostname.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Hostname = ""
+	if _, err := webhook.ValidateCreate(context.TODO(), hostname); err == nil {
+		t.Error("expected a leaderTemplate hostname to be rejected with groupIdentity Hash")
 	}
 }
 
