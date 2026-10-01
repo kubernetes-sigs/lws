@@ -138,6 +138,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if lws.DeletionTimestamp != nil {
+		if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
+			if err := r.deleteWorkerStatefulSets(ctx, lws); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -1028,6 +1033,11 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(lws)
 		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(lws)
 	}
+	// Default is the historical sequential behavior. Stamping it onto the leader
+	// pod template would change the StatefulSet and roll existing groups on upgrade.
+	if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
+		podAnnotations[leaderworkerset.PodTerminationPolicyAnnotationKey] = string(lws.Spec.PodTerminationPolicy)
+	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 
@@ -1226,4 +1236,24 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	}
 
 	return false
+}
+
+func (r *LeaderWorkerSetReconciler) deleteWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
+	var workerStsList appsv1.StatefulSetList
+	if err := r.List(ctx, &workerStsList, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey: lws.Name,
+		leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+	}); err != nil {
+		return err
+	}
+	propagation := metav1.DeletePropagationForeground
+	for i := range workerStsList.Items {
+		sts := &workerStsList.Items[i]
+		if sts.DeletionTimestamp == nil {
+			if err := r.Delete(ctx, sts, &client.DeleteOptions{PropagationPolicy: &propagation}); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
