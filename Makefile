@@ -19,7 +19,8 @@ GO_FMT ?= gofmt
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
-GIT_TAG ?= $(shell git describe --tags --dirty --always)
+GIT_TAG ?= $(shell date -u +"v%Y%m%d")-$(shell git describe --tags --dirty --always --match="")
+GIT_TAG := $(shell echo "$(GIT_TAG)" | sed -E 's/^(v[0-9]{8})-.*-[0-9]+-g([0-9a-f]+(-dirty)?)$$/\1-\2/')
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
