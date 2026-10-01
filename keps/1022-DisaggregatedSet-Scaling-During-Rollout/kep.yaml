@@ -1,0 +1,17 @@
+title: DisaggregatedSet scaling during rolling updates
+kep-number: 1022
+authors:
+  - "hasB4K"
+status: provisional
+creation-date: 2026-09-02
+reviewers:
+  - TBD
+approvers:
+  - TBD
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/849-DisaggregatedSet-HPA"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
