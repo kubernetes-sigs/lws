@@ -368,6 +368,14 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 	if spec.RolloutStrategy.RollingUpdateConfiguration != nil && spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil && *spec.RolloutStrategy.RollingUpdateConfiguration.Partition != 0 {
 		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "rollingUpdateConfiguration.partition is not supported with groupIdentity Hash"))
 	}
+	// Each hash group needs its own leader host name.
+	leaderTemplate := &spec.LeaderWorkerTemplate.WorkerTemplate
+	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		leaderTemplate = spec.LeaderWorkerTemplate.LeaderTemplate
+	}
+	if leaderTemplate.Spec.Hostname != "" {
+		allErrs = append(allErrs, field.Invalid(giPath, spec.GroupIdentity, "a leader pod hostname is not supported with groupIdentity Hash"))
+	}
 	return allErrs
 }
 

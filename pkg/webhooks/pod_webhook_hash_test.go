@@ -85,6 +85,31 @@ func TestHashLeaderDNSDefaults(t *testing.T) {
 	}
 }
 
+// A second pass keeps the group key, and a key this webhook did not assign is replaced.
+func TestHashLeaderGroupKeyIdempotent(t *testing.T) {
+	webhook := &PodWebhook{}
+	pod := hashLeaderPod("hash-idem", nil)
+	if err := webhook.Default(context.TODO(), pod); err != nil {
+		t.Fatal(err)
+	}
+	key, hostname := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey], pod.Spec.Hostname
+	if err := webhook.Default(context.TODO(), pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]; got != key || pod.Spec.Hostname != hostname {
+		t.Errorf("second pass got key %q and host name %q, want %q and %q", got, pod.Spec.Hostname, key, hostname)
+	}
+
+	templated := hashLeaderPod("hash-idem", nil)
+	templated.Labels[leaderworkerset.GroupUniqueHashLabelKey] = "from-template"
+	if err := webhook.Default(context.TODO(), templated); err != nil {
+		t.Fatal(err)
+	}
+	if templated.Labels[leaderworkerset.GroupUniqueHashLabelKey] == "from-template" {
+		t.Error("a group key from the pod template was reused")
+	}
+}
+
 func TestHashLeaderUniquePerReplicaSubdomain(t *testing.T) {
 	webhook := &PodWebhook{}
 	pod := hashLeaderPod("hash-upr", map[string]string{
