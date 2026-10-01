@@ -44,7 +44,7 @@ To install a released version of LeaderWorkerSet in your cluster, run the follow
 
 
 ```shell
-VERSION=v0.11.0
+VERSION=v0.11.1
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -59,7 +59,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
-CHART_VERSION=0.11.0
+CHART_VERSION=0.11.1
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -70,7 +70,7 @@ helm install lws oci://registry.k8s.io/lws/charts/lws \
 You can also use the following command:
 
 ```shell
-VERSION=v0.11.0
+VERSION=v0.11.1
 helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
   --namespace lws-system \
   --create-namespace \
@@ -88,7 +88,7 @@ so CRD schema changes and newly added CRDs do not reach the cluster through
 Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
 ```shell
-CHART_VERSION=0.11.0
+CHART_VERSION=0.11.1
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
 kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
@@ -130,7 +130,7 @@ Then follow the regular upgrade flow above (apply the CRDs, then
 To uninstall a released version of LeaderWorkerSet from your cluster, run the following command:
 
 ```shell
-VERSION=v0.11.0
+VERSION=v0.11.1
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
 
@@ -287,7 +287,7 @@ The optional validating webhook and user-facing editor/viewer/admin ClusterRoles
 by passing `--set enableDisaggregatedSet=true` to the Helm install command:
 
 ```shell
-CHART_VERSION=0.11.0
+CHART_VERSION=0.11.1
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
@@ -349,7 +349,7 @@ Use the [Upgrade by Helm](#upgrade-by-helm) steps, which apply every CRD in the 
 DisaggregatedSet flag added:
 
 ```shell
-CHART_VERSION=0.11.0
+CHART_VERSION=0.11.1
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
 kubectl apply --server-side --force-conflicts -f lws/crds
 helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
