@@ -58,6 +58,8 @@ The count keys off the old group's pods, not the leader's phase or object. A pod
 
 A waiting replacement is visible as a `SchedulingGated` pod and counts as a not-ready group in `status.replicas`.
 
+When [`maxGroupRestarts`](../failure-handling/#limit-automatic-group-recreation) is configured, admitting a gated replacement leader transfers the recreating group's restart count on the same revision to the new group key so the restart budget is preserved across replacements. If a group exhausts its restart budget, its retained leader holds back one gated replacement leader under both `PostTermination` and `Immediate` policies until the group is [explicitly recovered](../failure-handling/#recover-an-exhausted-group) or removed by scale-down, rollout, or deletion.
+
 ## Unsupported Combinations
 
 Validation rejects Hash mode combined with features that depend on stable StatefulSet identity:
