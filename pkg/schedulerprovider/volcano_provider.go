@@ -74,13 +74,18 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
+	// With spec.scheduling, Ordinal PodGroups are owned by the LWS since an
+	// ordinal reuses its name across restarts. Hash groups never reuse a name,
+	// so the leader owns them and they are garbage collected with it.
+	ownedByLWS := lws.Spec.Scheduling != nil && lws.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash
+
 	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
 		if pg.DeletionTimestamp != nil {
 			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
 		owner := metav1.GetControllerOf(&pg)
-		if lws.Spec.Scheduling != nil {
+		if ownedByLWS {
 			if owner == nil ||
 				owner.APIVersion != leaderworkerset.GroupVersion.String() ||
 				owner.Kind != "LeaderWorkerSet" ||
@@ -91,6 +96,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 				return nil
 			}
 			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
+		}
+		// Earlier releases made hash PodGroups LWS-owned.
+		if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && owner != nil && owner.Kind == "LeaderWorkerSet" && owner.UID == lws.UID {
+			return nil
 		}
 
 		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
@@ -144,7 +153,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	}
 
 	var controllerOwner metav1.Object = leaderPod
-	if lws.Spec.Scheduling != nil {
+	if ownedByLWS {
 		controllerOwner = lws
 	}
 	err := ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())
