@@ -58,13 +58,19 @@ failure.
 
 The budget is tracked independently for each replica group and Pod template
 revision. It is consumed only when LWS initiates a group recreation. The field
-is not supported with `restartPolicy: None`.
+is supported with both `Ordinal` and `Hash` [group identity](../group-identity/)
+modes, and is not supported with `restartPolicy: None`. In `Hash` mode, a
+recreated group receives a new group key, and LWS transfers the recreating
+group's restart count when admitting the replacement leader so the budget
+persists across replacements.
 
 When a group exhausts its budget, LWS:
 
 1. Terminates the leader and worker Pods to release their scheduled resources.
 2. Retains Pod API objects that can still receive cleanup finalizers and stops
-   automatic recreation of that group. A Pod that was already deleting may
+   automatic recreation of that group (in `Hash` mode, the retained leader holds
+   back its gated replacement leader under both `PostTermination` and
+   `Immediate` replacement policies). A Pod that was already deleting may
    disappear because Kubernetes does not allow adding a finalizer at that point.
 3. Sets `Degraded=True` with reason `ReplicaRestartBudgetExceeded`. Other
    replica groups continue running.
@@ -92,8 +98,9 @@ kubectl annotate pod <leader-pod-name> leaderworkerset.sigs.k8s.io/recover=true
 ```
 
 LWS then clears that group's count, removes the cleanup finalizers, and allows
-the StatefulSet to create a replacement group with a fresh budget. Editing or
-unsetting `maxGroupRestarts`, or deleting retained Pods, does not recover an
-exhausted group. LWS deletion, scale-down, and selecting the group for
-replacement during a rollout remove retained objects as normal lifecycle
+a replacement group to start (created by the StatefulSet in `Ordinal` mode, or
+admitted from the gated replacement leader in `Hash` mode) with a fresh budget.
+Editing or unsetting `maxGroupRestarts`, or deleting retained Pods, does not
+recover an exhausted group. LWS deletion, scale-down, and selecting the group
+for replacement during a rollout remove retained objects as normal lifecycle
 cleanup rather than starting recovery.
