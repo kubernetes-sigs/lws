@@ -18,6 +18,7 @@ workload primitive.
   - [N-Dimensional Rolling Update Algorithm](#n-dimensional-rolling-update-algorithm)
     - [Issued work and available capacity](#issued-work-and-available-capacity)
     - [Capacity and pending-work bounds](#capacity-and-pending-work-bounds)
+    - [Reversing a scale-down](#reversing-a-scale-down)
     - [Bootstrap surge](#bootstrap-surge)
     - [Automatic unschedulable target recovery](#automatic-unschedulable-target-recovery)
     - [Reconcile ordering and completion](#reconcile-ordering-and-completion)
@@ -274,6 +275,14 @@ roles may still satisfy their own availability floors while that revision is
 retired as one unit.
 
 Revision completeness is a separate hard constraint. For required roles that are still present in the active old revision, either every role remains at one or more Spec replicas, or every role reaches zero in the same plan. This allows ordinary partial drains and coordinated retirement without a fallback that leaves only part of a revision running.
+
+#### Reversing a scale-down
+
+A scale-down is marked atomically with the lower LWS Spec. The marker survives controller restarts and does not prevent further drains. Before that LWS grows again (for example, on rollback), the executor waits for the earlier downscale to settle instead of inferring completion from equal replica counters.
+
+The LWS and its child workload must acknowledge their current generations and replica counts. For Hash identity, this also includes the ReplicaSets that actually create and delete Pods. Live child-workload and Pod reads must confirm that no excess leaders or terminating members remain. The guard does not require the retained replicas to become Ready. Growth removes the marker atomically with its Spec update; ordinary target growth remains pipelined. LWS objects from before the marker was introduced also wait when their status indicates outstanding deletions.
+
+This marker records an unfinished change of scale direction, not an availability baseline. The phase-local availability policy above is unchanged.
 
 #### Bootstrap surge
 

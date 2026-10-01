@@ -110,6 +110,18 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if created || newRevision == nil {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+	// A formerly draining revision can become the target again. Finish that
+	// shrink before planning growth, which otherwise releases its deletion
+	// reservations without any replacement becoming Ready.
+	for _, lws := range newRevision.Roles {
+		settled, err := executor.LWSManager.scaleDownSettled(ctx, lws)
+		if err != nil {
+			return ctrl.Result{}, false, err
+		}
+		if !settled {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
+	}
 
 	// The slice was used above to discover the relevant LWS objects. Continuing
 	// the rollout updates those objects by their actual names, so the executor
@@ -174,10 +186,6 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	inputs := buildRolloutInputs(disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole)
 	if err := executor.syncTargetInitialReplicas(ctx, disaggregatedSet, inputs.allRoleNames, targetRevision, inputs.targetReplicas); err != nil {
 		return ctrl.Result{}, false, err
-	}
-	if roleName, waiting := targetRoleWithPendingDrain(targetRevision, inputs.targetRoleNames); waiting {
-		log.V(1).Info("Waiting for previous target drain to finish before continuing rollback", "role", roleName)
-		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 
 	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas)
@@ -524,26 +532,6 @@ func committedReadyReplicas(lws *leaderworkersetv1.LeaderWorkerSet) int {
 	pendingDrain := max(0, int(lws.Status.Replicas)-specReplicas)
 	readyAfterPendingDrain := max(0, int(lws.Status.ReadyReplicas)-pendingDrain)
 	return min(specReplicas, readyAfterPendingDrain)
-}
-
-// targetRoleWithPendingDrain detects a rollback target whose earlier
-// scale-down has not finished. Continuing now could reuse the readiness of a
-// terminating replica after the target Spec grows.
-func targetRoleWithPendingDrain(
-	target disaggregatedsetutils.RevisionRoles,
-	roleNames []string,
-) (string, bool) {
-	for _, roleName := range roleNames {
-		lws := target.Roles[roleName]
-		if lws == nil {
-			continue
-		}
-		specReplicas := int(getLWSReplicas(lws))
-		if int(lws.Status.Replicas) > specReplicas {
-			return roleName, true
-		}
-	}
-	return "", false
 }
 
 func rolloutTargetReplicas(

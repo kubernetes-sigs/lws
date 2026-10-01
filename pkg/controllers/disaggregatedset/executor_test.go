@@ -24,11 +24,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
@@ -58,7 +60,9 @@ func testRoleNames() []string {
 
 // testSchemeForUnit creates a scheme with all required types registered.
 func testSchemeForUnit() *runtime.Scheme {
-	return wrappers.DisaggregatedSetTestScheme()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+	utilruntime.Must(appsv1.AddToScheme(scheme))
+	return scheme
 }
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
