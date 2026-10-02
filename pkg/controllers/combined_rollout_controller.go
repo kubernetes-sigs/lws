@@ -100,8 +100,16 @@ func (r *LeaderWorkerSetReconciler) reconcileCombinedRollout(ctx context.Context
 	var state combinedModelState
 	if active {
 		state, err = combinedModelDecode(raw)
-		if err != nil || state.Phase == "" || state.Generation > lws.Generation {
-			return true, wait, fmt.Errorf("invalid combined rollout state; no mutation or deletion: %v", err)
+		if err != nil {
+			return true, wait, r.combinedInvalidState(lws, sts, "cannot decode persisted state", fmt.Errorf("cannot decode persisted state: %w", err))
+		}
+		if state.Phase == "" {
+			err = fmt.Errorf("persisted state is missing phase")
+			return true, wait, r.combinedInvalidState(lws, sts, err.Error(), err)
+		}
+		if state.Generation > lws.Generation {
+			err = fmt.Errorf("persisted generation %d is newer than current LWS generation %d", state.Generation, lws.Generation)
+			return true, wait, r.combinedInvalidState(lws, sts, err.Error(), err)
 		}
 	} else {
 		state = combinedModelState{Version: 1, Baseline: baseline, Desired: *lws.Spec.Replicas, Generation: lws.Generation, Revision: revision, Phase: combinedFreeze}
@@ -214,6 +222,17 @@ func (r *LeaderWorkerSetReconciler) reconcileCombinedRollout(ctx context.Context
 	// protocol or truncates protected history during an active operation.
 	_, err = r.updateStatus(ctx, lws, revision)
 	return true, wait, err
+}
+
+// Only persisted-state validation after a successful observation fence emits
+// this warning. Keep decoder details in the returned error, not the Event:
+// JSON type errors can contain user-controlled values or field names.
+func (r *LeaderWorkerSetReconciler) combinedInvalidState(lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, diagnostic string, cause error) error {
+	err := fmt.Errorf("invalid combined rollout state; no mutation or deletion: %w", cause)
+	if r.Record != nil {
+		r.Record.Eventf(lws, sts, corev1.EventTypeWarning, "CombinedRolloutInvalidState", Update, "Invalid combined rollout state; no mutation or deletion: %s", diagnostic)
+	}
+	return err
 }
 
 func (r *LeaderWorkerSetReconciler) combinedFence(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet) error {
