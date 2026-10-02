@@ -78,6 +78,12 @@ func TestCombinedRolloutAPIPreconditions(t *testing.T) {
 	t.Run("upstream scheduling and restart prerequisites", func(t *testing.T) {
 		testCombinedUpstreamPrerequisites(t, c, scheme, ns.Name)
 	})
+	t.Run("invalid state warnings and exact-state recovery", func(t *testing.T) {
+		testCombinedInvalidStateWarnings(t, c, scheme, ns.Name)
+	})
+	t.Run("observation fence errors are not invalid state warnings", func(t *testing.T) {
+		testCombinedInvalidStateWarningFences(t, c, scheme, ns.Name)
+	})
 
 	t.Run("SSA persists partition and reservations atomically and rejects stale plans", func(t *testing.T) {
 		sts := &appsv1.StatefulSet{
