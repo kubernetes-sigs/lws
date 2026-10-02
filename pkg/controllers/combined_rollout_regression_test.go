@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -539,6 +541,252 @@ func testCombinedUpstreamPrerequisites(t *testing.T, c client.Client, scheme *ru
 			}
 		}
 	})
+}
+
+type combinedWarningEvent struct {
+	regarding, related              runtime.Object
+	eventType, reason, action, note string
+}
+
+type combinedWarningRecorder struct {
+	events []combinedWarningEvent
+}
+
+func (r *combinedWarningRecorder) Eventf(regarding, related runtime.Object, eventType, reason, action, note string, args ...interface{}) {
+	event := combinedWarningEvent{eventType: eventType, reason: reason, action: action, note: fmt.Sprintf(note, args...)}
+	if regarding != nil {
+		event.regarding = regarding.DeepCopyObject()
+	}
+	if related != nil {
+		event.related = related.DeepCopyObject()
+	}
+	r.events = append(r.events, event)
+}
+
+// Compare complete API objects, including raw annotations, RVs, specs, status,
+// UIDs and deletion timestamps. List RV is unrelated to per-object mutation.
+func combinedWarningUnchanged(t *testing.T, f *combinedAPIFixture) func() {
+	t.Helper()
+	sts, lws := f.sts(), f.lws()
+	pods := func() []corev1.Pod {
+		t.Helper()
+		var list corev1.PodList
+		if err := f.c.List(context.Background(), &list, client.InNamespace(f.key.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: f.key.Name}); err != nil {
+			t.Fatal(err)
+		}
+		return list.Items
+	}
+	beforePods := pods()
+	return func() {
+		t.Helper()
+		if !reflect.DeepEqual(sts, f.sts()) || !reflect.DeepEqual(lws, f.lws()) || !reflect.DeepEqual(beforePods, pods()) {
+			t.Fatal("blocked reconciliation mutated StatefulSet, LWS or Pods (including RV/spec/status/raw state)")
+		}
+	}
+}
+
+func testCombinedInvalidStateWarnings(t *testing.T, c client.Client, scheme *runtime.Scheme, namespace string) {
+	ctx := context.Background()
+	for _, name := range []string{"malformed-json", "future-generation", "unknown-version", "missing-phase", "zero-generation", "oversized"} {
+		t.Run(name, func(t *testing.T) {
+			f := newCombinedAPIFixture(t, c, scheme, namespace, "warning-"+name, 2)
+			f.grow(3)
+			// Simulate native creation without readiness credit. An absent slot
+			// would require a new reservation before the recovery control deletes.
+			f.leader(2, false)
+			original := f.sts().Annotations[combinedRolloutAnnotation]
+			state := f.state()
+			reservation, ok := state.Reservations[1]
+			if !ok || len(state.Reservations) != 1 || state.Phase != combinedActive || state.Baseline != 2 || state.Desired != 3 {
+				t.Fatalf("expected active B=2/D=3 with one old ordinal-1 reservation: %+v", state)
+			}
+			getPod := func(i int) *corev1.Pod {
+				t.Helper()
+				p := &corev1.Pod{}
+				if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: fmt.Sprintf("%s-%d", f.key.Name, i)}, p); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}
+			old0, old1 := getPod(0), getPod(1)
+			if old1.UID != reservation.UID || old0.DeletionTimestamp != nil || old1.DeletionTimestamp != nil {
+				t.Fatal("fixture must stop before either old leader is deleted")
+			}
+			diagnostic, cause := "cannot decode persisted state", "invalid combined rollout state"
+			switch name {
+			case "future-generation":
+				state.Generation = f.lws().Generation + 100
+				diagnostic = fmt.Sprintf("persisted generation %d is newer than current LWS generation %d", state.Generation, f.lws().Generation)
+				cause = diagnostic
+			case "unknown-version":
+				state.Version++
+			case "missing-phase":
+				state.Phase = ""
+				diagnostic, cause = "persisted state is missing phase", "persisted state is missing phase"
+			case "zero-generation":
+				state.Generation = 0
+			case "malformed-json":
+				cause = "unexpected end of JSON input"
+			case "oversized":
+				cause = "combined rollout state too large"
+			}
+			corrupt := combinedModelEncode(state)
+			if name == "malformed-json" {
+				corrupt = `{"v":`
+			} else if name == "oversized" {
+				corrupt = strings.Repeat("x", combinedStateLimit+1)
+			}
+			sts := f.sts()
+			sts.Annotations[combinedRolloutAnnotation] = corrupt
+			if err := c.Update(ctx, sts); err != nil {
+				t.Fatalf("real API rejected corrupt annotation: %v", err)
+			}
+			if f.sts().Annotations[combinedRolloutAnnotation] != corrupt {
+				t.Fatal("API did not persist exact corrupt annotation")
+			}
+			unchanged := combinedWarningUnchanged(t, f)
+			checkError := func(err error) {
+				t.Helper()
+				if err == nil || errors.Unwrap(err) == nil || !strings.Contains(errors.Unwrap(err).Error(), cause) || strings.Contains(err.Error(), "<nil>") {
+					t.Fatalf("expected wrapped cause %q, got %v", cause, err)
+				}
+				if name == "malformed-json" {
+					var syntax *json.SyntaxError
+					if !errors.As(err, &syntax) {
+						t.Fatalf("lost JSON syntax error cause: %v", err)
+					}
+				}
+			}
+			for attempt := 1; attempt <= 3; attempt++ {
+				recorder := &combinedWarningRecorder{}
+				r := NewLeaderWorkerSetReconciler(c, scheme, recorder)
+				r.APIReader = c
+				_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
+				checkError(err)
+				unchanged()
+				if len(recorder.events) != 1 {
+					t.Fatalf("attempt %d: expected exactly one warning, got %+v", attempt, recorder.events)
+				}
+				event := recorder.events[0]
+				want := "Invalid combined rollout state; no mutation or deletion: " + diagnostic
+				if event.eventType != corev1.EventTypeWarning || event.reason != "CombinedRolloutInvalidState" || event.action != Update || event.note != want || len(event.note) > 256 || strings.Contains(event.note, "<nil>") || strings.Contains(event.note, corrupt) {
+					t.Fatalf("attempt %d: wrong or unbounded warning: %+v", attempt, event)
+				}
+				regarding, lwsOK := event.regarding.(*leaderworkerset.LeaderWorkerSet)
+				related, stsOK := event.related.(*appsv1.StatefulSet)
+				if !lwsOK || !stsOK || regarding.UID != f.lws().UID || related.UID != sts.UID || client.ObjectKeyFromObject(regarding) != f.key || client.ObjectKeyFromObject(related) != f.key {
+					t.Fatalf("wrong regarding LWS / related leader STS: %+v", event)
+				}
+				t.Logf("fresh controller %d: warning=%s action=%s note=%q; unchanged API objects; error=%v", attempt, event.reason, event.action, event.note, err)
+			}
+			// The invalid-state branch must also fail closed with no recorder.
+			r := NewLeaderWorkerSetReconciler(c, scheme, nil)
+			r.APIReader = c
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
+			checkError(err)
+			unchanged()
+
+			// Causal control, not a generic operator repair: restore EXACT known
+			// valid bytes, never clear state or infer a new baseline/reservation.
+			sts = f.sts()
+			sts.Annotations[combinedRolloutAnnotation] = original
+			if err := c.Update(ctx, sts); err != nil {
+				t.Fatal(err)
+			}
+			recorder := &combinedWarningRecorder{}
+			r = NewLeaderWorkerSetReconciler(c, scheme, recorder)
+			r.APIReader = c
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key}); err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range recorder.events {
+				if event.eventType == corev1.EventTypeWarning || event.reason == "CombinedRolloutInvalidState" {
+					t.Fatalf("valid restored state emitted warning: %+v", event)
+				}
+			}
+			if p := getPod(1); p.UID != reservation.UID || p.DeletionTimestamp == nil {
+				t.Fatal("exact-state restore did not resume authorized old ordinal-1 deletion")
+			}
+			if !reflect.DeepEqual(old0, getPod(0)) || f.sts().Annotations[combinedRolloutAnnotation] != original {
+				t.Fatal("restore control mutated protected old ordinal 0 or reset baseline/reservation")
+			}
+			t.Log("nil recorder safe; exact-state restore resumed authorized deletion without Warning or state reset")
+		})
+	}
+}
+
+type combinedWarningErrorReader struct {
+	client.Reader
+	err error
+}
+
+func (r combinedWarningErrorReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return r.err
+}
+
+func testCombinedInvalidStateWarningFences(t *testing.T, c client.Client, scheme *runtime.Scheme, namespace string) {
+	ctx := context.Background()
+	for _, name := range []string{"sts-rv", "lws-rv", "lws-generation", "permission", "transient"} {
+		t.Run(name, func(t *testing.T) {
+			f := newCombinedAPIFixture(t, c, scheme, namespace, "warning-fence-"+name, 2)
+			f.grow(3)
+			f.leader(2, false)
+			sts := f.sts()
+			sts.Annotations[combinedRolloutAnnotation] = `{"v":`
+			if err := c.Update(ctx, sts); err != nil {
+				t.Fatal(err)
+			}
+			// Hold actual old API observations, not a client wrapper that might
+			// mutate the caller's object and accidentally bypass the fence.
+			oldLWS, oldSTS := f.lws(), f.sts()
+			recorder := &combinedWarningRecorder{}
+			r := NewLeaderWorkerSetReconciler(c, scheme, recorder)
+			r.APIReader = c
+			var readErr error
+			switch name {
+			case "sts-rv":
+				sts = f.sts()
+				sts.Annotations["test.example/fence"] = "changed"
+				if err := c.Update(ctx, sts); err != nil {
+					t.Fatal(err)
+				}
+				if f.sts().ResourceVersion == oldSTS.ResourceVersion {
+					t.Fatal("fixture did not advance StatefulSet RV")
+				}
+			case "lws-rv", "lws-generation":
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+					if name == "lws-generation" {
+						lws.Spec.Replicas = ptr.To[int32](4)
+					} else {
+						if lws.Labels == nil {
+							lws.Labels = make(map[string]string)
+						}
+						lws.Labels["test.example/fence"] = "changed"
+					}
+				})
+				if f.lws().ResourceVersion == oldLWS.ResourceVersion || (name == "lws-generation") != (f.lws().Generation > oldLWS.Generation) {
+					t.Fatal("fixture did not advance intended LWS fence")
+				}
+			case "permission":
+				readErr = apierrors.NewForbidden(leaderworkerset.Resource("leaderworkersets"), f.key.Name, errors.New("test denied"))
+			case "transient":
+				readErr = apierrors.NewTimeoutError("test transient read failure", 1)
+			}
+			if readErr != nil {
+				r.APIReader = combinedWarningErrorReader{Reader: c, err: readErr}
+			}
+			unchanged := combinedWarningUnchanged(t, f)
+			handled, _, err := r.reconcileCombinedRollout(ctx, oldLWS, oldSTS, oldSTS.Labels[leaderworkerset.RevisionKey], false)
+			if !handled || (readErr == nil && !apierrors.IsConflict(err)) || (readErr != nil && !errors.Is(err, readErr)) {
+				t.Fatalf("expected observation fence failure, got handled=%v error=%v", handled, err)
+			}
+			if len(recorder.events) != 0 {
+				t.Fatalf("observation fence failure misdiagnosed as invalid state: %+v", recorder.events)
+			}
+			unchanged()
+			t.Logf("fence error=%v; events=0; API objects unchanged", err)
+		})
+	}
 }
 
 func TestCombinedOrdinalPodMapping(t *testing.T) {
