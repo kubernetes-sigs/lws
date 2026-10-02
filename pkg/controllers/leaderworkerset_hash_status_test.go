@@ -240,7 +240,7 @@ func TestUpdateStatusHash(t *testing.T) {
 			}
 			reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy)
 
-			available, err := reconciler.updateStatusHash(context.Background(), lws)
+			available, err := reconciler.updateStatusHash(context.Background(), lws, "")
 			if err != nil {
 				t.Fatalf("updateStatusHash() unexpected error: %v", err)
 			}
@@ -278,7 +278,7 @@ func TestUpdateStatusHashDeploymentMissing(t *testing.T) {
 	lws := lwsStatusHashLWS(2)
 	reconciler, _ := lwsStatusNewReconciler(t, lws)
 
-	if _, err := reconciler.updateStatusHash(context.Background(), lws); !apierrors.IsNotFound(err) {
+	if _, err := reconciler.updateStatusHash(context.Background(), lws, ""); !apierrors.IsNotFound(err) {
 		t.Fatalf("updateStatusHash() error = %v, want NotFound", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestUpdateStatusHashNoWriteWhenUnchanged(t *testing.T) {
 		},
 	}, lws, deploy)
 
-	available, err := reconciler.updateStatusHash(context.Background(), lws)
+	available, err := reconciler.updateStatusHash(context.Background(), lws, "")
 	if err != nil {
 		t.Fatalf("updateStatusHash() unexpected error: %v", err)
 	}
@@ -510,6 +510,60 @@ func TestReconcileHash(t *testing.T) {
 		}
 	})
 
+	t.Run("template change read through a stale cache keeps the old revision", func(t *testing.T) {
+		lws := lwsStatusHashLWS(2)
+		key := types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}
+		// Once set, Deployment reads return this copy, like an informer cache that
+		// has not seen the reconcile's own apply yet.
+		var cached *appsv1.Deployment
+		reconciler, k8sClient := lwsStatusNewReconcilerWithInterceptor(t, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if d, ok := obj.(*appsv1.Deployment); ok && cached != nil && k == key {
+					cached.DeepCopyInto(d)
+					return nil
+				}
+				return c.Get(ctx, k, obj, opts...)
+			},
+		}, lws)
+
+		if _, err := reconciler.reconcileHash(ctx, lws); err != nil {
+			t.Fatalf("reconcileHash() first call unexpected error: %v", err)
+		}
+		var deploy appsv1.Deployment
+		if err := k8sClient.Get(ctx, key, &deploy); err != nil {
+			t.Fatalf("leader deployment was not created: %v", err)
+		}
+		deploy.Status = appsv1.DeploymentStatus{ObservedGeneration: deploy.Generation, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}
+		if err := k8sClient.Status().Update(ctx, &deploy); err != nil {
+			t.Fatalf("updating the leader deployment status: %v", err)
+		}
+		if err := k8sClient.Get(ctx, key, &deploy); err != nil {
+			t.Fatalf("reading back the leader deployment: %v", err)
+		}
+		cached = deploy.DeepCopy()
+
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "nginx:updated"
+		if _, err := reconciler.reconcileHash(ctx, lws); err != nil {
+			t.Fatalf("reconcileHash() second call unexpected error: %v", err)
+		}
+
+		var revisions appsv1.ControllerRevisionList
+		if err := k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace)); err != nil {
+			t.Fatalf("listing revisions: %v", err)
+		}
+		if len(revisions.Items) != 2 {
+			t.Errorf("got %d controller revisions, want 2 while old groups still run the previous revision", len(revisions.Items))
+		}
+		var persisted leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, key, &persisted); err != nil {
+			t.Fatalf("reading back the leaderworkerset: %v", err)
+		}
+		want := []string{string(leaderworkerset.LeaderWorkerSetProgressing), string(leaderworkerset.LeaderWorkerSetUpdateInProgress)}
+		if diff := cmp.Diff(want, lwsStatusTrueConditionTypes(&persisted)); diff != "" {
+			t.Errorf("unexpected conditions (-want +got):\n%s", diff)
+		}
+	})
+
 	t.Run("unique per replica subdomains skip the shared headless service", func(t *testing.T) {
 		lws := lwsStatusHashLWS(2)
 		lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
@@ -582,7 +636,7 @@ func TestUpdateStatusHashDegraded(t *testing.T) {
 	}
 
 	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, exhaustedLeader)
-	available, err := reconciler.updateStatusHash(ctx, lws)
+	available, err := reconciler.updateStatusHash(ctx, lws, "")
 	if err != nil {
 		t.Fatalf("updateStatusHash() unexpected error: %v", err)
 	}
@@ -657,7 +711,7 @@ func TestUpdateStatusHashStaleDeploymentStatusDuringRollout(t *testing.T) {
 	}
 
 	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, rev1PodA, rev1PodB)
-	available, err := reconciler.updateStatusHash(ctx, lws)
+	available, err := reconciler.updateStatusHash(ctx, lws, "rev-2")
 	if err != nil {
 		t.Fatalf("updateStatusHash() unexpected error: %v", err)
 	}
@@ -678,6 +732,80 @@ func TestUpdateStatusHashStaleDeploymentStatusDuringRollout(t *testing.T) {
 		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
 			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
 		}
+	}
+}
+
+// The cache can return the Deployment from before the reconcile applied the new
+// revision. Its status looks done, but only for the previous revision.
+func TestUpdateStatusHashStaleDeploymentObject(t *testing.T) {
+	tests := []struct {
+		name           string
+		revisionKey    string
+		wantAvailable  bool
+		wantConditions []string
+	}{
+		{
+			name:           "deployment carries the desired revision, the set is Available",
+			revisionKey:    "rev-1",
+			wantAvailable:  true,
+			wantConditions: []string{string(leaderworkerset.LeaderWorkerSetAvailable)},
+		},
+		{
+			name:          "deployment still carries the previous revision, the set is UpdateInProgress",
+			revisionKey:   "rev-2",
+			wantAvailable: false,
+			wantConditions: []string{
+				string(leaderworkerset.LeaderWorkerSetProgressing),
+				string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lws := lwsStatusHashLWS(2)
+			lws.Generation = 2
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       lws.Name,
+					Namespace:  lws.Namespace,
+					Generation: 1,
+					Labels:     map[string]string{leaderworkerset.RevisionKey: "rev-1"},
+				},
+				Spec:   appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+				Status: appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+			}
+			objs := []client.Object{lws, deploy}
+			for _, name := range []string{"leader-a", "leader-b"} {
+				objs = append(objs, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      name,
+						Namespace: lws.Namespace,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     lws.Name,
+							leaderworkerset.WorkerIndexLabelKey: "0",
+							leaderworkerset.RevisionKey:         "rev-1",
+						},
+					},
+				})
+			}
+
+			reconciler, k8sClient := lwsStatusNewReconciler(t, objs...)
+			available, err := reconciler.updateStatusHash(ctx, lws, tc.revisionKey)
+			if err != nil {
+				t.Fatalf("updateStatusHash() unexpected error: %v", err)
+			}
+			if available != tc.wantAvailable {
+				t.Errorf("updateStatusHash() = %t, want %t", available, tc.wantAvailable)
+			}
+			var updated leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.wantConditions, lwsStatusTrueConditionTypes(&updated)); diff != "" {
+				t.Errorf("unexpected conditions (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -719,7 +847,7 @@ func TestUpdateStatusHashDegradedRolloutHalted(t *testing.T) {
 	}
 
 	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy, exhaustedSurgeLeader)
-	available, err := reconciler.updateStatusHash(ctx, lws)
+	available, err := reconciler.updateStatusHash(ctx, lws, "rev-2")
 	if err != nil {
 		t.Fatalf("updateStatusHash() unexpected error: %v", err)
 	}
