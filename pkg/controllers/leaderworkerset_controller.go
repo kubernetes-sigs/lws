@@ -626,7 +626,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 
 		var sts appsv1.StatefulSet
 		if !noWorkerSts {
-			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: pod.Name}, &sts); err != nil {
+			if err := r.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: workerStatefulSetName(&pod)}, &sts); err != nil {
 				if client.IgnoreNotFound(err) != nil {
 					log.Error(err, "Fetching worker statefulSet")
 					return false, false, err
