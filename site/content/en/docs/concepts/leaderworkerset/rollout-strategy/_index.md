@@ -32,7 +32,7 @@ In both [Group Identity](../group-identity/) modes (`Ordinal` and `Hash`), `maxU
 
 ### `Ordinal` Mode (Default)
 
-In `Ordinal` mode, leader pods are managed by a `StatefulSet`. The controller drives the rollout by coordinating the leader StatefulSet's `replicas` and `partition` from highest ordinal to lowest:
+In `Ordinal` mode, leader pods are managed by a `StatefulSet`. For a template update without concurrent scale-up, the controller drives the rollout by coordinating the leader StatefulSet's `replicas` and `partition` from highest ordinal to lowest. Combined template updates and scale-up use the budget rules described below.
 
 1. **Surge creation**: If `maxSurge > 0`, the controller temporarily scales the leader StatefulSet up to `spec.replicas + maxSurge` and sets `partition` to `spec.replicas`.
 2. **Batch progression**: The controller lowers `partition` toward `0` (or `.spec.rolloutStrategy.rollingUpdateConfiguration.partition`) in steps bounded by `maxUnavailable` and active surge groups, waiting for higher ordinals (leader and workers) to be updated and `Ready` before advancing.
@@ -57,65 +57,21 @@ Status indicators:
 | **Stage 8** | 0 | 4 | ⏳ | ✅ | ✅ | ✅ | | | R-1 becomes ready |
 | **Stage 9** | 0 | 4 | ✅ | ✅ | ✅ | ✅ | | | R-0 becomes ready; rolling update complete |
 
-### `Hash` Mode
-
-When `.spec.groupIdentity` is `Hash`, leader pods are managed by a `Deployment` instead of a `StatefulSet`, and each new group gets a fresh random identity rather than updating an ordinal in place (see [Group Identity](../group-identity/) for details):
-
-1. **Deployment-driven rollout**: `maxUnavailable` and `maxSurge` are passed directly to the leader Deployment's `RollingUpdate` strategy, which scales up the new `ReplicaSet` and scales down the old `ReplicaSet`. (`partition` is not supported in `Hash` mode.)
-2. **Whole-group readiness**: Multi-pod groups use the `leaderworkerset.sigs.k8s.io/group-ready` readiness gate on the leader pod, which becomes `True` only after all workers in the group are `Ready`. The Deployment therefore counts a leader as available—and frees budget to terminate another old group—only when its entire group is ready.
-3. **Replacement pacing**: New leader pods start with the `leaderworkerset.sigs.k8s.io/group-replacement` scheduling gate:
-   - With `groupReplacementPolicy: PostTermination` (default), surge groups are ungated immediately, while replacement groups stay `SchedulingGated` (without creating workers) until the terminating old group's leader and worker pods are fully removed.
-   - With `groupReplacementPolicy: Immediate`, replacement groups are ungated immediately without waiting for old groups to finish terminating.
-   - At most `spec.replicas` groups on a given revision are ungated at the same time; any extra pods created by `maxSurge` beyond `spec.replicas` stay gated and are removed first when scaling down.
-
-Below is a trace in `Hash` mode (`groupReplacementPolicy: PostTermination`) for 2 replicas with `maxUnavailable=1` and `maxSurge=1`:
-
-| Stage | Old Groups (`rev1`) | New Groups (`rev2`) | Description |
-| :--- | :--- | :--- | :--- |
-| **Stage 1** | `G-aaa` ✅, `G-bbb` ✅ | *none* | Steady state before rolling update (2 available groups). |
-| **Stage 2** | `G-aaa` ✅, `G-bbb` 🗑️ (tearing down) | `G-ccc` ⏳ (surge, ungated)<br>`G-ddd` 🔒 (`SchedulingGated`) | Deployment creates `G-ccc` (surge) and `G-ddd` (replacement) on `rev2` and terminates `G-bbb`. `G-ccc` is ungated immediately; `G-ddd` waits for `G-bbb` (leader + workers) to finish terminating. |
-| **Stage 3** | `G-aaa` ✅ | `G-ccc` ⏳, `G-ddd` ⏳ (ungated) | `G-bbb` finishes terminating. `G-ddd` is ungated and creates its workers. |
-| **Stage 4** | `G-aaa` 🗑️ (tearing down) | `G-ccc` ✅, `G-ddd` ⏳ | `G-ccc` becomes ready, restoring 2 available groups (`G-aaa` + `G-ccc`). The Deployment terminates `G-aaa`. |
-| **Stage 5** | *none* | `G-ccc` ✅, `G-ddd` ✅ | `G-aaa` finishes terminating and `G-ddd` becomes ready. Rollout complete on `rev2`. |
-
-#### Combined Template Update and Scale-Up with Hash Identity
-
-When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `oldReplicas` to `newReplicas`) are updated together—or when `spec.replicas` is scaled up mid-rollout—`Hash` mode follows these rules:
-
-1. **Added capacity comes up on the new revision**:
-   - In `Hash` mode, although the Deployment controller briefly scales the old `ReplicaSet` before rolling to the new `ReplicaSet`, gating prevents outdated leader pods from ever scheduling or creating workers; they are immediately deleted as the new `ReplicaSet` scales up.
-2. **Unready scaled-up groups count against `maxUnavailable`** (evaluated relative to `newReplicas`):
-   - **If `newReplicas - oldReplicas >= maxUnavailable`**: No existing old-revision groups are disrupted initially. Existing groups keep running until enough new groups become ready to free room within `maxUnavailable`.
-   - **If `newReplicas - oldReplicas < maxUnavailable`**: Up to `maxUnavailable - (newReplicas - oldReplicas)` existing old-revision groups begin updating immediately alongside the newly added groups.
-
-#### Resource Deadlock When Reducing Per-Group Resources During Scale-Up with Hash Identity ([#717](https://github.com/kubernetes-sigs/lws/issues/717))
-
-On capacity-constrained clusters (for example, a fixed pool of 8 GPUs), a common operation is **halving per-group resources while doubling `spec.replicas` in a single update** (such as `1 × 8 GPUs -> 2 × 4 GPUs`, or `4 × 8 GPUs -> 8 × 4 GPUs`) with default rollout settings (`maxUnavailable: 1`, `maxSurge: 0`).
-
-Because `newReplicas - oldReplicas >= maxUnavailable`, this update **deadlocks in Hash mode**: the controller refuses to terminate any old `8`-GPU group until a new `4`-GPU group becomes ready, but the new `4`-GPU groups stay `Pending` because the existing `8`-GPU groups still occupy all cluster GPUs.
-
-To avoid or recover from this state:
-
-1. **Update in two steps (recommended)**:
-   - First update `.spec.leaderWorkerTemplate` to the smaller per-group resource request while keeping `spec.replicas` unchanged. Once existing groups roll and free capacity, scale `spec.replicas` up.
-2. **Increase `maxUnavailable` above the scale-up delta (`maxUnavailable > newReplicas - oldReplicas`)**:
-   - **In `Hash` mode**: Setting `maxUnavailable` to at least `(newReplicas - oldReplicas) + 1` (e.g. `2` for `1 -> 2`, or `5` for `4 -> 8`) lets the Deployment immediately terminate one old `8`-GPU group. Once it exits, two new `4`-GPU groups fit into the freed capacity, and because any ready group increases Deployment availability regardless of order, the remaining old groups cascade through the rollout.
-
-## Combined Template Update and Scale-Up
+#### Combined Template Update and Scale-Up
 
 This section applies only to `spec.groupIdentity: Ordinal` (the default).
-`Hash` continues to use its existing Deployment rollout budgets and group
-readiness behavior; it does not use the Ordinal combined-rollout protocol below.
+`Hash` uses Deployment rollout budgets and whole-group readiness; it does not
+use the Ordinal combined-rollout protocol below.
 
 When a template update accompanies scale-up, or desired replicas grow during an
-ongoing rollout, the controller uses whole-group availability instead of waiting
-for a continuous Ready suffix. Ordinary scaling and rollouts retain their existing
-behavior when no combined operation is active.
+ongoing rollout, the controller uses whole-group availability to authorize
+replacement of old groups. Additional Pending groups do not provide availability
+credit or, by themselves, prevent an affordable replacement.
 
-This changes the default combined-update behavior: with `maxUnavailable: 1`, an
-old group can be replaced while additions remain Pending. One eight-GPU group can
+With the default `maxUnavailable: 1`, an old group can be replaced while additions
+remain Pending. One eight-GPU group can
 release resources while changing to two four-GPU groups on an eight-GPU cluster.
-No ordering opt-in is needed:
+The following configuration permits one unavailable group and no surge:
 
 ```yaml
 spec:
@@ -146,16 +102,103 @@ a lower unavailable old group would expose an unaffordable Ready old higher grou
 There is no universal liveness or DaemonSet-style independent selection guarantee.
 Reservation storage is bounded; a full window waits for replacements to recover.
 
-### Invalid Persisted State
+##### Invalid Persisted State
 
 The controller fails closed if its persisted combined-rollout state is invalid:
 it returns an error and does not mutate the leader StatefulSet or authorize leader
-deletion. Repeated reconciliation or controller restarts do not repair that state.
-There is currently no dedicated invalid-state status condition or automatic reset.
-Do not blindly delete the state annotation: it preserves the original baseline
-and outstanding replacement reservations, which cannot safely be inferred from
-the current replica count or Pending groups. Recovery requires investigation of
-the persisted state and its outstanding obligations.
+deletion. It emits a `Warning` Event with reason `CombinedRolloutInvalidState` on
+the LeaderWorkerSet, with the leader StatefulSet as the related object. The Event
+identifies a decoding failure, a missing phase, or a persisted generation newer
+than the current LeaderWorkerSet generation. The returned error in the controller
+logs contains further decoding details; the Event does not include the saved
+annotation contents.
+
+Inspect the LeaderWorkerSet's Events, for example through the Events section of
+its describe output, and filter for `CombinedRolloutInvalidState`. Events have
+finite retention; a historical Event does not prove that the rollout is still
+blocked. There is no dedicated invalid-state status condition. Repeated
+reconciliation or controller restarts do not repair the saved state.
+
+###### Recovery guidance
+
+The state is stored in the leader StatefulSet annotation
+`leaderworkerset.sigs.k8s.io/combined-rollout`. Before changing it:
+
+1. Stop automated spec changes, including HPA and GitOps updates, while the
+  incident is investigated. This does **not** pause native StatefulSet rollout
+  or garbage collection, and it is not sufficient to make clearing state safe.
+2. Save the LeaderWorkerSet, leader and worker StatefulSets, Pods, relevant
+  ControllerRevisions, and Events. Record their UIDs, resource versions,
+  generations, revision hashes, partition, and deletion timestamps. Check for
+  a manual annotation edit, a backup restore, or a controller-version mismatch.
+3. If the exact valid state immediately before an accidental edit is available,
+  establish that it still belongs to the same objects and operation and that
+  its baseline and outstanding reservations remain correct. An older backup or
+  a value from another object is not sufficient. A qualified operator can then
+  restore that state using a resource-version-guarded update, rechecking the
+  objects if the update conflicts. Do not overwrite changes made concurrently.
+4. If the original state or outstanding replacement obligations cannot be
+  established, leave the fail-closed protection in place and seek help from the
+  project maintainers. Provide the collected evidence with sensitive values
+  removed. There is no general safe in-place reset procedure. A planned workload
+  recreation is a separate operational decision: it can interrupt service and
+  requires checking backups, ownership, and persistent-volume retention first.
+
+Do not remove the annotation, invent a new baseline, change its generation just
+to pass validation, or strip finalizers to force progress. Even Ready-looking
+leaders can have outstanding replacement authorizations. Clearing that history
+can allow another disruption before the first replacement is Ready. The
+controller clears the state itself after it observes the required rollout
+convergence and cleanup; a manually edited snapshot must not bypass those checks.
+
+After a verified repair, observe fresh reconciliation and group readiness,
+revision convergence, and reservation cleanup. Absence of a new Warning alone
+is not proof of recovery. If the warning returns, stop manual retries and retain
+the evidence for investigation.
+
+### `Hash` Mode
+
+When `.spec.groupIdentity` is `Hash`, leader pods are managed by a `Deployment` instead of a `StatefulSet`, and each new group gets a fresh random identity rather than updating an ordinal in place (see [Group Identity](../group-identity/) for details):
+
+1. **Deployment-driven rollout**: `maxUnavailable` and `maxSurge` are passed directly to the leader Deployment's `RollingUpdate` strategy, which scales up the new `ReplicaSet` and scales down the old `ReplicaSet`. (`partition` is not supported in `Hash` mode.)
+2. **Whole-group readiness**: Multi-pod groups use the `leaderworkerset.sigs.k8s.io/group-ready` readiness gate on the leader pod, which becomes `True` only after all workers in the group are `Ready`. The Deployment therefore counts a leader as available—and frees budget to terminate another old group—only when its entire group is ready.
+3. **Replacement pacing**: New leader pods start with the `leaderworkerset.sigs.k8s.io/group-replacement` scheduling gate:
+  - With `groupReplacementPolicy: PostTermination` (default), surge groups are ungated immediately, while replacement groups stay `SchedulingGated` (without creating workers) until the terminating old group's leader and worker pods are fully removed.
+  - With `groupReplacementPolicy: Immediate`, replacement groups are ungated immediately without waiting for old groups to finish terminating.
+  - At most `spec.replicas` groups on a given revision are ungated at the same time; any extra pods created by `maxSurge` beyond `spec.replicas` stay gated and are removed first when scaling down.
+
+Below is a trace in `Hash` mode (`groupReplacementPolicy: PostTermination`) for 2 replicas with `maxUnavailable=1` and `maxSurge=1`:
+
+| Stage | Old Groups (`rev1`) | New Groups (`rev2`) | Description |
+| :--- | :--- | :--- | :--- |
+| **Stage 1** | `G-aaa` ✅, `G-bbb` ✅ | *none* | Steady state before rolling update (2 available groups). |
+| **Stage 2** | `G-aaa` ✅, `G-bbb` 🗑️ (tearing down) | `G-ccc` ⏳ (surge, ungated)<br>`G-ddd` 🔒 (`SchedulingGated`) | Deployment creates `G-ccc` (surge) and `G-ddd` (replacement) on `rev2` and terminates `G-bbb`. `G-ccc` is ungated immediately; `G-ddd` waits for `G-bbb` (leader + workers) to finish terminating. |
+| **Stage 3** | `G-aaa` ✅ | `G-ccc` ⏳, `G-ddd` ⏳ (ungated) | `G-bbb` finishes terminating. `G-ddd` is ungated and creates its workers. |
+| **Stage 4** | `G-aaa` 🗑️ (tearing down) | `G-ccc` ✅, `G-ddd` ⏳ | `G-ccc` becomes ready, restoring 2 available groups (`G-aaa` + `G-ccc`). The Deployment terminates `G-aaa`. |
+| **Stage 5** | *none* | `G-ccc` ✅, `G-ddd` ✅ | `G-aaa` finishes terminating and `G-ddd` becomes ready. Rollout complete on `rev2`. |
+
+#### Combined Template Update and Scale-Up with Hash Identity
+
+When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `oldReplicas` to `newReplicas`) are updated together—or when `spec.replicas` is scaled up mid-rollout—`Hash` mode follows these rules:
+
+1. **Added capacity comes up on the new revision**:
+  - In `Hash` mode, although the Deployment controller briefly scales the old `ReplicaSet` before rolling to the new `ReplicaSet`, gating prevents outdated leader pods from ever scheduling or creating workers; they are immediately deleted as the new `ReplicaSet` scales up.
+2. **Unready scaled-up groups count against `maxUnavailable`** (evaluated relative to `newReplicas`):
+  - **If `newReplicas - oldReplicas >= maxUnavailable`**: No existing old-revision groups are disrupted initially. Existing groups keep running until enough new groups become ready to free room within `maxUnavailable`.
+  - **If `newReplicas - oldReplicas < maxUnavailable`**: Up to `maxUnavailable - (newReplicas - oldReplicas)` existing old-revision groups begin updating immediately alongside the newly added groups.
+
+#### Resource Deadlock When Reducing Per-Group Resources During Scale-Up with Hash Identity ([#717](https://github.com/kubernetes-sigs/lws/issues/717))
+
+On capacity-constrained clusters (for example, a fixed pool of 8 GPUs), a common operation is **halving per-group resources while doubling `spec.replicas` in a single update** (such as `1 × 8 GPUs -> 2 × 4 GPUs`, or `4 × 8 GPUs -> 8 × 4 GPUs`) with default rollout settings (`maxUnavailable: 1`, `maxSurge: 0`).
+
+Because `newReplicas - oldReplicas >= maxUnavailable`, this update **deadlocks in Hash mode**: the controller refuses to terminate any old `8`-GPU group until a new `4`-GPU group becomes ready, but the new `4`-GPU groups stay `Pending` because the existing `8`-GPU groups still occupy all cluster GPUs.
+
+To avoid or recover from this state:
+
+1. **Update in two steps (recommended)**:
+  - First update `.spec.leaderWorkerTemplate` to the smaller per-group resource request while keeping `spec.replicas` unchanged. Once existing groups roll and free capacity, scale `spec.replicas` up.
+2. **Increase `maxUnavailable` above the scale-up delta (`maxUnavailable > newReplicas - oldReplicas`)**:
+  - **In `Hash` mode**: Setting `maxUnavailable` to at least `(newReplicas - oldReplicas) + 1` (e.g. `2` for `1 -> 2`, or `5` for `4 -> 8`) lets the Deployment immediately terminate one old `8`-GPU group. Once it exits, two new `4`-GPU groups fit into the freed capacity, and because any ready group increases Deployment availability regardless of order, the remaining old groups cascade through the rollout.
 
 ## MaxUnavailable Feature Gate
 
