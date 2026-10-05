@@ -578,7 +578,9 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		return lws
 	}
 
-	t.Run("hash identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
+	// Hash groups never reuse a name, so an LWS-owned PodGroup would outlive its
+	// group. The leader owns it instead and it is garbage collected with it.
+	t.Run("hash identity with typed scheduling creates leader-owned PodGroup", func(t *testing.T) {
 		lws := newLWS(leaderworkerset.GroupIdentityHash, true)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 		provider := NewVolcanoProvider(fakeClient)
@@ -593,13 +595,27 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 
 		owner := metav1.GetControllerOf(pg)
 		assert.NotNil(t, owner)
-		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
-		assert.Equal(t, lws.Name, owner.Name)
-		assert.Equal(t, lws.UID, owner.UID)
+		assert.Equal(t, "Pod", owner.Kind)
+		assert.Equal(t, leader.Name, owner.Name)
+		assert.Equal(t, leader.UID, owner.UID)
 
 		// Subsequent call succeeds idempotently.
 		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
 		assert.NoError(t, err)
+	})
+
+	t.Run("hash identity accepts LWS-owned PodGroup from earlier releases", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityHash, true)
+		leader := createTestLeaderPod("leader-hash", lws.Namespace, lws.Name, "hash123", "rev1")
+		pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            GetPodGroupName(lws.Name, "hash123", "rev1"),
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, pg).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
 	})
 
 	t.Run("ordinal identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
