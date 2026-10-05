@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -674,6 +675,60 @@ func TestUpdateStatusHashDegraded(t *testing.T) {
 		if want, ok := wantConditions[cond.Type]; ok && cond.Status != want {
 			t.Errorf("condition %s = %s, want %s", cond.Type, cond.Status, want)
 		}
+	}
+}
+
+func TestUpdateStatusHashReportsUnschedulableGroups(t *testing.T) {
+	ctx := context.Background()
+	lws := lwsStatusHashLWS(2)
+	lws.Generation = 1
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: lws.Name, Namespace: lws.Namespace},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+		Status: appsv1.DeploymentStatus{
+			Replicas: 2, ReadyReplicas: 1, UpdatedReplicas: 2,
+		},
+	}
+	leader := func(name string, reason string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: lws.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  name,
+				},
+			},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodPending,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: reason}},
+			},
+		}
+	}
+	terminating := leader("test-sample-terminating", corev1.PodReasonUnschedulable)
+	terminating.DeletionTimestamp = ptr.To(metav1.Now())
+	terminating.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+
+	reconciler, k8sClient := lwsStatusNewReconciler(t, lws, deploy,
+		leader("test-sample-unschedulable", corev1.PodReasonUnschedulable),
+		leader("test-sample-gated", corev1.PodReasonSchedulingGated),
+		terminating,
+	)
+	if _, err := reconciler.updateStatusHash(ctx, lws, ""); err != nil {
+		t.Fatalf("updateStatusHash() unexpected error: %v", err)
+	}
+
+	var updated leaderworkerset.LeaderWorkerSet
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &updated); err != nil {
+		t.Fatal(err)
+	}
+	progressing := apimeta.FindStatusCondition(updated.Status.Conditions, string(leaderworkerset.LeaderWorkerSetProgressing))
+	if progressing == nil || progressing.Status != metav1.ConditionTrue {
+		t.Fatalf("Progressing condition = %#v, want True", progressing)
+	}
+	if progressing.Reason != GroupUnschedulable || progressing.Message != "1 replica(s) cannot be scheduled" {
+		t.Errorf("Progressing reason, message = %q, %q, want %q, %q", progressing.Reason, progressing.Message, GroupUnschedulable, "1 replica(s) cannot be scheduled")
 	}
 }
 

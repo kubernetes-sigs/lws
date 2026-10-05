@@ -134,3 +134,16 @@ the blocking constraint lets kube-scheduler retry the whole gang.
 `PodGroupInitiallyScheduled=True` records that the group completed its initial
 placement once. It is not current replica health; use the LeaderWorkerSet
 `Available`/`Progressing` conditions and pod readiness for that.
+
+While kube-scheduler cannot place a replica's leader, the LeaderWorkerSet
+`Progressing` condition has reason `GroupUnschedulable` and reports how many
+replicas cannot be scheduled:
+
+```shell
+kubectl get lws <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="Progressing")].message}'
+```
+
+Only leaders are counted. When the leader is placed and only workers are
+waiting, for example with a separate worker gang, check the worker pods and the
+`GroupUnschedulable` events instead.

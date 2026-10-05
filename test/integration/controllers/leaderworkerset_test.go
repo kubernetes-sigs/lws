@@ -25,6 +25,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -681,6 +682,52 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						var workers corev1.PodList
 						gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
 						gomega.Expect(len(workers.Items)).To(gomega.Equal(2))
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is RecreateGroupAfterStart, and a pod cannot be scheduled", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.RecreateGroupAfterStart).Replica(1).Size(4)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						testing.CreateWorkerPodsForLeaderPod(ctx, leaderPod, k8sClient, *lws)
+						var workers corev1.PodList
+						gomega.Eventually(func() int {
+							gomega.Expect(k8sClient.List(ctx, &workers, client.InNamespace(lws.Namespace), &client.MatchingLabels{"worker.pod": "workers"})).To(gomega.Succeed())
+							return len(workers.Items)
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(3))
+						testing.SetPodScheduled(ctx, k8sClient, leaderPod.Name, lws, corev1.ConditionFalse, corev1.PodReasonUnschedulable)
+						// delete one worker pod
+						gomega.Expect(k8sClient.Delete(ctx, &workers.Items[0])).To(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ValidateEvent(ctx, k8sClient, "GroupUnschedulable", corev1.EventTypeWarning, fmt.Sprintf("Skipped recreating group 0 because pod %s cannot be scheduled", lws.Name+"-0"), lws.Namespace)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var current leaderworkerset.LeaderWorkerSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+							progressing := meta.FindStatusCondition(current.Status.Conditions, string(leaderworkerset.LeaderWorkerSetProgressing))
+							g.Expect(progressing).NotTo(gomega.BeNil())
+							g.Expect(progressing.Status).To(gomega.Equal(metav1.ConditionTrue))
+							g.Expect(progressing.Reason).To(gomega.Equal("GroupUnschedulable"))
+							g.Expect(progressing.Message).To(gomega.Equal("1 replica(s) cannot be scheduled"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						var leaderPod corev1.Pod
+						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+						gomega.Expect(leaderPod.DeletionTimestamp).To(gomega.BeNil())
+					},
+				},
+				{
+					// The scheduler places the leader; the reason must follow without any StatefulSet change.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodScheduled(ctx, k8sClient, lws.Name+"-0", lws, corev1.ConditionTrue, "")
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 					},
 				},
 			},
