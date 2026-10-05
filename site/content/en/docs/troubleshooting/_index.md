@@ -63,7 +63,7 @@ This issue occurs because StatefulSet names exceeding 57 characters prevent pods
 
 ### Solution
 
-The name limit for LWS objects is calculated as `(51 - int(replicas / 10))`. This is because the worker StatefulSet name grows by one character for replicas above 9, another character for replicas above 99, and so on. Ensure that the LWS object name adheres to this limit to avoid issues.
+The name limit for LWS objects is calculated as `(51 - int(replicas / 10))`. This is because the worker StatefulSet name grows by one character for replicas above 9, another character for replicas above 99, and so on. Ensure that the LWS object name adheres to this limit to avoid issues. With `groupIdentity: Hash`, the limit is 43 characters, or 54 for groups of size 1, and admission enforces it.
 
 ---
 
