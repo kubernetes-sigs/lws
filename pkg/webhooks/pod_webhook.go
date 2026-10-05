@@ -106,7 +106,12 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			// Hash-identity leaders are created through a Deployment: the pod name is
 			// not known at admission (generateName), so the group identity is a fresh
 			// random key rather than a name-derived ordinal.
-			groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
+			// Keep the key from an earlier pass of this webhook, recognized by the
+			// host name derived from it, so reinvocation is idempotent.
+			groupUniqueKey = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
+			if groupUniqueKey == "" || pod.Spec.Hostname != hashLeaderHostname(pod.Labels[leaderworkerset.SetNameLabelKey], groupUniqueKey) {
+				groupUniqueKey = genGroupUniqueKey(pod.Namespace, utilrand.String(16))
+			}
 			pod.Labels[leaderworkerset.GroupUniqueHashLabelKey] = groupUniqueKey
 			pod.Labels[leaderworkerset.GroupIndexLabelKey] = groupUniqueKey
 			// The host name is immutable, so admission is the only chance to set it.
