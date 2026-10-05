@@ -116,7 +116,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{}, err
 	}
 
-	updateDone, err := r.updateStatusHash(ctx, lws)
+	updateDone, err := r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision))
 	if err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
@@ -303,10 +303,10 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 // Deployment's readyReplicas already counts fully ready groups. Retained budget-exhausted
 // groups are discounted from ready counts and reported via the Degraded condition.
 // To prevent premature Available status during rollouts, the function verifies that the
-// Deployment observed the current generation, all old-revision pods have terminated, and
-// all desired replicas are ready and non-degraded. Returns true (updateDone) once the
-// desired revision is fully rolled out and Available.
-func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+// Deployment carries revisionKey and observed the current generation, all old-revision
+// pods have terminated, and all desired replicas are ready and non-degraded. Returns
+// true (updateDone) once the desired revision is fully rolled out and Available.
+func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	updateStatus := false
 
@@ -374,8 +374,10 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	lwsReplicas := *lws.Spec.Replicas
 	readyNonDegradedCount := max(int32(0), deploy.Status.ReadyReplicas-degradedReadyCount)
 	degraded := degradedGroupCount > 0
+	// The Deployment is read from the cache, which can still hold the object from
+	// before this reconcile applied revisionKey, with a status that looks done.
 	deploymentCurrent := deploy.Status.ObservedGeneration >= deploy.Generation &&
-		(deployRevision == "" || (oldRevisionPodCount == 0 && (len(leaderPodList.Items) == 0 || currentRevisionPodCount >= int(lwsReplicas))))
+		(deployRevision == "" || (deployRevision == revisionKey && oldRevisionPodCount == 0 && (len(leaderPodList.Items) == 0 || currentRevisionPodCount >= int(lwsReplicas))))
 	updateInProgress := !deploymentCurrent || deploy.Status.UpdatedReplicas < deploy.Status.Replicas
 	available := deploymentCurrent && !degraded &&
 		deploy.Status.Replicas == lwsReplicas &&
