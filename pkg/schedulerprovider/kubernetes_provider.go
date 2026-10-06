@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -204,6 +205,16 @@ func (p *KubernetesProvider) ReconcileScheduling(ctx context.Context, lws *leade
 	if err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
+	for i := range groups {
+		if groups[i].templateName != lwsWorkloadTemplateName {
+			continue
+		}
+		minCount, err := p.wholeLWSGangMinCount(ctx, lws, groups[i].name)
+		if err != nil {
+			return NewReconcileError(ReasonPodGroupCreateFailed, err)
+		}
+		groups[i].gangMinCount = ptr.To(minCount)
+	}
 	desiredGroups := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
 		desiredGroups[group.name] = struct{}{}
@@ -292,9 +303,9 @@ type desiredPodGroup struct {
 	labels              map[string]string
 	allowMinCountUpdate bool
 	// gangMinCount, when set, replaces the gang minCount of the template, which
-	// follows the current size, with the membership of the group the PodGroup
-	// belongs to. It is ignored for delegated Workloads, whose templates belong
-	// to the parent.
+	// follows the current size, with the membership of the groups the PodGroup
+	// covers. It is ignored for delegated Workloads, whose templates belong to
+	// the parent.
 	gangMinCount *int32
 }
 
@@ -322,6 +333,61 @@ func desiredPodGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32, _ st
 	default:
 		return nil, fmt.Errorf("unsupported scheduling mode %q", mode)
 	}
+}
+
+// wholeLWSGangMinCount returns the gang minimum of the whole-LWS PodGroup
+// podGroupName: the pods in the groups of the replicas, see
+// wholeLWSMembership. Only groups whose leader pod is a member of the PodGroup
+// count, which leaves out the pods of a deleted LWS of the same name. Leader
+// pods that are terminating count too, because the scheduler counts the members
+// of their group until they are deleted.
+func (p *KubernetesProvider) wholeLWSGangMinCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, podGroupName string) (int32, error) {
+	leaders := &corev1.PodList{}
+	if err := p.client.List(ctx, leaders, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	}); err != nil {
+		return 0, fmt.Errorf("list leader pods: %w", err)
+	}
+	groupSizes := make([]int32, 0, len(leaders.Items))
+	for i := range leaders.Items {
+		leader := &leaders.Items[i]
+		if ref := leader.Spec.SchedulingGroup; ref == nil || ptr.Deref(ref.PodGroupName, "") != podGroupName {
+			continue
+		}
+		groupSizes = append(groupSizes, groupSize(lws, leader))
+	}
+	return wholeLWSMembership(ptr.Deref(lws.Spec.Replicas, 1), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1), groupSizes), nil
+}
+
+// wholeLWSMembership returns the number of pods in the groups of the replicas
+// of a whole-LWS gang, given the sizes of the existing groups. Every group
+// keeps the size of the revision its leader pod was created from, so after a
+// size increase the LWS has fewer than replicas * size pods until the rollout
+// has replaced all groups of the old size. Against the replicas * size of the
+// Workload template, the scheduler would never admit the replacement groups
+// and the rollout would stall.
+//
+// Every replica counts with the size of an existing group, the smallest first,
+// since surge and scaled down groups go away. A replica without a group counts
+// with the smallest group size, or with size if that is smaller. The result is
+// at least 1 and at most replicas * size, the template minimum, and is lower
+// only while a group is smaller than size.
+func wholeLWSMembership(replicas, size int32, groupSizes []int32) int32 {
+	slices.Sort(groupSizes)
+	pending := size
+	if len(groupSizes) > 0 {
+		pending = min(pending, groupSizes[0])
+	}
+	var members int32
+	for i := range replicas {
+		if int(i) < len(groupSizes) {
+			members += groupSizes[i]
+		} else {
+			members += pending
+		}
+	}
+	return max(1, min(members, replicas*size))
 }
 
 func basePodGroupLabels(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode) map[string]string {
