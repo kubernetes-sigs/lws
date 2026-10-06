@@ -50,6 +50,9 @@ const (
 	WorkloadSchedulingAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-aware-scheduling"
 	// WorkloadNameAnnotationKey is set on managed pod templates by the LWS
 	// controller. The pod webhook uses it because the admission request has no LWS object.
+	// On Ordinal leader pods in replica and role modes the pod webhook appends
+	// a group incarnation to it, which the pod controller copies onto the
+	// worker statefulset template, see GroupWorkloadName.
 	WorkloadNameAnnotationKey = "leaderworkerset.sigs.k8s.io/workload-name"
 	// SchedulingLevelLabelKey is set on created PodGroups by the kubernetes provider.
 	SchedulingLevelLabelKey = "leaderworkerset.sigs.k8s.io/scheduling-level"
@@ -57,6 +60,12 @@ const (
 	PodGroupRoleLabelKey = "leaderworkerset.sigs.k8s.io/role"
 
 	workloadControllerUIDIndex = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
+	// groupIncarnationSeparator separates the group incarnation from the
+	// workload name. Workload names never contain it, LeaderWorkerSet names
+	// are DNS labels.
+	groupIncarnationSeparator = "."
+	// groupIncarnationLength matches the random suffix of generated object names.
+	groupIncarnationLength = 5
 )
 
 // SetupKubernetesIndexes registers cache indexes used by the Kubernetes provider.
@@ -119,6 +128,46 @@ func KubernetesPodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, re
 // KubernetesRolePodGroupName returns a UID-qualified role PodGroup name.
 func KubernetesRolePodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, role, revision string) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, role, revision)
+}
+
+// GroupWorkloadName returns the WorkloadNameAnnotationKey value of the pods in
+// the group of leaderPod, from which the names of the group's PodGroups are
+// derived.
+//
+// The pod webhook gives every Ordinal leader pod in replica and role modes a
+// group incarnation of its own: a random suffix of the workload name. The
+// statefulset controller recreates a leader with the same name, group index
+// and revision, so without it the new leader would reuse a PodGroup that
+// cleanup may already be deleting. The PodGroup protection finalizer then
+// holds that PodGroup for as long as the gated leader references it, and the
+// leader is never admitted. The worker statefulset template carries the
+// leader's workload name, so the workers join the same PodGroups whichever LWS
+// version admits them.
+//
+// Hash leaders, whose group key is already drawn per leader pod, and leader
+// pods admitted before group incarnations were introduced keep
+// KubernetesWorkloadName.
+func GroupWorkloadName(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) string {
+	workloadName := KubernetesWorkloadName(lws)
+	incarnation, found := strings.CutPrefix(leaderPod.Annotations[WorkloadNameAnnotationKey], workloadName+groupIncarnationSeparator)
+	if found && isGroupIncarnation(incarnation) {
+		return workloadName + groupIncarnationSeparator + incarnation
+	}
+	return workloadName
+}
+
+// isGroupIncarnation reports whether s has the form of a group incarnation
+// drawn by the pod webhook.
+func isGroupIncarnation(s string) bool {
+	if len(s) != groupIncarnationLength {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // KubernetesProvider manages upstream Workload and PodGroup resources.
@@ -270,11 +319,11 @@ func basePodGroupLabels(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMod
 }
 
 // replicaPodGroups returns the PodGroups of a single replica: one in replica
-// mode, a leader and a worker one in role mode. groupIndex is the value of the
-// group index label, an ordinal with groupIdentity Ordinal and the group key
-// with groupIdentity Hash.
-func replicaPodGroups(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode, groupIndex, revision string) []desiredPodGroup {
-	workloadName := KubernetesWorkloadName(lws)
+// mode, a leader and a worker one in role mode. workloadName is the workload
+// name of the replica's pods, see GroupWorkloadName. groupIndex is the value of
+// the group index label, an ordinal with groupIdentity Ordinal and the group
+// key with groupIdentity Hash.
+func replicaPodGroups(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode, workloadName, groupIndex, revision string) []desiredPodGroup {
 	if mode == SchedulingModeReplica {
 		labels := basePodGroupLabels(lws, mode)
 		labels[leaderworkerset.GroupIndexLabelKey] = groupIndex
@@ -620,9 +669,12 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	}
 	// In replica and role modes (both Ordinal and Hash identity), each active
 	// leader pod represents an active replica whose PodGroups must be preserved.
-	// Deriving their names from the leader's labels matches CreatePodGroupIfNotExists
-	// and prevents cleanup from racing before member pods have spec.schedulingGroup
-	// populated (such as worker PodGroups in role mode before workers are created).
+	// Deriving their names from the leader's labels and workload name matches
+	// CreatePodGroupIfNotExists and prevents cleanup from racing before member
+	// pods have spec.schedulingGroup populated (such as worker PodGroups in role
+	// mode before workers are created). The PodGroups of a previous leader of the
+	// same group have other names, so they are removed once no pod references
+	// them.
 	mode, err := SchedulingModeFor(lws)
 	if err == nil && (mode == SchedulingModeReplica || mode == SchedulingModeRole) {
 		for i := range pods.Items {
@@ -635,7 +687,7 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 			if groupIndex == "" || revision == "" {
 				continue
 			}
-			for _, group := range replicaPodGroups(lws, mode, groupIndex, revision) {
+			for _, group := range replicaPodGroups(lws, mode, GroupWorkloadName(lws, pod), groupIndex, revision) {
 				desiredGroups[group.name] = struct{}{}
 			}
 		}
@@ -671,8 +723,12 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 // The pod controller calls this while the leader pod still carries the group
 // replacement scheduling gate, which keeps the KEP-666 ordering: the leaf
 // PodGroup exists before any member pod can be scheduled. The PodGroup is
-// controller-owned by the LeaderWorkerSet, never by the leader pod, so a leader
-// restart reuses it instead of racing garbage collection.
+// controller-owned by the LeaderWorkerSet, never by the leader pod, because it
+// has to exist before the leader can be scheduled. Every leader pod gets
+// PodGroups of its own: their names carry the group key (Hash) or the group
+// incarnation (Ordinal), both drawn when the leader pod is admitted. A
+// recreated leader therefore never waits on a PodGroup of its predecessor that
+// cleanup is deleting.
 func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
 	groups, err := leaderPodGroups(lws, leaderPod)
 	if err != nil {
@@ -711,7 +767,7 @@ func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod
 	if revision == "" {
 		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.RevisionKey)
 	}
-	return replicaPodGroups(lws, mode, groupIndex, revision), nil
+	return replicaPodGroups(lws, mode, GroupWorkloadName(lws, leaderPod), groupIndex, revision), nil
 }
 
 // findWorkload looks up the Workload that already backs the LeaderWorkerSet
@@ -747,6 +803,8 @@ func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	workloadName := pod.Annotations[WorkloadNameAnnotationKey]
 	if workloadName == "" {
 		workloadName = pod.Labels[leaderworkerset.SetNameLabelKey]
+	} else if ordinalReplicaLeader(pod, mode) {
+		workloadName = incarnateGroup(pod, workloadName)
 	}
 	var name string
 	switch mode {
@@ -765,4 +823,28 @@ func (p *KubernetesProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	}
 	pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{PodGroupName: ptr.To(name)}
 	return nil
+}
+
+// ordinalReplicaLeader reports whether pod is the leader of an Ordinal group
+// with replica or role level PodGroups.
+func ordinalReplicaLeader(pod *corev1.Pod, mode SchedulingMode) bool {
+	return (mode == SchedulingModeReplica || mode == SchedulingModeRole) &&
+		pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0" &&
+		pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] != string(leaderworkerset.GroupIdentityHash)
+}
+
+// incarnateGroup draws a group incarnation for an Ordinal leader pod being
+// admitted, see GroupWorkloadName. It appends it to workloadName, records the
+// result on the pod and returns it. A workload name that already ends in an
+// incarnation is kept: the LWS controller writes plain workload names on pod
+// templates, so only an earlier pass of this webhook appends one, and
+// reinvocation stays idempotent.
+func incarnateGroup(pod *corev1.Pod, workloadName string) string {
+	base, incarnation, _ := strings.Cut(workloadName, groupIncarnationSeparator)
+	if isGroupIncarnation(incarnation) {
+		return workloadName
+	}
+	workloadName = base + groupIncarnationSeparator + utilrand.String(groupIncarnationLength)
+	pod.Annotations[WorkloadNameAnnotationKey] = workloadName
+	return workloadName
 }

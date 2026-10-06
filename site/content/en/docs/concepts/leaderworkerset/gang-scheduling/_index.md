@@ -56,19 +56,26 @@ removes independent PodGroups, and changing `size` updates the derived gang
 membership as part of the LWS rollout.
 
 LWS creates the `Workload` before creating member pods. Runtime `PodGroup`
-creation depends on the scheduling level and group identity:
+creation depends on the scheduling level:
 
-- In **Ordinal mode** (the default `spec.groupIdentity: Ordinal`), replica
-  ordinals are known upfront. LWS creates the runtime `PodGroup` objects before
-  creating member pods.
-- In **Hash mode** (`spec.groupIdentity: Hash`) at the whole-LWS level, the
-  `PodGroup` name does not depend on a group key, so LWS also creates it before
-  member pods.
-- In **Hash mode** at the replica or role level, group keys are generated at
-  admission. Leader pods are created first with a scheduling gate
-  (`leaderworkerset.sigs.k8s.io/group-replacement`). The pod controller creates
-  the runtime `PodGroup` objects while reconciling the leader pod, before
-  clearing its gate and creating workers.
+- At the **whole-LWS level**, the `PodGroup` name does not depend on a
+  replica, so LWS creates it before member pods in both group identity modes.
+- At the **replica or role level**, leader pods are created with a scheduling
+  gate (`leaderworkerset.sigs.k8s.io/group-replacement`). The pod controller
+  creates the runtime `PodGroup` objects of a replica while reconciling its
+  gated leader pod, before clearing the gate and creating workers.
+
+At the replica and role levels, every leader pod gets `PodGroup` objects of
+its own, so a recreated leader never waits on a `PodGroup` of its predecessor
+that is being deleted:
+
+- In **Hash mode** (`spec.groupIdentity: Hash`), the `PodGroup` names contain
+  the group key that admission generates for each leader pod.
+- In **Ordinal mode** (the default `spec.groupIdentity: Ordinal`), a recreated
+  leader keeps its name, group index, and revision, so admission adds a random
+  5-character group incarnation to the names:
+  `<lws-name>-<uid-hash>.<incarnation>-<group-index>[-<role>]-<revision>`.
+  Workers inherit the incarnation of their leader.
 
 In all cases, LWS sets `spec.schedulingGroup.podGroupName` on each pod so kube-scheduler can match member pods to the correct gang.
 
@@ -102,17 +109,28 @@ The initial implementation has these important restrictions:
 The scheduling policy and immutable constraints cannot be changed in place.
 At the replica level, LWS derives runtime PodGroup instances and gang
 membership from `replicas` and `size`, so ordinary replica scaling and size
-changes remain supported. The alpha implementation has known update edge
-cases:
-
-- A size change during a rolling update can deadlock a whole-LWS gang; see
-  [#1080](https://github.com/kubernetes-sigs/lws/issues/1080).
-- A partitioned scale-down followed by a scale-up at the replica or role level
-  can leave a recreated replica waiting on a deleted PodGroup; see
-  [#1082](https://github.com/kubernetes-sigs/lws/issues/1082) and the fix in
-  [#1108](https://github.com/kubernetes-sigs/lws/pull/1108).
+changes remain supported. The alpha implementation has a known update edge
+case: a size change during a rolling update can deadlock a whole-LWS gang; see
+[#1080](https://github.com/kubernetes-sigs/lws/issues/1080).
 
 `WorkloadSchedulingCreated=True` on the LeaderWorkerSet means LWS created the
 requested scheduling objects. It does not mean the gang was placed or that
 the replica is healthy. Use PodGroup conditions and pod placement to inspect
 scheduler progress, as shown in the [quickstart](../../../examples/leaderworkerset/gang-scheduling/#inspect-the-scheduling-objects).
+
+## Upgrading LWS
+
+Upgrading LWS does not restart running replicas. Replicas whose leader pod was
+admitted by an earlier version keep their `PodGroup` objects, named without a
+group incarnation, until their leader pod is recreated.
+
+While the upgrade rolls out, the pod webhook and the controller can briefly
+run different LWS versions. If the new webhook admits a leader pod whose
+workers the earlier controller then creates, the leader and its workers join
+different `PodGroup` objects. LWS recreates such a replica by deleting its
+leader pod, as long as none of its workers is scheduled, and records a
+`RecreateGroup` event.
+
+Downgrading LWS keeps running replicas running. A replica that the newer
+version admitted but that has not started yet can wait for `PodGroup` objects
+the earlier version does not create. Delete its leader pod to recreate it.
