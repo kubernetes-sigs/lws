@@ -21,7 +21,8 @@ set -o pipefail
 DEST_CHART_DIR=${DEST_CHART_DIR:-bin/}
 
 EXTRA_TAG=${EXTRA_TAG:-$(git branch --show-current)}
-GIT_TAG=${GIT_TAG:-$(git describe --tags --dirty --always)}
+GIT_TAG=${GIT_TAG:-$(date -u +"v%Y%m%d")-g$(git describe --tags --dirty --always --match="")}
+GIT_TAG=$(echo "${GIT_TAG}" | sed -E 's/^(v[0-9]{8})-(.*-[0-9]+-g|g?)([0-9a-f]+(-dirty)?)$/\1-g\3/')
 
 STAGING_IMAGE_REGISTRY=${STAGING_IMAGE_REGISTRY:-us-central1-docker.pkg.dev/k8s-staging-images}
 IMAGE_REGISTRY=${IMAGE_REGISTRY:-${STAGING_IMAGE_REGISTRY}/lws}

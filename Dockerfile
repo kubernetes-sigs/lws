@@ -6,6 +6,8 @@ FROM --platform=${BUILDPLATFORM} ${BUILDER_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG CGO_ENABLED
+ARG GIT_TAG
+ARG GIT_COMMIT
 
 WORKDIR /workspace
 # cache deps before building so that we don't need to re-download as much

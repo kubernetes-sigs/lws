@@ -19,7 +19,8 @@ GO_FMT ?= gofmt
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
-GIT_TAG ?= $(shell git describe --tags --dirty --always)
+GIT_TAG ?= $(shell date -u +"v%Y%m%d")-g$(shell git describe --tags --dirty --always --match="")
+GIT_TAG := $(shell echo "$(GIT_TAG)" | sed -E 's/^(v[0-9]{8})-(.*-[0-9]+-g|g?)([0-9a-f]+(-dirty)?)$$/\1-g\3/')
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
@@ -58,10 +59,11 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "$(GIT_TAG)" | sed -E 's/^v[0-9]{8}-g([0-9a-f]+).*$$/\1/')
 
 version_pkg = sigs.k8s.io/lws/pkg/version
 LD_FLAGS += -X '$(version_pkg).GitVersion=$(GIT_TAG)'
-LD_FLAGS += -X '$(version_pkg).GitCommit=$(shell git rev-parse HEAD)'
+LD_FLAGS += -X '$(version_pkg).GitCommit=$(GIT_COMMIT)'
 LD_FLAGS += -X '$(version_pkg).BuildDate=$(BUILD_DATE)'
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -280,6 +282,8 @@ image-build:
 		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg CGO_ENABLED=$(CGO_ENABLED) \
+		--build-arg GIT_TAG=$(GIT_TAG) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--output=type=$(OUTPUT_TYPE) \
 		$(PUSH) \
 		$(IMAGE_BUILD_EXTRA_OPTS) ./
