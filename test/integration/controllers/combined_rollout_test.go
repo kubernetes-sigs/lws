@@ -36,6 +36,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/utils"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
 )
 
@@ -43,6 +44,7 @@ type combinedRolloutOptions struct {
 	duringUpdate       bool
 	afterPartialUpdate bool
 	downscale          bool
+	additionalReplicas int32
 }
 
 // These growth scenarios run the real asynchronous LWS controller, not
@@ -54,8 +56,38 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 	key := client.ObjectKeyFromObject(lws)
 	baseline := *lws.Spec.Replicas
 	desired := baseline + 2
+	if options.additionalReplicas != 0 {
+		desired = baseline + options.additionalReplicas
+	}
+	growth := desired - baseline
 	surge := int32(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge.IntValue())
 	size := *lws.Spec.LeaderWorkerTemplate.Size
+	const targetWorkerImage = "test.invalid/combined-update"
+	oldWorker := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0]
+	oldLeader := oldWorker
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		oldLeader = lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0]
+	}
+	gomega.Expect(oldWorker.Image).NotTo(gomega.Equal(targetWorkerImage))
+	oldRevisionObject, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	oldRevision := revisionutils.GetRevisionKey(oldRevisionObject)
+	targetRevision := oldRevision
+	// Expectations come from the intended templates, never from the observed
+	// StatefulSet. A separate leader template intentionally keeps its old image.
+	checkContainer := func(g gomega.Gomega, containers []corev1.Container, revision string, worker bool) {
+		g.Expect(revision).To(gomega.Or(gomega.Equal(oldRevision), gomega.Equal(targetRevision)))
+		want := oldLeader
+		if worker {
+			want = oldWorker
+		}
+		if revision != oldRevision && (worker || lws.Spec.LeaderWorkerTemplate.LeaderTemplate == nil) {
+			want.Image = targetWorkerImage
+		}
+		g.Expect(containers).NotTo(gomega.BeEmpty())
+		g.Expect(containers[0].Name).To(gomega.Equal(want.Name))
+		g.Expect(containers[0].Image).To(gomega.Equal(want.Image))
+	}
 	groupKey := func(i int32) client.ObjectKey {
 		return client.ObjectKey{Namespace: key.Namespace, Name: fmt.Sprintf("%s-%d", key.Name, i)}
 	}
@@ -69,6 +101,23 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		gomega.Expect(k8sClient.Get(ctx, key, &sts)).To(gomega.Succeed())
 		return &sts
 	}
+	var condemnedUID types.UID
+	// Keep checking the retired old-3 obligation after the ordinal is reused.
+	// New missing-slot surge obligations are distinct from that original UID.
+	checkRetiredReservation := func(g gomega.Gomega, sts *appsv1.StatefulSet) {
+		if condemnedUID == "" || sts.Annotations[annotation] == "" {
+			return
+		}
+		var state struct {
+			Pending map[string]struct {
+				UID types.UID `json:"uid"`
+			} `json:"pending"`
+		}
+		g.Expect(json.Unmarshal([]byte(sts.Annotations[annotation]), &state)).To(gomega.Succeed())
+		for _, obligation := range state.Pending {
+			g.Expect(obligation.UID).NotTo(gomega.Equal(condemnedUID), "condemned old ordinal 3 must never be carried into surge reuse")
+		}
+	}
 	// Bounded Eventually only acknowledges concrete observed spec generations;
 	// it never fabricates healthy Pods or silently completes a rollout.
 	advance := func(predicate func(*appsv1.StatefulSet) bool) {
@@ -77,6 +126,7 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			if err := k8sClient.Get(ctx, key, &sts); err != nil {
 				return false, err
 			}
+			checkRetiredReservation(gomega.Default, &sts)
 			native := "native-" + sts.Spec.Template.Labels[leaderworkerset.RevisionKey]
 			if sts.Status.ObservedGeneration < sts.Generation || sts.Status.UpdateRevision != native || sts.Status.Replicas != *sts.Spec.Replicas {
 				sts.Status.ObservedGeneration, sts.Status.UpdateRevision, sts.Status.Replicas = sts.Generation, native, *sts.Spec.Replicas
@@ -99,6 +149,11 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			mutate(&live)
 			return k8sClient.Update(ctx, &live)
 		})).To(gomega.Succeed())
+		var live leaderworkerset.LeaderWorkerSet
+		gomega.Expect(k8sClient.Get(ctx, key, &live)).To(gomega.Succeed())
+		revision, err := revisionutils.NewRevision(ctx, k8sClient, &live, "")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		targetRevision = revisionutils.GetRevisionKey(revision)
 	}
 	// Idempotent readiness: an existing worker must already have the right
 	// owner and revision. Never relabel an old Pod to manufacture an update.
@@ -109,6 +164,7 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			if err := k8sClient.Get(ctx, podKey, &pod); err != nil {
 				return err
 			}
+			checkContainer(gomega.Default, pod.Spec.Containers, pod.Labels[leaderworkerset.RevisionKey], false)
 			pod.Status.Phase = corev1.PodRunning
 			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 			return k8sClient.Status().Update(ctx, &pod)
@@ -123,6 +179,7 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 				g.Expect(metav1.GetControllerOf(&workers).UID).To(gomega.Equal(leader.UID))
 				g.Expect(workers.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(leader.Labels[leaderworkerset.RevisionKey]))
 				g.Expect(*workers.Spec.Replicas).To(gomega.Equal(size - 1))
+				checkContainer(g, workers.Spec.Template.Spec.Containers, leader.Labels[leaderworkerset.RevisionKey], true)
 			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 			native := "native-" + workers.Labels[leaderworkerset.RevisionKey]
 			for j := int32(1); j <= *workers.Spec.Replicas; j++ {
@@ -144,6 +201,7 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 				gomega.Expect(p.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(leader.Labels[leaderworkerset.RevisionKey]))
 				gomega.Expect(p.Labels[appsv1.ControllerRevisionHashLabelKey]).To(gomega.Equal(native))
 				gomega.Expect(p.DeletionTimestamp).To(gomega.BeNil())
+				checkContainer(gomega.Default, p.Spec.Containers, leader.Labels[leaderworkerset.RevisionKey], true)
 				if workersReady {
 					gomega.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
 						if err := k8sClient.Get(ctx, workerKey, &p); err != nil {
@@ -172,6 +230,8 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 	}
 	create := func(i int32) {
 		sts := getSTS()
+		gomega.Expect(sts.Spec.Template.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(targetRevision))
+		checkContainer(gomega.Default, sts.Spec.Template.Spec.Containers, targetRevision, false)
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", key.Name, i), Namespace: key.Namespace,
 			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: key.Name, leaderworkerset.GroupIndexLabelKey: strconv.Itoa(int(i)), leaderworkerset.WorkerIndexLabelKey: "0", leaderworkerset.RevisionKey: sts.Spec.Template.Labels[leaderworkerset.RevisionKey], appsv1.ControllerRevisionHashLabelKey: "native-" + sts.Spec.Template.Labels[leaderworkerset.RevisionKey]},
 			Annotations:     map[string]string{leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))},
@@ -244,31 +304,78 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 	rolloutStarted := false
 	stage := func(replicas, partition, readyCount, updatedCount int32, updating bool) {
 		ginkgo.By(fmt.Sprintf("checking stable stage: replicas=%d partition=%d ready=%d updated=%d updating=%t", replicas, partition, readyCount, updatedCount, updating))
+		// This validator has its own Eventually; do not nest it inside check.
+		// It fetches fresh desired spec, even while native surge differs from it.
+		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, replicas)
 		check := func(g gomega.Gomega) {
 			var sts appsv1.StatefulSet
 			var live leaderworkerset.LeaderWorkerSet
 			g.Expect(k8sClient.Get(ctx, key, &sts)).To(gomega.Succeed())
 			g.Expect(k8sClient.Get(ctx, key, &live)).To(gomega.Succeed())
+			checkRetiredReservation(g, &sts)
 			g.Expect(*sts.Spec.Replicas).To(gomega.Equal(replicas))
 			g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(partition))
 			g.Expect(sts.Status.ObservedGeneration).To(gomega.Equal(sts.Generation))
+			revision, err := revisionutils.NewRevision(ctx, k8sClient, &live, "")
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(revisionutils.GetRevisionKey(revision)).To(gomega.Equal(targetRevision))
+			g.Expect(sts.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(targetRevision))
+			g.Expect(sts.Labels[leaderworkerset.SetNameLabelKey]).To(gomega.Equal(key.Name))
+			g.Expect(sts.Annotations[leaderworkerset.ReplicasAnnotationKey]).To(gomega.Equal(strconv.Itoa(int(*live.Spec.Replicas))))
+			g.Expect(sts.Spec.Template.Labels).To(gomega.Equal(map[string]string{
+				leaderworkerset.SetNameLabelKey: key.Name, leaderworkerset.WorkerIndexLabelKey: "0", leaderworkerset.RevisionKey: targetRevision,
+			}))
+			g.Expect(sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]).To(gomega.Equal(strconv.Itoa(int(size))))
+			for _, annotationKey := range []string{leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.SubGroupExclusiveKeyAnnotationKey} {
+				g.Expect(sts.Spec.Template.Annotations[annotationKey]).To(gomega.Equal(live.Annotations[annotationKey]))
+			}
+			checkContainer(g, sts.Spec.Template.Spec.Containers, targetRevision, false)
+			g.Expect(live.Status.ObservedGeneration).To(gomega.Equal(live.Generation))
 			g.Expect(live.Status.Replicas).To(gomega.Equal(replicas))
 			g.Expect(live.Status.ReadyReplicas).To(gomega.Equal(readyCount))
 			g.Expect(live.Status.UpdatedReplicas).To(gomega.Equal(updatedCount))
-			for _, condition := range []leaderworkerset.LeaderWorkerSetConditionType{leaderworkerset.LeaderWorkerSetProgressing, leaderworkerset.LeaderWorkerSetUpdateInProgress} {
-				g.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, string(condition))).To(gomega.Equal(updating))
-				// UpdateInProgress is absent before the first rollout, not False.
-				// Once a rollout starts, require explicit completion conditions.
-				if rolloutStarted || condition != leaderworkerset.LeaderWorkerSetUpdateInProgress {
-					g.Expect(meta.IsStatusConditionFalse(live.Status.Conditions, string(condition))).To(gomega.Equal(!updating))
+			for _, want := range []struct {
+				typeName leaderworkerset.LeaderWorkerSetConditionType
+				message  string
+				isTrue   bool
+			}{
+				{leaderworkerset.LeaderWorkerSetProgressing, "Replicas are progressing", updating},
+				{leaderworkerset.LeaderWorkerSetUpdateInProgress, "Rolling Upgrade is in progress", updating},
+				{leaderworkerset.LeaderWorkerSetAvailable, "All replicas are ready", !updating},
+			} {
+				condition := meta.FindStatusCondition(live.Status.Conditions, string(want.typeName))
+				// Only UpdateInProgress may be absent before the first rollout.
+				if !rolloutStarted && want.typeName == leaderworkerset.LeaderWorkerSetUpdateInProgress && condition == nil {
+					continue
+				}
+				g.Expect(condition).NotTo(gomega.BeNil())
+				status := metav1.ConditionFalse
+				if want.isTrue {
+					status = metav1.ConditionTrue
+				}
+				g.Expect(condition.Status).To(gomega.Equal(status))
+				// Mutual exclusion changes Status, but preserves makeCondition's message.
+				g.Expect(condition.Message).To(gomega.Equal(want.message))
+				g.Expect(condition.ObservedGeneration).To(gomega.Equal(live.Generation))
+			}
+			var pods corev1.PodList
+			var sets appsv1.StatefulSetList
+			selector := client.MatchingLabels{leaderworkerset.SetNameLabelKey: key.Name}
+			g.Expect(k8sClient.List(ctx, &pods, client.InNamespace(key.Namespace), selector)).To(gomega.Succeed())
+			g.Expect(k8sClient.List(ctx, &sets, client.InNamespace(key.Namespace), selector)).To(gomega.Succeed())
+			for _, pod := range pods.Items {
+				checkContainer(g, pod.Spec.Containers, pod.Labels[leaderworkerset.RevisionKey], pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0")
+			}
+			for _, set := range sets.Items {
+				if set.Name != key.Name {
+					checkContainer(g, set.Spec.Template.Spec.Containers, set.Labels[leaderworkerset.RevisionKey], true)
 				}
 			}
-			g.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, string(leaderworkerset.LeaderWorkerSetAvailable))).To(gomega.Equal(!updating))
 		}
 		gomega.Eventually(check, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 		gomega.Consistently(check, 2*time.Second, testing.Interval).Should(gomega.Succeed())
 	}
-	oldRevision := getSTS().Labels[leaderworkerset.RevisionKey]
+	gomega.Expect(getSTS().Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(oldRevision))
 	oldUIDs := make(map[int32]types.UID)
 	for i := int32(0); i < baseline; i++ {
 		podKey := client.ObjectKey{Namespace: key.Namespace, Name: fmt.Sprintf("%s-%d", key.Name, i)}
@@ -294,16 +401,18 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			g.Expect(pod.Labels[appsv1.ControllerRevisionHashLabelKey]).To(gomega.Equal(original.Labels[appsv1.ControllerRevisionHashLabelKey]))
 			g.Expect(pod.OwnerReferences).To(gomega.Equal(original.OwnerReferences))
 			g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+			checkContainer(g, pod.Spec.Containers, targetRevision, pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0")
 		}
 	}
 	ginkgo.By("publishing growth concurrently with a template update, or during an ordinary surge rollout")
 	change(func(live *leaderworkerset.LeaderWorkerSet) {
-		live.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "test.invalid/combined-update"
+		live.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = targetWorkerImage
 		if !options.duringUpdate {
 			live.Spec.Replicas = ptr.To(desired)
 		}
 	})
 	rolloutStarted = true
+	gomega.Expect(targetRevision).NotTo(gomega.Equal(oldRevision))
 	if options.duringUpdate {
 		advance(func(sts *appsv1.StatefulSet) bool {
 			return sts.Labels[leaderworkerset.RevisionKey] != oldRevision && *sts.Spec.Replicas == baseline+surge
@@ -346,11 +455,14 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		}
 		return state.Phase == "active" && state.Baseline == baseline && state.Pending[strconv.Itoa(int(first))] != nil && *sts.Spec.Replicas == desired && *sts.Spec.UpdateStrategy.RollingUpdate.Partition == first
 	})
-	// Desired additions, rather than an extra surge, supply growth capacity.
-	if !options.duringUpdate || surge == 0 {
-		for i := baseline; i < desired; i++ {
-			create(i)
-		}
+	// Existing surge slots are already present. Create only the NEW growth
+	// slots, including 6 and 7 when growing beyond the initial 4+2 surge.
+	start := baseline
+	if options.duringUpdate {
+		start += surge
+	}
+	for i := start; i < desired; i++ {
+		create(i)
 	}
 	gomega.Expect(*getSTS().Spec.Replicas).To(gomega.Equal(desired))
 	ginkgo.By("withholding worker readiness: Ready leaders alone cannot pay for another old group")
@@ -358,7 +470,17 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		ready(i, false)
 	}
 	advance(func(*appsv1.StatefulSet) bool { return getLeader(first).DeletionTimestamp != nil })
-	stage(desired, first, baseline, partial+2, true)
+	stage(desired, first, baseline, partial+growth, true)
+	var growthPods corev1.PodList
+	gomega.Expect(k8sClient.List(ctx, &growthPods, client.InNamespace(key.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: key.Name})).To(gomega.Succeed())
+	gomega.Expect(growthPods.Items).To(gomega.HaveLen(int(desired * size)))
+	updatedPods := 0
+	for _, pod := range growthPods.Items {
+		if pod.Labels[leaderworkerset.RevisionKey] == targetRevision {
+			updatedPods++
+		}
+	}
+	gomega.Expect(updatedPods).To(gomega.Equal(int((growth + partial) * size)))
 	// Check the exact original UID obligation, not just the partition. Lower
 	// old groups remain live and the already-updated group is never replaced.
 	type reservation struct {
@@ -413,11 +535,61 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 	gomega.Consistently(barrier, 2*time.Second, testing.Interval).Should(gomega.Succeed())
 	if options.downscale {
 		ginkgo.By("downscaling with an outstanding old-leader reservation")
+		gomega.Expect(baseline).To(gomega.Equal(int32(4)))
+		gomega.Expect(surge).To(gomega.Equal(int32(2)))
+		gomega.Expect(desired).To(gomega.Equal(int32(8)))
+		gomega.Expect(held.Pending["3"]).To(gomega.Equal(reservation{UID: oldUIDs[3], Revision: targetRevision}))
 		change(func(live *leaderworkerset.LeaderWorkerSet) { live.Spec.Replicas = ptr.To[int32](2) })
-		advance(func(sts *appsv1.StatefulSet) bool { return *sts.Spec.Replicas == 2 })
+		// Observe the atomic replica/reservation reduction BEFORE acknowledging
+		// it to the simulated native controller, cleaning any condemned group,
+		// or reusing ordinal 3. No readiness is supplied during these barriers.
+		checkDownscale := func(g gomega.Gomega) {
+			var sts appsv1.StatefulSet
+			var live leaderworkerset.LeaderWorkerSet
+			g.Expect(k8sClient.Get(ctx, key, &sts)).To(gomega.Succeed())
+			g.Expect(k8sClient.Get(ctx, key, &live)).To(gomega.Succeed())
+			g.Expect(*sts.Spec.Replicas).To(gomega.Equal(int32(2)))
+			g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(int32(1)))
+			g.Expect(*live.Spec.Replicas).To(gomega.Equal(int32(2)))
+			g.Expect(sts.Annotations[leaderworkerset.ReplicasAnnotationKey]).To(gomega.Equal("2"))
+			var state struct {
+				Baseline       int32                  `json:"b"`
+				Desired        int32                  `json:"d"`
+				Protected      int32                  `json:"protected"`
+				Generation     int64                  `json:"g"`
+				Revision       string                 `json:"r"`
+				NativeRevision string                 `json:"native"`
+				Phase          string                 `json:"phase"`
+				Pending        map[string]reservation `json:"pending"`
+			}
+			g.Expect(json.Unmarshal([]byte(sts.Annotations[annotation]), &state)).To(gomega.Succeed())
+			g.Expect(state.Baseline).To(gomega.Equal(baseline))
+			g.Expect(state.Desired).To(gomega.Equal(int32(2)))
+			g.Expect(state.Protected).To(gomega.BeZero())
+			g.Expect(state.Generation).To(gomega.Equal(live.Generation))
+			g.Expect(state.Revision).To(gomega.Equal(targetRevision))
+			g.Expect(state.NativeRevision).To(gomega.Equal("native-" + targetRevision))
+			g.Expect(state.Phase).To(gomega.Equal("active"))
+			g.Expect(state.Pending).To(gomega.Equal(map[string]reservation{"1": {UID: oldUIDs[1], Revision: targetRevision}}))
+			for ordinal := range state.Pending {
+				g.Expect(mustCombinedOrdinal(ordinal)).To(gomega.BeNumerically("<", 2), "no out-of-range reservation before surge reuse")
+			}
+			var lower corev1.Pod
+			g.Expect(k8sClient.Get(ctx, groupKey(0), &lower)).To(gomega.Succeed())
+			g.Expect(lower.UID).To(gomega.Equal(oldUIDs[0]))
+			g.Expect(lower.DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(lower.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(oldRevision))
+			checkContainer(g, lower.Spec.Containers, oldRevision, false)
+		}
+		gomega.Eventually(checkDownscale, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Consistently(checkDownscale, 2*time.Second, testing.Interval).Should(gomega.Succeed())
+		ginkgo.By("downscale snapshot BEFORE cleanup or surge reuse: " + getSTS().Annotations[annotation])
+		condemnedUID = oldUIDs[3]
 		for i := int32(2); i < desired; i++ {
 			remove(i)
 		}
+		gomega.Consistently(checkDownscale, 2*time.Second, testing.Interval).Should(gomega.Succeed())
+		ginkgo.By("downscale snapshot AFTER simulated cleanup, BEFORE native acknowledgement or surge reuse: " + getSTS().Annotations[annotation])
 		desired = 2
 	} else {
 		// The reserved replacement is also held at leader-only readiness.
@@ -427,7 +599,7 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		gomega.Expect(getLeader(first).UID).NotTo(gomega.Equal(oldUIDs[first]))
 		ready(first, false)
 		advance(func(*appsv1.StatefulSet) bool { return true })
-		stage(desired, first, baseline-1, partial+3, true)
+		stage(desired, first, baseline-1, partial+growth+1, true)
 		gomega.Consistently(barrier, 2*time.Second, testing.Interval).Should(gomega.Succeed())
 		for i := baseline; i < desired; i++ {
 			ready(i, true)

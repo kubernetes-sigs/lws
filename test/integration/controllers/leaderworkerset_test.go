@@ -1626,7 +1626,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).Size(2).MaxSurge(2)
 			},
 			updates: []*update{{lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-				testCombinedScaleSurge(lws, combinedRolloutOptions{duringUpdate: true, downscale: true})
+				testCombinedScaleSurge(lws, combinedRolloutOptions{duringUpdate: true, downscale: true, additionalReplicas: 4})
 			}}},
 		}),
 		ginkgo.Entry("multiple rolling update with maxSurge set", &testCase{
