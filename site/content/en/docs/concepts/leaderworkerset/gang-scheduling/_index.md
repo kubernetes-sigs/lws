@@ -53,7 +53,8 @@ Each replica's leader and workers are therefore admitted together, while
 different replicas remain independent. One replica can run without waiting
 for capacity for every other replica in the LWS. Scaling `replicas` adds or
 removes independent PodGroups, and changing `size` updates the derived gang
-membership as part of the LWS rollout.
+membership as part of the LWS rollout. Replicas that the rollout has not
+replaced yet keep PodGroups with the `gang.minCount` of their previous size.
 
 LWS creates the `Workload` before creating member pods. Runtime `PodGroup`
 creation depends on the scheduling level:

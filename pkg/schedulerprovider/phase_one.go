@@ -116,6 +116,20 @@ func WorkloadSchedulingValue(lws *leaderworkerset.LeaderWorkerSet) string {
 	return string(mode)
 }
 
+// leafMembership returns the number of pods in a PodGroup materialized from
+// the named leaf template for a replica of the given size: the leader alone,
+// the workers, or the whole replica.
+func leafMembership(templateName string, size int32) int32 {
+	switch templateName {
+	case leaderWorkloadTemplateName:
+		return 1
+	case workerWorkloadTemplateName:
+		return size - 1
+	default:
+		return size
+	}
+}
+
 func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder.WorkloadItem, error) {
 	mode, err := SchedulingModeFor(lws)
 	if err != nil {
@@ -159,7 +173,7 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 			nil,
 			gangSchedulingPolicy(),
 			priorityClassName,
-			size,
+			leafMembership(replicaWorkloadTemplateName, size),
 		)
 		return []*workloadbuilder.WorkloadItem{item}, nil
 	case SchedulingModeRole:
@@ -182,7 +196,7 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 				leader.ResourceClaims,
 				basicSchedulingPolicy(),
 				priorityClassName,
-				1,
+				leafMembership(leaderWorkloadTemplateName, size),
 			),
 			newLeafItem(
 				workerWorkloadTemplateName,
@@ -193,7 +207,7 @@ func phaseOneLeafItems(lws *leaderworkerset.LeaderWorkerSet) ([]*workloadbuilder
 				worker.ResourceClaims,
 				basicSchedulingPolicy(),
 				priorityClassName,
-				size-1,
+				leafMembership(workerWorkloadTemplateName, size),
 			),
 		}, nil
 	default:
@@ -429,10 +443,10 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 		}
 		replica := lws.Spec.Scheduling.Replica
 		if replica.Leader != nil {
-			allErrs = append(allErrs, validateLeafGangMembership(replica.Leader.SchedulingPolicy, 1, path.Child("replica", "leader"))...)
+			allErrs = append(allErrs, validateLeafGangMembership(replica.Leader.SchedulingPolicy, leafMembership(leaderWorkloadTemplateName, size), path.Child("replica", "leader"))...)
 		}
 		if replica.Worker != nil {
-			allErrs = append(allErrs, validateLeafGangMembership(replica.Worker.SchedulingPolicy, size-1, path.Child("replica", "worker"))...)
+			allErrs = append(allErrs, validateLeafGangMembership(replica.Worker.SchedulingPolicy, leafMembership(workerWorkloadTemplateName, size), path.Child("replica", "worker"))...)
 		}
 	}
 
