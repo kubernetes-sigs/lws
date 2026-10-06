@@ -402,24 +402,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return false, nil
 	}
 
-	// Old groups keep their original size during a rollout that changes it.
-	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-		groupSize = size
-	}
-	startState, unschedulablePod, err := r.groupStartState(ctx, pod, groupSize)
-	if err != nil {
-		return false, err
-	}
-
-	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
-
-	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
-	if recreateAfterStart && startState == groupStarting {
-		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-		return false, nil
-	}
-
 	var leader corev1.Pod
 	if !podutils.LeaderPod(pod) {
 		// Prefer the annotation over name parsing: with hash identity the leader
@@ -452,15 +434,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 	} else {
 		leader = pod
-	}
-	if recreateAfterStart && startState == groupUnschedulable {
-		// Keep waiting rather than recreate a group that cannot be placed, but say
-		// why so that a group waiting on the scheduler does not look idle. This
-		// runs after the ownership checks so that pods of a replaced group do not
-		// report on the group that replaced them.
-		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, GroupUnschedulable, Update,
-			fmt.Sprintf("Skipped recreating group %s because pod %s cannot be scheduled", pod.Labels[leaderworkerset.GroupIndexLabelKey], unschedulablePod))
-		return false, nil
 	}
 	// The caller's objects may come from a lagging cache snapshot. Re-read the
 	// leader and the LWS so that budget enforcement below uses the persisted
@@ -498,6 +471,33 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	// explicit recovery or workload teardown.
 	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		return r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+	}
+
+	// RecreateGroupAfterStart only defers a new recreation, so it runs after the
+	// checks above: a terminating or exhausted group must not be held by it.
+	// Old groups keep their original size during a rollout that changes it.
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+		groupSize = size
+	}
+	startState, unschedulablePod, err := r.groupStartState(ctx, pod, groupSize)
+	if err != nil {
+		return false, err
+	}
+	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
+	if recreateAfterStart && startState == groupStarting {
+		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+		return false, nil
+	}
+	if recreateAfterStart && startState == groupUnschedulable {
+		// Keep waiting rather than recreate a group that cannot be placed, but say
+		// why so that a group waiting on the scheduler does not look idle. This
+		// runs after the ownership checks so that pods of a replaced group do not
+		// report on the group that replaced them.
+		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, GroupUnschedulable, Update,
+			fmt.Sprintf("Skipped recreating group %s because pod %s cannot be scheduled", pod.Labels[leaderworkerset.GroupIndexLabelKey], unschedulablePod))
+		return false, nil
 	}
 	// If a restart budget is configured, enforce it: any recreate-triggering
 	// failure contributes to the same counter. nil keeps the unbounded legacy

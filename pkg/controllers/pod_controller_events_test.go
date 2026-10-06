@@ -1016,7 +1016,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 		{
 			name: "a pending group member defers recreation under RecreateGroupAfterStart",
 			lws:  lwsWith(leaderworkerset.RecreateGroupAfterStart, nil),
-			pod:  deleting(workerPod(nil)),
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects: []client.Object{
 				leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending }),
 				workerPod(nil),
@@ -1027,7 +1027,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			lws: lwsWith(leaderworkerset.RecreateGroupOnPodRestart, func(l *leaderworkerset.LeaderWorkerSet) {
 				l.Annotations = map[string]string{leaderworkerset.RecreateGroupAfterStartAnnotationKey: "true"}
 			}),
-			pod: deleting(workerPod(nil)),
+			pod: deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects: []client.Object{
 				leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending }),
 				workerPod(nil),
@@ -1036,11 +1036,35 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 		{
 			name: "a placed member that is still starting defers recreation under RecreateGroupAfterStart",
 			lws:  recreateAfterStart,
-			pod:  deleting(workerPod(nil)),
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects: []client.Object{
 				leaderPod(podScheduled(corev1.ConditionTrue, "")),
 				workerPod(nil),
 			},
+		},
+		{
+			name: "an exhausted group is terminated even while a member is pending under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				leaderPod(func(p *corev1.Pod) {
+					p.Annotations = map[string]string{leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true"}
+					p.Status.Phase = corev1.PodPending
+				}),
+				workerPod(nil),
+			},
+			wantDeleted:       true,
+			wantEventContains: "ReplicaRestartBudgetExceeded",
+		},
+		{
+			name: "a terminating leader is not held by RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				deleting(leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })),
+				workerPod(nil),
+			},
+			wantDeleted: true,
 		},
 		{
 			name:    "a missing member defers recreation under RecreateGroupAfterStart even when the others started",
@@ -1136,7 +1160,7 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 		{
 			name:            "a failed pod list is propagated",
 			lws:             recreateOnRestart,
-			pod:             deleting(workerPod(nil)),
+			pod:             deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects:         []client.Object{leaderPod(nil), workerPod(nil)},
 			listErr:         errors.New("list failed"),
 			wantErrContains: "list failed",
