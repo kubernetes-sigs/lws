@@ -33,10 +33,16 @@ type Availability struct {
 }
 
 // Availability computes Ready capacity from this observation without any writes.
-// Acknowledged generations fence deletion calls from older scale decisions;
-// they do not mean all terminating Pods have disappeared. Those are excluded
-// individually. Until the acknowledgement chain is complete, retained credit
-// is zero, without hiding the detailed groups from other consumers.
+// Acknowledged generations prevent crediting unapplied scale intent; they do
+// not mean all terminating Pods have disappeared. Those are excluded individually.
+// Until the acknowledgement chain is complete, retained credit is zero, without
+// hiding the detailed groups from other consumers.
+//
+// Retained credit accounts for native scale-downs, not independent Pod removals.
+// A concurrent health replacement can leave a ReplicaSet retry using an older
+// Pod cohort, even after its generation is acknowledged. Neither this ordered
+// observation nor status counts fence those hidden victims. Callers requiring
+// specific survivors must enforce deletion authority, not treat this as a lock.
 //
 // For Hash identity, native ReplicaSets choose their victims dynamically. Each
 // reserves only its remaining unissued deletions, using the same Pod list as
