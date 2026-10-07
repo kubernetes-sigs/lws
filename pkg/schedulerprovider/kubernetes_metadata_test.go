@@ -19,6 +19,7 @@ package schedulerprovider
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,6 +130,117 @@ func TestKubernetesProvider_InjectPodGroupMetadata(t *testing.T) {
 		require.NoError(t, provider.InjectPodGroupMetadata(pod))
 		require.NotNil(t, pod.Spec.SchedulingGroup)
 		assert.Equal(t, "custom-workload-lws", *pod.Spec.SchedulingGroup.PodGroupName)
+	})
+}
+
+func TestKubernetesProvider_InjectPodGroupMetadataGroupIncarnation(t *testing.T) {
+	provider := NewKubernetesProvider(fake.NewClientBuilder().Build())
+	// workloadName stands in for the workload name the LWS controller writes on
+	// pod templates.
+	const workloadName = "test-lws-k7m2q"
+	// podFor returns a pod of group 1 at revision rev1 with the annotations of
+	// its template. The statefulset controller recreates a leader with the same
+	// name, labels and annotations.
+	podFor := func(mode SchedulingMode, workerIndex string, annotations map[string]string) *corev1.Pod {
+		podAnnotations := map[string]string{
+			WorkloadSchedulingAnnotationKey: string(mode),
+			WorkloadNameAnnotationKey:       workloadName,
+		}
+		for k, v := range annotations {
+			podAnnotations[k] = v
+		}
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-lws-1",
+			Annotations: podAnnotations,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     "test-lws",
+				leaderworkerset.GroupIndexLabelKey:  "1",
+				leaderworkerset.RevisionKey:         "rev1",
+				leaderworkerset.WorkerIndexLabelKey: workerIndex,
+			},
+		}}
+	}
+	admit := func(t *testing.T, pod *corev1.Pod) string {
+		t.Helper()
+		require.NoError(t, provider.InjectPodGroupMetadata(pod))
+		require.NotNil(t, pod.Spec.SchedulingGroup)
+		require.NotNil(t, pod.Spec.SchedulingGroup.PodGroupName)
+		return *pod.Spec.SchedulingGroup.PodGroupName
+	}
+	// incarnationOf returns the group incarnation the webhook recorded on pod.
+	incarnationOf := func(t *testing.T, pod *corev1.Pod) string {
+		t.Helper()
+		incarnation, found := strings.CutPrefix(pod.Annotations[WorkloadNameAnnotationKey], workloadName+".")
+		require.True(t, found, "workload name %q has no group incarnation", pod.Annotations[WorkloadNameAnnotationKey])
+		require.Len(t, incarnation, groupIncarnationLength)
+		require.True(t, isGroupIncarnation(incarnation), "invalid group incarnation %q", incarnation)
+		return incarnation
+	}
+
+	for mode, suffix := range map[SchedulingMode]string{
+		SchedulingModeReplica: "-1-rev1",
+		SchedulingModeRole:    "-1-leader-rev1",
+	} {
+		t.Run(string(mode)+" mode ordinal leader", func(t *testing.T) {
+			t.Run("every admission draws its own incarnation", func(t *testing.T) {
+				first, second := podFor(mode, "0", nil), podFor(mode, "0", nil)
+				firstName, secondName := admit(t, first), admit(t, second)
+				for _, pod := range []*corev1.Pod{first, second} {
+					assert.Equal(t, workloadName+"."+incarnationOf(t, pod)+suffix, *pod.Spec.SchedulingGroup.PodGroupName)
+				}
+				assert.NotEqual(t, firstName, secondName, "a recreated leader must not reuse the PodGroups of its predecessor")
+			})
+			t.Run("reinvocation keeps the incarnation", func(t *testing.T) {
+				pod := podFor(mode, "0", nil)
+				name := admit(t, pod)
+				incarnated := pod.Annotations[WorkloadNameAnnotationKey]
+				assert.Equal(t, name, admit(t, pod))
+				assert.Equal(t, incarnated, pod.Annotations[WorkloadNameAnnotationKey])
+			})
+			t.Run("a malformed incarnation is replaced", func(t *testing.T) {
+				for _, malformed := range []string{".", ".x7k2", ".X7K2P", ".x7k2p.b"} {
+					pod := podFor(mode, "0", map[string]string{WorkloadNameAnnotationKey: workloadName + malformed})
+					name := admit(t, pod)
+					assert.Equal(t, workloadName+"."+incarnationOf(t, pod)+suffix, name, malformed)
+				}
+			})
+		})
+	}
+
+	t.Run("workers keep the workload name of their template", func(t *testing.T) {
+		incarnated := workloadName + ".x7k2p"
+		for mode, want := range map[SchedulingMode]string{
+			SchedulingModeReplica: incarnated + "-1-rev1",
+			SchedulingModeRole:    incarnated + "-1-worker-rev1",
+		} {
+			pod := podFor(mode, "2", map[string]string{WorkloadNameAnnotationKey: incarnated})
+			assert.Equal(t, want, admit(t, pod), string(mode))
+			assert.Equal(t, incarnated, pod.Annotations[WorkloadNameAnnotationKey], string(mode))
+		}
+		pod := podFor(SchedulingModeReplica, "2", nil)
+		assert.Equal(t, workloadName+"-1-rev1", admit(t, pod))
+		assert.Equal(t, workloadName, pod.Annotations[WorkloadNameAnnotationKey])
+	})
+
+	t.Run("hash leaders get no incarnation", func(t *testing.T) {
+		pod := podFor(SchedulingModeReplica, "0", map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+		})
+		assert.Equal(t, workloadName+"-1-rev1", admit(t, pod))
+		assert.Equal(t, workloadName, pod.Annotations[WorkloadNameAnnotationKey])
+	})
+
+	t.Run("whole-LWS pods get no incarnation", func(t *testing.T) {
+		pod := podFor(SchedulingModeLWS, "0", nil)
+		assert.Equal(t, workloadName+"-lws", admit(t, pod))
+		assert.Equal(t, workloadName, pod.Annotations[WorkloadNameAnnotationKey])
+	})
+
+	t.Run("leaders without a workload name get no incarnation", func(t *testing.T) {
+		pod := podFor(SchedulingModeReplica, "0", nil)
+		delete(pod.Annotations, WorkloadNameAnnotationKey)
+		assert.Equal(t, "test-lws-1-rev1", admit(t, pod))
+		assert.NotContains(t, pod.Annotations, WorkloadNameAnnotationKey)
 	})
 }
 

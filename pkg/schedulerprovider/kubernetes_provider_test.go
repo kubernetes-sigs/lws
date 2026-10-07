@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -229,8 +230,10 @@ func TestKubernetesSchedulingNamesAreUIDQualifiedAndBounded(t *testing.T) {
 		KubernetesLWSGroupName(lws),
 		KubernetesPodGroupName(lws, "1000000", strings.Repeat("b", 63)),
 		KubernetesRolePodGroupName(lws, "1000000", workerWorkloadTemplateName, strings.Repeat("b", 63)),
+		kubernetesRuntimeName(KubernetesWorkloadName(lws)+".x7k2p", "1000000", workerWorkloadTemplateName, strings.Repeat("b", 63)),
 	} {
 		assert.LessOrEqual(t, len(name), 253)
+		assert.Empty(t, validation.IsDNS1123Subdomain(name), name)
 	}
 	workloadName := KubernetesWorkloadName(lws)
 	uidHash := workloadName[strings.LastIndexByte(workloadName, '-')+1:]
@@ -347,6 +350,285 @@ func TestKubernetesProviderLeaderWorkerMode(t *testing.T) {
 		assert.Equal(t, role, group.Labels[PodGroupRoleLabelKey])
 		assert.Equal(t, string(SchedulingModeRole), group.Labels[SchedulingLevelLabelKey])
 	}
+}
+
+// TestKubernetesProviderRecreatedOrdinalLeaderGetsFreshPodGroups covers a
+// leader that the statefulset controller recreates with the same name, group
+// index and revision while cleanup is deleting the PodGroups of its
+// predecessor. The PodGroup protection finalizer holds those PodGroups while
+// any pod references them, so the new leader must not wait on them.
+func TestKubernetesProviderRecreatedOrdinalLeaderGetsFreshPodGroups(t *testing.T) {
+	tests := map[string]struct {
+		mutate     func(*leaderworkerset.LeaderWorkerSet)
+		wantGroups int
+	}{
+		"replica mode": {wantGroups: 1},
+		"role mode": {
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "high-priority"}}
+				lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+					Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{
+							SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}},
+						},
+						Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
+							SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}},
+						},
+					},
+				}
+			},
+			wantGroups: 2,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			lws := testScheduledLWS()
+			if tc.mutate != nil {
+				tc.mutate(lws)
+			}
+			fakeClient := newKubernetesFakeClientBuilder().Build()
+			provider := NewKubernetesProvider(fakeClient)
+			require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+
+			// admitLeader does what the pod webhook and the pod controller do for
+			// a new leader pod of group 0 and returns the names of its PodGroups.
+			admitLeader := func() (*corev1.Pod, []string) {
+				leader := ordinalLeaderPod(lws, "0")
+				leader.Annotations = map[string]string{
+					WorkloadSchedulingAnnotationKey: WorkloadSchedulingValue(lws),
+					WorkloadNameAnnotationKey:       KubernetesWorkloadName(lws),
+				}
+				leader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+				require.NoError(t, provider.InjectPodGroupMetadata(leader))
+				require.NoError(t, fakeClient.Create(ctx, leader))
+				require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+				groups, err := leaderPodGroups(lws, leader)
+				require.NoError(t, err)
+				require.Len(t, groups, tc.wantGroups)
+				names := make([]string, 0, len(groups))
+				for _, group := range groups {
+					names = append(names, group.name)
+				}
+				assert.Contains(t, names, *leader.Spec.SchedulingGroup.PodGroupName)
+				return leader, names
+			}
+			getGroup := func(name string) *schedulingv1beta1.PodGroup {
+				group := &schedulingv1beta1.PodGroup{}
+				require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: name}, group))
+				return group
+			}
+
+			first, firstGroups := admitLeader()
+			// Stand in for the PodGroup protection finalizer.
+			for _, name := range firstGroups {
+				group := getGroup(name)
+				group.Finalizers = []string{"test.scheduling.k8s.io/protection"}
+				require.NoError(t, fakeClient.Update(ctx, group))
+			}
+			require.NoError(t, fakeClient.Delete(ctx, first))
+			require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+			for _, name := range firstGroups {
+				assert.False(t, getGroup(name).DeletionTimestamp.IsZero(), "cleanup deletes the PodGroups of a deleted leader")
+			}
+
+			second, secondGroups := admitLeader()
+			assert.Equal(t, first.Name, second.Name)
+			for _, name := range secondGroups {
+				assert.NotContains(t, firstGroups, name)
+				assert.True(t, getGroup(name).DeletionTimestamp.IsZero())
+			}
+
+			// Cleanup keeps the PodGroups of the new leader, including the role
+			// mode worker PodGroup that no pod references yet.
+			require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+			for _, name := range secondGroups {
+				assert.True(t, getGroup(name).DeletionTimestamp.IsZero())
+			}
+
+			// Once the finalizer is released only the new leader's PodGroups remain.
+			for _, name := range firstGroups {
+				group := getGroup(name)
+				group.Finalizers = nil
+				require.NoError(t, fakeClient.Update(ctx, group))
+			}
+			groups := &schedulingv1beta1.PodGroupList{}
+			require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+			remaining := make([]string, 0, len(groups.Items))
+			for _, group := range groups.Items {
+				remaining = append(remaining, group.Name)
+			}
+			assert.ElementsMatch(t, secondGroups, remaining)
+		})
+	}
+}
+
+func TestGroupWorkloadName(t *testing.T) {
+	lws := testScheduledLWS()
+	workloadName := KubernetesWorkloadName(lws)
+	other := testScheduledLWS()
+	other.UID = types.UID("other-lws-uid")
+	tests := map[string]struct {
+		annotations map[string]string
+		want        string
+	}{
+		"leader with a group incarnation": {
+			annotations: map[string]string{WorkloadNameAnnotationKey: workloadName + ".x7k2p"},
+			want:        workloadName + ".x7k2p",
+		},
+		"leader admitted before group incarnations were introduced": {
+			annotations: map[string]string{WorkloadNameAnnotationKey: workloadName},
+			want:        workloadName,
+		},
+		"leader without a workload name": {
+			want: workloadName,
+		},
+		"group incarnation of another LeaderWorkerSet": {
+			annotations: map[string]string{WorkloadNameAnnotationKey: KubernetesWorkloadName(other) + ".x7k2p"},
+			want:        workloadName,
+		},
+		"malformed group incarnation": {
+			annotations: map[string]string{WorkloadNameAnnotationKey: workloadName + ".x7k2p.b"},
+			want:        workloadName,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			leader := ordinalLeaderPod(lws, "0")
+			leader.Annotations = tc.annotations
+			assert.Equal(t, tc.want, GroupWorkloadName(lws, leader))
+		})
+	}
+}
+
+// TestKubernetesProviderGroupPodGroupNamesAgree checks that the pod webhook and
+// the pod controller agree on the PodGroups of an Ordinal group. Every LWS
+// version admits workers the same way: their PodGroup names derive from the
+// workload name on the worker statefulset template, which is the one of their
+// leader, see GroupWorkloadName.
+func TestKubernetesProviderGroupPodGroupNamesAgree(t *testing.T) {
+	tests := map[string]struct {
+		mutate       func(*leaderworkerset.LeaderWorkerSet)
+		leaderSuffix string
+		workerSuffix string
+	}{
+		"replica mode": {leaderSuffix: "-0-revision-1", workerSuffix: "-0-revision-1"},
+		"role mode": {
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+					Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{},
+					},
+				}
+			},
+			leaderSuffix: "-0-leader-revision-1",
+			workerSuffix: "-0-worker-revision-1",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			lws := testScheduledLWS()
+			if tc.mutate != nil {
+				tc.mutate(lws)
+			}
+			provider := NewKubernetesProvider(nil)
+			workloadName := KubernetesWorkloadName(lws)
+			// admit admits a pod of group 0 whose template carries
+			// templateWorkloadName and returns its PodGroup name.
+			admit := func(pod *corev1.Pod, workerIndex, templateWorkloadName string) string {
+				pod.Labels[leaderworkerset.WorkerIndexLabelKey] = workerIndex
+				pod.Annotations = map[string]string{
+					WorkloadSchedulingAnnotationKey: WorkloadSchedulingValue(lws),
+					WorkloadNameAnnotationKey:       templateWorkloadName,
+				}
+				require.NoError(t, provider.InjectPodGroupMetadata(pod))
+				require.NotNil(t, pod.Spec.SchedulingGroup)
+				return ptr.Deref(pod.Spec.SchedulingGroup.PodGroupName, "")
+			}
+
+			leader := ordinalLeaderPod(lws, "0")
+			leaderGroup := admit(leader, "0", workloadName)
+			groupWorkloadName := GroupWorkloadName(lws, leader)
+			incarnation, found := strings.CutPrefix(groupWorkloadName, workloadName+".")
+			require.True(t, found, "leader %s has no group incarnation", groupWorkloadName)
+			require.True(t, isGroupIncarnation(incarnation))
+			assert.Equal(t, workloadName+"."+incarnation+tc.leaderSuffix, leaderGroup)
+
+			workerGroup := admit(ordinalLeaderPod(lws, "0"), "1", groupWorkloadName)
+			assert.Equal(t, workloadName+"."+incarnation+tc.workerSuffix, workerGroup)
+
+			groups, err := leaderPodGroups(lws, leader)
+			require.NoError(t, err)
+			names := make([]string, 0, len(groups))
+			for _, group := range groups {
+				names = append(names, group.name)
+			}
+			want := []string{leaderGroup}
+			if workerGroup != leaderGroup {
+				want = append(want, workerGroup)
+			}
+			assert.ElementsMatch(t, want, names)
+		})
+	}
+}
+
+// TestKubernetesProviderKeepsPodGroupsOfLeadersAdmittedBeforeIncarnations
+// checks that an LWS upgrade leaves existing groups alone: a leader pod
+// admitted by a previous LWS version keeps its PodGroups, named after the plain
+// workload name, next to those of a leader pod with a group incarnation.
+func TestKubernetesProviderKeepsPodGroupsOfLeadersAdmittedBeforeIncarnations(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "high-priority"}}
+	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+		Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+			Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{},
+		},
+	}
+	fakeClient := newKubernetesFakeClientBuilder().Build()
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	workloadName := KubernetesWorkloadName(lws)
+	templateAnnotations := func() map[string]string {
+		return map[string]string{
+			WorkloadSchedulingAnnotationKey: WorkloadSchedulingValue(lws),
+			WorkloadNameAnnotationKey:       workloadName,
+		}
+	}
+
+	// A previous LWS version admitted the leader of group 0.
+	legacy := ordinalLeaderPod(lws, "0")
+	legacy.Annotations = templateAnnotations()
+	legacy.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{
+		PodGroupName: ptr.To(KubernetesRolePodGroupName(lws, "0", leaderWorkloadTemplateName, "revision-1")),
+	}
+	// This version admits the leader of group 1.
+	leader := ordinalLeaderPod(lws, "1")
+	leader.Annotations = templateAnnotations()
+	require.NoError(t, provider.InjectPodGroupMetadata(leader))
+	incarnated := GroupWorkloadName(lws, leader)
+	require.NotEqual(t, workloadName, incarnated)
+	for _, pod := range []*corev1.Pod{legacy, leader} {
+		require.NoError(t, fakeClient.Create(ctx, pod))
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, pod))
+	}
+
+	// Cleanup keeps them all, including the worker PodGroups that no pod
+	// references yet.
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	groups := &schedulingv1beta1.PodGroupList{}
+	require.NoError(t, fakeClient.List(ctx, groups, client.InNamespace(lws.Namespace)))
+	names := make([]string, 0, len(groups.Items))
+	for _, group := range groups.Items {
+		assert.True(t, group.DeletionTimestamp.IsZero(), group.Name)
+		names = append(names, group.Name)
+	}
+	assert.ElementsMatch(t, []string{
+		KubernetesRolePodGroupName(lws, "0", leaderWorkloadTemplateName, "revision-1"),
+		KubernetesRolePodGroupName(lws, "0", workerWorkloadTemplateName, "revision-1"),
+		kubernetesRuntimeName(incarnated, "1", leaderWorkloadTemplateName, "revision-1"),
+		kubernetesRuntimeName(incarnated, "1", workerWorkloadTemplateName, "revision-1"),
+	}, names)
 }
 
 func TestBuildFlatWorkloadSynthesizesOmittedRoleAsBasic(t *testing.T) {
@@ -575,11 +857,15 @@ func TestKubernetesProviderInjectPodGroupMetadata(t *testing.T) {
 		mode        SchedulingMode
 		workerIndex string
 		want        string
+		// wantIncarnation means the workload name in want is followed by the
+		// group incarnation.
+		wantIncarnation bool
 	}{
-		"whole LWS": {mode: SchedulingModeLWS, want: "test-lws-lws"},
-		"replica":   {mode: SchedulingModeReplica, want: "test-lws-4-revision-1"},
-		"leader":    {mode: SchedulingModeRole, workerIndex: "0", want: "test-lws-4-leader-revision-1"},
-		"worker":    {mode: SchedulingModeRole, workerIndex: "2", want: "test-lws-4-worker-revision-1"},
+		"whole LWS":      {mode: SchedulingModeLWS, want: "test-lws-lws"},
+		"replica":        {mode: SchedulingModeReplica, want: "test-lws-4-revision-1"},
+		"replica leader": {mode: SchedulingModeReplica, workerIndex: "0", want: "test-lws-4-revision-1", wantIncarnation: true},
+		"leader":         {mode: SchedulingModeRole, workerIndex: "0", want: "test-lws-4-leader-revision-1", wantIncarnation: true},
+		"worker":         {mode: SchedulingModeRole, workerIndex: "2", want: "test-lws-4-worker-revision-1"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -600,6 +886,14 @@ func TestKubernetesProviderInjectPodGroupMetadata(t *testing.T) {
 			require.NoError(t, NewKubernetesProvider(nil).InjectPodGroupMetadata(pod))
 			require.NotNil(t, pod.Spec.SchedulingGroup)
 			require.NotNil(t, pod.Spec.SchedulingGroup.PodGroupName)
+			if tc.wantIncarnation {
+				incarnation, found := strings.CutPrefix(pod.Annotations[WorkloadNameAnnotationKey], workloadName+".")
+				require.True(t, found)
+				require.True(t, isGroupIncarnation(incarnation))
+				workloadName += "." + incarnation
+			} else {
+				assert.Equal(t, workloadName, pod.Annotations[WorkloadNameAnnotationKey])
+			}
 			assert.Equal(t, strings.Replace(tc.want, "test-lws", workloadName, 1), *pod.Spec.SchedulingGroup.PodGroupName)
 		})
 	}

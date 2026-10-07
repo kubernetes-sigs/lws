@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -422,5 +423,204 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: podGroupName}, &schedulingv1beta1.PodGroup{})
 			return apierrors.IsNotFound(err)
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+	})
+
+	ginkgo.It("gives a recreated ordinal leader its own PodGroup while the previous one is still terminating", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-recreate").
+			Replica(1).
+			Size(2).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).NotTo(gomega.BeEmpty())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// createLeader stands in for the statefulset controller and the pod
+		// webhook. Every leader of group 0 has the same name, index and revision.
+		createLeader := func() *corev1.Pod {
+			gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, lws, 0, 1, func(pod *corev1.Pod) {
+				for key, value := range leaderStatefulSet.Spec.Template.Annotations {
+					pod.Annotations[key] = value
+				}
+				pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+				gomega.Expect(schedulerprovider.NewKubernetesProvider(k8sClient).InjectPodGroupMetadata(pod)).To(gomega.Succeed())
+			})).To(gomega.Succeed())
+			leader := &corev1.Pod{}
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, leader)).To(gomega.Succeed())
+			gomega.Expect(leader.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+			// The pod webhook gives the leader a group incarnation of its own.
+			gomega.Expect(leader.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.HavePrefix(schedulerprovider.KubernetesWorkloadName(lws) + "."))
+			return leader
+		}
+		// expectAdmitted waits for the PodGroup of the leader, for its gate to be
+		// lifted and for a worker statefulset that joins the same PodGroup.
+		expectAdmitted := func(leader *corev1.Pod) *schedulingv1beta1.PodGroup {
+			group := &schedulingv1beta1.PodGroup{}
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: *leader.Spec.SchedulingGroup.PodGroupName}, group)).To(gomega.Succeed())
+				g.Expect(group.DeletionTimestamp).To(gomega.BeNil())
+				pod := &corev1.Pod{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), pod)).To(gomega.Succeed())
+				g.Expect(pod.UID).To(gomega.Equal(leader.UID))
+				g.Expect(pod.Spec.SchedulingGates).To(gomega.BeEmpty())
+				workerStatefulSet := &appsv1.StatefulSet{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), workerStatefulSet)).To(gomega.Succeed())
+				if !metav1.IsControlledBy(workerStatefulSet, leader) {
+					// envtest runs no garbage collector, so remove the worker
+					// statefulset of a previous leader.
+					_ = k8sClient.Delete(ctx, workerStatefulSet, client.Preconditions{UID: &workerStatefulSet.UID})
+				}
+				g.Expect(metav1.IsControlledBy(workerStatefulSet, leader)).To(gomega.BeTrue())
+				g.Expect(workerStatefulSet.Spec.Template.Annotations).To(gomega.HaveKeyWithValue(
+					schedulerprovider.WorkloadNameAnnotationKey, leader.Annotations[schedulerprovider.WorkloadNameAnnotationKey]))
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			return group
+		}
+
+		first := createLeader()
+		firstGroup := expectAdmitted(first)
+
+		// Hold the PodGroup the way the PodGroup protection finalizer does
+		// while pods still reference it.
+		gomega.Eventually(func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(firstGroup), firstGroup); err != nil {
+				return err
+			}
+			firstGroup.Finalizers = append(firstGroup.Finalizers, "lws.test/hold")
+			return k8sClient.Update(ctx, firstGroup)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, first)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(firstGroup), firstGroup)).To(gomega.Succeed())
+			g.Expect(firstGroup.DeletionTimestamp).NotTo(gomega.BeNil())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		second := createLeader()
+		gomega.Expect(second.UID).NotTo(gomega.Equal(first.UID))
+		secondGroup := expectAdmitted(second)
+		gomega.Expect(secondGroup.Name).NotTo(gomega.Equal(firstGroup.Name))
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(firstGroup), firstGroup)).To(gomega.Succeed())
+		gomega.Expect(firstGroup.DeletionTimestamp).NotTo(gomega.BeNil(), "the new leader must not wait for the previous PodGroup")
+
+		// Once the previous PodGroup is released, only the new leader's remains.
+		gomega.Eventually(func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(firstGroup), firstGroup); err != nil {
+				return err
+			}
+			firstGroup.Finalizers = nil
+			return k8sClient.Update(ctx, firstGroup)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(1))
+			g.Expect(groups.Items[0].Name).To(gomega.Equal(secondGroup.Name))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.Context("when an LWS upgrade splits a group across PodGroups", func() {
+		// startGroup creates leader 0 of a new LWS the way the statefulset
+		// controller and the pod webhook of this version do, and returns it
+		// with the worker statefulset the pod controller creates for it.
+		startGroup := func(name string) (*leaderworkerset.LeaderWorkerSet, *corev1.Pod, *appsv1.StatefulSet) {
+			lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+				Name(name).
+				Replica(1).
+				Size(2).
+				Obj()
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+			gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+			leaderStatefulSet := &appsv1.StatefulSet{}
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+				g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).NotTo(gomega.BeEmpty())
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, lws, 0, 1, func(pod *corev1.Pod) {
+				for key, value := range leaderStatefulSet.Spec.Template.Annotations {
+					pod.Annotations[key] = value
+				}
+				pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+				gomega.Expect(schedulerprovider.NewKubernetesProvider(k8sClient).InjectPodGroupMetadata(pod)).To(gomega.Succeed())
+			})).To(gomega.Succeed())
+			leader := &corev1.Pod{}
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, leader)).To(gomega.Succeed())
+			workers := &appsv1.StatefulSet{}
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), workers)).To(gomega.Succeed())
+				g.Expect(metav1.IsControlledBy(workers, leader)).To(gomega.BeTrue())
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			return lws, leader, workers
+		}
+		// splitGroup gives the worker statefulset the template the pod
+		// controller of a version without group incarnations creates: its
+		// workers join the PodGroups of the plain workload name instead of
+		// those of the leader.
+		splitGroup := func(lws *leaderworkerset.LeaderWorkerSet, workers *appsv1.StatefulSet) {
+			gomega.Eventually(func() error {
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(workers), workers); err != nil {
+					return err
+				}
+				workers.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(lws)
+				return k8sClient.Update(ctx, workers)
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		}
+
+		ginkgo.It("recreates the group while none of its workers is scheduled", func() {
+			lws, leader, workers := startGroup("was-split")
+			splitGroup(lws, workers)
+			// envtest runs no garbage collector, so the foreground deletion of
+			// the leader waits for its worker statefulset.
+			gomega.Eventually(func(g gomega.Gomega) {
+				pod := &corev1.Pod{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), pod)).To(gomega.Succeed())
+				g.Expect(pod.UID).To(gomega.Equal(leader.UID))
+				g.Expect(pod.DeletionTimestamp).NotTo(gomega.BeNil())
+				g.Expect(pod.Finalizers).To(gomega.ContainElement(metav1.FinalizerDeleteDependents))
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			testing.ValidateEvent(ctx, k8sClient, "RecreateGroup", corev1.EventTypeNormal, fmt.Sprintf(
+				"Worker statefulset %s was created by a previous LWS version and its workers do not join the PodGroups of leader pod %s, deleted the leader pod to recreate group 0",
+				workers.Name, leader.Name), ns.Name)
+		})
+
+		ginkgo.It("leaves the group alone once one of its workers is scheduled", func() {
+			lws, leader, workers := startGroup("was-split-scheduled")
+			worker := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      leader.Name + "-1",
+					Namespace: ns.Name,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.WorkerIndexLabelKey: "1",
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workers, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+				},
+				Spec: corev1.PodSpec{
+					NodeName:   "node-1",
+					Containers: []corev1.Container{{Name: "worker", Image: "nginx"}},
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, worker)).To(gomega.Succeed())
+			expectLeaderKept := func(duration string) {
+				gomega.Consistently(func(g gomega.Gomega) {
+					pod := &corev1.Pod{}
+					g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), pod)).To(gomega.Succeed())
+					g.Expect(pod.UID).To(gomega.Equal(leader.UID))
+					g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+				}, duration, testing.Interval).Should(gomega.Succeed())
+			}
+			// Let the cache of the pod controller observe the scheduled worker
+			// before the group is split.
+			expectLeaderKept("1s")
+			splitGroup(lws, workers)
+			expectLeaderKept("2s")
+		})
 	})
 })

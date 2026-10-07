@@ -709,19 +709,29 @@ Runtime names identify the selected level:
 | --- | --- |
 | Workload | `<name-prefix>-<uid-hash>` |
 | Whole-LWS PodGroup or root CPG | `<name-prefix>-<uid-hash>-lws` |
-| Replica PodGroup or CPG | `<name-prefix>-<uid-hash>-<group-index>-<template-revision-hash>` |
-| Leader/worker PodGroup | `<name-prefix>-<uid-hash>-<group-index>-<role>-<template-revision-hash>` |
+| Replica PodGroup or CPG | `<name-prefix>-<uid-hash>[.<incarnation>]-<group-index>-<template-revision-hash>` |
+| Leader/worker PodGroup | `<name-prefix>-<uid-hash>[.<incarnation>]-<group-index>-<role>-<template-revision-hash>` |
 
 `uid-hash` is a DNS-safe short hash of `lws.UID`. Truncate `name-prefix` so
 the full name fits the target API. Reuse a computed name only after verifying
 owner and expected labels; surface a collision instead of adopting it.
+`incarnation` is a random 5-character token that the pod webhook draws for
+every leader pod with `groupIdentity: Ordinal` in replica and role modes. The
+webhook derives PodGroup names from the workload name,
+`<name-prefix>-<uid-hash>`, which the LWS controller sets on pod templates in
+the `leaderworkerset.sigs.k8s.io/workload-name` annotation. It appends the
+incarnation to the leader's copy after a dot, which never occurs in a workload
+name and keeps the names valid DNS subdomains. The pod controller copies the
+leader's workload name to the worker StatefulSet template, so workers resolve
+the same names. Hash mode needs no incarnation (see Group Identity Hash).
 
 UID-qualified names avoid colliding with deletion-protected groups from a
 previous same-name LWS. Revision suffixes isolate old and new replicas during
-a rolling update. Same-UID, same-revision leader restart reuses replica and
-role groups as objects but must not overlap member generations (see Leader
-recreation). The whole-LWS group is stable for the LWS lifetime; its gang
-covers initial admission, later rolling replacement follows LWS availability.
+a rolling update. Incarnations do the same for a same-UID, same-revision
+leader recreation, which gets new replica and role groups instead of reusing
+those of the previous leader (see Leader recreation). The whole-LWS group is
+stable for the LWS lifetime; its gang covers initial admission, later rolling
+replacement follows LWS availability.
 
 Every PodGroup (and, in Phase 2, every LWS-owned CPG) has:
 
@@ -800,24 +810,30 @@ as follows:
 - **Rolling update:** pre-create the new revision's PodGroup before creating
   its leader. The old and new revision-specific PodGroups may coexist while
   `maxSurge` is active.
-- **Leader recreation:** reuse the existing PodGroup because group index and
-  revision are unchanged. Reuse is object identity only and does not allow
-  overlapping member generations.
+- **Leader recreation:** create new PodGroups for the replacement leader.
+  Group index and revision are unchanged, so the leader's incarnation (its
+  group key in hash mode) is what separates the two generations.
 
 Same-revision leader recreation under the `kubernetes` provider follows this
 protocol:
 
-1. Stop creating members for the replica (and role leaves, if any).
-2. Foreground-delete the old generation.
-3. Wait until those pods are fully gone from the API, not merely marked with
-   `deletionTimestamp`.
-4. Create the replacement generation and stamp it with the same
-   `spec.schedulingGroup`.
+1. Admission draws a new incarnation for the replacement leader and stamps
+   its `spec.schedulingGroup` with the derived name. Workers inherit the
+   leader's workload name, and so its incarnation, from the worker
+   StatefulSet template.
+2. While the leader is gated, the pod controller creates the replacement
+   generation's PodGroups. It then lifts the gate according to
+   `groupReplacementPolicy`.
+3. Cleanup deletes the previous generation's PodGroups once no member pod
+   references them. The PodGroup protection finalizer holds them until the
+   old pods are fully gone from the API.
 
-Old terminating pods and new Pending pods must not coexist in the same
-PodGroup. The scheduler still counts terminating members as scheduled until
-they are fully deleted. Rolling update is isolated by revision-specific
-PodGroups.
+Old terminating pods and new Pending pods never share a PodGroup. The
+scheduler still counts terminating members as scheduled until they are fully
+deleted. Reusing the name would also deadlock: the old PodGroup may already be
+terminating, and its protection finalizer holds it for as long as the gated
+replacement leader references it. Rolling update is isolated by
+revision-specific PodGroups.
 
 Scaling to `replicas: 0` removes scheduling instances without deleting the
 Workload:
@@ -984,8 +1000,24 @@ and violate the user's declared policy.
   is absent. In that legacy path the PodGroup is owned by the leader Pod and
   is destroyed and recreated with it under `RecreateGroupOnPodRestart`.
 - Typed `spec.scheduling` with the `kubernetes` provider owns PodGroups at
-  the LWS and reuses them across a same-revision leader restart, with the
-  generation-isolation protocol above.
+  the LWS and gives every leader pod its own, with the generation-isolation
+  protocol above.
+- Upgrading LWS does not restart running groups. Pod templates do not change.
+  Leader pods admitted before incarnations were introduced keep their
+  PodGroups, and so do their worker StatefulSets, which are never rewritten.
+  Such a group moves to incarnated names at its next leader recreation.
+- While an upgrade rolls out, the pod webhook and the controller may run
+  different versions. Every version derives PodGroup names from the
+  workload-name annotation the same way, so workers join the PodGroups of
+  their leader whichever version admits them. A group is split only if the
+  new webhook admits its leader and a previous controller creates its worker
+  StatefulSet with the plain workload name, so that its leader and its
+  workers join different PodGroups. The pod controller recreates such a group
+  by deleting its leader, as long as none of its workers is scheduled, that
+  is, before the group can run.
+- Downgrading LWS leaves running groups running. A group admitted by the newer
+  version that is not running yet may wait for PodGroups the previous version
+  does not create; deleting its leader pod recreates it.
 - The new field is alpha and guarded by `WorkloadAwareScheduling`, default
   `false`.
 - Enabling the LWS gate alone does not change existing objects.
@@ -1247,9 +1279,14 @@ to existing tests to make this code solid before implementation.
   modes, including injected failures and controller restarts between steps.
 - Scale up, scale down, rolling update, `maxSurge`, leader recreation, and
   whole-LWS deletion in default replica mode; role mode covers both leaves.
-  Leader recreation under the `kubernetes` provider waits until old members
-  are fully gone before creating replacements; terminating and new Pending
-  members never coexist in one PodGroup.
+  Leader recreation under the `kubernetes` provider gives the replacement
+  generation new PodGroups while the previous ones are still
+  deletion-protected; terminating and new Pending members never coexist in
+  one PodGroup.
+- Upgrade from a version without group incarnations: groups whose leader was
+  admitted before keep their PodGroups, and a group whose leader and workers
+  were admitted with different workload names is recreated only while none
+  of its workers is scheduled.
 - Scale to and from `replicas: 0` in every flat mode and Phase 2: no runtime
   group remains at zero, no template contains a zero minimum, the Workload is
   retained, and its positive minimum is restored before any group or pod.

@@ -41,6 +41,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -1333,6 +1334,201 @@ func TestWorkerStatefulSetApplyConfigPropagatesObjectMeta(t *testing.T) {
 	wantAnnotations := map[string]string{"owner": "platform"}
 	if diff := cmp.Diff(wantAnnotations, statefulSetConfig.Annotations); diff != "" {
 		t.Errorf("unexpected StatefulSet annotations: %s", diff)
+	}
+}
+
+func TestWorkerStatefulSetApplyConfigCarriesLeaderGroupIncarnation(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(2).
+		Obj()
+	lws.UID = "test-sample-uid"
+	lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+	workloadName := schedulerprovider.KubernetesWorkloadName(lws)
+
+	for _, tc := range []struct {
+		name string
+		// leaderWorkloadName is the workload name the pod webhook recorded on
+		// the leader pod.
+		leaderWorkloadName string
+		want               string
+	}{
+		{name: "leader with a group incarnation", leaderWorkloadName: workloadName + ".x7k2p", want: workloadName + ".x7k2p"},
+		{name: "leader admitted before group incarnations were introduced", leaderWorkloadName: workloadName, want: workloadName},
+		{name: "leader without a workload name", want: workloadName},
+		{name: "leader with a foreign workload name", leaderWorkloadName: "other-workload.x7k2p", want: workloadName},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			leaderPod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-sample-1",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:    "test-sample",
+						leaderworkerset.GroupIndexLabelKey: "1",
+						leaderworkerset.RevisionKey:        "rev1",
+					},
+				},
+			}
+			if tc.leaderWorkloadName != "" {
+				leaderPod.Annotations = map[string]string{schedulerprovider.WorkloadNameAnnotationKey: tc.leaderWorkloadName}
+			}
+
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
+			if err != nil {
+				t.Fatalf("failed with error %s", err.Error())
+			}
+			if got := statefulSetConfig.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]; got != tc.want {
+				t.Errorf("worker template workload name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPodReconcilerRecreatesGroupSplitByUpgrade(t *testing.T) {
+	const incarnation = ".x7k2p"
+	for _, tc := range []struct {
+		name string
+		// leaderIncarnation and templateIncarnation follow the workload name
+		// on the leader pod and on the worker statefulset template.
+		leaderIncarnation   string
+		templateIncarnation string
+		// previousLeader makes a previous leader pod of the group control the
+		// worker statefulset.
+		previousLeader bool
+		terminating    bool
+		workerNode     string
+		wantRecreate   bool
+	}{
+		{
+			name:              "workers created by a previous LWS version do not join the leader's PodGroups",
+			leaderIncarnation: incarnation,
+			wantRecreate:      true,
+		},
+		{
+			name:              "a split group with a scheduled worker is left alone",
+			leaderIncarnation: incarnation,
+			workerNode:        "node-1",
+		},
+		{
+			name:                "workers join the leader's PodGroups",
+			leaderIncarnation:   incarnation,
+			templateIncarnation: incarnation,
+		},
+		{
+			name: "a leader admitted before group incarnations were introduced",
+		},
+		{
+			name:              "a worker statefulset of a previous leader",
+			leaderIncarnation: incarnation,
+			previousLeader:    true,
+		},
+		{
+			name:              "a terminating worker statefulset",
+			leaderIncarnation: incarnation,
+			terminating:       true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := podCtrlTestScheme(t)
+			lws := podCtrlBasicLWS()
+			lws.UID = "test-lws-uid"
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+			workloadName := schedulerprovider.KubernetesWorkloadName(lws)
+			leader := podCtrlLeaderPod(lws, "test-lws-0")
+			leader.Annotations = map[string]string{schedulerprovider.WorkloadNameAnnotationKey: workloadName + tc.leaderIncarnation}
+			revision := podCtrlRevisionFor(t, scheme, lws, leader)
+			owner := leader
+			if tc.previousLeader {
+				owner = leader.DeepCopy()
+				owner.UID = "previous-leader"
+			}
+			workerSts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Spec.Hostname, Namespace: lws.Namespace, UID: "workers",
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](1),
+					Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{schedulerprovider.WorkloadNameAnnotationKey: workloadName + tc.templateIncarnation},
+					}},
+				},
+			}
+			if tc.terminating {
+				workerSts.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+			}
+			worker := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name + "-1", Namespace: lws.Namespace, UID: "worker",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.WorkerIndexLabelKey: "1",
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workerSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+				},
+				Spec: corev1.PodSpec{NodeName: tc.workerNode},
+			}
+			// The fake client neither enforces UID preconditions nor
+			// propagates deletion, so check the request instead.
+			var leaderDeletes []*client.DeleteOptions
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(lws, revision, leader, workerSts, worker).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if _, isPod := obj.(*corev1.Pod); isPod && obj.GetName() == leader.Name {
+							options := &client.DeleteOptions{}
+							options.ApplyOptions(opts)
+							leaderDeletes = append(leaderDeletes, options)
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).
+				Build()
+			if tc.terminating {
+				if err := k8sClient.Delete(ctx, workerSts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recorder := events.NewFakeRecorder(10)
+			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: recorder, SchedulerProvider: &stubSchedulerProvider{}}
+
+			result, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(leader, false))
+			if err != nil || !result.IsZero() {
+				t.Fatalf("reconcilePod() = %+v, %v, want a zero result and no error", result, err)
+			}
+			var recreateEvents []string
+			for _, event := range podCtrlDrainEvents(recorder) {
+				if strings.Contains(event, "RecreateGroup") {
+					recreateEvents = append(recreateEvents, event)
+				}
+			}
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &corev1.Pod{})
+			if !tc.wantRecreate {
+				if err != nil || len(leaderDeletes) != 0 || len(recreateEvents) != 0 {
+					t.Fatalf("group was recreated: get leader error %v, %d leader deletions, events %v", err, len(leaderDeletes), recreateEvents)
+				}
+				return
+			}
+			if !apierrors.IsNotFound(err) {
+				t.Errorf("leader pod was not deleted, get error %v", err)
+			}
+			if len(leaderDeletes) != 1 {
+				t.Fatalf("leader pod deletions = %d, want 1", len(leaderDeletes))
+			}
+			if got := ptr.Deref(leaderDeletes[0].PropagationPolicy, ""); got != metav1.DeletePropagationForeground {
+				t.Errorf("leader pod deletion propagation = %q, want %q", got, metav1.DeletePropagationForeground)
+			}
+			if preconditions := leaderDeletes[0].Preconditions; preconditions == nil || ptr.Deref(preconditions.UID, "") != leader.UID {
+				t.Errorf("leader pod deletion preconditions = %+v, want UID %q", preconditions, leader.UID)
+			}
+			if len(recreateEvents) != 1 || !strings.HasPrefix(recreateEvents[0], corev1.EventTypeNormal+" RecreateGroup ") {
+				t.Errorf("events = %v, want one %s RecreateGroup event", recreateEvents, corev1.EventTypeNormal)
+			}
+		})
 	}
 }
 

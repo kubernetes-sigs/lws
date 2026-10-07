@@ -350,6 +350,10 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
+		recreated, err := r.recreateGroupSplitByUpgrade(ctx, &leaderWorkerSet, &pod, &workerSts)
+		if err != nil || recreated {
+			return ctrl.Result{}, err
+		}
 		workerStsReady = statefulsetutils.StatefulsetReady(workerSts)
 	}
 
@@ -362,6 +366,56 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	}
 	log.V(2).Info("Worker Reconcile completed.")
 	return ctrl.Result{}, nil
+}
+
+// recreateGroupSplitByUpgrade recreates the group of leader if an LWS upgrade
+// split it across PodGroups, and reports whether it did.
+//
+// While an upgrade rolls out, the pod webhook of this version can admit a
+// leader whose worker statefulset is then created by the controller of the
+// previous version. The leader joins the PodGroups of its group incarnation,
+// see schedulerprovider.GroupWorkloadName, but the previous version stamps the
+// plain workload name on the worker template, so the workers join other
+// PodGroups, which may not even exist. Under a replica level gang neither side
+// can ever reach its minimum count. The group is recreated by deleting the
+// leader, as handleRestartPolicy does, without counting against the restart
+// budget since nothing failed. Once a worker is scheduled the group is left
+// alone: its PodGroups admit the workers without the leader, and the workload
+// may be running already.
+func (r *PodReconciler) recreateGroupSplitByUpgrade(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, workerSts *appsv1.StatefulSet) (bool, error) {
+	workloadName := schedulerprovider.KubernetesWorkloadName(lws)
+	if workerSts.DeletionTimestamp != nil || !metav1.IsControlledBy(workerSts, leader) ||
+		workerSts.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey] != workloadName ||
+		schedulerprovider.GroupWorkloadName(lws, leader) == workloadName {
+		return false, nil
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(leader.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:    lws.Name,
+		leaderworkerset.GroupIndexLabelKey: leader.Labels[leaderworkerset.GroupIndexLabelKey],
+	}); err != nil {
+		return false, err
+	}
+	for i := range pods.Items {
+		if metav1.IsControlledBy(&pods.Items[i], workerSts) && pods.Items[i].Spec.NodeName != "" {
+			return false, nil
+		}
+	}
+	propagation := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, leader, &client.DeleteOptions{
+		PropagationPolicy: &propagation,
+		Preconditions:     &metav1.Preconditions{UID: &leader.UID},
+	}); err != nil {
+		// The leader is gone or has been replaced already.
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	r.Record.Eventf(lws, leader, corev1.EventTypeNormal, "RecreateGroup", Delete,
+		"Worker statefulset %s was created by a previous LWS version and its workers do not join the PodGroups of leader pod %s, deleted the leader pod to recreate group %s",
+		workerSts.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey])
+	return true, nil
 }
 
 // syncGroupReadyCondition patches the leader pod's group-ready condition to match
@@ -1302,7 +1356,8 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)
 	if currentLws.Spec.Scheduling != nil {
 		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(currentLws)
-		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.KubernetesWorkloadName(&lws)
+		// Workers join the PodGroups of their leader's group incarnation.
+		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.GroupWorkloadName(&lws, &leaderPod)
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	// The service name always matches the leader's subdomain in every mode and
