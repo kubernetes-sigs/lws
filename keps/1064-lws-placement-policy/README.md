@@ -20,6 +20,7 @@
   - [Migration From the Annotations](#migration-from-the-annotations)
   - [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling)
   - [Interaction With DisaggregatedSet](#interaction-with-disaggregatedset)
+  - [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling)
   - [Update Semantics](#update-semantics)
   - [Open Questions](#open-questions)
   - [Test Plan](#test-plan)
@@ -95,6 +96,9 @@ rather than waiting on that discussion.
 4. Best-effort (preferred) placement. Like the annotations, the fields are hard
    constraints.
 5. Removing the annotations. See [Open Questions](#open-questions).
+6. Integrating the policy with Kueue topology-aware scheduling. The two stay
+   alternatives; see
+   [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling).
 
 ## Proposal
 
@@ -264,6 +268,7 @@ Every other reader of the LeaderWorkerSet annotations moves to the same resolver
 | Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. |
 | Field and annotation both set for one level | Rejected if the values differ, including `type: None` with the annotation set. |
 | Non-`None` policy at either level with WAS gang or topology constraints at the selected level | Rejected. Rule 10 does this for the replica-level annotation today; alpha applies it to the subgroup level too. |
+| Non-`None` policy on a template that carries Kueue topology annotations | Admission warning. See [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling). |
 
 ### Migration From the Annotations
 
@@ -290,6 +295,26 @@ DisaggregatedSet `placementPolicy` together with either exclusive annotation on 
 role, since slice co-location and group exclusivity conflict (KEP-848 explains
 why). It must check the fields too, and that change ships with the fields so the
 check never misses them.
+
+### Interaction With Kueue Topology-Aware Scheduling
+
+The LeaderWorkerSet docs already present exclusive placement and Kueue
+topology-aware scheduling (TAS) as alternatives. Kueue admits a group only if it
+fits one domain and can pack several groups into a domain; exclusive placement
+reserves a domain for each group. The placement policy keeps that position: it is
+a standalone feature for clusters where LeaderWorkerSet schedules directly, not
+an input to Kueue.
+
+The gap is that Kueue chooses domains without seeing the affinity the pod
+webhook injects, so a group that uses both can be assigned a domain its
+anti-affinity forbids (kubernetes-sigs/kueue#15057). For alpha, admission returns
+a warning when a non-`None` policy is set on a template that carries Kueue
+topology annotations such as `kueue.x-k8s.io/podset-required-topology`.
+An integration would need Kueue to read the policy and treat the domain as
+exclusive when it assigns topology. A typed field gives Kueue a stable API to
+read if it takes that on, and a common WAS constraint
+(kubernetes/kubernetes#142690) would remove the need for per-controller
+integrations altogether.
 
 ### Update Semantics
 
@@ -345,6 +370,9 @@ Each question has a proposed answer for reviewers to confirm.
    GitOps drift it causes.
 6. **Removing the annotations.** Out of scope. They stay supported, with a
    deprecation warning.
+7. **Combining with Kueue TAS.** Warn at admission. Rejecting would make LWS
+   validation depend on Kueue's annotation names, and a warning is enough while
+   the combination stays unsupported.
 
 ### Test Plan
 
@@ -358,7 +386,8 @@ None identified.
 
 ##### Unit tests
 
-- `pkg/webhooks`: the validation matrix above, for both levels.
+- `pkg/webhooks`: the validation matrix above, for both levels, including the
+  Kueue warning.
 - `pkg/controllers`: the resolver, propagation into leader and worker pod
   templates, and the worker node selector.
 - `pkg/schedulerprovider`: rule 10 with the field.
