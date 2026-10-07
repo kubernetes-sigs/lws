@@ -21,6 +21,7 @@
   - [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling)
   - [Interaction With DisaggregatedSet](#interaction-with-disaggregatedset)
   - [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling)
+  - [Interaction With SubGroup Placement](#interaction-with-subgroup-placement)
   - [Update Semantics](#update-semantics)
   - [Open Questions](#open-questions)
   - [Test Plan](#test-plan)
@@ -265,6 +266,7 @@ Every other reader of the LeaderWorkerSet annotations moves to the same resolver
 | --- | --- |
 | `type: ExclusiveTopology` | `topology` must be a valid label key. |
 | `type: None` or unset | `topology` must be empty. |
+| Subgroup-level policy without subgroups defined | Rejected, as the annotation is today without `subGroupSize`. See [Interaction With SubGroup Placement](#interaction-with-subgroup-placement). |
 | Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. |
 | Field and annotation both set for one level | Rejected if the values differ, including `type: None` with the annotation set. |
 | Non-`None` policy at either level with WAS gang or topology constraints at the selected level | Rejected. Rule 10 does this for the replica-level annotation today; alpha applies it to the subgroup level too. |
@@ -310,11 +312,26 @@ webhook injects, so a group that uses both can be assigned a domain its
 anti-affinity forbids (kubernetes-sigs/kueue#15057). For alpha, admission returns
 a warning when a non-`None` policy is set on a template that carries Kueue
 topology annotations such as `kueue.x-k8s.io/podset-required-topology`.
-An integration would need Kueue to read the policy and treat the domain as
-exclusive when it assigns topology. A typed field gives Kueue a stable API to
-read if it takes that on, and a common WAS constraint
+Kueue maintainers have said on kubernetes-sigs/kueue#15057 that TAS will not
+honor affinity or anti-affinity, and that the long-term plan is to reuse
+kube-scheduler logic through a scheduler library, v0.21 at the earliest. That
+would make the injected affinity visible to Kueue without an integration
+specific to LeaderWorkerSet, and a common WAS constraint
 (kubernetes/kubernetes#142690) would remove the need for per-controller
 integrations altogether.
+
+### Interaction With SubGroup Placement
+
+kubernetes-sigs/lws#854 proposes KEP-859, a `subGroupPolicy.subGroupPlacement`
+list that defines subgroups explicitly instead of through `subGroupSize`, and
+keeps `subgroup-exclusive-topology` working for those subgroups.
+`subGroupPolicy.placementPolicy` applies to subgroups however they are defined,
+so it carries the same guarantee. The webhook rejects the subgroup annotation
+without `subGroupSize` today; with KEP-859 that check would need to accept
+`subGroupPlacement` as well, and the field follows the same rule. The two names
+sit side by side in `SubGroupPolicy`, so the docs must make clear that
+`placementPolicy` controls exclusivity while `subGroupPlacement` maps subgroups
+to nodes.
 
 ### Update Semantics
 
