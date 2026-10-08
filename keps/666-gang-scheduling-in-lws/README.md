@@ -865,8 +865,14 @@ in-place size policy, if added later, must coordinate membership; it cannot
 only patch `minCount`.
 
 Leader/worker mode applies the same revision transition to each leaf.
-Whole-LWS mode patches the computed minimum when cardinality changes; that
-does not promise a second all-at-once admission during rolling updates.
+Whole-LWS mode has one PodGroup for all revisions, so its minimum follows the
+groups that exist instead. Each group, including a terminating one, counts with
+the size of its own revision; at most `replicas` groups count, the smallest
+first; and each missing replica counts with the smallest group size or `size`,
+whichever is smaller. Capped at `replicas * size`, the minimum is below the
+template minimum only while groups of a smaller size remain, so a size increase
+never raises it above what the old-size groups and their replacements provide.
+That does not promise a second all-at-once admission during rolling updates.
 Phase 2 uses revision-specific replica CPGs and role PodGroups with the same
 per-replica rollout boundary.
 

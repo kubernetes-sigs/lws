@@ -26,7 +26,8 @@ LWS supports three mutually exclusive scheduling levels in `spec.scheduling`:
   `schedulingConstraints`, or `disruptionMode` under `spec.scheduling`, for
   example `spec.scheduling.schedulingPolicy.gang: {}`. This creates one
   `PodGroup` for the entire LeaderWorkerSet (`replicas * size` pods across all
-  replicas).
+  replicas). While a rollout increases `size`, its `gang.minCount` counts the
+  replicas that the rollout has not replaced yet with their previous size.
 - **Role level (`spec.scheduling.replica.leader` or
   `spec.scheduling.replica.worker`)**: Setting either role selects this level.
   LWS creates separate `PodGroup` objects for the leader and workers within
@@ -110,9 +111,7 @@ The initial implementation has these important restrictions:
 The scheduling policy and immutable constraints cannot be changed in place.
 At the replica level, LWS derives runtime PodGroup instances and gang
 membership from `replicas` and `size`, so ordinary replica scaling and size
-changes remain supported. The alpha implementation has a known update edge
-case: a size change during a rolling update can deadlock a whole-LWS gang; see
-[#1080](https://github.com/kubernetes-sigs/lws/issues/1080).
+changes remain supported.
 
 `WorkloadSchedulingCreated=True` on the LeaderWorkerSet means LWS created the
 requested scheduling objects. It does not mean the gang was placed or that

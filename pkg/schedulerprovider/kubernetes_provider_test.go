@@ -1173,6 +1173,146 @@ func TestKubernetesProviderCorrectsGangMinimumOfExistingPodGroup(t *testing.T) {
 	assert.Contains(t, err.Error(), "immutable scheduling configuration drift")
 }
 
+func TestWholeLWSMembership(t *testing.T) {
+	cases := map[string]struct {
+		replicas, size int32
+		groupSizes     []int32
+		want           int32
+	}{
+		"no groups yet":                         {replicas: 2, size: 3, want: 6},
+		"all groups have the size":              {replicas: 2, size: 3, groupSizes: []int32{3, 3}, want: 6},
+		"a group is being recreated":            {replicas: 2, size: 3, groupSizes: []int32{3}, want: 6},
+		"scale up":                              {replicas: 3, size: 3, groupSizes: []int32{3, 3}, want: 9},
+		"size increase, no group replaced":      {replicas: 2, size: 3, groupSizes: []int32{2, 2}, want: 4},
+		"size increase, replacement pending":    {replicas: 2, size: 3, groupSizes: []int32{2}, want: 4},
+		"size increase, a group replaced":       {replicas: 2, size: 3, groupSizes: []int32{3, 2}, want: 5},
+		"size increase, last old group deleted": {replicas: 2, size: 3, groupSizes: []int32{3}, want: 6},
+		"size increase with surge":              {replicas: 2, size: 3, groupSizes: []int32{2, 3, 2}, want: 4},
+		"size increase with scale up":           {replicas: 3, size: 3, groupSizes: []int32{3, 2}, want: 7},
+		"successive size increases":             {replicas: 3, size: 4, groupSizes: []int32{4, 2, 3}, want: 9},
+		"size decrease":                         {replicas: 2, size: 2, groupSizes: []int32{3, 3}, want: 4},
+		"size decrease, a group replaced":       {replicas: 2, size: 2, groupSizes: []int32{2, 3}, want: 4},
+		"zero replicas":                         {replicas: 0, size: 3, groupSizes: []int32{3}, want: 1},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, wholeLWSMembership(tc.replicas, tc.size, tc.groupSizes))
+		})
+	}
+}
+
+// A size increase raises the gang minimum of the Workload template to the new
+// replicas * size at once, while the groups of the old size only leave as the
+// rollout replaces them. The whole-LWS PodGroup, which all revisions share,
+// keeps a minimum that the existing groups can meet, and reaches the template
+// minimum once the last group of the old size is gone.
+func TestKubernetesProviderWholeLWSSizeIncreaseKeepsGangMinimumReachable(t *testing.T) {
+	identities := map[string]struct {
+		groupIdentity leaderworkerset.GroupIdentityType
+		leaderPod     func(*leaderworkerset.LeaderWorkerSet, string) *corev1.Pod
+	}{
+		"ordinal": {leaderworkerset.GroupIdentityOrdinal, ordinalLeaderPod},
+		"hash": {leaderworkerset.GroupIdentityHash, func(lws *leaderworkerset.LeaderWorkerSet, group string) *corev1.Pod {
+			pod := hashLeaderPod(lws, group)
+			pod.Name = lws.Name + "-" + group
+			return pod
+		}},
+	}
+	for name, identity := range identities {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			fakeClient := newKubernetesFakeClientBuilder().Build()
+			provider := NewKubernetesProvider(fakeClient)
+			lws := testScheduledLWS()
+			lws.Spec.GroupIdentity = identity.groupIdentity
+			lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+				SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+					Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+				},
+			}
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+			podGroupKey := types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesLWSGroupName(lws)}
+			// reconcile runs ReconcileScheduling as the LWS controller does and
+			// checks the gang minimum of the Workload template and the PodGroup.
+			reconcile := func(revision string, templateMinCount, podGroupMinCount int32) {
+				t.Helper()
+				require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, revision))
+				workload := &schedulingv1beta1.Workload{}
+				require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesWorkloadName(lws)}, workload))
+				assert.Equal(t, templateMinCount, workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount, "Workload template")
+				podGroup := &schedulingv1beta1.PodGroup{}
+				require.NoError(t, fakeClient.Get(ctx, podGroupKey, podGroup))
+				assert.Equal(t, podGroupMinCount, podGroup.Spec.SchedulingPolicy.Gang.MinCount, "PodGroup")
+			}
+			newLeader := func(group, revision string, size int32) *corev1.Pod {
+				leader := identity.leaderPod(lws, group)
+				leader.Labels[leaderworkerset.RevisionKey] = revision
+				if leader.Annotations == nil {
+					leader.Annotations = map[string]string{}
+				}
+				leader.Annotations[leaderworkerset.SizeAnnotationKey] = fmt.Sprint(size)
+				// The pod webhook adds every pod to the whole-LWS PodGroup.
+				leader.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{PodGroupName: ptr.To(podGroupKey.Name)}
+				return leader
+			}
+			createLeader := func(group, revision string, size int32) *corev1.Pod {
+				t.Helper()
+				leader := newLeader(group, revision, size)
+				require.NoError(t, fakeClient.Create(ctx, leader))
+				return leader
+			}
+
+			// The leader pods of a deleted LWS of the same name, which can still
+			// be terminating, have the same labels but belong to its PodGroup.
+			previousLWS := lws.DeepCopy()
+			previousLWS.UID = "previous-lws-uid"
+			previousLeader := newLeader("9", "revision-0", 1)
+			previousLeader.Spec.SchedulingGroup.PodGroupName = ptr.To(KubernetesLWSGroupName(previousLWS))
+			require.NoError(t, fakeClient.Create(ctx, previousLeader))
+
+			reconcile("revision-1", 4, 4)
+			oldLeader0 := createLeader("0", "revision-1", 2)
+			oldLeader1 := createLeader("1", "revision-1", 2)
+			reconcile("revision-1", 4, 4)
+
+			// The size increase starts a rollout and moves the template minimum
+			// to 6, which the 4 pods of the old groups can never meet.
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](3)
+			reconcile("revision-2", 6, 4)
+
+			// Earlier versions raised the PodGroup minimum with the template,
+			// which stalled the rollout. It is lowered again.
+			podGroup := &schedulingv1beta1.PodGroup{}
+			require.NoError(t, fakeClient.Get(ctx, podGroupKey, podGroup))
+			podGroup.Spec.SchedulingPolicy.Gang.MinCount = 6
+			require.NoError(t, fakeClient.Update(ctx, podGroup))
+			reconcile("revision-2", 6, 4)
+
+			// The rollout replaces group 1 with a group of the new size.
+			require.NoError(t, fakeClient.Delete(ctx, oldLeader1))
+			reconcile("revision-2", 6, 4)
+			createLeader("1", "revision-2", 3)
+			reconcile("revision-2", 6, 5)
+
+			// The old group 0 counts until its leader pod is deleted.
+			oldLeader0.Finalizers = []string{"test.leaderworkerset.sigs.k8s.io/hold"}
+			require.NoError(t, fakeClient.Update(ctx, oldLeader0))
+			require.NoError(t, fakeClient.Delete(ctx, oldLeader0))
+			reconcile("revision-2", 6, 5)
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(oldLeader0), oldLeader0))
+			oldLeader0.Finalizers = nil
+			require.NoError(t, fakeClient.Update(ctx, oldLeader0))
+			reconcile("revision-2", 6, 6)
+			createLeader("0", "revision-2", 3)
+			reconcile("revision-2", 6, 6)
+
+			// A size decrease lowers both minimums at once, as before.
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+			reconcile("revision-3", 4, 4)
+		})
+	}
+}
+
 func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {
 	return &leaderworkerset.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{

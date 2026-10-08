@@ -390,6 +390,82 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("keeps the whole-LWS gang minimum reachable while a rollout increases the size", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-whole-lws-size").
+			Replica(2).
+			Size(2).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		podGroupKey := types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesLWSGroupName(lws)}
+		// expectGangMinimums waits for the gang minimum of the Workload template
+		// and of the whole-LWS PodGroup.
+		expectGangMinimums := func(templateMinCount, podGroupMinCount int32) {
+			gomega.Eventually(func(g gomega.Gomega) {
+				workload := &schedulingv1beta1.Workload{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesWorkloadName(lws)}, workload)).To(gomega.Succeed())
+				g.Expect(workload.Spec.PodGroupTemplates).To(gomega.HaveLen(1))
+				g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount).To(gomega.Equal(templateMinCount))
+				group := &schedulingv1beta1.PodGroup{}
+				g.Expect(k8sClient.Get(ctx, podGroupKey, group)).To(gomega.Succeed())
+				g.Expect(group.Spec.SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+				g.Expect(group.Spec.SchedulingPolicy.Gang.MinCount).To(gomega.Equal(podGroupMinCount))
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		}
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		// The pod webhook, which this suite does not run, adds every pod to the
+		// whole-LWS PodGroup.
+		joinPodGroup := func(pod *corev1.Pod) {
+			pod.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{PodGroupName: ptr.To(podGroupKey.Name)}
+		}
+		gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, lws, 0, 2, joinPodGroup)).To(gomega.Succeed())
+		expectGangMinimums(4, 4)
+
+		// The size increase starts a rollout and moves the template minimum to
+		// 6, which the 4 pods of the old groups can never meet.
+		testing.UpdateSize(ctx, k8sClient, lws, 3)
+		expectGangMinimums(6, 4)
+
+		// Earlier versions raised the PodGroup minimum with the template, which
+		// stalled the rollout. It is lowered again.
+		gomega.Eventually(func() error {
+			group := &schedulingv1beta1.PodGroup{}
+			if err := k8sClient.Get(ctx, podGroupKey, group); err != nil {
+				return err
+			}
+			group.Spec.SchedulingPolicy.Gang.MinCount = 6
+			return k8sClient.Update(ctx, group)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		expectGangMinimums(6, 4)
+
+		// The rollout replaces the old groups with groups of the new size one
+		// at a time, and the minimum follows their pods.
+		resized := &leaderworkerset.LeaderWorkerSet{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), resized)).To(gomega.Succeed())
+		replaceGroup := func(index int32) {
+			// The pod controller creates the worker StatefulSet of the leader.
+			gomega.Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: fmt.Sprintf("%s-%d", lws.Name, index)}, &appsv1.StatefulSet{})
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			testing.DeleteLeaderPod(ctx, k8sClient, lws, index, index+1)
+			gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, resized, int(index), int(index)+1, joinPodGroup)).To(gomega.Succeed())
+		}
+		replaceGroup(1)
+		expectGangMinimums(6, 5)
+		replaceGroup(0)
+		expectGangMinimums(6, 6)
+	})
+
 	ginkgo.It("cleans up replica PodGroup when the last member worker pod is deleted after scale-down", func() {
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
 			Name("was-scale-cleanup").
