@@ -298,6 +298,98 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("keeps the gang minimum of a replica on the previous revision when the size changes", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-size-change").
+			Replica(1).
+			Size(3).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Expect(testing.CreateLeaderPods(ctx, *leaderStatefulSet, k8sClient, lws, 0, 1)).To(gomega.Succeed())
+		leaderPod := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, leaderPod)).To(gomega.Succeed())
+
+		podGroupKey := types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesPodGroupName(lws, "0", leaderPod.Labels[leaderworkerset.RevisionKey])}
+		workerStatefulSetKey := types.NamespacedName{Namespace: ns.Name, Name: leaderPod.Name}
+		assertOldGroup := func(g gomega.Gomega) {
+			group := &schedulingv1beta1.PodGroup{}
+			g.Expect(k8sClient.Get(ctx, podGroupKey, group)).To(gomega.Succeed())
+			g.Expect(group.Spec.SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+			g.Expect(group.Spec.SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(3)))
+			workers := &appsv1.StatefulSet{}
+			g.Expect(k8sClient.Get(ctx, workerStatefulSetKey, workers)).To(gomega.Succeed())
+			g.Expect(workers.Spec.Replicas).To(gomega.Equal(ptr.To[int32](2)))
+		}
+		gomega.Eventually(assertOldGroup, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// The size change starts a rollout and moves the Workload template to
+		// the new size, while the old leader keeps running.
+		gomega.Eventually(func() error {
+			persisted := &leaderworkerset.LeaderWorkerSet{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persisted); err != nil {
+				return err
+			}
+			persisted.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](4)
+			return k8sClient.Update(ctx, persisted)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			workload := &schedulingv1beta1.Workload{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesWorkloadName(lws)}, workload)).To(gomega.Succeed())
+			g.Expect(workload.Spec.PodGroupTemplates).To(gomega.HaveLen(1))
+			g.Expect(workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(4)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// The old leader is still reconciled: its worker StatefulSet is
+		// recreated with the old size.
+		workers := &appsv1.StatefulSet{}
+		gomega.Expect(k8sClient.Get(ctx, workerStatefulSetKey, workers)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, workers)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			recreated := &appsv1.StatefulSet{}
+			g.Expect(k8sClient.Get(ctx, workerStatefulSetKey, recreated)).To(gomega.Succeed())
+			g.Expect(recreated.UID).NotTo(gomega.Equal(workers.UID))
+			assertOldGroup(g)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// A recreated PodGroup of the old revision keeps the old minimum.
+		group := &schedulingv1beta1.PodGroup{}
+		gomega.Expect(k8sClient.Get(ctx, podGroupKey, group)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, group)).To(gomega.Succeed())
+		// envtest does not run the upstream PodGroup protection controller, so
+		// emulate its finalizer removal.
+		gomega.Eventually(func() error {
+			deleting := &schedulingv1beta1.PodGroup{}
+			if err := k8sClient.Get(ctx, podGroupKey, deleting); err != nil || deleting.UID != group.UID {
+				return client.IgnoreNotFound(err)
+			}
+			deleting.Finalizers = nil
+			return k8sClient.Update(ctx, deleting)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		// Trigger a reconcile of the old leader.
+		gomega.Eventually(func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(leaderPod), leaderPod); err != nil {
+				return err
+			}
+			if leaderPod.Annotations == nil {
+				leaderPod.Annotations = map[string]string{}
+			}
+			leaderPod.Annotations["test.leaderworkerset.sigs.k8s.io/touch"] = "1"
+			return k8sClient.Update(ctx, leaderPod)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			recreated := &schedulingv1beta1.PodGroup{}
+			g.Expect(k8sClient.Get(ctx, podGroupKey, recreated)).To(gomega.Succeed())
+			g.Expect(recreated.UID).NotTo(gomega.Equal(group.UID))
+			assertOldGroup(g)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("cleans up replica PodGroup when the last member worker pod is deleted after scale-down", func() {
 		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
 			Name("was-scale-cleanup").

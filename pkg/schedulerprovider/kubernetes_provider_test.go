@@ -921,8 +921,9 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 			ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{APIGroup: "example.test", Kind: "ParentJob", Name: "parent"},
 			PodGroupTemplates: []schedulingv1beta1.PodGroupTemplate{{
 				Name: "child-template",
+				// The parent owns the minimum, which need not match the LWS size.
 				SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
-					Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 2},
 				},
 			}},
 		},
@@ -966,6 +967,8 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	require.NotNil(t, group.Spec.WorkloadRef)
 	assert.Equal(t, "parent-workload", group.Spec.WorkloadRef.WorkloadName)
 	assert.Equal(t, "child-template", group.Spec.WorkloadRef.TemplateName)
+	require.NotNil(t, group.Spec.SchedulingPolicy.Gang)
+	assert.Equal(t, int32(2), group.Spec.SchedulingPolicy.Gang.MinCount, "delegated groups keep the parent template minimum")
 	assert.Nil(t, group.Spec.ParentCompositePodGroupName, "Phase 1 does not attach a parent CompositePodGroup")
 	assert.Nil(t, workloadOwnerReference(group), "delegated groups must not own a parent Workload")
 	lwsController := metav1.GetControllerOf(group)
@@ -1013,6 +1016,161 @@ func TestKubernetesProviderDelegatedWorkloadRejectsAmbiguousParent(t *testing.T)
 	_, err := NewKubernetesProvider(fakeClient).findDelegatedWorkload(ctx, lws)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "multiple parent Workloads")
+}
+
+// A size change creates a new revision and moves the Workload templates to the
+// new size. A group still on the old revision keeps PodGroups with the gang
+// minimum of its old size: an existing one is not reported as drift, and a
+// recreated one is neither unschedulable (size increase) nor a partial gang
+// (size decrease).
+func TestKubernetesProviderSizeChangeKeepsGroupGangMinimum(t *testing.T) {
+	gang := func() *schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy {
+		return &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{}}
+	}
+	modes := map[string]struct {
+		scheduling func() *leaderworkerset.LeaderWorkerSetScheduling
+		// minimums returns the gang minimum of each PodGroup of a group.
+		minimums func(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string, size int32) map[string]int32
+	}{
+		"replica": {
+			scheduling: func() *leaderworkerset.LeaderWorkerSetScheduling { return &leaderworkerset.LeaderWorkerSetScheduling{} },
+			minimums: func(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string, size int32) map[string]int32 {
+				return map[string]int32{KubernetesPodGroupName(lws, groupIndex, revision): size}
+			},
+		},
+		"role": {
+			scheduling: func() *leaderworkerset.LeaderWorkerSetScheduling {
+				return &leaderworkerset.LeaderWorkerSetScheduling{Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+					Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{SchedulingPolicy: gang()},
+					Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{SchedulingPolicy: gang()},
+				}}
+			},
+			minimums: func(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string, size int32) map[string]int32 {
+				return map[string]int32{
+					KubernetesRolePodGroupName(lws, groupIndex, leaderWorkloadTemplateName, revision): 1,
+					KubernetesRolePodGroupName(lws, groupIndex, workerWorkloadTemplateName, revision): size - 1,
+				}
+			},
+		},
+	}
+	identities := map[string]struct {
+		groupIdentity      leaderworkerset.GroupIdentityType
+		leaderPod          func(*leaderworkerset.LeaderWorkerSet, string) *corev1.Pod
+		oldGroup, newGroup string
+	}{
+		"ordinal": {leaderworkerset.GroupIdentityOrdinal, ordinalLeaderPod, "0", "1"},
+		"hash":    {leaderworkerset.GroupIdentityHash, hashLeaderPod, hashGroupKey, "8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f70819"},
+	}
+	sizeChanges := map[string]struct{ oldSize, newSize int32 }{
+		"increase": {oldSize: 3, newSize: 5},
+		"decrease": {oldSize: 5, newSize: 3},
+	}
+	withSize := func(pod *corev1.Pod, size int32) *corev1.Pod {
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations[leaderworkerset.SizeAnnotationKey] = fmt.Sprint(size)
+		return pod
+	}
+
+	for modeName, mode := range modes {
+		for identityName, identity := range identities {
+			for changeName, change := range sizeChanges {
+				t.Run(modeName+"/"+identityName+"/"+changeName, func(t *testing.T) {
+					ctx := context.Background()
+					fakeClient := newKubernetesFakeClientBuilder().Build()
+					provider := NewKubernetesProvider(fakeClient)
+					// assertMinimums checks the gang minimum of the given
+					// PodGroups and returns their resource versions.
+					assertMinimums := func(want map[string]int32) map[string]string {
+						t.Helper()
+						versions := make(map[string]string, len(want))
+						for name, minCount := range want {
+							podGroup := &schedulingv1beta1.PodGroup{}
+							require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, podGroup))
+							require.NotNil(t, podGroup.Spec.SchedulingPolicy.Gang, name)
+							assert.Equal(t, minCount, podGroup.Spec.SchedulingPolicy.Gang.MinCount, name)
+							versions[name] = podGroup.ResourceVersion
+						}
+						return versions
+					}
+
+					oldLWS := testScheduledLWS()
+					oldLWS.Spec.GroupIdentity = identity.groupIdentity
+					oldLWS.Spec.Scheduling = mode.scheduling()
+					oldLWS.Spec.LeaderWorkerTemplate.Size = ptr.To(change.oldSize)
+					require.NoError(t, provider.ReconcileScheduling(ctx, oldLWS, 2, "revision-1"))
+					// The running leader keeps its PodGroups out of cleanup.
+					oldLeader := withSize(identity.leaderPod(oldLWS, identity.oldGroup), change.oldSize)
+					require.NoError(t, fakeClient.Create(ctx, oldLeader))
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, oldLWS, oldLeader))
+					oldGroups := mode.minimums(oldLWS, identity.oldGroup, "revision-1", change.oldSize)
+					assertMinimums(oldGroups)
+
+					newLWS := oldLWS.DeepCopy()
+					newLWS.Spec.LeaderWorkerTemplate.Size = ptr.To(change.newSize)
+					require.NoError(t, provider.ReconcileScheduling(ctx, newLWS, 2, "revision-2"))
+					existing := assertMinimums(oldGroups)
+
+					// The pod controller reconciles the old leader with its
+					// revision applied, which restores oldLWS, or with newLWS
+					// when it cannot find the revision.
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, oldLWS, oldLeader))
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, newLWS, oldLeader))
+					unannotated := oldLeader.DeepCopy()
+					delete(unannotated.Annotations, leaderworkerset.SizeAnnotationKey)
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, oldLWS, unannotated))
+					assert.Equal(t, existing, assertMinimums(oldGroups), "PodGroups with the right minimum are not written")
+
+					// Recreated PodGroups of the old revision keep the old minimum.
+					for name := range oldGroups {
+						require.NoError(t, fakeClient.Delete(ctx, &schedulingv1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name}}))
+					}
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, oldLWS, oldLeader))
+					assertMinimums(oldGroups)
+
+					// Groups of the new revision get the new minimum.
+					newLeader := withSize(identity.leaderPod(newLWS, identity.newGroup), change.newSize)
+					newLeader.Labels[leaderworkerset.RevisionKey] = "revision-2"
+					require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, newLWS, newLeader))
+					assertMinimums(mode.minimums(newLWS, identity.newGroup, "revision-2", change.newSize))
+				})
+			}
+		}
+	}
+}
+
+// Earlier versions materialized the PodGroup of a group still on the previous
+// revision from the template of the new size. Such a PodGroup gets the gang
+// minimum of its own group back, whichever way the size changed, instead of
+// failing every reconcile as drift.
+func TestKubernetesProviderCorrectsGangMinimumOfExistingPodGroup(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	fakeClient := newKubernetesFakeClientBuilder().Build()
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+	leader := ordinalLeaderPod(lws, "0")
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+	key := types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}
+	podGroup := &schedulingv1beta1.PodGroup{}
+	for _, stale := range []int32{5, 2} {
+		require.NoError(t, fakeClient.Get(ctx, key, podGroup))
+		podGroup.Spec.SchedulingPolicy.Gang.MinCount = stale
+		require.NoError(t, fakeClient.Update(ctx, podGroup))
+
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+		require.NoError(t, fakeClient.Get(ctx, key, podGroup))
+		assert.Equal(t, int32(3), podGroup.Spec.SchedulingPolicy.Gang.MinCount)
+	}
+
+	// Only the minimum is corrected; the other scheduling fields stay immutable.
+	podGroup.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{All: &schedulingv1beta1.AllDisruptionMode{}}
+	require.NoError(t, fakeClient.Update(ctx, podGroup))
+	err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "immutable scheduling configuration drift")
 }
 
 func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {

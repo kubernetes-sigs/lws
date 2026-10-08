@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -241,6 +242,13 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 		if err != nil {
 			return NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("materialize PodGroup %q: %w", name, err))
 		}
+		allowMinCountUpdate := group.allowMinCountUpdate
+		if gang := podGroup.Spec.SchedulingPolicy.Gang; gang != nil && group.gangMinCount != nil && !delegated {
+			gang.MinCount = *group.gangMinCount
+			// Also correct an existing PodGroup that was materialized from the
+			// template of another size, as earlier versions did after a size change.
+			allowMinCountUpdate = true
+		}
 		podGroup.TypeMeta = metav1.TypeMeta{
 			APIVersion: schedulingv1beta1.SchemeGroupVersion.String(),
 			Kind:       "PodGroup",
@@ -255,7 +263,7 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 			if !existing.DeletionTimestamp.IsZero() {
 				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
 			}
-			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, group.allowMinCountUpdate); err != nil {
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, allowMinCountUpdate); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		} else if !apierrors.IsNotFound(err) {
@@ -270,7 +278,7 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 			if !existing.DeletionTimestamp.IsZero() {
 				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
 			}
-			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, group.allowMinCountUpdate); err != nil {
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, allowMinCountUpdate); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		}
@@ -283,6 +291,11 @@ type desiredPodGroup struct {
 	templateName        string
 	labels              map[string]string
 	allowMinCountUpdate bool
+	// gangMinCount, when set, replaces the gang minCount of the template, which
+	// follows the current size, with the membership of the group the PodGroup
+	// belongs to. It is ignored for delegated Workloads, whose templates belong
+	// to the parent.
+	gangMinCount *int32
 }
 
 func desiredPodGroups(lws *leaderworkerset.LeaderWorkerSet, replicas int32, _ string) ([]desiredPodGroup, error) {
@@ -729,6 +742,10 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 // incarnation (Ordinal), both drawn when the leader pod is admitted. A
 // recreated leader therefore never waits on a PodGroup of its predecessor that
 // cleanup is deleting.
+//
+// While a rollout changes the size, the Workload templates already have the
+// gang minimum of the new size. The PodGroups of a group keep the minimum of
+// the group's own size until the rollout replaces the group.
 func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
 	groups, err := leaderPodGroups(lws, leaderPod)
 	if err != nil {
@@ -767,7 +784,24 @@ func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod
 	if revision == "" {
 		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.RevisionKey)
 	}
-	return replicaPodGroups(lws, mode, GroupWorkloadName(lws, leaderPod), groupIndex, revision), nil
+	groups := replicaPodGroups(lws, mode, GroupWorkloadName(lws, leaderPod), groupIndex, revision)
+	size := groupSize(lws, leaderPod)
+	for i := range groups {
+		groups[i].gangMinCount = ptr.To(leafMembership(groups[i].templateName, size))
+	}
+	return groups, nil
+}
+
+// groupSize returns the size of the group of leaderPod. It differs from the
+// current size for groups that a rollout changing the size has not replaced
+// yet. The size annotation records the size of the revision the leader pod was
+// created from; lws has that revision applied too, unless the pod controller
+// could not find it.
+func groupSize(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) int32 {
+	if size, err := strconv.ParseInt(leaderPod.Annotations[leaderworkerset.SizeAnnotationKey], 10, 32); err == nil && size > 0 {
+		return int32(size)
+	}
+	return ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
 }
 
 // findWorkload looks up the Workload that already backs the LeaderWorkerSet
