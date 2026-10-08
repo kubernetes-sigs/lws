@@ -97,9 +97,8 @@ topology by adding parent roles.
    whenever `subRoles` is present.
 5. **Multi-slice External scaling.** This follows the initial KEP-849 restriction until
    aggregate versus per-slice scaler semantics are defined.
-6. **Hash group identity.** The initial implementation supports only ordinal group
-   identity because scale-down assignment relies on knowing which StatefulSet ordinals
-   will be removed. A role cannot combine `subRoles` with `groupIdentity: Hash`.
+6. **Shared parent rollout budgets.** Every child independently inherits or overrides
+   the parent policy; there is no second aggregate surge or unavailability limit.
 
 ## Proposal
 
@@ -164,9 +163,11 @@ routing.
 scaling down, the allocator swaps labels between interchangeable groups so the groups
 that will be removed represent the planned sub-role drain.
 
-**Hash identity has no predictable scale-down ordinal.** Admission rejects a role that
-combines `subRoles` with `groupIdentity: Hash`. Supporting Deployment-selected victims
-requires a separate assignment protocol and is deferred to a follow-up PR.
+**Hash identity has no predictable scale-down ordinal.** Hash support follows the
+Ordinal implementation as a separate change. It protects retained group UIDs and
+authorizes exact victims; deletion-cost preferences cannot provide that guarantee.
+For `A=5,B=1 -> A=4,B=1`, an arbitrary victim could remove B's only Ready group.
+Reassignment after deletion would repair a violation, not prevent it.
 
 **Parent and child targets could conflict.** Parent scaling is rejected when sub-roles
 are present and parent `spec.replicas` is ignored. The webhook warns when an explicit
@@ -281,11 +282,9 @@ of 10 parent roles remains, and each parent may define at most 32 sub-roles.
 
 External sub-roles cannot set `replicas`. Parent `scaling` is forbidden and parent
 `spec.replicas` has no effect when `subRoles` is present. The system sub-role label is
-reserved and cannot appear in user Pod templates. A role with `subRoles` must use the
-default `Ordinal` group identity; admission rejects `groupIdentity: Hash`.
-
-TODO: Add `groupIdentity: Hash` support for sub-roles in a follow-up PR once assignment
-and scale-down semantics for Deployment-selected victims are defined.
+reserved and cannot appear in user Pod templates. Both `Ordinal` and `Hash` group
+identities are supported. They use the same planner and independent child budgets;
+only physical assignment and deletion control differ.
 
 ### Labels, Identity, and Scaler Names
 
@@ -316,8 +315,14 @@ role and sub-role scaler names. When sub-roles exist, no parent scaler is create
 
 The reconciler watches Pods through a mapping from the existing
 `disaggregatedset.x-k8s.io/name` label to the parent DisaggregatedSet. It receives Pod
-`get`, `list`, `watch`, and `patch` permissions and patches only the sub-role label.
-Converged assignments produce no writes; native controllers retain health recovery.
+`get`, `list`, `watch`, `patch`, and `delete` permissions. It changes controller-owned
+assignment metadata and, for Hash, deletes authorized victim UIDs or narrowly selected
+owned, unassigned, unlabelled, unprotected excess groups, with UID/resource-version guards.
+Converged assignments produce no writes. Native health recovery and restart-budget
+finalizers remain owned by the native controllers.
+
+Internally, `(parent role, child name)` uniquely identifies a planner dimension;
+an unpartitioned role uses its parent identity.
 
 Reconciliation follows this flow:
 
@@ -337,17 +342,46 @@ LWS scale and group-label assignment
 For each `(slice, revision, parent role)`, the assignment algorithm:
 
 1. Saves pending reductions/transfers without changing issued counts; pure growth publishes directly.
-2. Repairs partial/newborn labels, then waits for the whole retained Ordinal prefix to be Ready.
-3. Keeps valid assignments and fills deficits one group at a time, reobserving workers-first,
-   UID/resource-version guarded writes; donors retain `min(issued, pending)` coherent Ready groups.
-4. Observes survivors, clears outgoing labels, then atomically publishes issued counts and
-   `LWS.spec.replicas = sum(counts)`, clearing pending work. The observer tracks native deletions.
+2. Repairs partial/newborn labels, then waits for the whole retained Ordinal prefix
+   to be Ready; Hash reserves eligible Ready groups for its accepted per-child floors.
+3. Keeps valid assignments and fills deficits with workers-first, UID/resource-version
+   guarded writes, then reobserves the changes. Ordinal donors retain `min(issued, pending)` coherent
+   Ready groups; Hash donors retain the accepted per-child Ready floor.
+4. Observes survivors, then atomically publishes issued counts and
+   `LWS.spec.replicas = sum(counts)`. Ordinal clears outgoing labels first and completes
+   pending work; Hash arms exact victim tokens and completes after their native deletion
+   acknowledgment. The observer tracks native deletions.
 
 Temporary duplicate labels do not grant planner capacity: `[A,A,B]` may become `[A,B,B]`
 before shrinking to `[A,B]`. Growing `[A,A]` to `A=1,B=2` still requires physical replicas 3.
-Pending targets survive retries/restarts and cannot be superseded. Missing/unhealthy retained
-groups stall that slice's subsequent planning, even if budgets allow progress; recovery may
-require user intervention. Newborn/partial labels repair before health checks to avoid deadlock.
+Pending targets survive retries/restarts and cannot be superseded. A missing/unhealthy
+Ordinal retained group or an unsatisfied Hash Ready floor stalls subsequent planning,
+even if budgets allow progress; recovery may require user intervention. Newborn/partial
+labels repair before health checks to avoid deadlock.
+
+Hash adds a compact transaction ID and exact victim UID tokens to this preparation.
+Its Ready floor for each child is the observed Ready count minus the accepted count
+reduction, bounded at zero. Count-only survivors may be unready; accepted Ready
+reservations take priority over those assignments.
+Survivor protection remains active between transactions. Publishing the child counts,
+physical Spec and armed ID authorizes the selected victims together. After native
+targets propagate, delete those victims before waiting for replacement vacancies.
+An armed victim cannot become a survivor; replacement UIDs fill only real vacancies.
+Parent metadata grows with child count, not physical replica count.
+
+Previously saved object plans resume with their accepted Ready floors and transaction
+identity. Legacy Ordinal plans may use only their actual retained prefix; new Ordinal
+count-map plans retain the full-prefix health policy described above.
+
+A DELETE-only, fail-closed webhook enforces this authority for protected live Hash
+leaders. Native health recovery persists its restart budget before authorizing the
+unhealthy leader's exact UID. Terminal/terminating leaders and ordinary Pods bypass
+the endpoint; parent teardown is allowed when the endpoint is online. Removing a
+leader's protection annotation is an administrative override. Unpartitioning finishes
+accepted work and clears protection. These are trusted-controller coordination rules,
+not guarantees against arbitrary Pod editors or independent workload failures.
+The override is still a Pod update and requires the existing Pod validation webhook;
+it does not bypass an outage of the shared webhook server.
 
 No separate assignment CRD is needed. Live labels provide stickiness, and the desired
 counts reconstruct missing labels after a Pod restart.
@@ -474,9 +508,13 @@ existing tests to make this code solid enough prior to implementation.
 #### Unit tests
 
 - API validation, replica resolution, and generated scaler names.
-- Rejection of `groupIdentity: Hash` when a role defines sub-roles.
-- Stable assignment, UID-safe partial writes, native recovery, and conservative ordinal drains.
-- Ordinary child planner state, independent budgets, retirement history, and initial snapshots.
+- Both identity policies, including unchanged Ordinal plan replay after upgrade.
+- Stable assignment, conservative retained-group readiness, Pod recreation, and ordinal scale-down.
+- Ordinary child planner state, independently resolved integer/percentage budgets,
+  required/removed-child history, and initial snapshot parsing.
+- UID-safe partial writes, native health, finalizer-held slots, and unpartitioning.
+- Hash exact-victim authority, restart replay, stale native choices, same-name UID
+  replacement, native health authorization, and bounded parent metadata.
 - Scaler creation, seeding, status, selector, and cleanup.
 - Parent status aggregation and revision-hash stability.
 
@@ -486,6 +524,7 @@ existing tests to make this code solid enough prior to implementation.
 - Static and External target changes converge labels with minimal reassignment.
 - Pod recreation restores assignment; scale-down preserves the requested distribution.
 - Template rollout preserves ordinary child availability and independent budgets.
+- Real API-server DELETE races and fail-closed/outage matching for protected leaders.
 - llm-d observes label changes and filters subsequent endpoint candidates.
 - Static multi-slice behavior works; External multi-slice objects are rejected in alpha.
 
@@ -521,6 +560,10 @@ existing tests to make this code solid enough prior to implementation.
 3. Membership is eventually consistent across router caches.
 4. A one-parent DisaggregatedSet broadens the API beyond its original topology scope.
 5. Rollout execution must translate child plans into one physical scale field.
+6. Independent child allowances, including percentage rounding, accumulate physically.
+7. Directional rollout execution can cause Pod churn for net-zero child transfers.
+8. Deleting protected healthy Hash leaders depends on the protection webhook's
+   availability, including during parent teardown; administrative override is explicit.
 
 ## Alternatives
 

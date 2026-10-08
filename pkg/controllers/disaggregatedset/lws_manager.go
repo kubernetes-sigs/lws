@@ -100,7 +100,7 @@ func (manager *LeaderWorkerSetManager) collectRolloutObservations(
 	pending := false
 	for _, revision := range revisions {
 		for _, lws := range revision.Roles {
-			if lws.Annotations[subRolePlanAnnotation] != "" {
+			if hasPendingSubRolePlan(lws) {
 				if _, err := manager.syncSubRoles(ctx, ds, lws, subRoleUpdate{}); err != nil && !errors.Is(err, errReplicaGroupsPending) {
 					return nil, err
 				}

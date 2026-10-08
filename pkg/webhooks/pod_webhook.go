@@ -44,6 +44,7 @@ func NewPodWebhook(sp schedulerprovider.SchedulerProvider) *PodWebhook {
 }
 
 func (p *PodWebhook) Setup(mgr ctrl.Manager) error {
+	mgr.GetWebhookServer().Register("/validate-protected-leader", admission.WithValidator(mgr.GetScheme(), &protectedLeaderWebhook{reader: mgr.GetAPIReader()}))
 	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
 		WithDefaulter(p).
 		WithValidator(p).

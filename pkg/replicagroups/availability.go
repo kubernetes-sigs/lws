@@ -106,7 +106,8 @@ func (s *Snapshot) Availability() Availability {
 		}
 		result.ReadyReplicas++
 		if !acknowledged || group.Terminating ||
-			leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+			leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] == "true" ||
+			leader.UID != "" && leader.Annotations[leaderworkersetv1.GroupReplacementDeleteAnnotationKey] == string(leader.UID) {
 			continue
 		}
 		if workers := group.WorkerStatefulSet; workers != nil && workers.Status.ObservedGeneration < workers.Generation {

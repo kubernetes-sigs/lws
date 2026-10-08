@@ -69,7 +69,7 @@ Because each role maps to an independent child LeaderWorkerSet, each role inheri
 one parent's shared-template LWS into routing pools, totaling four groups per slice.
 Parent `spec.replicas` is ignored and parent `scaling` must be omitted. Children may
 use `scaling.mode: External` without `replicas`; their `<ds>-<parent>-<child>` RoleScalers
-retain the single-slice restriction. This initial implementation requires Ordinal identity.
+retain the single-slice restriction. Both Ordinal and Hash group identities are supported.
 
 Route using the controller-owned `disaggregatedset.x-k8s.io/subrole` Pod label alongside
 set/role/slice labels. Each child inherits independent rollout budgets; there is no parent cap.
@@ -93,7 +93,16 @@ Changing these settings adjusts rollout pacing without creating a new revision.
 `status.roleStatuses` lists parent aggregates, with current children nested in
 `subRoleStatuses` using local names such as `interactive`. Use the parent total or the
 child breakdown, not their sum. `SubRolesAssigned` reports coherent group assignment.
-Labels can briefly duplicate during transfers. Retained groups must be healthy before relabeling
-or shrinking; pending operations block further planning and desired changes until they complete.
+Labels can briefly duplicate during transfers. Ordinal requires a healthy retained prefix;
+Hash preserves the accepted per-child Ready floors. Pending operations block further planning
+and desired changes until they complete.
+
+Assigned Hash leaders carry UID-bound `leaderworkerset.sigs.k8s.io/scale-protection`
+annotations. A DELETE-only webhook rejects stale native victim choices; accepted exact-UID
+scale victims and native health replacements are allowed. Terminal/terminating leaders
+bypass it. Parent teardown requires the endpoint to be online; an administrative override
+removes the leader's protection annotation before deletion. Removing subroles finishes
+accepted work and clears protection with assignments.
+
 See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)
 for assignment ordering, recovery, rollout churn, and removing subroles.

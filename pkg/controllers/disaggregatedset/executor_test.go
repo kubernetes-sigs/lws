@@ -3047,15 +3047,20 @@ func TestSubRolePendingBarrierResumesEveryAcceptedAssignment(t *testing.T) {
 }
 
 type subRoleFixture struct {
-	t       *testing.T
-	manager *LeaderWorkerSetManager
-	ds      *disaggregatedsetv1.DisaggregatedSet
-	lws     *leaderworkersetv1.LeaderWorkerSet
-	start   int
+	t        *testing.T
+	manager  *LeaderWorkerSetManager
+	ds       *disaggregatedsetv1.DisaggregatedSet
+	lws      *leaderworkersetv1.LeaderWorkerSet
+	start    int
+	identity leaderworkersetv1.GroupIdentityType
 }
 
 func newSubRoleFixture(t *testing.T, start int, children ...string) *subRoleFixture {
-	f := &subRoleFixture{t: t, start: start, ds: newDSWithRoles("ds")}
+	return newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityOrdinal, start, children...)
+}
+
+func newSubRoleFixtureForIdentity(t *testing.T, identity leaderworkersetv1.GroupIdentityType, start int, children ...string) *subRoleFixture {
+	f := &subRoleFixture{t: t, start: start, identity: identity, ds: newDSWithRoles("ds")}
 	f.manager = NewLeaderWorkerSetManager(newTestClient(f.ds))
 	return f.withRevision("model", children...)
 }
@@ -3067,9 +3072,9 @@ func (f *subRoleFixture) metadata(name string, owner client.Object, kind schema.
 }
 
 func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleFixture {
-	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
+	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
 	f.lws.ObjectMeta = f.metadata(name, f.ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))
-	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: leaderworkersetv1.GroupIdentityOrdinal, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
+	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: f.identity, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
 	f.lws.Status.ObservedGeneration = 1
 	counts := map[string]int{}
 	for _, child := range children {
@@ -3078,8 +3083,13 @@ func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleF
 	setSubRoleJSON(f.lws, subRoleReplicasAnnotation, counts)
 	setSubRoleJSON(f.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, counts)
 	setInitialReplicasAnnotation(f.lws, len(children))
-	owner := &appsv1.StatefulSet{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.StatefulSetSpec{Replicas: f.lws.Spec.Replicas, Ordinals: &appsv1.StatefulSetOrdinals{Start: int32(f.start)}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1}}
+	var owner client.Object = &appsv1.StatefulSet{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.StatefulSetSpec{Replicas: f.lws.Spec.Replicas, Ordinals: &appsv1.StatefulSetOrdinals{Start: int32(f.start)}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, Replicas: int32(len(children))}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), f.lws))
+	if f.identity == leaderworkersetv1.GroupIdentityHash {
+		deployment := &appsv1.Deployment{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.DeploymentSpec{Replicas: f.lws.Spec.Replicas}, Status: appsv1.DeploymentStatus{ObservedGeneration: 1}}
+		require.NoError(f.t, f.manager.client.Create(f.t.Context(), deployment))
+		owner = &appsv1.ReplicaSet{ObjectMeta: f.metadata(name+"-rs", deployment, appsv1.SchemeGroupVersion.WithKind("Deployment")), Spec: appsv1.ReplicaSetSpec{Replicas: f.lws.Spec.Replicas}, Status: appsv1.ReplicaSetStatus{ObservedGeneration: 1, Replicas: int32(len(children))}}
+	}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), owner))
 	for i, child := range children {
 		f.createGroup(owner, f.start+i, child)
@@ -3088,13 +3098,20 @@ func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleF
 }
 
 // Initial construction and native growth use the same two-worker group shape.
-func (f *subRoleFixture) createGroup(owner *appsv1.StatefulSet, ordinal int, child string) {
+func (f *subRoleFixture) createGroup(owner client.Object, ordinal int, child string) {
 	ready := corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}
 	if child == "" {
 		ready.Conditions = nil // Native growth has not acquired application readiness yet.
 	}
-	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, appsv1.SchemeGroupVersion.WithKind("StatefulSet")), Status: ready}
+	kind := appsv1.SchemeGroupVersion.WithKind("StatefulSet")
+	if _, hash := owner.(*appsv1.ReplicaSet); hash {
+		kind = appsv1.SchemeGroupVersion.WithKind("ReplicaSet")
+	}
+	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, kind), Status: ready}
 	leader.Annotations = map[string]string{leaderworkersetv1.SizeAnnotationKey: "3", "user": "keep"}
+	if f.identity == leaderworkersetv1.GroupIdentityHash && child != "" {
+		leader.Annotations[leaderworkersetv1.GroupScaleProtectionAnnotationKey] = string(f.lws.UID) + "/" + string(leader.UID)
+	}
 	workers := &appsv1.StatefulSet{ObjectMeta: f.metadata(leader.Name, leader, corev1.SchemeGroupVersion.WithKind("Pod")), Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2), Ordinals: &appsv1.StatefulSetOrdinals{Start: 1}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, AvailableReplicas: 2, CurrentRevision: "a", UpdateRevision: "a"}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), workers))
 	for i := range 3 {
@@ -3129,6 +3146,17 @@ func (f *subRoleFixture) sync() {
 func (f *subRoleFixture) native() {
 	s := f.observe()
 	n := int(getLWSReplicas(s.LWS))
+	if f.identity == leaderworkersetv1.GroupIdentityHash {
+		s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
+		require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderDeployment))
+		for _, rs := range s.ReplicaSets {
+			rs.Spec.Replicas = ptr.To(int32(n))
+			require.NoError(f.t, f.manager.client.Update(f.t.Context(), rs))
+			rs.Status.Replicas = int32(len(activeSubRoleGroups(f.observe())))
+			require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), rs))
+		}
+		return // Hash victims are deleted by the implementation, not this simulator.
+	}
 	s.LeaderStatefulSet.Spec.Replicas = ptr.To(int32(n))
 	require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderStatefulSet))
 	for _, group := range s.Groups {
@@ -3141,6 +3169,9 @@ func (f *subRoleFixture) native() {
 			f.createGroup(s.LeaderStatefulSet, ordinal, "")
 		}
 	}
+	s = f.observe()
+	s.LeaderStatefulSet.Status.Replicas = int32(len(activeSubRoleGroups(s)))
+	require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), s.LeaderStatefulSet))
 }
 
 // Exercise the real API observation and reconciler for every initial health mask.

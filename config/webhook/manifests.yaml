@@ -109,3 +109,22 @@ webhooks:
     resources:
     - pods
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-protected-leader
+  failurePolicy: Fail
+  name: vprotectedleader.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - DELETE
+    resources:
+    - pods
+  sideEffects: None

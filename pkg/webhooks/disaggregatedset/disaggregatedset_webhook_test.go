@@ -31,6 +31,18 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
+func TestValidateHashSubRoles(t *testing.T) {
+	ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{
+		Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}},
+	}}}}
+	ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	webhook := &DisaggregatedSetWebhook{}
+	_, err := webhook.ValidateCreate(t.Context(), ds)
+	require.NoError(t, err)
+	_, err = webhook.ValidateUpdate(t.Context(), ds.DeepCopy(), ds)
+	require.NoError(t, err)
+}
+
 func TestValidateCreate(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()

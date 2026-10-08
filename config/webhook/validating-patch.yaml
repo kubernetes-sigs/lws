@@ -1,7 +1,7 @@
 # This index is positional, not name-based: JSON6902 patches can only target
 # array elements by index. It must match vpod.kb.io's position in the
 # controller-gen-generated config/webhook/manifests.yaml, which is currently
-# [vdisaggregatedset, vleaderworkerset, vpod] (index 2). A controller-gen
+# [vdisaggregatedset, vleaderworkerset, vpod, vprotectedleader] (index 2). A controller-gen
 # version bump can reorder that output and silently break this patch again
 # (it will overwrite whichever webhook it now points at, rather than error) —
 # re-verify this index against manifests.yaml after any such bump.
@@ -32,3 +32,20 @@
       resources:
       - pods
     sideEffects: None
+# Restrict the separate fail-closed DELETE hook to opted-in leaders. CEL is
+# evaluated by the API server, so ordinary Pod deletes remain independent of
+# this hook's availability. Keep this index aligned with the generated name.
+- op: add
+  path: /webhooks/3/matchConditions
+  value:
+  - name: protected-leader
+    expression: >-
+      oldObject != null &&
+      (!has(oldObject.metadata.deletionTimestamp) || oldObject.metadata.deletionTimestamp == null) &&
+      (!has(oldObject.status) || !has(oldObject.status.phase) || !(oldObject.status.phase in ['Succeeded', 'Failed'])) &&
+      has(oldObject.metadata.annotations) &&
+      'leaderworkerset.sigs.k8s.io/scale-protection' in oldObject.metadata.annotations &&
+      oldObject.metadata.annotations['leaderworkerset.sigs.k8s.io/scale-protection'] != '' &&
+      has(oldObject.metadata.labels) &&
+      'leaderworkerset.sigs.k8s.io/worker-index' in oldObject.metadata.labels &&
+      oldObject.metadata.labels['leaderworkerset.sigs.k8s.io/worker-index'] == '0'

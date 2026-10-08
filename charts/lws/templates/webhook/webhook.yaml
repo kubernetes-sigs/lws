@@ -126,3 +126,34 @@ webhooks:
           - disaggregatedsets
     sideEffects: None
   {{- end }}
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: lws-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-protected-leader
+    failurePolicy: Fail
+    name: vprotectedleader.kb.io
+    matchConditions:
+      - name: protected-leader
+        expression: >-
+          oldObject != null &&
+          (!has(oldObject.metadata.deletionTimestamp) || oldObject.metadata.deletionTimestamp == null) &&
+          (!has(oldObject.status) || !has(oldObject.status.phase) || !(oldObject.status.phase in ['Succeeded', 'Failed'])) &&
+          has(oldObject.metadata.annotations) &&
+          'leaderworkerset.sigs.k8s.io/scale-protection' in oldObject.metadata.annotations &&
+          oldObject.metadata.annotations['leaderworkerset.sigs.k8s.io/scale-protection'] != '' &&
+          has(oldObject.metadata.labels) &&
+          'leaderworkerset.sigs.k8s.io/worker-index' in oldObject.metadata.labels &&
+          oldObject.metadata.labels['leaderworkerset.sigs.k8s.io/worker-index'] == '0'
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - DELETE
+        resources:
+          - pods
+    sideEffects: None

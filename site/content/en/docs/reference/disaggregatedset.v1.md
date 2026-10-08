@@ -80,7 +80,7 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec"><code>[]DisaggregatedSubRoleSpec</code></a>
 </td>
 <td>
-   <p>SubRoles partitions one Ordinal LWS into pools sharing its templates.
+   <p>SubRoles partitions one LWS into pools sharing its templates; both group identities are supported.
 Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.</p>
 </td>
 </tr>
