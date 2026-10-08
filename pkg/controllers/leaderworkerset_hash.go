@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -95,6 +97,14 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// scheduling gated.
 	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
+		if isNonTransientSchedulingError(err) && deploy != nil {
+			if scaleErr := r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas); scaleErr != nil {
+				return ctrl.Result{}, errors.Join(err, scaleErr)
+			}
+			if _, statusErr := r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)); statusErr != nil && !apierrors.IsConflict(statusErr) {
+				return ctrl.Result{}, errors.Join(err, statusErr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -225,6 +235,14 @@ func (r *LeaderWorkerSetReconciler) getLeaderDeployment(ctx context.Context, lws
 		return nil, err
 	}
 	return deploy, nil
+}
+
+func (r *LeaderWorkerSetReconciler) scaleDownLeaderDeployment(ctx context.Context, deploy *appsv1.Deployment, desiredReplicas int32) error {
+	if deploy.Spec.Replicas == nil || desiredReplicas >= *deploy.Spec.Replicas {
+		return nil
+	}
+	deploy.Spec.Replicas = ptr.To(desiredReplicas)
+	return r.Update(ctx, deploy)
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {

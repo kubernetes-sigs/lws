@@ -1313,6 +1313,205 @@ func TestKubernetesProviderWholeLWSSizeIncreaseKeepsGangMinimumReachable(t *test
 	}
 }
 
+func TestValidatePhaseOneWorkloadImmutability(t *testing.T) {
+	ctx := context.Background()
+
+	newRoleLWS := func() *leaderworkerset.LeaderWorkerSet {
+		lws := testScheduledLWS()
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				PriorityClassName: "high-priority",
+				ResourceClaims: []corev1.PodResourceClaim{
+					{Name: "leader-claim", ResourceClaimName: ptr.To("shared-leader-claim")},
+					{Name: "leader-claim-2", ResourceClaimName: ptr.To("shared-leader-claim-2")},
+				},
+				Containers: []corev1.Container{{Name: "leader", Image: "leader:latest"}},
+			},
+		}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.ResourceClaims = []corev1.PodResourceClaim{
+			{Name: "worker-claim", ResourceClaimName: ptr.To("shared-worker-claim")},
+		}
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+				Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{
+					ResourceClaims: []schedulingv1alpha3.WorkloadPodGroupResourceClaim{
+						{Name: "leader-claim", ResourceClaimName: ptr.To("shared-leader-claim")},
+					},
+				},
+				Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
+					SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
+						Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{},
+					},
+				},
+			},
+		}
+		return lws
+	}
+
+	t.Run("rejects immutable field mutations across all levels", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			base      func() *leaderworkerset.LeaderWorkerSet
+			mutate    func(*leaderworkerset.LeaderWorkerSet)
+			wantField string
+		}{
+			{
+				name: "replica default gang -> basic",
+				base: testScheduledLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+							Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+						},
+					}
+				},
+				wantField: "spec.scheduling.replica.schedulingPolicy",
+			},
+			{
+				name: "replica explicit gang -> basic",
+				base: func() *leaderworkerset.LeaderWorkerSet {
+					l := testScheduledLWS()
+					l.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+							Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+						},
+					}
+					return l
+				},
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+						Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+					}
+				},
+				wantField: "spec.scheduling.replica.schedulingPolicy",
+			},
+			{
+				name: "replica default disruption -> all",
+				base: testScheduledLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						DisruptionMode: &schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode{
+							All: &schedulingv1alpha3.WorkloadCompositePodGroupAllDisruptionMode{},
+						},
+					}
+				},
+				wantField: "spec.scheduling.replica.disruptionMode",
+			},
+			{
+				name: "replica explicit single -> all",
+				base: func() *leaderworkerset.LeaderWorkerSet {
+					l := testScheduledLWS()
+					l.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						DisruptionMode: &schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode{
+							Single: &schedulingv1alpha3.WorkloadCompositePodGroupSingleDisruptionMode{},
+						},
+					}
+					return l
+				},
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica.DisruptionMode = &schedulingv1alpha3.WorkloadCompositePodGroupDisruptionMode{
+						All: &schedulingv1alpha3.WorkloadCompositePodGroupAllDisruptionMode{},
+					}
+				},
+				wantField: "spec.scheduling.replica.disruptionMode",
+			},
+			{
+				name: "replica schedulingConstraints changed",
+				base: func() *leaderworkerset.LeaderWorkerSet {
+					l := testScheduledLWS()
+					l.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+						SchedulingConstraints: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingConstraints{
+							Topology: []schedulingv1alpha3.TopologyConstraint{{Key: "topology.kubernetes.io/zone"}},
+						},
+					}
+					return l
+				},
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica.SchedulingConstraints = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingConstraints{
+						Topology: []schedulingv1alpha3.TopologyConstraint{{Key: "kubernetes.io/hostname"}},
+					}
+				},
+				wantField: "spec.scheduling.replica.schedulingConstraints",
+			},
+			{
+				name: "whole-LWS gang -> basic",
+				base: func() *leaderworkerset.LeaderWorkerSet {
+					l := testScheduledLWS()
+					l.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+						SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+							Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+						},
+					}
+					return l
+				},
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.SchedulingPolicy = &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+						Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+					}
+				},
+				wantField: "spec.scheduling.schedulingPolicy",
+			},
+			{
+				name: "role leader resourceClaims changed",
+				base: newRoleLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica.Leader.ResourceClaims = []schedulingv1alpha3.WorkloadPodGroupResourceClaim{
+						{Name: "leader-claim-2", ResourceClaimName: ptr.To("shared-leader-claim-2")},
+					}
+				},
+				wantField: "spec.scheduling.replica.leader.resourceClaims",
+			},
+			{
+				name: "role worker gang -> basic",
+				base: newRoleLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Spec.Scheduling.Replica.Worker.SchedulingPolicy = &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
+						Basic: &schedulingv1alpha3.WorkloadPodGroupBasicSchedulingPolicy{},
+					}
+				},
+				wantField: "spec.scheduling.replica.worker.schedulingPolicy",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				oldLWS := tc.base()
+				require.Empty(t, ValidatePhaseOneWorkload(ctx, nil, oldLWS))
+
+				updated := oldLWS.DeepCopy()
+				tc.mutate(updated)
+				errs := ValidatePhaseOneWorkload(ctx, oldLWS, updated)
+				require.NotEmpty(t, errs)
+				assert.Equal(t, tc.wantField, errs[0].Field)
+				assert.Contains(t, errs[0].Detail, "immutable after creation")
+			})
+		}
+	})
+
+	t.Run("allows mutable size, replicas, and explicit gang minCount updates", func(t *testing.T) {
+		oldReplica := testScheduledLWS()
+		newReplica := oldReplica.DeepCopy()
+		newReplica.Spec.Replicas = ptr.To[int32](4)
+		newReplica.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](5)
+		newReplica.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			},
+		}
+		assert.Empty(t, ValidatePhaseOneWorkload(ctx, oldReplica, newReplica))
+
+		oldWhole := testScheduledLWS()
+		oldWhole.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			},
+		}
+		newWhole := oldWhole.DeepCopy()
+		newWhole.Spec.Replicas = ptr.To[int32](3)
+		assert.Empty(t, ValidatePhaseOneWorkload(ctx, oldWhole, newWhole))
+	})
+}
+
 func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {
 	return &leaderworkerset.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{

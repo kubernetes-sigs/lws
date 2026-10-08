@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -202,6 +203,14 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := r.reconcileWorkloadScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
+		if isNonTransientSchedulingError(err) && leaderSts != nil {
+			if scaleErr := r.scaleDownLeaderStatefulSet(ctx, leaderSts, *lws.Spec.Replicas); scaleErr != nil {
+				return ctrl.Result{}, errors.Join(err, scaleErr)
+			}
+			if _, statusErr := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision)); statusErr != nil && !apierrors.IsConflict(statusErr) {
+				return ctrl.Result{}, errors.Join(err, statusErr)
+			}
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -350,6 +359,23 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 		return fmt.Errorf("update WorkloadSchedulingCreated condition: %w", err)
 	}
 	return nil
+}
+
+func isNonTransientSchedulingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	reason := schedulerprovider.ReconcileErrorReason(err)
+	return reason == schedulerprovider.ReasonInvalidSchedulingConfiguration ||
+		reason == schedulerprovider.ReasonUnsupportedProviderCapability
+}
+
+func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Context, leaderSts *appsv1.StatefulSet, desiredReplicas int32) error {
+	if leaderSts.Spec.Replicas == nil || desiredReplicas >= *leaderSts.Spec.Replicas {
+		return nil
+	}
+	leaderSts.Spec.Replicas = ptr.To(desiredReplicas)
+	return r.Update(ctx, leaderSts)
 }
 
 // SetupWithManager sets up the controller with the Manager.

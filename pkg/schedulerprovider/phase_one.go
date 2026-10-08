@@ -389,12 +389,52 @@ func ValidatePhaseOneWorkload(ctx context.Context, oldLWS, lws *leaderworkerset.
 		}
 	}
 	for _, item := range items {
+		oldItem := oldItemsByName[item.Name]
 		allErrs = append(allErrs, workloadbuilder.NewBuilder(item, workloadBuildOptions(lws)).Validate(ctx, workloadbuilder.ValidationInput{
-			OldRoot: oldItemsByName[item.Name],
+			OldRoot: oldItem,
 		})...)
+		if oldItem != nil {
+			allErrs = append(allErrs, validateLeafItemImmutability(oldLWS, lws, oldItem, item)...)
+		}
 	}
 
 	allErrs = append(allErrs, validatePhaseOneSemantics(lws, mode)...)
+	return allErrs
+}
+
+func validateLeafItemImmutability(oldLWS, lws *leaderworkerset.LeaderWorkerSet, oldItem, newItem *workloadbuilder.WorkloadItem) field.ErrorList {
+	oldWorkload, err := workloadbuilder.NewBuilder(oldItem, workloadBuildOptions(oldLWS)).BuildWorkload()
+	if err != nil || len(oldWorkload.Spec.PodGroupTemplates) != 1 {
+		return nil
+	}
+	newWorkload, err := workloadbuilder.NewBuilder(newItem, workloadBuildOptions(lws)).BuildWorkload()
+	if err != nil || len(newWorkload.Spec.PodGroupTemplates) != 1 {
+		return nil
+	}
+	oldTemplate := oldWorkload.Spec.PodGroupTemplates[0]
+	newTemplate := newWorkload.Spec.PodGroupTemplates[0]
+
+	var allErrs field.ErrorList
+	oldPolicy := oldTemplate.SchedulingPolicy.DeepCopy()
+	newPolicy := newTemplate.SchedulingPolicy.DeepCopy()
+	if oldPolicy.Gang != nil {
+		oldPolicy.Gang.MinCount = 0
+	}
+	if newPolicy.Gang != nil {
+		newPolicy.Gang.MinCount = 0
+	}
+	if !reflect.DeepEqual(oldPolicy, newPolicy) {
+		allErrs = append(allErrs, field.Forbidden(newItem.Path.Child("schedulingPolicy"), "is immutable after creation"))
+	}
+	if !reflect.DeepEqual(oldTemplate.SchedulingConstraints, newTemplate.SchedulingConstraints) {
+		allErrs = append(allErrs, field.Forbidden(newItem.Path.Child("schedulingConstraints"), "is immutable after creation"))
+	}
+	if !reflect.DeepEqual(oldTemplate.DisruptionMode, newTemplate.DisruptionMode) {
+		allErrs = append(allErrs, field.Forbidden(newItem.Path.Child("disruptionMode"), "is immutable after creation"))
+	}
+	if !reflect.DeepEqual(oldTemplate.ResourceClaims, newTemplate.ResourceClaims) {
+		allErrs = append(allErrs, field.Forbidden(newItem.Path.Child("resourceClaims"), "is immutable after creation"))
+	}
 	return allErrs
 }
 
