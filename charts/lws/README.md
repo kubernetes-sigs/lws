@@ -143,7 +143,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `securityContext.allowPrivilegeEscalation` | Allow privilege escalation in security context | `false`                                             |
 | `securityContext.capabilities.drop`        | Drop all capabilities in security context      | `["ALL"]`                                           |
 | `service.type`                             | Type of lws controller service                 | `ClusterIP`                                         |
-| `service.port`                             | Lws controller service port                    | `9443`                                              |
+| `service.port`                             | Webhook server target port                     | `9443`                                              |
 | `resources.requests.cpu`                   | CPU request for resources                      | `1`                                                 |
 | `resources.requests.memory`                | Memory request for resources                   | `1Gi`                                               |
 | `nodeSelector`                             | Node selector                                  | `{}`                                                |

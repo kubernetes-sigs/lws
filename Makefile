@@ -450,6 +450,9 @@ helm-verify: update-helm helm ## Verify the Helm chart and generated RBAC templa
 	$(HELM) lint charts/lws
 	$(HELM) template charts/lws >/dev/null
 	$(HELM) template charts/lws --set gangSchedulingManagement.schedulerProvider=volcano >/dev/null
+	$(HELM) template charts/lws --set service.port=10443 --show-only templates/manager/configmap.yaml | grep -q 'port: 10443'
+	$(HELM) template charts/lws --set service.port=10443 --show-only templates/manager/deployment.yaml | grep -q 'containerPort: 10443'
+	$(HELM) template charts/lws --set service.port=10443 --show-only templates/webhook/service.yaml | grep -q 'targetPort: 10443'
 
 YQ = $(PROJECT_DIR)/bin/yq
 .PHONY: yq
