@@ -170,7 +170,30 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		_, err = r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &pod)
 		return ctrl.Result{}, err
 	}
-	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, leaderWorkerSet)
+
+	// Worker Pods need no reconciliation unless they triggered restart-policy
+	// handling. Avoid looking up a ControllerRevision on routine worker updates.
+	if !podutils.LeaderPod(pod) && !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
+		return ctrl.Result{}, nil
+	}
+
+	// RestartPolicy is part of the revisioned LeaderWorkerTemplate. Resolve the
+	// Pod's revision before handling failures so an old group keeps its original
+	// restart behavior until its rolling-update turn. ApplyRevision preserves
+	// live-only fields such as maxGroupRestarts.
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	groupLws := &leaderWorkerSet
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, *groupLws)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -201,19 +224,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if pod.DeletionTimestamp != nil {
 		log.V(2).Info("skip creating worker sts and headless service since the leader pod is being deleted")
 		return ctrl.Result{}, nil
-	}
-
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
-	if err != nil {
-		log.Error(err, "Getting lws revisions")
-		return ctrl.Result{}, err
-	}
-	// Old groups keep the size and subdomain policy of their own revision.
-	groupLws := &leaderWorkerSet
-	if revision != nil {
-		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
