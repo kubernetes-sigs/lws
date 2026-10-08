@@ -205,3 +205,109 @@ func TestHandleRestartPolicyUsesGroupSize(t *testing.T) {
 		t.Fatalf("leader pod still exists, err = %v", err)
 	}
 }
+
+func TestReconcilePodUsesGroupRevisionRestartPolicy(t *testing.T) {
+	tests := []struct {
+		name              string
+		oldPolicy         leaderworkerset.RestartPolicyType
+		newPolicy         leaderworkerset.RestartPolicyType
+		wantLeaderDeleted bool
+	}{
+		{
+			name:              "old recreate policy remains active",
+			oldPolicy:         leaderworkerset.RecreateGroupOnPodRestart,
+			newPolicy:         leaderworkerset.NoneRestartPolicy,
+			wantLeaderDeleted: true,
+		},
+		{
+			name:              "old none policy remains active",
+			oldPolicy:         leaderworkerset.NoneRestartPolicy,
+			newPolicy:         leaderworkerset.RecreateGroupOnPodRestart,
+			wantLeaderDeleted: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := groupRevisionTestScheme(t)
+			lws := wrappers.BuildLeaderWorkerSet("default").
+				Replica(1).
+				Size(2).
+				RestartPolicy(tc.oldPolicy).
+				Obj()
+			lws.UID = "lws-uid"
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+
+			oldRevision, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := k8sClient.Create(ctx, oldRevision); err != nil {
+				t.Fatal(err)
+			}
+
+			lws.Spec.LeaderWorkerTemplate.RestartPolicy = tc.newPolicy
+			if err := k8sClient.Update(ctx, lws); err != nil {
+				t.Fatal(err)
+			}
+
+			revisionKey := revisionutils.GetRevisionKey(oldRevision)
+			leader := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: lws.Name + "-0", Namespace: lws.Namespace, UID: "leader-uid",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.WorkerIndexLabelKey: "0",
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.RevisionKey:         revisionKey,
+					},
+					Annotations: map[string]string{leaderworkerset.SizeAnnotationKey: "2"},
+				},
+			}
+			workerSts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name, Namespace: leader.Namespace, UID: "worker-sts-uid",
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+			}
+			worker := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name + "-1", Namespace: lws.Namespace, UID: "worker-uid",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.WorkerIndexLabelKey: "1",
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.RevisionKey:         revisionKey,
+					},
+					Annotations: map[string]string{
+						leaderworkerset.SizeAnnotationKey:          "2",
+						leaderworkerset.LeaderPodNameAnnotationKey: leader.Name,
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workerSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+				},
+			}
+			for _, obj := range []client.Object{leader, workerSts, worker} {
+				if err := k8sClient.Create(ctx, obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			deletedWorker := worker.DeepCopy()
+			deletionTimestamp := metav1.Now()
+			deletedWorker.DeletionTimestamp = &deletionTimestamp
+			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}}
+			if _, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(deletedWorker, true)); err != nil {
+				t.Fatal(err)
+			}
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &corev1.Pod{})
+			if tc.wantLeaderDeleted && !apierrors.IsNotFound(err) {
+				t.Fatalf("leader pod still exists, err = %v", err)
+			}
+			if !tc.wantLeaderDeleted && err != nil {
+				t.Fatalf("leader pod was deleted, err = %v", err)
+			}
+		})
+	}
+}
