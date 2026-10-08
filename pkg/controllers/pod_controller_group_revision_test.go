@@ -205,3 +205,111 @@ func TestHandleRestartPolicyUsesGroupSize(t *testing.T) {
 		t.Fatalf("leader pod still exists, err = %v", err)
 	}
 }
+
+// A group still running an old revision must keep that revision's
+// restartPolicy until its own rollout turn, in both directions: a live change
+// away from RecreateGroupOnPodRestart must not suppress recreation of an old
+// group, and a live change toward it must not trigger recreation of an old
+// group that was created with None.
+func TestReconcilePodOldRevisionRestartPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		oldPolicy      leaderworkerset.RestartPolicyType
+		newPolicy      leaderworkerset.RestartPolicyType
+		wantLeaderGone bool
+	}{
+		{
+			name:           "RecreateGroupOnPodRestart to None",
+			oldPolicy:      leaderworkerset.RecreateGroupOnPodRestart,
+			newPolicy:      leaderworkerset.NoneRestartPolicy,
+			wantLeaderGone: true,
+		},
+		{
+			name:           "None to RecreateGroupOnPodRestart",
+			oldPolicy:      leaderworkerset.NoneRestartPolicy,
+			newPolicy:      leaderworkerset.RecreateGroupOnPodRestart,
+			wantLeaderGone: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := groupRevisionTestScheme(t)
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+				Size(2).
+				RestartPolicy(tc.oldPolicy).
+				Obj()
+			lws.UID = "lws-uid"
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+
+			// The old group was created from this revision, with the old policy.
+			oldRevision, err := revisionutils.NewRevision(ctx, k8sClient, lws, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := k8sClient.Create(ctx, oldRevision); err != nil {
+				t.Fatal(err)
+			}
+			// The rollout changes the live restartPolicy; this old group's
+			// partition keeps it on the old revision.
+			lws.Spec.LeaderWorkerTemplate.RestartPolicy = tc.newPolicy
+			if err := k8sClient.Update(ctx, lws); err != nil {
+				t.Fatal(err)
+			}
+
+			leader := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: lws.Name + "-0", Namespace: lws.Namespace, UID: "leader-uid",
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.WorkerIndexLabelKey: "0",
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(oldRevision),
+					},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			workerSts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name, Namespace: leader.Namespace, UID: "sts-uid",
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+			}
+			worker := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name + "-1", Namespace: lws.Namespace,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:     lws.Name,
+						leaderworkerset.WorkerIndexLabelKey: "1",
+						leaderworkerset.GroupIndexLabelKey:  "0",
+						leaderworkerset.RevisionKey:         revisionutils.GetRevisionKey(oldRevision),
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workerSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			for _, obj := range []client.Object{leader, workerSts, worker} {
+				if err := k8sClient.Create(ctx, obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: fakeEventRecorder{}, SchedulerProvider: &stubSchedulerProvider{}}
+			// The worker is deleted; reconcilePod must decide whether to recreate
+			// the group using the old revision's restartPolicy, not the live one.
+			if _, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(worker, true)); err != nil {
+				t.Fatalf("reconcilePod() error = %v", err)
+			}
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &corev1.Pod{})
+			leaderGone := apierrors.IsNotFound(err)
+			if err != nil && !leaderGone {
+				t.Fatalf("getting leader pod: %v", err)
+			}
+			if leaderGone != tc.wantLeaderGone {
+				t.Errorf("leader pod deleted = %v, want %v (old revision restartPolicy=%s, live restartPolicy=%s)",
+					leaderGone, tc.wantLeaderGone, tc.oldPolicy, tc.newPolicy)
+			}
+		})
+	}
+}

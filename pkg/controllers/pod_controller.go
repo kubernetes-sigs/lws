@@ -170,7 +170,22 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		_, err = r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &pod)
 		return ctrl.Result{}, err
 	}
-	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, leaderWorkerSet)
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		log.Error(err, "Getting lws revisions")
+		return ctrl.Result{}, err
+	}
+	// Old groups keep the restartPolicy, size, and subdomain policy of their own
+	// revision: a group still running an old template must not pick up a
+	// restartPolicy change meant for the new revision before its rollout turn.
+	groupLws := &leaderWorkerSet
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, *groupLws)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -201,19 +216,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	if pod.DeletionTimestamp != nil {
 		log.V(2).Info("skip creating worker sts and headless service since the leader pod is being deleted")
 		return ctrl.Result{}, nil
-	}
-
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &leaderWorkerSet, revisionutils.GetRevisionKey(&pod))
-	if err != nil {
-		log.Error(err, "Getting lws revisions")
-		return ctrl.Result{}, err
-	}
-	// Old groups keep the size and subdomain policy of their own revision.
-	groupLws := &leaderWorkerSet
-	if revision != nil {
-		if groupLws, err = revisionutils.ApplyRevision(&leaderWorkerSet, revision); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
