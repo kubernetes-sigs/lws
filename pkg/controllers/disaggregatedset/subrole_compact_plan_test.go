@@ -36,6 +36,7 @@ import (
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
+	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 func setSubRolePlanForTest(t *testing.T, lws *leaderv1.LeaderWorkerSet, plan *subRolePlan) {
@@ -629,6 +630,58 @@ func TestHashSubRoleAdapterMembershipAndRemoval(t *testing.T) {
 		require.True(t, coherent)
 		require.Empty(t, child)
 		require.Empty(t, group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey])
+	}
+}
+
+func TestHashSubRoleCollectorEnrollsOnlyCurrentTarget(t *testing.T) {
+	for _, ordinary := range []bool{false, true} {
+		t.Run(fmt.Sprint("ordinary-old=", ordinary), func(t *testing.T) {
+			children := []string{"a", "a"}
+			if ordinary {
+				children = []string{"", ""}
+			}
+			old := newSubRoleFixtureForIdentity(t, leaderv1.GroupIdentityHash, 0, children...)
+			if ordinary {
+				lws := old.observe().LWS
+				delete(lws.Annotations, subRoleReplicasAnnotation)
+				delete(lws.Annotations, disaggv1.InitialSubRoleReplicasAnnotationKey)
+				require.NoError(t, old.manager.client.Update(t.Context(), lws))
+			}
+			target := old.withRevision("current", "a")
+			target.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{
+				Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "new"}},
+			}}
+			target.ds.Spec.Roles[0].Spec.GroupIdentity = leaderv1.GroupIdentityHash
+			desired := map[string]int{"model": 2, "model/a": 1, "model/new": 1}
+			before := old.observe()
+			var err error
+			for range 8 {
+				_, err = target.manager.collectRolloutObservations(t.Context(), target.ds,
+					disaggutils.RevisionRolesList{old.revision("old")}, target.revision("current"), desired)
+				if err == nil {
+					break
+				}
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+			}
+			require.NoError(t, err)
+			after := old.observe()
+			require.Equal(t, before.LWS.Annotations, after.LWS.Annotations, "old Hash layout and history stay frozen")
+			require.Equal(t, before.Groups, after.Groups, "old Hash groups must not be enrolled or relabeled")
+			counts, err := subRoleCounts(target.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "new": 0}, counts, "the current Hash target enrolls its new child before scaling")
+
+			executor := &RollingUpdateExecutor{LWSManager: target.manager}
+			require.NoError(t, executor.scaleRevision(t.Context(), target.ds, old.revision("old"),
+				[]string{"model/a", "model/new", "model"}, RoleReplicaState{2, 0, 2}, scaleDown))
+			require.Equal(t, before.LWS.Annotations, old.observe().LWS.Annotations, "old execution cannot add a foreign zero-count child")
+			require.NoError(t, executor.scaleRevision(t.Context(), target.ds, target.revision("current"),
+				[]string{"model/a", "model/new"}, RoleReplicaState{1, 1}, scaleUp), "accepted Hash growth does not block sibling roles")
+			counts, err = subRoleCounts(target.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "new": 1}, counts)
+			require.EqualValues(t, 2, getLWSReplicas(target.lws), "enrolled current children remain executable")
+		})
 	}
 }
 
