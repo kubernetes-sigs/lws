@@ -209,6 +209,21 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 			}
 		}
 	}
+	if oldLws != nil && oldLws.Spec.Scheduling != nil {
+		for _, annotation := range []string{
+			schedulerprovider.GroupTemplateNameAnnotation,
+			schedulerprovider.ParentCompositePodGroupAnnotation,
+		} {
+			oldVal, oldSet := oldLws.Annotations[annotation]
+			newVal, newSet := lws.Annotations[annotation]
+			if oldSet != newSet || oldVal != newVal {
+				allErrs = append(allErrs, field.Forbidden(
+					field.NewPath("metadata", "annotations").Key(annotation),
+					"is immutable once spec.scheduling is set",
+				))
+			}
+		}
+	}
 	if oldLws != nil && oldLws.Spec.Scheduling == nil {
 		allErrs = append(allErrs, field.Forbidden(path, "cannot add scheduling after creation"))
 	}
