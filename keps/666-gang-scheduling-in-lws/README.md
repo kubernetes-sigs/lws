@@ -1030,9 +1030,14 @@ and violate the user's declared policy.
 - Enabling the LWS gate alone does not change existing objects.
 - Enabling Phase 2 does not rewrite a Phase-1 object's flat layout: its one
   active level continues to select `Flat` on every reconciliation.
-- Disabling the LWS gate after objects have opted in stops new compilation but
-  does not mutate or orphan live objects; operators must drain opted-in LWS
-  objects before disabling the upstream Kubernetes gates.
+- Disabling the LWS gate or removing the `gangSchedulingManagement` block after
+  objects have opted in stops new opt-ins and refuses ungrouped pod admission,
+  but keeps existing opted-in LWS objects updateable so operators can scale them
+  down and delete them cleanly without mutating or orphaning live objects.
+  Operators must drain opted-in LWS objects and remove the
+  `gangSchedulingManagement` block before disabling the upstream Kubernetes
+  gates; starting the manager with `schedulerProvider=kubernetes` when
+  `scheduling.k8s.io/v1beta1` is not served fails fast at startup.
 - The unpublished `v1alpha2` LWS draft has no compatibility promise.
 
 ### Risks and Mitigations

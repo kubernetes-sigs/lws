@@ -250,6 +250,8 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			// if garbage collection is delayed or blocked by a finalizer.
 			return ctrl.Result{}, err
 		}
+	} else if groupLws.Spec.Scheduling != nil {
+		return ctrl.Result{}, fmt.Errorf("spec.scheduling requires a configured scheduler provider")
 	}
 
 	// While the leader is gated, only the group's scheduling prerequisites exist:

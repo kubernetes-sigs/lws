@@ -203,6 +203,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		if err != nil {
 			return err
 		}
+	} else if pod.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey] != "" {
+		return fmt.Errorf("pod %s requests workload-aware scheduling but no scheduler provider is configured", pod.Name)
 	}
 
 	// injecting env vars if needed

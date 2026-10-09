@@ -142,6 +142,23 @@ func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("missing scheduler provider rejects opted-in pod reconciliation", func(t *testing.T) {
+		scheduledLWS := lws.DeepCopy()
+		scheduledLWS.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		reconciler := &PodReconciler{
+			Client: fake.NewClientBuilder().WithScheme(testScheme).WithObjects(scheduledLWS, leaderPod).Build(),
+			Scheme: testScheme,
+			Record: events.NewFakeRecorder(1),
+		}
+		result, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leaderPod, false))
+		if err == nil || !strings.Contains(err.Error(), "requires a configured scheduler provider") {
+			t.Fatalf("reconcilePod() error = %v, want missing scheduler provider error", err)
+		}
+		if !result.IsZero() {
+			t.Fatalf("expected error-based retry without explicit requeue, got %+v", result)
+		}
+	})
 }
 
 // TestPodReconcilerCreatesPodGroupBeforeUngatingHashLeader pins the ordering

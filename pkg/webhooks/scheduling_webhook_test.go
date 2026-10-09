@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -202,6 +203,58 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		features.SetFeatureGateDuringTest(t, features.WorkloadAwareScheduling, false)
 		disabledHook := &LeaderWorkerSetWebhook{SchedulerProvider: schedulerprovider.Kubernetes}
 		assert.Empty(t, disabledHook.validateScheduling(context.Background(), oldLWS, newLWS))
+	})
+
+	t.Run("existing scheduling remains updateable after scheduler provider is removed", func(t *testing.T) {
+		oldLWS := validScheduledLWS()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.Replicas = ptr.To[int32](0)
+		unconfiguredHook := &LeaderWorkerSetWebhook{}
+		assert.Empty(t, unconfiguredHook.validateScheduling(context.Background(), oldLWS, newLWS))
+		// New opt-ins are still rejected without a configured provider.
+		errs := unconfiguredHook.validateScheduling(context.Background(), nil, newLWS)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "requires a configured scheduler provider")
+	})
+
+	t.Run("existing scheduling remains updateable when v1beta1 API is missing", func(t *testing.T) {
+		oldLWS := validScheduledLWS()
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.Replicas = ptr.To[int32](0)
+		missingAPIHook := &LeaderWorkerSetWebhook{
+			SchedulerProvider: schedulerprovider.Kubernetes,
+			RESTMapper:        apimeta.NewDefaultRESTMapper(nil),
+		}
+		assert.Empty(t, missingAPIHook.validateScheduling(context.Background(), oldLWS, newLWS))
+		// New opt-ins are rejected when the upstream v1beta1 API is unavailable.
+		errs := missingAPIHook.validateScheduling(context.Background(), nil, newLWS)
+		assert.NotEmpty(t, errs)
+		assert.Contains(t, errs.ToAggregate().Error(), "scheduling.k8s.io/v1beta1 Workload API is not available")
+	})
+
+	t.Run("pod webhook rejects workload-aware pod when scheduler provider is nil", func(t *testing.T) {
+		pw := NewPodWebhook(nil)
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     "test-lws",
+					leaderworkerset.WorkerIndexLabelKey: "0",
+				},
+				Annotations: map[string]string{
+					leaderworkerset.SizeAnnotationKey:                 "2",
+					schedulerprovider.WorkloadSchedulingAnnotationKey: string(schedulerprovider.SchedulingModeReplica),
+				},
+			},
+			Spec: corev1.PodSpec{
+				Subdomain:  "test-lws",
+				Containers: []corev1.Container{{Name: "c", Image: "img"}},
+			},
+		}
+		err := pw.Default(context.Background(), pod)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "no scheduler provider is configured")
 	})
 
 	t.Run("priority class is immutable", func(t *testing.T) {
