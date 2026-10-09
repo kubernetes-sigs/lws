@@ -791,4 +791,45 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			expectLeaderKept("2s")
 		})
 	})
+
+	ginkgo.It("still scales down and updates status when non-transient scheduling drift occurs", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Name("was-drift-scaledown").Replica(2).Size(2).Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			fetched := &leaderworkerset.LeaderWorkerSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched)).To(gomega.Succeed())
+			g.Expect(apimeta.IsStatusConditionTrue(fetched.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))).To(gomega.BeTrue())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(*leaderStatefulSet.Spec.Replicas).To(gomega.Equal(int32(2)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// Controller integration suite runs without webhooks, allowing us to simulate
+		// non-transient scheduling drift alongside a scale-down.
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched)).To(gomega.Succeed())
+		fetched.Spec.Replicas = ptr.To[int32](1)
+		fetched.Spec.Scheduling.Replica = &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+			},
+		}
+		gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			updated := &leaderworkerset.LeaderWorkerSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), updated)).To(gomega.Succeed())
+			cond := apimeta.FindStatusCondition(updated.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated))
+			g.Expect(cond).NotTo(gomega.BeNil())
+			g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(gomega.Equal(schedulerprovider.ReasonInvalidSchedulingConfiguration))
+			g.Expect(updated.Status.ObservedGeneration).To(gomega.Equal(updated.Generation))
+
+			sts := &appsv1.StatefulSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), sts)).To(gomega.Succeed())
+			g.Expect(*sts.Spec.Replicas).To(gomega.Equal(int32(1)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
 })

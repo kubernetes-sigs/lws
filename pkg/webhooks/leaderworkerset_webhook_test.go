@@ -22,12 +22,14 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -427,6 +429,31 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 
 		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
 			t.Fatal("expected validation error for a nil subdomainPolicy")
+		}
+	})
+
+	t.Run("immutable scheduling fields on update should return a validation error", func(t *testing.T) {
+		schedWebhook := &LeaderWorkerSetWebhook{SchedulerProvider: schedulerprovider.Kubernetes}
+		oldLWS := &v1.LeaderWorkerSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+			Spec: v1.LeaderWorkerSetSpec{
+				Replicas:      ptr.To[int32](2),
+				StartupPolicy: v1.LeaderCreatedStartupPolicy,
+				Scheduling:    &v1.LeaderWorkerSetScheduling{},
+				LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
+				},
+			},
+		}
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.Scheduling.Replica = &v1.LeaderWorkerSetReplicaScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Basic: &schedulingv1alpha3.WorkloadCompositePodGroupBasicSchedulingPolicy{},
+			},
+		}
+
+		if _, err := schedWebhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Fatal("expected validation error when changing schedulingPolicy on update")
 		}
 	})
 }

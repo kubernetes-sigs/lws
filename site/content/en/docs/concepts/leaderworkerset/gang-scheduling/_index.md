@@ -108,7 +108,9 @@ The initial implementation has these important restrictions:
   `spec.scheduling.replica.worker`). Hierarchical gang-of-gangs scheduling is
   not supported.
 
-The scheduling policy and immutable constraints cannot be changed in place.
+`schedulingPolicy`, `schedulingConstraints`, `disruptionMode`, and
+`resourceClaims` are immutable after creation (except `gang.minCount`, which
+follows replica count and group size).
 At the replica level, LWS derives runtime PodGroup instances and gang
 membership from `replicas` and `size`, so ordinary replica scaling and size
 changes remain supported.

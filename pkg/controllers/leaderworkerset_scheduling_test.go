@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -445,6 +446,110 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 		}
 		if got := lwsSchedGetCondition(t, k8sClient, lws); got != nil {
 			t.Errorf("condition = %v, want it absent when scheduling is not requested", got)
+		}
+	})
+
+	t.Run("non-transient error still scales down and updates status in ordinal mode", func(t *testing.T) {
+		lws := lwsSchedScheduledLWS()
+		lws.Spec.Replicas = ptr.To[int32](3)
+		provider := &lwsSchedFakeProvider{}
+		r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+		r.SchedulerProvider = provider
+
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("initial Reconcile() = %v, want nil", err)
+		}
+
+		// Scale down while introducing a non-transient scheduling error.
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws: %v", err)
+		}
+		fetched.Spec.Replicas = ptr.To[int32](1)
+		fetched.Generation = 2
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+
+		provider.reconcileErr = schedulerprovider.NewReconcileError(
+			schedulerprovider.ReasonInvalidSchedulingConfiguration,
+			errors.New("immutable scheduling configuration drift"),
+		)
+
+		_, err := r.Reconcile(ctx, lwsSchedRequest(lws))
+		if err == nil {
+			t.Fatal("Reconcile() = nil, want non-transient scheduling error")
+		}
+
+		sts := &appsv1.StatefulSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), sts); err != nil {
+			t.Fatalf("getting statefulset: %v", err)
+		}
+		if *sts.Spec.Replicas != 1 {
+			t.Errorf("statefulset spec.replicas = %d, want 1 after scale-down", *sts.Spec.Replicas)
+		}
+
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting updated lws: %v", err)
+		}
+		if fetched.Status.ObservedGeneration != 2 {
+			t.Errorf("status.observedGeneration = %d, want 2", fetched.Status.ObservedGeneration)
+		}
+		cond := lwsSchedGetCondition(t, k8sClient, lws)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != schedulerprovider.ReasonInvalidSchedulingConfiguration {
+			t.Errorf("condition = %v, want False/%s", cond, schedulerprovider.ReasonInvalidSchedulingConfiguration)
+		}
+	})
+
+	t.Run("non-transient error still scales down and updates status in hash mode", func(t *testing.T) {
+		lws := lwsSchedScheduledLWS()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Spec.Replicas = ptr.To[int32](3)
+		provider := &lwsSchedFakeProvider{}
+		r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+		r.SchedulerProvider = provider
+
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("initial Reconcile() = %v, want nil", err)
+		}
+
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws: %v", err)
+		}
+		fetched.Spec.Replicas = ptr.To[int32](1)
+		fetched.Generation = 2
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+
+		provider.reconcileErr = schedulerprovider.NewReconcileError(
+			schedulerprovider.ReasonInvalidSchedulingConfiguration,
+			errors.New("immutable scheduling configuration drift"),
+		)
+
+		_, err := r.Reconcile(ctx, lwsSchedRequest(lws))
+		if err == nil {
+			t.Fatal("Reconcile() = nil, want non-transient scheduling error")
+		}
+
+		deploy := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), deploy); err != nil {
+			t.Fatalf("getting deployment: %v", err)
+		}
+		if *deploy.Spec.Replicas != 1 {
+			t.Errorf("deployment spec.replicas = %d, want 1 after scale-down", *deploy.Spec.Replicas)
+		}
+
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting updated lws: %v", err)
+		}
+		if fetched.Status.ObservedGeneration != 2 {
+			t.Errorf("status.observedGeneration = %d, want 2", fetched.Status.ObservedGeneration)
+		}
+		cond := lwsSchedGetCondition(t, k8sClient, lws)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != schedulerprovider.ReasonInvalidSchedulingConfiguration {
+			t.Errorf("condition = %v, want False/%s", cond, schedulerprovider.ReasonInvalidSchedulingConfiguration)
 		}
 	})
 }
