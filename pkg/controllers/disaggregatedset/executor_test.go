@@ -1817,7 +1817,7 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	assert.Equal(t, RoleReplicaState{0, 0}, state.ParkedOld[0].ReadyReplicas)
 
 	for _, roleName := range roleNames {
-		require.NoError(t, executor.LWSManager.Scale(ctx, ds, activeRevision.Roles[roleName].Name, 0))
+		require.NoError(t, executor.LWSManager.Scale(ctx, ds, activeRevision.Roles[roleName], 0))
 	}
 	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)

@@ -658,7 +658,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 		}
 
 		log.Info(action, "lws", lws.Name, "from_spec", currentSpec, "to", desiredSpec)
-		if err := executor.LWSManager.Scale(ctx, ds, lws.Name, desiredSpec); err != nil {
+		if err := executor.LWSManager.Scale(ctx, ds, lws, desiredSpec); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lws.Name, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, eventReason,

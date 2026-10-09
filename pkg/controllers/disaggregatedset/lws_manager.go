@@ -193,26 +193,30 @@ func (manager *LeaderWorkerSetManager) Create(
 	return nil
 }
 
-// Scale patches the LWS named name to replicas, but only if it's actually
-// controller-owned by ds. A same-named LWS that exists but isn't owned by ds
-// — e.g. left over from a same-named DisaggregatedSet that was deleted and
-// recreated before garbage collection ran — is refused rather than mutated;
-// see #981.
-func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, name string, replicas int) error {
+// Scale applies an observed scale intent only while its object and Spec still
+// match. Status-only updates are harmless; a replaced object or changed Spec
+// needs a new plan. The optimistic patch also guards changes after the live Get.
+func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int) error {
+	name := observed.Name
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
+	if err := manager.apiReader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s for scaling: %w", name, err)
 	}
 	if !metav1.IsControlledBy(leaderWorkerSet, ds) {
 		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to scale it", name, ds.Name)
 	}
-
-	if int(getLWSReplicas(leaderWorkerSet)) == replicas {
-		return nil
+	if leaderWorkerSet.UID != observed.UID || leaderWorkerSet.Generation != observed.Generation ||
+		getLWSReplicas(leaderWorkerSet) != getLWSReplicas(observed) || !leaderWorkerSet.DeletionTimestamp.IsZero() {
+		return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), name,
+			errors.New("LeaderWorkerSet changed since scale observation"))
 	}
 
+	currentReplicas := int(getLWSReplicas(leaderWorkerSet))
+	if currentReplicas == replicas {
+		return nil
+	}
 	replicas32 := int32(replicas)
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	leaderWorkerSet.Spec.Replicas = &replicas32
 	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
 		return fmt.Errorf("failed to scale LeaderWorkerSet %s: %w", name, err)
