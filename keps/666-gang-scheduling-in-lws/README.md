@@ -898,9 +898,10 @@ group management:
 5. The resulting root LWS group sets `parentCompositePodGroupName` when the
    parent annotation is present; LWS then owns all internal descendant links.
 
-The annotations are controller-to-controller linkage. Reject a missing
-template, invalid owner chain, or missing parent CPG. Block pods until the
-delegated Workload and required parent instance exist.
+The annotations are controller-to-controller linkage and are immutable once
+`spec.scheduling` is set. Reject a missing template, invalid owner chain, or
+missing parent CPG. Block pods until the delegated Workload and required parent
+instance exist.
 
 In Phase 2, `group-template-name` selects the LWS root composite template; LWS
 then materializes that CPG and its replica and role descendants, so delegated

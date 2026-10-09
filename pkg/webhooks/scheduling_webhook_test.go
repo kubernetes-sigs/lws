@@ -227,6 +227,101 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		assert.NotEmpty(t, errs)
 		assert.Contains(t, errs.ToAggregate().Error(), "supports only whole-LWS or replica mode")
 	})
+
+	t.Run("delegation annotations are immutable once spec.scheduling is set", func(t *testing.T) {
+		controller := true
+		ownerRef := []metav1.OwnerReference{{
+			APIVersion: "example.test/v1", Kind: "Parent", Name: "parent", Controller: &controller,
+		}}
+
+		delegatedLWS := validScheduledLWS()
+		delegatedLWS.OwnerReferences = ownerRef
+		delegatedLWS.Annotations = map[string]string{
+			schedulerprovider.GroupTemplateNameAnnotation:       "template-a",
+			schedulerprovider.ParentCompositePodGroupAnnotation: "parent-a",
+		}
+
+		standaloneLWS := validScheduledLWS()
+		standaloneLWS.OwnerReferences = ownerRef
+
+		cases := []struct {
+			name      string
+			oldLWS    *leaderworkerset.LeaderWorkerSet
+			mutate    func(*leaderworkerset.LeaderWorkerSet)
+			wantError string
+		}{
+			{
+				name:   "adding group-template-name on update fails",
+				oldLWS: standaloneLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Annotations = map[string]string{schedulerprovider.GroupTemplateNameAnnotation: "template-a"}
+				},
+				wantError: schedulerprovider.GroupTemplateNameAnnotation,
+			},
+			{
+				name:   "removing group-template-name on update fails",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					delete(l.Annotations, schedulerprovider.GroupTemplateNameAnnotation)
+					delete(l.Annotations, schedulerprovider.ParentCompositePodGroupAnnotation)
+				},
+				wantError: schedulerprovider.GroupTemplateNameAnnotation,
+			},
+			{
+				name:   "changing group-template-name on update fails",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Annotations[schedulerprovider.GroupTemplateNameAnnotation] = "template-b"
+				},
+				wantError: schedulerprovider.GroupTemplateNameAnnotation,
+			},
+			{
+				name: "adding parent-compositepodgroup on update fails",
+				oldLWS: func() *leaderworkerset.LeaderWorkerSet {
+					l := delegatedLWS.DeepCopy()
+					delete(l.Annotations, schedulerprovider.ParentCompositePodGroupAnnotation)
+					return l
+				}(),
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation] = "parent-a"
+				},
+				wantError: schedulerprovider.ParentCompositePodGroupAnnotation,
+			},
+			{
+				name:   "removing parent-compositepodgroup on update fails",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					delete(l.Annotations, schedulerprovider.ParentCompositePodGroupAnnotation)
+				},
+				wantError: schedulerprovider.ParentCompositePodGroupAnnotation,
+			},
+			{
+				name:   "changing parent-compositepodgroup on update fails",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.Annotations[schedulerprovider.ParentCompositePodGroupAnnotation] = "parent-b"
+				},
+				wantError: schedulerprovider.ParentCompositePodGroupAnnotation,
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				newLWS := tc.oldLWS.DeepCopy()
+				tc.mutate(newLWS)
+				errs := hook.validateScheduling(context.Background(), tc.oldLWS, newLWS)
+				assert.NotEmpty(t, errs)
+				assert.Contains(t, errs.ToAggregate().Error(), tc.wantError)
+				assert.Contains(t, errs.ToAggregate().Error(), "immutable once spec.scheduling is set")
+			})
+		}
+
+		// Updating replicas and unrelated annotations while keeping delegation annotations succeeds.
+		unchanged := delegatedLWS.DeepCopy()
+		unchanged.Spec.Replicas = ptr.To[int32](3)
+		unchanged.Annotations["example.com/other"] = "value"
+		assert.Empty(t, hook.validateScheduling(context.Background(), delegatedLWS, unchanged))
+	})
 }
 
 func TestValidateSchedulingKEPConstraints(t *testing.T) {
