@@ -12,6 +12,8 @@ data:
     kind: Configuration
     leaderElection:
       leaderElect: true
+    webhook:
+      port: {{ .Values.service.port }}
     internalCertManagement:
       enable: {{ not .Values.enableCertManager }}
     {{- if .Values.featureGates }}
