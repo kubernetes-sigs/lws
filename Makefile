@@ -344,6 +344,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 KUSTOMIZE_VERSION ?= v5.2.1
 CONTROLLER_TOOLS_VERSION ?= v0.22.0
 HELM_VERSION ?= v3.19.0
+HELM_UNITTEST_VERSION ?= v1.2.1
 # Use go.mod go version as a single source of truth of Ginkgo version.
 GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
 
@@ -445,8 +446,15 @@ HELM = $(PROJECT_DIR)/bin/helm
 helm: ## Download helm locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install helm.sh/helm/v3/cmd/helm@$(HELM_VERSION)
 
+.PHONY: helm-unittest
+helm-unittest: helm ## Run Helm chart unit tests (helm-unittest plugin).
+	@if ! $(HELM) plugin list 2>/dev/null | grep -q '^unittest'; then \
+		$(HELM) plugin install https://github.com/helm-unittest/helm-unittest.git --version $(HELM_UNITTEST_VERSION); \
+	fi
+	$(HELM) unittest charts/lws --strict
+
 .PHONY: helm-verify
-helm-verify: update-helm helm ## Verify the Helm chart and generated RBAC templates.
+helm-verify: update-helm helm helm-unittest ## Verify the Helm chart and generated RBAC templates.
 	$(HELM) lint charts/lws
 	$(HELM) template charts/lws >/dev/null
 	$(HELM) template charts/lws --set gangSchedulingManagement.schedulerProvider=volcano >/dev/null

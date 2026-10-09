@@ -1,0 +1,58 @@
+renders the webhook and metrics certificates with a self-signed Issuer when enabled:
+  1: |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      labels:
+        app.kubernetes.io/instance: serving-cert
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: lws
+        app.kubernetes.io/version: v0.11.1
+        helm.sh/chart: lws-0.1.0
+      name: lws-serving-cert
+      namespace: lws-system
+    spec:
+      dnsNames:
+        - lws-webhook-service.lws-system.svc
+        - lws-webhook-service.lws-system.svc.cluster.local
+      issuerRef:
+        group: cert-manager.io
+        kind: Issuer
+        name: lws-selfsigned-issuer
+      secretName: lws-webhook-server-cert
+  2: |
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      labels:
+        app.kubernetes.io/instance: serving-cert
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: lws
+        app.kubernetes.io/version: v0.11.1
+        helm.sh/chart: lws-0.1.0
+      name: lws-selfsigned-issuer
+      namespace: lws-system
+    spec:
+      selfSigned: {}
+  3: |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      labels:
+        app.kubernetes.io/instance: serving-cert
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: lws
+        app.kubernetes.io/version: v0.11.1
+        helm.sh/chart: lws-0.1.0
+      name: lws-metrics-cert
+      namespace: lws-system
+    spec:
+      commonName: lws-metrics
+      dnsNames:
+        - lws-controller-manager-metrics-service.lws-system.svc
+        - lws-controller-manager-metrics-service.lws-system.svc.cluster.local
+      issuerRef:
+        group: cert-manager.io
+        kind: Issuer
+        name: lws-selfsigned-issuer
+      secretName: lws-metrics-server-cert

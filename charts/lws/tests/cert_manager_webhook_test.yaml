@@ -1,0 +1,19 @@
+suite: cert-manager webhook CA injection (enableCertManager)
+templates:
+  - templates/webhook/webhook.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: does not annotate the webhook configurations when disabled
+    asserts:
+      - notExists:
+          path: metadata.annotations
+
+  - it: injects the CA into both webhook configurations when enabled
+    set:
+      enableCertManager: true
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: lws-system/lws-serving-cert

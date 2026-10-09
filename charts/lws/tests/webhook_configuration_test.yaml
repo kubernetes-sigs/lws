@@ -1,0 +1,27 @@
+suite: admission webhook configurations
+templates:
+  - templates/webhook/webhook.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: adds the DisaggregatedSet validating webhook when enableDisaggregatedSet is set
+    set:
+      enableDisaggregatedSet: true
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - lengthEqual:
+          path: webhooks
+          count: 3
+      - contains:
+          path: webhooks
+          content:
+            name: vdisaggregatedset.kb.io
+            clientConfig:
+              service:
+                name: lws-webhook-service
+                namespace: lws-system
+                path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
+          any: true
