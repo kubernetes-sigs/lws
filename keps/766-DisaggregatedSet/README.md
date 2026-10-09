@@ -214,15 +214,21 @@ The controller distinguishes LWS `Spec` replicas (work already issued, including
 
 Spec drives the planner's progress calculation. Re-planning from Ready would request the same work again on every reconcile while a pod is starting. Ready instead controls how much additional work may be in flight, whether an old replica can be removed safely, and whether the rollout is complete.
 
-Status can temporarily remain higher than Spec after a scale-down. The controller does not know which replicas the LWS controller will delete. It reserves every replica above Spec before counting committed availability:
+Status counters can lag a scale-down or report terminating groups as Ready.
+The controller uses `replicagroups.Observe` with an uncached API reader and
+`Snapshot.Availability()` to obtain raw whole-group Ready capacity and retained
+Ready credit. Only retained credit can authorize another drain; raw readiness
+remains visible to protect the no-worsening floor.
 
-```
-pendingDrain   = max(0, status.replicas - spec.replicas)
-committedReady = min(spec.replicas,
-                     max(0, status.readyReplicas - pendingDrain))
-```
+The shared helper checks ownership and native acknowledgements, excludes
+terminating groups from retained credit, and accounts for outstanding removals
+for both Ordinal and Hash identity. Increasing Spec on rollback does not restore
+credit to terminating Pods. Safe growth need not wait for every deletion to finish.
 
-This prevents a replica already committed to deletion from authorizing another drain. The controller guarantees that a drain is safe for the snapshot it observed. It cannot prevent an unrelated pod from losing readiness after that observation.
+If the LWS disappears, is replaced, starts deleting, or changes generation between
+discovery and observation, the executor retries without planning: unknown is not
+zero readiness. No downscale marker or availability summary is persisted. These
+ordered reads are not an atomic snapshot or a reservation against later failures.
 
 Readiness is also revision-aware. A revision contributes its committed Ready counts only when every required role has at least one; otherwise it contributes zero for every role.
 

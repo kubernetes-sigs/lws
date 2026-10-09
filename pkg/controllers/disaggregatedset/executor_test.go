@@ -18,17 +18,21 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
@@ -58,7 +62,9 @@ func testRoleNames() []string {
 
 // testSchemeForUnit creates a scheme with all required types registered.
 func testSchemeForUnit() *runtime.Scheme {
-	return wrappers.DisaggregatedSetTestScheme()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+	utilruntime.Must(appsv1.AddToScheme(scheme))
+	return scheme
 }
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
@@ -67,7 +73,7 @@ func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 	return &DisaggregatedSetReconciler{
 		Client:        fakeClient,
 		Scheme:        scheme,
-		LWSManager:    NewLeaderWorkerSetManager(fakeClient),
+		LWSManager:    newTestLWSManager(fakeClient),
 		ScalerManager: NewScalerManager(fakeClient, recorder),
 		Record:        recorder,
 	}
@@ -76,12 +82,22 @@ func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 // newTestExecutor creates a RollingUpdateExecutor with a FakeRecorder for testing.
 func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 	return &RollingUpdateExecutor{
-		LWSManager: NewLeaderWorkerSetManager(fakeClient),
+		LWSManager: newTestLWSManager(fakeClient),
 		Record:     events.NewFakeRecorder(100),
 	}
 }
 
-func newTestClient(objects ...client.Object) client.Client {
+// Ordinary executor fixtures model settled observations. Pending-work tests
+// supply explicit raw/committed counts; adapter tests use the real observer.
+func newTestLWSManager(c client.Client) *LeaderWorkerSetManager {
+	manager := NewLeaderWorkerSetManager(c)
+	manager.observeReadiness = func(_ context.Context, lws *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error) {
+		return replicaReadiness{raw: int(lws.Status.ReadyReplicas), committed: int(min(getLWSReplicas(lws), lws.Status.ReadyReplicas))}, nil
+	}
+	return manager
+}
+
+func newTestClient(objects ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
 		WithObjects(objects...).WithStatusSubresource(statusSubresourceObjects()...).Build()
 }
@@ -113,6 +129,7 @@ func buildTestLWS(name, namespace, role, revision string) *wrappers.LeaderWorker
 func revisionLWS(revision, role string, replicas, ready int32, createdAt time.Time, initial ...int32) *leaderworkersetv1.LeaderWorkerSet {
 	lws := buildTestLWS(fmt.Sprintf("test-0-%s-%s", revision, role), testNamespace, role, revision).
 		Replica(int(replicas)).StatusReplicas(replicas).ReadyReplicas(ready).CreationTimestamp(createdAt).Obj()
+	lws.UID = types.UID(lws.Name)
 	if len(initial) > 0 {
 		setInitialReplicasAnnotation(lws, int(initial[0]))
 	}
@@ -314,7 +331,7 @@ func newOccupiedSurgeRollout() (
 		"hashC", [2]int32{0, 1}, [2]int32{0, 1}, initial, createdAt.Add(2*time.Hour))...)
 	fakeClient := newTestClient(objects...)
 	recorder := events.NewFakeRecorder(10)
-	executor := &RollingUpdateExecutor{LWSManager: NewLeaderWorkerSetManager(fakeClient), Record: recorder}
+	executor := &RollingUpdateExecutor{LWSManager: newTestLWSManager(fakeClient), Record: recorder}
 	return fakeClient, executor, newTwoRoleTestDisaggregatedSet(initial, [2]int{1, 1}, [2]int{}), recorder
 }
 
@@ -581,6 +598,194 @@ func TestReconcilerIntegration(t *testing.T) {
 	}
 }
 
+// Only adapter tests build native objects. Ordinary executor tests supply
+// observations; native ownership and victim accounting are tested in pkg/replicagroups.
+func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready int32) []client.Object {
+	meta := metav1.ObjectMeta{Name: lws.Name, Namespace: lws.Namespace, UID: types.UID(lws.Name + "-native"), Generation: 1,
+		Labels:          map[string]string{leaderworkersetv1.SetNameLabelKey: lws.Name},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))}}
+	objects := []client.Object{lws}
+	var owner client.Object
+	kind := "StatefulSet"
+	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
+		deployment := &appsv1.Deployment{ObjectMeta: meta, Spec: appsv1.DeploymentSpec{Replicas: lws.Spec.Replicas},
+			Status: appsv1.DeploymentStatus{ObservedGeneration: 1}}
+		meta.Name, meta.UID = lws.Name+"-rs", types.UID(lws.Name+"-rs")
+		meta.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))}
+		owner = &appsv1.ReplicaSet{ObjectMeta: meta, Spec: appsv1.ReplicaSetSpec{Replicas: lws.Spec.Replicas},
+			Status: appsv1.ReplicaSetStatus{ObservedGeneration: 1}}
+		objects, kind = append(objects, deployment), "ReplicaSet"
+	} else {
+		owner = &appsv1.StatefulSet{ObjectMeta: meta, Spec: appsv1.StatefulSetSpec{Replicas: lws.Spec.Replicas},
+			Status: appsv1.StatefulSetStatus{ObservedGeneration: 1}}
+	}
+	objects = append(objects, owner)
+	for i := int32(0); i < actual; i++ {
+		status := corev1.ConditionFalse
+		if i < ready {
+			status = corev1.ConditionTrue
+		}
+		name := fmt.Sprintf("%s-%d", lws.Name, i)
+		objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: lws.Namespace, UID: types.UID(name),
+			Annotations:     map[string]string{leaderworkersetv1.SizeAnnotationKey: "1"},
+			Labels:          map[string]string{leaderworkersetv1.SetNameLabelKey: lws.Name, leaderworkersetv1.WorkerIndexLabelKey: "0"},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, appsv1.SchemeGroupVersion.WithKind(kind))}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}}}})
+	}
+	return objects
+}
+
+func TestRolloutRejectsInvalidReplicaGroupObservation(t *testing.T) {
+	for _, change := range []string{"missing", "replacement", "generation changed", "deleting", "read error"} {
+		t.Run(change, func(t *testing.T) {
+			ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
+			old := revisionLWS("A", testRolePrefill, 4, 4, time.Unix(1000, 0), 4)
+			target := revisionLWS("B", testRolePrefill, 1, 1, time.Unix(2000, 0), 4)
+			old.Spec.LeaderWorkerTemplate.Size, target.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
+			c := newTestClient(append(replicaGroupObjects(old, 4, 4), replicaGroupObjects(target, 1, 1)...)...)
+			manager := NewLeaderWorkerSetManager(c)
+			failure, failRead := errors.New("read unavailable"), true
+			manager.apiReader = interceptor.NewClient(c, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet)
+					if !ok || key.Name != old.Name {
+						return nil
+					}
+					switch change {
+					case "missing":
+						return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
+					case "replacement":
+						lws.UID = "replacement"
+					case "generation changed":
+						lws.Generation++
+					case "deleting":
+						lws.DeletionTimestamp = ptr.To(metav1.Now())
+					case "read error":
+						if failRead {
+							failRead = false
+							return failure
+						}
+					}
+					return nil
+				},
+			})
+			wantError := errReplicaGroupsPending
+			if change == "read error" {
+				wantError = failure
+			}
+			_, err := manager.observeReadiness(t.Context(), old)
+			require.ErrorIs(t, err, wantError)
+			failRead = true // The executor must also propagate a one-shot failure.
+			executor := newTestExecutor(c)
+			executor.LWSManager = manager
+			result, complete, err := executor.ReconcileRevisionTransition(t.Context(), ds, 0, "B", resolveDesiredReplicasByRole(ds, nil))
+			if change == "read error" {
+				require.ErrorIs(t, err, failure)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, time.Second, result.RequeueAfter)
+			}
+			assert.False(t, complete)
+			assert.EqualValues(t, 4, getTestLWSReplicas(c, testNamespace, old.Name))
+			assert.EqualValues(t, 1, getTestLWSReplicas(c, testNamespace, target.Name))
+		})
+	}
+}
+
+func TestRollbackUsesLiveRetainedReadiness(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, issued := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/deletions-issued=%t", identity, issued), func(t *testing.T) {
+				ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
+				a := revisionLWS("A", testRolePrefill, 2, 4, time.Unix(1000, 0), 4)
+				b := revisionLWS("B", testRolePrefill, 2, 2, time.Unix(2000, 0), 4)
+				a.Spec.GroupIdentity, b.Spec.GroupIdentity = identity, identity
+				a.Spec.LeaderWorkerTemplate.Size, b.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
+				c := newTestClient(a, b)
+				for _, phase := range []struct {
+					name                                          string
+					pending, cancel, replacement, unready, finish bool
+					counters, target                              int32
+					raw, retained, old                            int
+					complete                                      bool
+				}{
+					{name: "grow despite outstanding removals", raw: 4, retained: 2, old: 2, target: 3},
+					{name: "growth awaits acknowledgement", pending: true, raw: 4, old: 2},
+					{name: "counters alone cannot restore credit", pending: true, counters: 2, raw: 4, old: 2},
+					{name: "acknowledged reversal", cancel: true, raw: 4, retained: 2, old: 2},
+					{name: "replacement starts unready", replacement: true, unready: true, raw: 3, retained: 2, old: 2},
+					{name: "replacement ready; other victim still terminating", replacement: true, raw: 4, retained: 3, old: 1},
+					{name: "finish growth", finish: true, raw: 4, retained: 3, old: 1},
+					{name: "finish draining", finish: true, raw: 4, retained: 4},
+					{name: "complete", finish: true, raw: 4, retained: 4, complete: true},
+				} {
+					if !issued && phase.replacement {
+						continue
+					}
+					t.Run(phase.name, func(t *testing.T) {
+						require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(a), a))
+						require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(b), b))
+						live := a.DeepCopy()
+						// These counters deliberately disagree with four live Ready Pods.
+						if phase.counters != 0 {
+							live.Status.Replicas, live.Status.ReadyReplicas = phase.counters, phase.counters
+						}
+						objects := replicaGroupObjects(live, 4, 4)
+						for _, object := range objects[1:] {
+							if pod, ok := object.(*corev1.Pod); ok {
+								if issued && !phase.finish && (pod.Name == a.Name+"-3" || !phase.replacement && pod.Name == a.Name+"-2") {
+									pod.DeletionTimestamp, pod.Finalizers = ptr.To(metav1.Now()), []string{"test/hold"}
+								}
+								if issued && phase.finish && pod.Name == a.Name+"-3" {
+									pod.UID = types.UID(pod.Name + "-replacement")
+								}
+								if issued && (phase.replacement || phase.finish) && pod.Name == a.Name+"-2" {
+									pod.UID = types.UID(pod.Name + "-replacement")
+									if phase.unready {
+										pod.Status.Conditions[0].Status = corev1.ConditionFalse
+									}
+								}
+							} else if phase.pending {
+								object.SetGeneration(2)
+							}
+						}
+						manager := NewLeaderWorkerSetManager(c)
+						manager.apiReader = newTestClient(append(objects, replicaGroupObjects(b.DeepCopy(), 2, 2)...)...)
+						observed, err := manager.observeReadiness(t.Context(), a)
+						require.NoError(t, err)
+						if !issued && phase.cancel {
+							phase.retained, phase.old = 3, 1 // Unissued removals can be cancelled.
+						}
+						assert.Equal(t, replicaReadiness{raw: phase.raw, committed: phase.retained}, observed)
+						assert.EqualValues(t, 4, a.Status.ReadyReplicas, "observation must not mutate discovered inputs")
+						executor := newTestExecutor(c)
+						executor.LWSManager = manager // Real observer, reconstructed on every reconcile.
+						_, complete, err := executor.ReconcileRevisionTransition(t.Context(), ds, 0, "A", resolveDesiredReplicasByRole(ds, nil))
+						require.NoError(t, err)
+						assert.Equal(t, phase.complete, complete)
+						assert.EqualValues(t, phase.old, getTestLWSReplicas(c, testNamespace, b.Name))
+						if phase.target != 0 {
+							assert.EqualValues(t, phase.target, getTestLWSReplicas(c, testNamespace, a.Name))
+						}
+					})
+				}
+				// Discovery must use live Spec too, not just live readiness.
+				a.Spec.Replicas = ptr.To[int32](3)
+				manager := NewLeaderWorkerSetManager(c)
+				manager.apiReader = newTestClient(a)
+				_, target, err := manager.GetRevisionRolesList(t.Context(), ds, 0, "A")
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				assert.EqualValues(t, 3, getLWSReplicas(target.Roles[testRolePrefill]))
+			})
+		}
+	}
+}
+
 func TestReconcileExistingRolloutDoesNotReuseReadyCapacityFromPendingDrain(t *testing.T) {
 	ctx := context.Background()
 	role := makeRoleSpec(testRolePrefill, 6, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(1))
@@ -593,6 +798,13 @@ func TestReconcileExistingRolloutDoesNotReuseReadyCapacityFromPendingDrain(t *te
 	newLWS := revisionLWS(newRevision, testRolePrefill, 3, 3, createdAt.Add(time.Second), 6)
 	fakeClient := newTestClient(oldLWS, newLWS)
 	executor := newTestExecutor(fakeClient)
+	oldReady := replicaReadiness{raw: 3, committed: 3}
+	executor.LWSManager.observeReadiness = func(_ context.Context, lws *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error) {
+		if lws.Name == oldLWS.Name {
+			return oldReady, nil
+		}
+		return replicaReadiness{raw: 3, committed: 3}, nil
+	}
 
 	reconcile := func() {
 		oldRevisions, currentRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, newRevision)
@@ -610,9 +822,9 @@ func TestReconcileExistingRolloutDoesNotReuseReadyCapacityFromPendingDrain(t *te
 	reconcile()
 	assert.EqualValues(t, 3, getTestLWSReplicas(fakeClient, testNamespace, oldName))
 
-	// Keep status stale to model the next reconciliation arriving before the
-	// underlying scale-down finishes. status.replicas=4 exposes one pending
-	// deletion; status.readyReplicas=3 must not be treated as three survivors.
+	// The observer still sees three Ready groups, but only two are retained.
+	// Stale LWS counters must not override that observation.
+	oldReady.committed = 2
 	var observedOld leaderworkersetv1.LeaderWorkerSet
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: oldName}, &observedOld))
 	assert.EqualValues(t, 4, observedOld.Status.Replicas)
@@ -621,12 +833,12 @@ func TestReconcileExistingRolloutDoesNotReuseReadyCapacityFromPendingDrain(t *te
 	assert.EqualValues(t, 3, getTestLWSReplicas(fakeClient, testNamespace, oldName),
 		"a pending deletion must reserve the Ready replica it may remove")
 
-	// If status catches up and confirms that three Ready replicas survived, the
-	// availability slot is real again and the rollout may continue.
+	// The observer confirms three survivors; the rollout may continue.
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: oldName}, &observedOld))
 	observedOld.Status.Replicas = 3
 	observedOld.Status.ReadyReplicas = 3
 	require.NoError(t, fakeClient.Status().Update(ctx, &observedOld))
+	oldReady.committed = 3
 	reconcile()
 	assert.EqualValues(t, 2, getTestLWSReplicas(fakeClient, testNamespace, oldName))
 }
@@ -658,18 +870,20 @@ func TestReconcileRevisionTransitionDoesNotUseTerminatingTargetReadiness(t *test
 func TestOrderedRevisionCandidatesPreferUnreadyThenNewest(t *testing.T) {
 	createdAt := time.Now()
 	oldestUnready := disaggregatedsetutils.RevisionRoles{Revision: "A", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-		testRolePrefill: makeLWS(withReplicas(1), withCreationTimestamp(createdAt)),
+		testRolePrefill: makeLWS(withName("A"), withReplicas(1), withCreationTimestamp(createdAt)),
 	}}
 	newestReady := disaggregatedsetutils.RevisionRoles{Revision: "B", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-		testRolePrefill: makeLWS(withReplicas(1), withReadyReplicas(1), withCreationTimestamp(createdAt.Add(time.Second))),
+		testRolePrefill: makeLWS(withName("B"), withReplicas(1), withReadyReplicas(1), withCreationTimestamp(createdAt.Add(time.Second))),
 	}}
 
-	candidates := orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady})
+	readiness := rolloutReadiness{"B": {raw: 1, committed: 1}}
+	candidates := orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady}, readiness)
 	require.Len(t, candidates, 2)
 	assert.Equal(t, []string{"A", "B"}, []string{candidates[0].Revision, candidates[1].Revision})
 
 	oldestUnready.Roles[testRolePrefill].Status.ReadyReplicas = 1
-	candidates = orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady})
+	readiness["A"] = replicaReadiness{raw: 1, committed: 1}
+	candidates = orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady}, readiness)
 	require.Len(t, candidates, 2)
 	assert.Equal(t, []string{"B", "A"}, []string{candidates[0].Revision, candidates[1].Revision})
 
@@ -677,8 +891,8 @@ func TestOrderedRevisionCandidatesPreferUnreadyThenNewest(t *testing.T) {
 	// making the revision actually unready. It must not enter the fast path
 	// that discards a fully unready revision.
 	oldestUnready.Roles[testRolePrefill].Status.Replicas = 2
-	assert.Zero(t, committedReadyReplicas(oldestUnready.Roles[testRolePrefill]))
-	candidates = orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady})
+	readiness["A"] = replicaReadiness{raw: 1, committed: 0}
+	candidates = orderedRevisionCandidates(disaggregatedsetutils.RevisionRolesList{oldestUnready, newestReady}, readiness)
 	require.Len(t, candidates, 2)
 	assert.Equal(t, []string{"B", "A"}, []string{candidates[0].Revision, candidates[1].Revision})
 }
@@ -713,7 +927,7 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	)...)
 	fakeClient := newTestClient(objects...)
 	recorder := events.NewFakeRecorder(10)
-	executor := &RollingUpdateExecutor{LWSManager: NewLeaderWorkerSetManager(fakeClient), Record: recorder}
+	executor := &RollingUpdateExecutor{LWSManager: newTestLWSManager(fakeClient), Record: recorder}
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 5}, [2]int{}, [2]int{1, 1})
 	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)
@@ -862,7 +1076,9 @@ func TestTargetUnschedulableRolesSkipsReadyRoles(t *testing.T) {
 		testRoleDecode:  pending,
 	}}
 
-	roles, err := executor.targetUnschedulableRoles(context.Background(), target, testRoleNames())
+	roles, err := executor.targetUnschedulableRoles(context.Background(), target, testRoleNames(), rolloutReadiness{
+		ready.Name: {raw: 1, committed: 1},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []bool{false, true}, roles)
 	assert.Equal(t, 1, podListCalls)
@@ -1357,7 +1573,7 @@ func TestObserveOldRevisionNeverUsesBaselineBelowSpec(t *testing.T) {
 				Roles:    map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: lws},
 			}
 
-			initial, observed := observeOldRevision(revision, []string{testRolePrefill})
+			initial, observed := observeOldRevision(revision, []string{testRolePrefill}, nil)
 
 			assert.Equal(t, RoleReplicaState{3}, initial)
 			assert.Equal(t, RoleReplicaState{3}, observed.SpecReplicas)
@@ -1547,14 +1763,16 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, targetRevision)
 
-	candidates := orderedRevisionCandidates(oldRevisions)
+	readiness, err := executor.LWSManager.observeRolloutReadiness(ctx, oldRevisions, *targetRevision)
+	require.NoError(t, err)
+	candidates := orderedRevisionCandidates(oldRevisions, readiness)
 	require.NotEmpty(t, candidates)
 	activeRevision := candidates[0]
 	assert.Equal(t, "hashA", activeRevision.Revision, "the drained hashB revision must not become the planning baseline")
 	roleNames := testRoleNames()
 	config := extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole)
 	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole)
-	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config)
+	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config, readiness)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.InitialReplicas)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.SpecReplicas)
@@ -1608,6 +1826,14 @@ func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {
 		target,
 		RoleReplicaState{50, 25},
 		configs([]int{5, 5}, []int{5, 5}),
+		rolloutReadiness{
+			active.Roles[testRolePrefill].Name: {raw: 10, committed: 1},
+			active.Roles[testRoleDecode].Name:  {raw: 5, committed: 0},
+			parked.Roles[testRolePrefill].Name: {raw: 37, committed: 36},
+			parked.Roles[testRoleDecode].Name:  {raw: 19, committed: 18},
+			target.Roles[testRolePrefill].Name: {raw: 7, committed: 7},
+			target.Roles[testRoleDecode].Name:  {raw: 5, committed: 5},
+		},
 	)
 
 	assert.Equal(t, RoleReplicaState{10, 5}, state.ActiveOld.RawReadyReplicas)

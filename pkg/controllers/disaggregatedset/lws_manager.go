@@ -18,8 +18,10 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,15 +34,68 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 type LeaderWorkerSetManager struct {
-	client client.Client
+	client           client.Client
+	apiReader        client.Reader
+	observeReadiness func(context.Context, *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error)
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
-	return &LeaderWorkerSetManager{client: c}
+	manager := &LeaderWorkerSetManager{client: c, apiReader: c}
+	manager.observeReadiness = manager.observeLiveReadiness
+	return manager
+}
+
+var errReplicaGroupsPending = errors.New("replica-group observation no longer matches the rollout")
+
+type replicaReadiness struct {
+	raw       int // Ready groups, including groups committed to removal.
+	committed int // Ready groups that can authorize another drain.
+}
+
+// rolloutReadiness is local to one slice and one reconciliation. It never
+// changes LWS status or carries deletion reservations between reconciliations.
+type rolloutReadiness map[string]replicaReadiness
+
+func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
+	ctx context.Context,
+	old disaggregatedsetutils.RevisionRolesList,
+	target disaggregatedsetutils.RevisionRoles,
+) (rolloutReadiness, error) {
+	result := make(rolloutReadiness)
+	for _, revision := range append(slices.Clone(old), target) {
+		for _, lws := range revision.Roles {
+			observed, err := manager.observeReadiness(ctx, lws)
+			if err != nil {
+				return nil, fmt.Errorf("observing readiness of LeaderWorkerSet %s: %w", lws.Name, err)
+			}
+			result[lws.Name] = observed
+		}
+	}
+	return result, nil
+}
+
+// observeLiveReadiness adapts shared group observations to the planner's two counts.
+// Unknown observations must retry, not look like zero serving capacity: that
+// could lower the planner's no-worsening floor. Unacknowledged native decisions
+// still expose raw readiness, but withhold retained credit for another drain.
+func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error) {
+	snapshot, err := replicagroups.Observe(ctx, manager.apiReader, lws)
+	if err != nil {
+		return replicaReadiness{}, err
+	}
+	if snapshot == nil || snapshot.LWS.Generation != lws.Generation || !snapshot.LWS.DeletionTimestamp.IsZero() {
+		return replicaReadiness{}, errReplicaGroupsPending
+	}
+	availability := snapshot.Availability()
+	return replicaReadiness{
+		raw:       int(availability.ReadyReplicas),
+		committed: int(availability.RetainedReadyReplicas),
+	}, nil
 }
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
@@ -244,6 +299,10 @@ func (manager *LeaderWorkerSetManager) ListAll(ctx context.Context, disaggregate
 // from a same-named DisaggregatedSet that was deleted and recreated — cannot be
 // mistaken for one of this DisaggregatedSet's own replicas.
 func (manager *LeaderWorkerSetManager) list(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
+	return manager.listWithReader(ctx, manager.client, disaggregatedSet, role, options...)
+}
+
+func (manager *LeaderWorkerSetManager) listWithReader(ctx context.Context, reader client.Reader, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name}
@@ -253,7 +312,7 @@ func (manager *LeaderWorkerSetManager) list(ctx context.Context, disaggregatedSe
 
 	listOptions := []client.ListOption{client.InNamespace(disaggregatedSet.Namespace), labels}
 	listOptions = append(listOptions, options...)
-	if err := manager.client.List(ctx, lwsObjList, listOptions...); err != nil {
+	if err := reader.List(ctx, lwsObjList, listOptions...); err != nil {
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", disaggregatedSet.Namespace, disaggregatedSet.Name, err)
 	}
 
@@ -308,7 +367,11 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	lwsList, err := manager.ListForSlice(ctx, disaggregatedSet, slice, "")
+	// Pair live Pod observations with live scale intents. A cached Spec from
+	// before our previous drain would otherwise spend the same capacity twice.
+	lwsList, err := manager.listWithReader(ctx, manager.apiReader, disaggregatedSet, "", client.MatchingLabels{
+		disaggregatedsetv1.SliceLabelKey: strconv.Itoa(slice),
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
