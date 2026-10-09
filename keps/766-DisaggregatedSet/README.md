@@ -174,7 +174,7 @@ If an old LWS does not have a valid `initial-replicas` annotation, the controlle
 
 Suppose a rollout from revision A to revision B is interrupted by revision C. Both A and B are now old. The controller processes only one of them at a time. Revisions with no Ready replicas are preferred. The remaining candidates are ordered newest first. The controller asks the planner about candidates in that order and selects the first candidate with a safe executable action. A blocked B therefore does not prevent a movable A from making progress.
 
-While B is active, A is parked and remains unchanged. Fractional planning uses B's own `initial-replicas` value as `initialOld` and B's current Spec as `activeOldSpec`. Ready replicas in A reduce how much of C is needed during this phase. After B reaches zero, A becomes active and the controller plans the A to C phase. The controller never combines the `initial-replicas` values from A and B.
+While B is active, A is parked and remains unchanged. Fractional planning uses B's own `initial-replicas` value as `initialOld` and B's current Spec as `activeOldSpec`. Ready replicas in A reduce how much of C is needed during this phase. After B reaches zero, A becomes active and the controller plans the A to C phase. The controller never sums the `initial-replicas` values from A and B. For availability only, it takes their per-role maximum so selecting a smaller drain candidate cannot weaken `maxUnavailable`.
 
 Parking does not remove A from safety accounting. The planner includes the Spec of every old revision when enforcing surge. It includes a revision's Ready replicas in available capacity only when every role required by that revision has at least one Ready replica.
 
@@ -233,14 +233,19 @@ For example, a target revision with `0P/2D` Ready contributes `0P/0D` usable cap
 `MaxSurge` and `MaxUnavailable` are the per-role limits for ordinary rollout steps. The two bounded deadlock fallbacks are described below. For each role the ordinary planner enforces:
 
 ```
-roleReplicaCount  = max(initialOld, target)
-surgeCeiling      = roleReplicaCount + MaxSurge
-availabilityFloor = max(0, min(initialOld, target) - MaxUnavailable)
+roleReplicaCount    = max(initialOld, target)
+availabilityBaseline = max(initial-replicas across non-drained old revisions)
+surgeCeiling        = roleReplicaCount + MaxSurge
+availabilityFloor   = max(0, min(availabilityBaseline, target) - MaxUnavailable)
 
 oldSpec + newSpec <= surgeCeiling
 ```
 
 `oldSpec` includes active and parked old revisions. Existing out-of-bound Spec is never increased.
+
+The availability baseline follows the **current set of non-drained old revisions**; it is not a fixed promise captured at the start of an interrupted rollout. A revision participates while at least one of its role Specs is non-zero. Every candidate considered from the same observation uses the same per-role maximum, so merely switching the active candidate cannot lower the floor. Once all of an old revision's role Specs reach zero, it stops contributing to that maximum, whether or not its LWS objects have been deleted. If it carried the largest baseline, the next phase's availability floor may therefore decrease. No separate rollout-wide baseline is persisted; `initial-replicas` remains the per-revision baseline used for fractional coordination.
+
+For example, consider A → B → C with `initial-replicas=1` for A, `initial-replicas=2` for B, a target of 2 for C, `maxSurge=1`, and `maxUnavailable=0`, identically for each role. If A, B, and C each have one Spec and one Ready replica per role, B can retire while A+C retain two Ready replicas. The next A → C phase uses A's baseline of one. A can then retire while C grows from one to two Spec replicas, even if C still has only one Ready replica. This is ordinary phase-local progress, not an emergency-unavailability fallback. Thus `maxUnavailable=0` protects the current phase's floor; it does **not** guarantee a fixed Ready count throughout an A → B → C rollout. Completion still requires C to reach its full target in both Spec and Ready replicas.
 
 For target growth, complete parked revisions reduce the capacity needed during the current active-revision phase. However, each role required by the final target keeps a phase target of at least one replica. This lets the target revision form a complete same-revision unit instead of depending on a counterpart from a parked revision: `phaseTarget = max(currentNewSpec, target - parkedUsableReady, 1)` for required roles.
 

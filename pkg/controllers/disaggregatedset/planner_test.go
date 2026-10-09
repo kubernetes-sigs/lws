@@ -46,6 +46,10 @@ func rolloutState(
 	newSpec, newReady, target RoleReplicaState,
 	config []RollingUpdateConfig,
 ) RolloutState {
+	availabilityBaseline := slicesClone(initial)
+	for i, replicas := range parkedSpec {
+		availabilityBaseline[i] = max(availabilityBaseline[i], replicas)
+	}
 	state := RolloutState{
 		ActiveOld: ActiveRevisionState{
 			RequiredRoles:    requiredRoles(initial),
@@ -62,7 +66,8 @@ func rolloutState(
 			DesiredReplicas:    slicesClone(target),
 			UnschedulableRoles: make([]bool, len(target)),
 		},
-		Config: append([]RollingUpdateConfig(nil), config...),
+		AvailabilityBaseline: availabilityBaseline,
+		Config:               append([]RollingUpdateConfig(nil), config...),
 	}
 	if parkedSpec != nil {
 		state.ParkedOld = []ParkedRevisionState{{
@@ -259,6 +264,25 @@ func TestUsableReadyReplicasRequiresEveryRequiredRole(t *testing.T) {
 	assert.Equal(t, RoleReplicaState{0, 0}, usableReadyReplicas(required, RoleReplicaState{0, 2}))
 	assert.Equal(t, RoleReplicaState{1, 2}, usableReadyReplicas(required, RoleReplicaState{1, 2}))
 	assert.Equal(t, RoleReplicaState{1, 0}, usableReadyReplicas([]bool{true, false}, RoleReplicaState{1, 0}))
+}
+
+func TestAvailabilityFloorDoesNotChangeWithDrainCandidate(t *testing.T) {
+	// A was created for 2P/2D but is now parked at 1P/1D. The newer B
+	// candidate has a 1P/1D baseline. Selecting B must not lower the rollout's
+	// zero-unavailability floor from 2P/2D to B's local 1P/1D baseline.
+	state := rolloutState(
+		[]int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1}, []int{1, 1},
+		[]int{0, 0}, []int{0, 0}, []int{2, 2},
+		configs([]int{1, 1}, []int{0, 0}),
+	)
+	state.AvailabilityBaseline = RoleReplicaState{2, 2}
+
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{1, 1}, step.Past,
+		"B must remain until target growth replaces its Ready capacity")
+	assert.Equal(t, RoleReplicaState{1, 1}, step.New)
+	require.NoError(t, validateUpdateStep(state, step))
 }
 
 func TestRevisionCompletenessIsAPlannerBound(t *testing.T) {

@@ -78,7 +78,10 @@ type RolloutState struct {
 	ActiveOld ActiveRevisionState
 	ParkedOld []ParkedRevisionState
 	Target    TargetRevisionState
-	Config    []RollingUpdateConfig
+	// AvailabilityBaseline is shared by every old-revision candidate so
+	// selecting a smaller interrupted revision cannot weaken maxUnavailable.
+	AvailabilityBaseline RoleReplicaState
+	Config               []RollingUpdateConfig
 }
 
 // roleRolloutSnapshot is the per-role observed state rebuilt each reconcile.
@@ -87,6 +90,7 @@ type RolloutState struct {
 // a pending termination; observed Ready does not.
 type roleRolloutSnapshot struct {
 	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
+	AvailabilityBaselineReplicas    int                 // Old-side baseline shared by every candidate for availability checks.
 	ActiveOldSpecReplicas           int                 // Current Spec replicas of the active old revision.
 	ActiveOldCommittedReadyReplicas int                 // Active-old Ready replicas not reserved by a pending deletion.
 	ActiveOldUsableReadyReplicas    int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
@@ -184,6 +188,7 @@ func validRolloutState(state RolloutState) bool {
 		len(state.ActiveOld.SpecReplicas) != roleCount ||
 		len(state.ActiveOld.RawReadyReplicas) != roleCount ||
 		len(state.ActiveOld.ReadyReplicas) != roleCount ||
+		len(state.AvailabilityBaseline) != roleCount ||
 		len(state.Target.RequiredRoles) != roleCount ||
 		len(state.Target.SpecReplicas) != roleCount ||
 		len(state.Target.RawReadyReplicas) != roleCount ||
@@ -225,6 +230,7 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 	for i := range snapshot {
 		snapshot[i] = roleRolloutSnapshot{
 			InitialOldReplicas:              state.ActiveOld.InitialReplicas[i],
+			AvailabilityBaselineReplicas:    state.AvailabilityBaseline[i],
 			ActiveOldSpecReplicas:           state.ActiveOld.SpecReplicas[i],
 			ActiveOldCommittedReadyReplicas: state.ActiveOld.ReadyReplicas[i],
 			ActiveOldUsableReadyReplicas:    activeUsableReady[i],
@@ -346,7 +352,13 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 	}
 	targets = boundDrainingRoleTargetsToWindow(current, initial, targets)
 	targets = boundOldTargetsByRevisionCompleteness(current, targets, requiredRoles)
-	return boundDrainingRoleTargetsToWindow(current, initial, targets)
+	targets = boundDrainingRoleTargetsToWindow(current, initial, targets)
+	// The shared floor may cover a role that this candidate never contained.
+	// In that case the candidate cannot make an unrelated partial drain safe.
+	if !availabilityPreserved(snapshot, targets, requiredRoles) {
+		return current
+	}
+	return targets
 }
 
 // minimumSpecToPreserveReady returns the lowest Spec that cannot remove more
@@ -482,7 +494,7 @@ func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 func availabilityFloor(role roleRolloutSnapshot) int {
 	return max(
 		0,
-		min(role.InitialOldReplicas, role.NewTargetReplicas)-role.Config.MaxUnavailable,
+		min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas)-role.Config.MaxUnavailable,
 	)
 }
 
@@ -702,7 +714,8 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 			DesiredReplicas:    slicesClone(target),
 			UnschedulableRoles: make([]bool, len(target)),
 		},
-		Config: config,
+		AvailabilityBaseline: slicesClone(initialOld),
+		Config:               config,
 	}
 	steps := []UpdateStep{{Past: append(RoleReplicaState(nil), initialOld...), New: make(RoleReplicaState, len(initialOld))}}
 

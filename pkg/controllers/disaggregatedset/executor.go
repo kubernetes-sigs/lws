@@ -451,14 +451,23 @@ func rolloutStateForRevision(
 			DesiredReplicas:    slicesClone(targetReplicas),
 			UnschedulableRoles: make([]bool, len(roleNames)),
 		},
-		Config: slices.Clone(config),
+		AvailabilityBaseline: slicesClone(initial),
+		Config:               slices.Clone(config),
 	}
 	for _, revision := range oldRevisions {
 		if revision.Revision == active.Revision {
 			continue
 		}
-		_, parked := observeOldRevision(revision, roleNames)
+		parkedInitial, parked := observeOldRevision(revision, roleNames)
 		state.ParkedOld = append(state.ParkedOld, parked)
+		// All candidates share the non-drained old set's baseline. A fully
+		// drained revision leaves this set, so the next phase's floor may fall.
+		if replicaSum(parked.SpecReplicas) == 0 {
+			continue
+		}
+		for i := range state.AvailabilityBaseline {
+			state.AvailabilityBaseline[i] = max(state.AvailabilityBaseline[i], parkedInitial[i])
+		}
 	}
 	for i, roleName := range roleNames {
 		state.Target.RequiredRoles[i] = targetReplicas[i] > 0

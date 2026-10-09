@@ -1482,6 +1482,52 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 	assert.Equal(t, 2, old.GetTotalReplicasPerRole(testRoleDecode))
 }
 
+func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
+	for _, cleanup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup=%t", cleanup), func(t *testing.T) {
+			ctx := context.Background()
+			createdAt := time.Unix(1000, 0)
+			objects := revisionLWSObjects("A", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt)
+			objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt.Add(time.Hour))...)
+			objects = append(objects, revisionLWSObjects("C", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{2, 2}, createdAt.Add(2*time.Hour))...)
+			fakeClient := newTestClient(objects...)
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{1, 1}, [2]int{})
+			desired := resolveDesiredReplicasByRole(ds, nil)
+			reconcile := func() bool {
+				// Reconstruct the executor each time; there is no carried baseline.
+				_, complete, err := newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
+				require.NoError(t, err)
+				return complete
+			}
+
+			// B's baseline is two. Retiring B leaves A+C at two Ready per role.
+			require.False(t, reconcile())
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{1, 1})
+			assertRevisionReplicas(t, fakeClient, "B", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "C", [2]int32{1, 1})
+			if cleanup {
+				require.NoError(t, newTestReconciler(fakeClient).cleanupDrainedLWS(ctx, ds, 0, "C", false))
+			}
+
+			// B's zero Spec, not object cleanup, starts the next phase. A's
+			// baseline is one, so it may retire before C's growth becomes Ready.
+			require.False(t, reconcile())
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "C", [2]int32{2, 2})
+			for _, roleName := range testRoleNames() {
+				target, err := newTestExecutor(fakeClient).LWSManager.GetForRole(ctx, ds, 0, "C", roleName)
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				assert.EqualValues(t, 1, target.Status.ReadyReplicas)
+			}
+
+			// Completion still requires the full target to become Ready.
+			simulateAllReady(fakeClient)
+			require.True(t, reconcile())
+		})
+	}
+}
+
 func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) {
 	ctx := context.Background()
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 4}, [2]int{1, 1}, [2]int{})
@@ -1510,6 +1556,7 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole)
 	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.InitialReplicas)
+	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.SpecReplicas)
 	require.Len(t, state.ParkedOld, 1)
 	assert.Equal(t, RoleReplicaState{0, 0}, state.ParkedOld[0].SpecReplicas)
@@ -1539,8 +1586,8 @@ func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {
 	parked := disaggregatedsetutils.RevisionRoles{
 		Revision: "A",
 		Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
-			testRolePrefill: revisionLWS("A", testRolePrefill, 37, 37, createdAt.Add(-time.Hour), 50),
-			testRoleDecode:  revisionLWS("A", testRoleDecode, 18, 19, createdAt.Add(-time.Hour), 25),
+			testRolePrefill: revisionLWS("A", testRolePrefill, 37, 37, createdAt.Add(-time.Hour), 60),
+			testRoleDecode:  revisionLWS("A", testRoleDecode, 18, 19, createdAt.Add(-time.Hour), 30),
 		},
 	}
 	parked.Roles[testRolePrefill].Status.Replicas = 38
@@ -1564,6 +1611,8 @@ func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {
 	)
 
 	assert.Equal(t, RoleReplicaState{10, 5}, state.ActiveOld.RawReadyReplicas)
+	assert.Equal(t, RoleReplicaState{50, 25}, state.ActiveOld.InitialReplicas)
+	assert.Equal(t, RoleReplicaState{60, 30}, state.AvailabilityBaseline, "a smaller drain candidate must retain the parked revision's baseline")
 	assert.Equal(t, RoleReplicaState{1, 0}, state.ActiveOld.ReadyReplicas)
 	require.Len(t, state.ParkedOld, 1)
 	assert.Equal(t, RoleReplicaState{37, 19}, state.ParkedOld[0].RawReadyReplicas)
