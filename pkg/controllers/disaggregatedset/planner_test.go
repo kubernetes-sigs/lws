@@ -266,6 +266,31 @@ func TestUsableReadyReplicasRequiresEveryRequiredRole(t *testing.T) {
 	assert.Equal(t, RoleReplicaState{1, 0}, usableReadyReplicas([]bool{true, false}, RoleReplicaState{1, 0}))
 }
 
+func TestIncompleteOldRevisionCanRetire(t *testing.T) {
+	// Broken old revisions must not strand Decode replicas. A missing Prefill
+	// cannot recover; an unready one still requires per-role availability checks.
+	for _, tc := range []struct {
+		name                     string
+		spec, surge, unavailable []int
+	}{
+		{"missing Prefill", []int{0, 1}, []int{0, 1}, []int{1, 0}},
+		{"unready Prefill", []int{1, 1}, []int{1, 1}, []int{0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := rolloutState(
+				[]int{1, 2}, tc.spec, []int{0, 1}, tc.spec, []int{0, 1},
+				[]int{1, 1}, []int{1, 1}, []int{1, 2}, configs(tc.surge, tc.unavailable),
+			)
+			state.ParkedOld[0].RequiredRoles = []bool{true, true}
+			step := ComputeNextStep(state)
+			require.NotNil(t, step)
+			assert.Equal(t, RoleReplicaState{0, 0}, step.Past)
+			assert.Equal(t, RoleReplicaState{1, 1}, step.New)
+			require.NoError(t, validateUpdateStep(state, step))
+		})
+	}
+}
+
 func TestAvailabilityFloorDoesNotChangeWithDrainCandidate(t *testing.T) {
 	// A was created for 2P/2D but is now parked at 1P/1D. The newer B
 	// candidate has a 1P/1D baseline. Selecting B must not lower the rollout's

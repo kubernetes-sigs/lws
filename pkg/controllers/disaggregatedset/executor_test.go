@@ -1744,6 +1744,42 @@ func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
 	}
 }
 
+func TestTwoReadinessIncompleteOldRevisionsConverge(t *testing.T) {
+	ctx := context.Background()
+	createdAt := time.Now()
+	objects := revisionLWSObjects("A", [2]int32{1, 2}, [2]int32{0, 2}, [2]int32{1, 2}, createdAt)
+	objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{0, 1}, [2]int32{1, 2}, createdAt.Add(time.Hour))...)
+	objects = append(objects, revisionLWSObjects("C", [2]int32{}, [2]int32{}, [2]int32{1, 2}, createdAt.Add(2*time.Hour))...)
+	fakeClient := newTestClient(objects...)
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 2}, [2]int{1, 1}, [2]int{})
+	desired := resolveDesiredReplicasByRole(ds, nil)
+
+	complete := false
+	for i := 0; i < 10 && !complete; i++ {
+		var err error
+		_, complete, err = newTestExecutor(fakeClient).ReconcileRevisionTransition(ctx, ds, 0, "C", desired)
+		require.NoError(t, err)
+
+		// Old Prefill remains broken. Target replicas become Ready and old
+		// deletions settle before the next observation.
+		var list leaderworkersetv1.LeaderWorkerSetList
+		require.NoError(t, fakeClient.List(ctx, &list))
+		for j := range list.Items {
+			lws := &list.Items[j]
+			lws.Status.Replicas = *lws.Spec.Replicas
+			if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == "C" {
+				lws.Status.ReadyReplicas = *lws.Spec.Replicas
+			} else {
+				lws.Status.ReadyReplicas = min(lws.Status.ReadyReplicas, *lws.Spec.Replicas)
+			}
+			require.NoError(t, fakeClient.Status().Update(ctx, lws))
+		}
+	}
+
+	require.True(t, complete, "a healthy target must not wait for broken old Prefill Pods to recover")
+	assertRevisionReplicas(t, fakeClient, "C", [2]int32{1, 2})
+}
+
 func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) {
 	ctx := context.Background()
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 4}, [2]int{1, 1}, [2]int{})
