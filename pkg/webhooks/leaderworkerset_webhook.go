@@ -163,19 +163,23 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 	}
 
 	var allErrs field.ErrorList
-	// Disabling the gate prevents new opt-ins, but existing scheduled objects
-	// must remain updateable so they can scale down and be deleted safely.
-	if !features.Enabled(features.WorkloadAwareScheduling) && (oldLws == nil || oldLws.Spec.Scheduling == nil) {
+	// Disabling the gate, removing the scheduler provider, or disabling the
+	// upstream API prevents new opt-ins, but existing scheduled objects must
+	// remain updateable so they can scale down and be deleted safely.
+	newOptIn := oldLws == nil || oldLws.Spec.Scheduling == nil
+	if !features.Enabled(features.WorkloadAwareScheduling) && newOptIn {
 		allErrs = append(allErrs, field.Forbidden(path, "requires the WorkloadAwareScheduling feature gate"))
 	}
 	if r.SchedulerProvider == "" {
-		allErrs = append(allErrs, field.Required(path, "requires a configured scheduler provider"))
+		if newOptIn {
+			allErrs = append(allErrs, field.Required(path, "requires a configured scheduler provider"))
+		}
 	} else if r.SchedulerProvider == schedulerprovider.Volcano {
 		allErrs = append(allErrs, validateVolcanoScheduling(lws, path)...)
 	} else if r.SchedulerProvider != schedulerprovider.Kubernetes {
 		allErrs = append(allErrs, field.NotSupported(path, r.SchedulerProvider, []string{string(schedulerprovider.Kubernetes), string(schedulerprovider.Volcano)}))
 	}
-	if r.SchedulerProvider == schedulerprovider.Kubernetes && r.RESTMapper != nil {
+	if r.SchedulerProvider == schedulerprovider.Kubernetes && r.RESTMapper != nil && newOptIn {
 		// Require scheduling.k8s.io/v1beta1 Workload and PodGroup APIs.
 		for _, resource := range []string{"Workload", "PodGroup"} {
 			if _, err := r.RESTMapper.RESTMapping(schema.GroupKind{Group: schedulingv1beta1.GroupName, Kind: resource}, schedulingv1beta1.SchemeGroupVersion.Version); err != nil {

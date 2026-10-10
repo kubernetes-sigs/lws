@@ -216,6 +216,10 @@ kubectl api-resources --api-group=scheduling.k8s.io | grep -E 'workloads|podgrou
 The output must include `workloads` and `podgroups` at version `v1beta1`.
 Then follow the [native gang scheduling quickstart](../examples/leaderworkerset/gang-scheduling/).
 
+> **Operational notes:**
+> - When `gangSchedulingManagement.schedulerProvider` is set to `kubernetes`, `lws-controller-manager` indexes and watches `scheduling.k8s.io/v1beta1` `Workload` and `PodGroup` at startup and exits if those APIs are not served (for example, if `GenericWorkload` or the `scheduling.k8s.io/v1beta1` runtime config is disabled), even for `LeaderWorkerSet` objects that do not set `spec.scheduling`. Remove the `gangSchedulingManagement` block before disabling the upstream Kubernetes APIs.
+> - Disabling `featureGates.WorkloadAwareScheduling` or removing the `gangSchedulingManagement` block rejects new `LeaderWorkerSet` objects that request `spec.scheduling`, while keeping existing opted-in objects updateable so operators can scale them down (`spec.replicas: 0`) and delete them cleanly.
+
 ## Install the latest development version
 
 To install the latest development version of LeaderWorkerSet in your cluster, run the

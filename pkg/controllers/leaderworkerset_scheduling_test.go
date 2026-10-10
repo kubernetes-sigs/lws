@@ -552,6 +552,57 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			t.Errorf("condition = %v, want False/%s", cond, schedulerprovider.ReasonInvalidSchedulingConfiguration)
 		}
 	})
+
+	t.Run("removing scheduler provider still scales down existing scheduled LWS and updates status", func(t *testing.T) {
+		lws := lwsSchedScheduledLWS()
+		lws.Spec.Replicas = ptr.To[int32](3)
+		provider := &lwsSchedFakeProvider{}
+		r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+		r.SchedulerProvider = provider
+
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("initial Reconcile() = %v, want nil", err)
+		}
+
+		// Operator removes gangSchedulingManagement.schedulerProvider and drains replicas to 0.
+		r.SchedulerProvider = nil
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws: %v", err)
+		}
+		fetched.Spec.Replicas = ptr.To[int32](0)
+		fetched.Generation = 2
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+
+		_, err := r.Reconcile(ctx, lwsSchedRequest(lws))
+		if err == nil {
+			t.Fatal("Reconcile() = nil, want missing provider error")
+		}
+		if gotReason := schedulerprovider.ReconcileErrorReason(err); gotReason != schedulerprovider.ReasonUnsupportedProviderCapability {
+			t.Errorf("ReconcileErrorReason(err) = %s, want %s", gotReason, schedulerprovider.ReasonUnsupportedProviderCapability)
+		}
+
+		sts := &appsv1.StatefulSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), sts); err != nil {
+			t.Fatalf("getting statefulset: %v", err)
+		}
+		if *sts.Spec.Replicas != 0 {
+			t.Errorf("statefulset spec.replicas = %d, want 0 after scale-down", *sts.Spec.Replicas)
+		}
+
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting updated lws: %v", err)
+		}
+		if fetched.Status.ObservedGeneration != 2 {
+			t.Errorf("status.observedGeneration = %d, want 2", fetched.Status.ObservedGeneration)
+		}
+		cond := lwsSchedGetCondition(t, k8sClient, lws)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != schedulerprovider.ReasonUnsupportedProviderCapability {
+			t.Errorf("condition = %v, want False/%s", cond, schedulerprovider.ReasonUnsupportedProviderCapability)
+		}
+	})
 }
 
 // lwsSchedRequest builds the reconcile request for lws.

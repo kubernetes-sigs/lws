@@ -328,7 +328,8 @@ func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Cont
 	}
 	if r.SchedulerProvider == nil {
 		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReasonUnsupportedProviderCapability,
-			fmt.Errorf("spec.scheduling requires a configured scheduler provider"))
+			schedulerprovider.NewReconcileError(schedulerprovider.ReasonUnsupportedProviderCapability,
+				fmt.Errorf("spec.scheduling requires a configured scheduler provider")))
 	}
 	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
 		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
