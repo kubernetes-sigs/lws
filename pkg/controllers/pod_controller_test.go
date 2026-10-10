@@ -755,7 +755,7 @@ func TestHandleRestartPolicyRespectsMaxGroupRestarts(t *testing.T) {
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
 			r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
-			deleted, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+			deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
 			if err != nil {
 				t.Fatalf("handleRestartPolicy() error = %v", err)
 			}
@@ -946,7 +946,7 @@ func TestHandleRestartPolicyRefreshesBudgetState(t *testing.T) {
 			}
 			cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
 			r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
-			if _, err := r.handleRestartPolicy(context.Background(), *staleLeader, *staleLWS); err != nil {
+			if _, _, err := r.handleRestartPolicy(context.Background(), *staleLeader, *staleLWS); err != nil {
 				t.Fatal(err)
 			}
 			var actual corev1.Pod
@@ -1040,7 +1040,7 @@ func TestExhaustedGroupFinalizesWorkersAndRecoversExplicitly(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker, otherLeader).Build()
 	r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
-	deleted, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
+	deleted, _, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
 	if err != nil {
 		t.Fatalf("handleRestartPolicy() error = %v", err)
 	}
@@ -1643,7 +1643,7 @@ func TestHandleRestartPolicyUsesCurrentWorkerOwnership(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			reconciler := PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
 
-			leaderDeleted, err := reconciler.handleRestartPolicy(context.Background(), tc.reconciledPod, *lws.DeepCopy())
+			leaderDeleted, _, err := reconciler.handleRestartPolicy(context.Background(), tc.reconciledPod, *lws.DeepCopy())
 			if err != nil {
 				t.Fatalf("handleRestartPolicy() error = %v", err)
 			}
@@ -2267,7 +2267,7 @@ func TestHashGroupRestartBudgetHandoffAndExhaustion(t *testing.T) {
 			r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
 
 			// 1. First failure consumes budget (0 -> 1) and deletes leader1.
-			deleted, err := r.handleRestartPolicy(ctx, *leader1, *lws)
+			deleted, _, err := r.handleRestartPolicy(ctx, *leader1, *lws)
 			if err != nil {
 				t.Fatalf("handleRestartPolicy(leader1) error = %v", err)
 			}
@@ -2320,7 +2320,7 @@ func TestHashGroupRestartBudgetHandoffAndExhaustion(t *testing.T) {
 			if err := fakeClient.Status().Update(ctx, leader2); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := r.handleRestartPolicy(ctx, *leader2, updatedLWS); err != nil {
+			if _, _, err := r.handleRestartPolicy(ctx, *leader2, updatedLWS); err != nil {
 				t.Fatalf("handleRestartPolicy(leader2) error = %v", err)
 			}
 
@@ -2584,4 +2584,567 @@ func TestBudgetFinalizedPodRequests(t *testing.T) {
 	if len(reqsDeleting) != 3 {
 		t.Fatalf("budgetFinalizedPodRequests(deleting) returned %d requests, want 3: %v", len(reqsDeleting), reqsDeleting)
 	}
+}
+
+func TestComputeBackoffDelay(t *testing.T) {
+	defaultBackoff := &leaderworkerset.RestartBackoff{}
+	tests := []struct {
+		name    string
+		backoff *leaderworkerset.RestartBackoff
+		count   int32
+		want    time.Duration
+	}{
+		{
+			name:    "default backoff count 0 returns base 10s",
+			backoff: defaultBackoff,
+			count:   0,
+			want:    10 * time.Second,
+		},
+		{
+			name:    "default backoff count 1 returns 20s",
+			backoff: defaultBackoff,
+			count:   1,
+			want:    20 * time.Second,
+		},
+		{
+			name:    "default backoff count 2 returns 40s",
+			backoff: defaultBackoff,
+			count:   2,
+			want:    40 * time.Second,
+		},
+		{
+			name:    "default backoff count 3 returns 80s",
+			backoff: defaultBackoff,
+			count:   3,
+			want:    80 * time.Second,
+		},
+		{
+			name:    "default backoff count 4 returns 160s",
+			backoff: defaultBackoff,
+			count:   4,
+			want:    160 * time.Second,
+		},
+		{
+			name:    "default backoff count 5 caps at 5m (300s)",
+			backoff: defaultBackoff,
+			count:   5,
+			want:    5 * time.Minute,
+		},
+		{
+			name:    "default backoff count 35 overflow protection caps at 5m",
+			backoff: defaultBackoff,
+			count:   35,
+			want:    5 * time.Minute,
+		},
+		{
+			name:    "negative count is treated as 0",
+			backoff: defaultBackoff,
+			count:   -5,
+			want:    10 * time.Second,
+		},
+		{
+			name: "custom backoff base 2s, cap 10s, count 0",
+			backoff: &leaderworkerset.RestartBackoff{
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
+			},
+			count: 0,
+			want:  2 * time.Second,
+		},
+		{
+			name: "custom backoff base 2s, cap 10s, count 2",
+			backoff: &leaderworkerset.RestartBackoff{
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
+			},
+			count: 2,
+			want:  8 * time.Second,
+		},
+		{
+			name: "custom backoff base 2s, cap 10s, count 3 caps at 10s",
+			backoff: &leaderworkerset.RestartBackoff{
+				BaseSeconds: ptr.To(int32(2)),
+				CapSeconds:  ptr.To(int32(10)),
+			},
+			count: 3,
+			want:  10 * time.Second,
+		},
+		{
+			name: "maxBackoffExponent boundary: count 30 computes 2^30 with large cap",
+			backoff: &leaderworkerset.RestartBackoff{
+				BaseSeconds: ptr.To(int32(1)),
+				CapSeconds:  ptr.To(int32(2147483647)),
+			},
+			count: 30,
+			want:  (1 << 30) * time.Second,
+		},
+		{
+			name: "maxBackoffExponent boundary: count 31 caps at capSeconds",
+			backoff: &leaderworkerset.RestartBackoff{
+				BaseSeconds: ptr.To(int32(1)),
+				CapSeconds:  ptr.To(int32(2147483647)),
+			},
+			count: 31,
+			want:  2147483647 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeBackoffDelay(tc.backoff, tc.count)
+			if got != tc.want {
+				t.Errorf("computeBackoffDelay() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = leaderworkerset.AddToScheme(scheme)
+
+	t.Run("within backoff window: delays recreation and returns RequeueAfter", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+		recorder := events.NewFakeRecorder(10)
+		r := &PodReconciler{Client: fakeClient, Record: recorder}
+
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if deleted {
+			t.Fatal("expected leader NOT to be deleted within backoff window")
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		var currentLeader corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &currentLeader); err != nil {
+			t.Fatalf("failed to get leader: %v", err)
+		}
+		if currentLeader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+			t.Fatal("expected leader to have GroupRecreatePendingAnnotationKey set")
+		}
+
+		select {
+		case ev := <-recorder.Events:
+			if !strings.Contains(ev, "GroupRestartBackoff") {
+				t.Fatalf("expected GroupRestartBackoff event, got %q", ev)
+			}
+		default:
+			t.Fatal("expected GroupRestartBackoff event to be emitted")
+		}
+
+		var updatedLWS leaderworkerset.LeaderWorkerSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+			t.Fatal(err)
+		}
+		if updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] != "" {
+			t.Fatalf("expected empty restart counts while waiting, got %q", updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+		}
+	})
+
+	t.Run("after backoff window: deletes leader and increments restart count", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-12 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if !deleted {
+			t.Fatal("expected leader to be deleted after backoff window")
+		}
+		if res.RequeueAfter != 0 {
+			t.Fatalf("expected RequeueAfter == 0, got %v", res.RequeueAfter)
+		}
+
+		var updatedLWS leaderworkerset.LeaderWorkerSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+			t.Fatal(err)
+		}
+		counts, err := parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counts["revision-a/0"] != 1 {
+			t.Fatalf("expected restart count 1, got %d", counts["revision-a/0"])
+		}
+	})
+
+	t.Run("exponential backoff for count 1", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Obj()
+		lws.Annotations = map[string]string{
+			leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`,
+		}
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-15 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if deleted {
+			t.Fatal("expected leader NOT to be deleted within count=1 backoff window")
+		}
+		if res.RequeueAfter < 4*time.Second || res.RequeueAfter > 6*time.Second {
+			t.Fatalf("expected RequeueAfter ~5s, got %v", res.RequeueAfter)
+		}
+	})
+
+	t.Run("worker pod failure triggers backoff based on leader creation timestamp", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(2).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+		leader.UID = "leader-uid"
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-3 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+
+		worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+		worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		worker.Status.Phase = corev1.PodRunning
+		worker.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if deleted {
+			t.Fatal("expected leader NOT to be deleted yet")
+		}
+		if res.RequeueAfter < 6*time.Second || res.RequeueAfter > 8*time.Second {
+			t.Fatalf("expected RequeueAfter ~7s, got %v", res.RequeueAfter)
+		}
+	})
+
+	t.Run("coexistence with MaxGroupRestarts: terminates immediately when exhausted", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			MaxGroupRestarts(1).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Obj()
+		lws.Annotations = map[string]string{
+			leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`,
+		}
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-1 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *leader, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if !deleted {
+			t.Fatal("expected leader to be terminated immediately upon budget exhaustion")
+		}
+		if res.RequeueAfter != 0 {
+			t.Fatalf("expected RequeueAfter == 0 for exhausted termination, got %v", res.RequeueAfter)
+		}
+
+		var currentLeader corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &currentLeader); err != nil {
+			t.Fatal(err)
+		}
+		if currentLeader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" {
+			t.Fatal("expected leader to be marked exhausted")
+		}
+	})
+
+	t.Run("RecreateGroupAfterStart with restartBackoff: pending replacement worker at requeue time does not drop recreation", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupAfterStart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(2).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+		leader.UID = "leader-uid"
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		leader.Annotations = map[string]string{leaderworkerset.SizeAnnotationKey: "2"}
+
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: leader.Name, Namespace: leader.Namespace, UID: "worker-sts-uid",
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+			},
+		}
+
+		worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+		worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		worker.Annotations = map[string]string{
+			leaderworkerset.SizeAnnotationKey:          "2",
+			leaderworkerset.LeaderPodNameAnnotationKey: leader.Name,
+		}
+		worker.Status.Phase = corev1.PodRunning
+		worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(workerSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, workerSts, worker).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		// 1. Worker fails (evicted/deleted). Group was fully running, so it passes the AfterStart guard.
+		deletedWorker := worker.DeepCopy()
+		deletionTimestamp := metav1.Now()
+		deletedWorker.DeletionTimestamp = &deletionTimestamp
+		deleted, res, err := r.handleRestartPolicy(context.Background(), *deletedWorker, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() error = %v", err)
+		}
+		if deleted {
+			t.Fatal("expected leader NOT to be deleted yet within backoff window")
+		}
+		if res.RequeueAfter == 0 {
+			t.Fatal("expected RequeueAfter > 0")
+		}
+
+		// Verify decision annotation is recorded on leader
+		var leaderWithAnnotation corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &leaderWithAnnotation); err != nil {
+			t.Fatal(err)
+		}
+		if leaderWithAnnotation.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+			t.Fatal("expected GroupRecreatePendingAnnotationKey set on leader")
+		}
+
+		// 2. StatefulSet replaces the worker. The replacement worker has same name, is Pending, no deletion timestamp, no restarts.
+		replacementWorker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+		replacementWorker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		replacementWorker.Annotations = map[string]string{
+			leaderworkerset.SizeAnnotationKey:          "2",
+			leaderworkerset.LeaderPodNameAnnotationKey: leader.Name,
+		}
+		replacementWorker.Status.Phase = corev1.PodPending
+		replacementWorker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(workerSts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+		if err := fakeClient.Update(context.Background(), replacementWorker); err != nil {
+			t.Fatal(err)
+		}
+
+		// 3. Requeue time arrives (simulate leader age >= backoff delay).
+		leaderWithAnnotation.CreationTimestamp = metav1.NewTime(now.Add(-12 * time.Second))
+		if err := fakeClient.Update(context.Background(), &leaderWithAnnotation); err != nil {
+			t.Fatal(err)
+		}
+
+		// Reconcile replacement worker at requeue time.
+		deleted, res, err = r.handleRestartPolicy(context.Background(), *replacementWorker, *lws.DeepCopy())
+		if err != nil {
+			t.Fatalf("handleRestartPolicy() at requeue error = %v", err)
+		}
+		if !deleted {
+			t.Fatal("expected leader to be deleted after backoff delay despite replacement worker being Pending")
+		}
+		if res.RequeueAfter != 0 {
+			t.Fatalf("expected RequeueAfter == 0, got %v", res.RequeueAfter)
+		}
+
+		// Verify leader pod is deleted
+		var currentLeader corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &currentLeader); !apierrors.IsNotFound(err) {
+			t.Fatalf("expected leader to be deleted, got err = %v", err)
+		}
+
+		// Verify restart count was incremented
+		var updatedLWS leaderworkerset.LeaderWorkerSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(lws), &updatedLWS); err != nil {
+			t.Fatal(err)
+		}
+		counts, err := parseGroupRestartCounts(updatedLWS.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counts["revision-a/0"] != 1 {
+			t.Fatalf("expected restart count 1, got %d", counts["revision-a/0"])
+		}
+	})
+
+	t.Run("leader container restart does not skip worker statefulset creation during backoff", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(2).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		leader.Spec.Hostname = leader.Name
+		leader.Spec.Subdomain = lws.Name
+
+		tempClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		revision, err := revisionutils.NewRevision(context.Background(), tempClient, lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(revision)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, revision, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		res, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		var workerSts appsv1.StatefulSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &workerSts); err != nil {
+			t.Fatalf("expected worker StatefulSet to be created during backoff, got %v", err)
+		}
+	})
+
+	t.Run("size == 1: leader container restart propagates backoff and does not drop on watch update", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(1).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		leader.Spec.Hostname = leader.Name
+		leader.Spec.Subdomain = lws.Name
+
+		tempClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		revision, err := revisionutils.NewRevision(context.Background(), tempClient, lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(revision)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, revision, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		// 1. Initial reconcile on leader container restart
+		res, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		// Verify pending annotation is set on leader
+		var leaderWithAnnotation corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &leaderWithAnnotation); err != nil {
+			t.Fatal(err)
+		}
+		if leaderWithAnnotation.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+			t.Fatal("expected GroupRecreatePendingAnnotationKey to be set on leader")
+		}
+
+		// 2. Re-entrant reconcile triggered by watch update from annotation write
+		res, err = r.reconcilePod(context.Background(), podReconcileRequestForPod(&leaderWithAnnotation, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() on watch update error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s preserved on watch update, got %v", res.RequeueAfter)
+		}
+	})
+
+	t.Run("startupPolicy: LeaderReady with unready leader container restart propagates backoff", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy).
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(2).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+		}
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		leader.Spec.Hostname = leader.Name
+		leader.Spec.Subdomain = lws.Name
+
+		tempClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		revision, err := revisionutils.NewRevision(context.Background(), tempClient, lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(revision)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, revision, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		res, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		// Ensure worker statefulset was not created because leader is unready
+		var workerSts appsv1.StatefulSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &workerSts); !apierrors.IsNotFound(err) {
+			t.Fatalf("expected worker StatefulSet not to be created for unready leader, got err = %v", err)
+		}
+	})
 }

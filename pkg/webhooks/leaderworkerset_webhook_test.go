@@ -257,6 +257,150 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	}
 }
 
+func TestGeneralValidateRestartBackoff(t *testing.T) {
+	tests := []struct {
+		name      string
+		lws       *v1.LeaderWorkerSet
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil RestartBackoff is always allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with RecreateGroupOnPodRestart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with RecreateGroupAfterStart is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupAfterStart).
+				RestartBackoff(ptr.To(int32(5)), ptr.To(int32(60))).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with None policy is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.NoneRestartPolicy).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "restartBackoff is only supported when restartPolicy recreates the group",
+		},
+		{
+			name: "RestartBackoff with non-positive Base is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(0)), ptr.To(int32(300))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "must be greater than 0",
+		},
+		{
+			name: "RestartBackoff with non-positive Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(10)), ptr.To(int32(-1))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "must be greater than 0",
+		},
+		{
+			name: "RestartBackoff with Base > Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(600)), ptr.To(int32(300))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "baseSeconds must not be greater than capSeconds",
+		},
+		{
+			name: "RestartBackoff with nil Base and Cap < default Base is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(nil, ptr.To(int32(5))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "baseSeconds must not be greater than capSeconds",
+		},
+		{
+			name: "RestartBackoff with Base > default Cap and nil Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(600)), nil).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "baseSeconds must not be greater than capSeconds",
+		},
+		{
+			name: "RestartBackoff with valid single-field Base is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(20)), nil).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with valid single-field Cap is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(nil, ptr.To(int32(60))).
+				Obj(),
+			wantErr: false,
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := r.generalValidate(tc.lws)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatalf("expected validation error, got none")
+				}
+				joined := ""
+				for _, e := range errs {
+					joined += e.Error() + "\n"
+				}
+				if !strings.Contains(joined, tc.errSubstr) {
+					t.Fatalf("expected error to contain %q, got %q", tc.errSubstr, joined)
+				}
+			} else if len(errs) != 0 {
+				t.Fatalf("unexpected validation error: %v", errs.ToAggregate())
+			}
+		})
+	}
+}
+
+func TestRestartBackoffDefaulting(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		RestartPolicy(v1.RecreateGroupOnPodRestart).
+		Obj()
+	lws.Spec.LeaderWorkerTemplate.RestartBackoff = &v1.RestartBackoff{}
+
+	if err := r.Default(context.Background(), lws); err != nil {
+		t.Fatalf("unexpected defaulting error: %v", err)
+	}
+
+	backoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff
+	if backoff.BaseSeconds == nil || *backoff.BaseSeconds != v1.DefaultRestartBackoffBaseSeconds {
+		t.Errorf("expected default BaseSeconds %d, got %v", v1.DefaultRestartBackoffBaseSeconds, backoff.BaseSeconds)
+	}
+	if backoff.CapSeconds == nil || *backoff.CapSeconds != v1.DefaultRestartBackoffCapSeconds {
+		t.Errorf("expected default CapSeconds %d, got %v", v1.DefaultRestartBackoffCapSeconds, backoff.CapSeconds)
+	}
+}
+
 func TestLeaderWorkerSetValidation(t *testing.T) {
 	webhook := &LeaderWorkerSetWebhook{}
 	ctx := context.Background()

@@ -516,6 +516,20 @@ relies on deleted Pods reaching a terminal phase while finalizers retain
 their API objects.</p>
 </td>
 </tr>
+<tr><td><code>restartBackoff</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-RestartBackoff"><code>RestartBackoff</code></a>
+</td>
+<td>
+   <p>restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+or RecreateGroupAfterStart. When specified, the controller applies an exponential
+backoff delay between group recreations.
+The semantic is that a group must have existed for at least min(baseSeconds * 2^count, capSeconds)
+before it can be recreated. The delay is measured from leader pod creation time,
+not from the failure time, so a group that has run stably for longer than the backoff
+delay recovers immediately on failure.
+It is opt-in: when unset (nil), group recreation happens immediately.</p>
+</td>
+</tr>
 <tr><td><code>subGroupPolicy</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPolicy"><code>SubGroupPolicy</code></a>
 </td>
@@ -565,6 +579,41 @@ the VolumeClaimTemplates.</p>
 <td>
    <p>subdomainPolicy determines the policy that will be used when creating
 the headless service, defaults to shared</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `RestartBackoff`     {#leaderworkerset-x-k8s-io-v1-RestartBackoff}
+    
+
+**Appears in:**
+
+- [LeaderWorkerTemplate](#leaderworkerset-x-k8s-io-v1-LeaderWorkerTemplate)
+
+
+<p>RestartBackoff defines the exponential backoff configuration for group recreation.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>baseSeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>baseSeconds is the initial backoff delay in seconds before group recreation.
+Defaults to 10.</p>
+</td>
+</tr>
+<tr><td><code>capSeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>capSeconds is the maximum backoff delay in seconds before group recreation.
+Defaults to 300.</p>
 </td>
 </tr>
 </tbody>

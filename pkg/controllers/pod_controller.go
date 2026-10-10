@@ -103,6 +103,24 @@ func NewPodReconciler(client client.Client, schema *runtime.Scheme, record event
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 
+func mergeResult(r1, r2 ctrl.Result) ctrl.Result {
+	res := ctrl.Result{
+		Requeue: r1.Requeue || r2.Requeue,
+	}
+	if r1.RequeueAfter > 0 && r2.RequeueAfter > 0 {
+		if r1.RequeueAfter < r2.RequeueAfter {
+			res.RequeueAfter = r1.RequeueAfter
+		} else {
+			res.RequeueAfter = r2.RequeueAfter
+		}
+	} else if r1.RequeueAfter > 0 {
+		res.RequeueAfter = r1.RequeueAfter
+	} else {
+		res.RequeueAfter = r2.RequeueAfter
+	}
+	return res
+}
+
 func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
 	if req.DeletedPod != nil {
@@ -170,11 +188,18 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		_, err = r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &pod)
 		return ctrl.Result{}, err
 	}
-
 	// Worker Pods need no reconciliation unless they triggered restart-policy
-	// handling. Avoid looking up a ControllerRevision on routine worker updates.
+	// handling or their group has a pending recreation. Avoid looking up a
+	// ControllerRevision on routine worker updates.
 	if !podutils.LeaderPod(pod) && !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
-		return ctrl.Result{}, nil
+		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+		if leaderPodName == "" {
+			leaderPodName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		}
+		var leader corev1.Pod
+		if leaderPodName == "" || r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader) != nil || leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// RestartPolicy is part of the revisioned LeaderWorkerTemplate. Resolve the
@@ -193,7 +218,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 
-	leaderDeleted, err := r.handleRestartPolicy(ctx, pod, *groupLws)
+	leaderDeleted, backoffResult, err := r.handleRestartPolicy(ctx, pod, *groupLws)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -203,7 +228,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	// worker pods' reconciliation is only done to handle restart policy
 	if !podutils.LeaderPod(pod) {
-		return ctrl.Result{}, nil
+		return backoffResult, nil
 	}
 
 	// validate leader's annotations to prevent infinite StatefulSet creation loops
@@ -264,13 +289,13 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			return ctrl.Result{}, err
 		}
 		if !admitted {
-			return ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, nil
+			return mergeResult(ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, backoffResult), nil
 		}
 	}
 
 	// Once size = 1, no need to create worker statefulSets.
 	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
-		return ctrl.Result{}, nil
+		return backoffResult, nil
 	}
 
 	hashIdentity := leaderWorkerSet.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash
@@ -286,12 +311,12 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		if !leaderStarted {
 			log.V(2).Info("defer the creation of the worker statefulset because leader pod is not ready.")
-			return ctrl.Result{}, nil
+			return backoffResult, nil
 		}
 	}
 	if revision == nil {
 		log.V(2).Info(fmt.Sprintf("Revision has not been created yet, requeing reconciler for pod %s", pod.Name))
-		return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
+		return mergeResult(ctrl.Result{Requeue: true, RequeueAfter: time.Second}, backoffResult), nil
 	}
 	// Leader pods always have a DNS identity: the statefulset controller
 	// assigns it in ordinal mode, admission in hash mode. The worker statefulset
@@ -320,7 +345,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		// check if the leader pod is scheduled.
 		if pod.Spec.NodeName == "" {
 			log.V(2).Info(fmt.Sprintf("Pod %q is not scheduled yet", pod.Name))
-			return ctrl.Result{}, nil
+			return backoffResult, nil
 		}
 		if err := r.setNodeSelectorForWorkerPods(ctx, &pod, statefulSet, topologyKey); err != nil {
 			log.Error(err, "setting node selector for worker pods")
@@ -357,8 +382,9 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
 			if client.IgnoreAlreadyExists(err) != nil {
 				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create worker statefulset for leader pod %s: %v", pod.Name, err))
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, client.IgnoreAlreadyExists(err)
+			return backoffResult, nil
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
@@ -377,7 +403,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 	log.V(2).Info("Worker Reconcile completed.")
-	return ctrl.Result{}, nil
+	return backoffResult, nil
 }
 
 // recreateGroupSplitByUpgrade recreates the group of leader if an LWS upgrade
@@ -457,36 +483,26 @@ func (r *PodReconciler) syncGroupReadyCondition(ctx context.Context, pod *corev1
 	return r.Status().Patch(ctx, newPod, client.MergeFrom(pod))
 }
 
-func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, error) {
+func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	policy := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy
 	if policy != leaderworkerset.RecreateGroupOnPodRestart && policy != leaderworkerset.RecreateGroupAfterStart {
-		return false, nil
-	}
-	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
-	if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
-		return false, nil
-	}
-
-	// Old groups keep their original size during a rollout that changes it.
-	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-		groupSize = size
-	}
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
-	if err != nil {
-		return false, err
-	}
-
-	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
-
-	if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
-		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-		return false, nil
+		return false, ctrl.Result{}, nil
 	}
 
 	var leader corev1.Pod
-	if !podutils.LeaderPod(pod) {
+	if podutils.LeaderPod(pod) {
+		// Re-read the leader pod to ensure we use the latest annotations/status.
+		if err := r.Get(ctx, client.ObjectKeyFromObject(&pod), &leader); err != nil {
+			// The leader is already gone, so the recreate it belonged to is done.
+			return true, ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if leader.UID != pod.UID {
+			// A same-name replacement leader already exists; do not act on it on
+			// behalf of the previous group.
+			return false, ctrl.Result{}, nil
+		}
+	} else {
 		// Prefer the annotation over name parsing: with hash identity the leader
 		// name is not ordinal-derived.
 		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
@@ -494,91 +510,160 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			var ordinal int
 			leaderPodName, ordinal = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 			if ordinal == -1 {
-				return false, fmt.Errorf("parsing pod name for pod %s", pod.Name)
+				return false, ctrl.Result{}, fmt.Errorf("parsing pod name for pod %s", pod.Name)
 			}
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
 			// If the error is not found, it is likely caused by the fact that the leader was deleted but the worker statefulset
 			// deletion hasn't deleted all the worker pods
-			return false, client.IgnoreNotFound(err)
+			return false, ctrl.Result{}, client.IgnoreNotFound(err)
 		}
+	}
+
+	isRecreatePending := leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
+
+	if !isRecreatePending {
+		// the leader pod will be deleted if the worker pod is deleted or any container was restarted
+		if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
+			return false, ctrl.Result{}, nil
+		}
+
+		// Old groups keep their original size during a rollout that changes it.
+		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+			groupSize = size
+		}
+		pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
+
+		_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+
+		if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
+			log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+			return false, ctrl.Result{}, nil
+		}
+	}
+
+	if !podutils.LeaderPod(pod) {
 		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
 		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
-			return false, nil
+			return false, ctrl.Result{}, nil
 		}
 		// Ignore worker pods from a stale worker StatefulSet (or test-owned direct pod) so
 		// background deletion of the previous group does not recreate the replacement leader again.
 		currentGroupWorkerPod, err := r.workerPodBelongsToLeader(ctx, pod, leader)
 		if err != nil {
-			return false, err
+			return false, ctrl.Result{}, err
 		}
 		if !currentGroupWorkerPod {
-			return false, nil
+			return false, ctrl.Result{}, nil
 		}
-	} else {
-		leader = pod
 	}
-	// The caller's objects may come from a lagging cache snapshot. Re-read the
-	// leader and the LWS so that budget enforcement below uses the persisted
-	// restart count and the leader's current annotations; a stale count would
-	// let the group restart past MaxGroupRestarts.
-	freshLeader := corev1.Pod{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(&leader), &freshLeader); err != nil {
-		// The leader is already gone, so the recreate it belonged to is done.
-		return true, client.IgnoreNotFound(err)
-	}
-	if freshLeader.UID != leader.UID {
-		// A same-name replacement leader already exists; do not act on it on
-		// behalf of the previous group.
-		return false, nil
-	}
-	leader = freshLeader
+
 	var freshLWS leaderworkerset.LeaderWorkerSet
 	if err := r.Get(ctx, client.ObjectKeyFromObject(&leaderWorkerSet), &freshLWS); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return false, err
+			return false, ctrl.Result{}, err
 		}
 		// The LWS disappeared after the caller read it. Release any retained
 		// Pods and stop here; the stale LWS must not trigger group recreation.
 		if podutils.LeaderPod(pod) {
-			return true, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &leader)
+			return true, ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &leader)
 		}
-		return true, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
+		return true, ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
 	leaderWorkerSet = freshLWS
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
-		return true, nil
+		return true, ctrl.Result{}, nil
 	}
 	// An exhausted group is terminated once and then held by Pod finalizers until
 	// explicit recovery or workload teardown.
 	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
-		return r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+		deleted, err := r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+		return deleted, ctrl.Result{}, err
 	}
-	// If a restart budget is configured, enforce it: any recreate-triggering
-	// failure contributes to the same counter. nil keeps the unbounded legacy
-	// behavior.
-	if leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
-		count, err := r.getPersistedGroupRestartCount(&leaderWorkerSet, &leader)
+	// If a restart budget or backoff is configured, enforce it: any recreate-triggering
+	// failure contributes to the same counter.
+	maxGroupRestarts := leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+	restartBackoff := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartBackoff
+
+	var count int32
+	if maxGroupRestarts != nil || restartBackoff != nil {
+		var err error
+		count, err = r.getPersistedGroupRestartCount(&leaderWorkerSet, &leader)
 		if err != nil {
-			return false, fmt.Errorf("reading persisted group restart count for %s: %w", leader.Name, err)
+			return false, ctrl.Result{}, fmt.Errorf("reading persisted group restart count for %s: %w", leader.Name, err)
 		}
-		limit := *leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
-		if count >= limit {
-			return r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+		if maxGroupRestarts != nil && count >= *maxGroupRestarts {
+			deleted, err := r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
+			return deleted, ctrl.Result{}, err
+		}
+		if restartBackoff != nil {
+			delay := computeBackoffDelay(restartBackoff, count)
+			if !leader.CreationTimestamp.IsZero() {
+				elapsed := time.Since(leader.CreationTimestamp.Time)
+				if elapsed < delay {
+					requeueAfter := delay - elapsed
+					log.V(2).Info("Backing off group recreation", "leader", leader.Name, "requeueAfter", requeueAfter, "restartCount", count)
+					if leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+						patch := client.MergeFrom(leader.DeepCopy())
+						if leader.Annotations == nil {
+							leader.Annotations = make(map[string]string)
+						}
+						// Mark that a recreation decision has been made and is pending backoff.
+						// The annotation is cleaned up automatically when the leader pod is deleted during recreation.
+						leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] = time.Now().Format(time.RFC3339)
+						if err := r.Patch(ctx, &leader, patch); err != nil {
+							return false, ctrl.Result{}, err
+						}
+						r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, GroupRestartBackoff, Update,
+							fmt.Sprintf("Backing off recreation of group %s for %v (restart count %d)",
+								leader.Labels[leaderworkerset.GroupIndexLabelKey], requeueAfter, count))
+					}
+					return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
+				}
+			}
 		}
 		if err := r.persistGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
-			return false, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
+			return false, ctrl.Result{}, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 		}
 	}
 	deletionOpt := metav1.DeletePropagationForeground
 	if err := r.Delete(ctx, &leader, &client.DeleteOptions{
 		PropagationPolicy: &deletionOpt,
 	}); err != nil {
-		return false, err
+		return false, ctrl.Result{}, err
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
-	return true, nil
+	return true, ctrl.Result{}, nil
+}
+
+// maxBackoffExponent prevents bit-shift overflow when computing base * (1 << count).
+const maxBackoffExponent = 31
+
+func computeBackoffDelay(backoff *leaderworkerset.RestartBackoff, count int32) time.Duration {
+	baseSeconds := int64(leaderworkerset.DefaultRestartBackoffBaseSeconds)
+	if backoff.BaseSeconds != nil && *backoff.BaseSeconds > 0 {
+		baseSeconds = int64(*backoff.BaseSeconds)
+	}
+	capSeconds := int64(leaderworkerset.DefaultRestartBackoffCapSeconds)
+	if backoff.CapSeconds != nil && *backoff.CapSeconds > 0 {
+		capSeconds = int64(*backoff.CapSeconds)
+	}
+	if count < 0 {
+		count = 0
+	}
+	if count >= maxBackoffExponent {
+		return time.Duration(capSeconds) * time.Second
+	}
+	delaySeconds := baseSeconds * (int64(1) << count)
+	if delaySeconds > capSeconds || delaySeconds <= 0 {
+		return time.Duration(capSeconds) * time.Second
+	}
+	return time.Duration(delaySeconds) * time.Second
 }
 
 func parseGroupRestartCounts(raw string) (map[string]int32, error) {
@@ -616,6 +701,10 @@ func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.Leade
 }
 
 func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
+	// Note: When only restartBackoff is configured (without maxGroupRestarts),
+	// this counter increases with each recreation without an upper bound.
+	// This is expected; computeBackoffDelay caps exponentiation at maxBackoffExponent
+	// and returns capSeconds for higher counts.
 	key := client.ObjectKeyFromObject(lws)
 	countKey := groupRestartCountKey(leader)
 	return mutateGroupRestartCounts(ctx, r.Client, key, func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
@@ -1016,7 +1105,7 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 				return false, nil
 			}
 		}
-		if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil {
+		if lws.Spec.LeaderWorkerTemplate.MaxGroupRestarts != nil || lws.Spec.LeaderWorkerTemplate.RestartBackoff != nil {
 			if err := r.claimGroupRestartCountForHashLeader(ctx, lws, pod); err != nil {
 				return false, err
 			}

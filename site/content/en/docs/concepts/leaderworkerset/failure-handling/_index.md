@@ -104,3 +104,26 @@ Editing or unsetting `maxGroupRestarts`, or deleting retained Pods, does not
 recover an exhausted group. LWS deletion, scale-down, and selecting the group
 for replacement during a rollout remove retained objects as normal lifecycle
 cleanup rather than starting recovery.
+
+## Group Restart Backoff
+
+For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, set `restartBackoff` to space out tight recreation loops by applying an exponential backoff delay before recreating each replica group:
+
+```yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: example
+spec:
+  leaderWorkerTemplate:
+    restartPolicy: RecreateGroupOnPodRestart
+    restartBackoff:
+      baseSeconds: 10
+      capSeconds: 300
+```
+
+- **Delay Calculation:** The backoff delay is computed as `min(baseSeconds * 2^count, capSeconds)`. The default `baseSeconds` is 10 and `capSeconds` is 300.
+- **Clock Semantics:** The delay enforces that a group must have existed for at least `min(baseSeconds * 2^count, capSeconds)` before it can be recreated. The delay is measured from **leader Pod creation time**, not from the failure time. A group that has run stably for longer than the computed delay recovers immediately on failure, providing a reset mechanism analogous to CrashLoopBackOff.
+- **Shared Restart Counter:** `restartBackoff` reads and increments the same per-group restart counter as `maxGroupRestarts`. Both features can be used together: `restartBackoff` spaces out recreations while `maxGroupRestarts` places an upper bound on total automatic recreation attempts.
+- **Worker Failure During Backoff:** When a recreation is triggered by a deleted worker and deferred by backoff, the leader pod remains until the backoff delay elapses before deleting the group. While deferred, LWS emits a `GroupRestartBackoff` event on the LeaderWorkerSet with the remaining delay and restart count.
+

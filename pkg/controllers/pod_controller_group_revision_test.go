@@ -194,7 +194,7 @@ func TestHandleRestartPolicyUsesGroupSize(t *testing.T) {
 	deleting := workers[0].DeepCopy()
 	now := metav1.Now()
 	deleting.DeletionTimestamp = &now
-	leaderDeleted, err := reconciler.handleRestartPolicy(context.Background(), *deleting, *lws.DeepCopy())
+	leaderDeleted, _, err := reconciler.handleRestartPolicy(context.Background(), *deleting, *lws.DeepCopy())
 	if err != nil {
 		t.Fatalf("handleRestartPolicy() error = %v", err)
 	}

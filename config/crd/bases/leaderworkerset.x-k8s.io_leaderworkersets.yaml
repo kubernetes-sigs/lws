@@ -9033,6 +9033,34 @@ spec:
                           the replica count to be deleted.
                         type: string
                     type: object
+                  restartBackoff:
+                    description: |-
+                      restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
+                      or RecreateGroupAfterStart. When specified, the controller applies an exponential
+                      backoff delay between group recreations.
+                      The semantic is that a group must have existed for at least min(baseSeconds * 2^count, capSeconds)
+                      before it can be recreated. The delay is measured from leader pod creation time,
+                      not from the failure time, so a group that has run stably for longer than the backoff
+                      delay recovers immediately on failure.
+                      It is opt-in: when unset (nil), group recreation happens immediately.
+                    properties:
+                      baseSeconds:
+                        default: 10
+                        description: |-
+                          baseSeconds is the initial backoff delay in seconds before group recreation.
+                          Defaults to 10.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      capSeconds:
+                        default: 300
+                        description: |-
+                          capSeconds is the maximum backoff delay in seconds before group recreation.
+                          Defaults to 300.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
                   restartPolicy:
                     default: RecreateGroupOnPodRestart
                     description: |-

@@ -89,6 +89,9 @@ const (
 	GroupReplacementDeferred = "GroupReplacementDeferred"
 	GroupReplacementAdmitted = "GroupReplacementAdmitted"
 
+	// GroupRestartBackoff indicates that group recreation is delayed by restart backoff.
+	GroupRestartBackoff = "GroupRestartBackoff"
+
 	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
 	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
 
