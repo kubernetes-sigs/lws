@@ -410,10 +410,24 @@ func ValidateRestartBackoff(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 			"must be greater than 0",
 		))
 	}
-	if baseSeconds != nil && capSeconds != nil && *baseSeconds > 0 && *capSeconds > 0 && *baseSeconds > *capSeconds {
+	effectiveBase := v1.DefaultRestartBackoffBaseSeconds
+	if baseSeconds != nil {
+		effectiveBase = *baseSeconds
+	}
+	effectiveCap := v1.DefaultRestartBackoffCapSeconds
+	if capSeconds != nil {
+		effectiveCap = *capSeconds
+	}
+	if effectiveBase > 0 && effectiveCap > 0 && effectiveBase > effectiveCap {
+		badPath := backoffPath.Child("baseSeconds")
+		badVal := any(effectiveBase)
+		if baseSeconds == nil {
+			badPath = backoffPath.Child("capSeconds")
+			badVal = effectiveCap
+		}
 		allErrs = append(allErrs, field.Invalid(
-			backoffPath.Child("baseSeconds"),
-			*baseSeconds,
+			badPath,
+			badVal,
 			"baseSeconds must not be greater than capSeconds",
 		))
 	}

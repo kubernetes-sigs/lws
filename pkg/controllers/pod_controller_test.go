@@ -3033,4 +3033,101 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 			t.Fatalf("expected worker StatefulSet to be created during backoff, got %v", err)
 		}
 	})
+
+	t.Run("size == 1: leader container restart propagates backoff and does not drop on watch update", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(1).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		leader.Spec.Hostname = leader.Name
+		leader.Spec.Subdomain = lws.Name
+
+		tempClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		revision, err := revisionutils.NewRevision(context.Background(), tempClient, lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(revision)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, revision, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		// 1. Initial reconcile on leader container restart
+		res, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		// Verify pending annotation is set on leader
+		var leaderWithAnnotation corev1.Pod
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &leaderWithAnnotation); err != nil {
+			t.Fatal(err)
+		}
+		if leaderWithAnnotation.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+			t.Fatal("expected GroupRecreatePendingAnnotationKey to be set on leader")
+		}
+
+		// 2. Re-entrant reconcile triggered by watch update from annotation write
+		res, err = r.reconcilePod(context.Background(), podReconcileRequestForPod(&leaderWithAnnotation, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() on watch update error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s preserved on watch update, got %v", res.RequeueAfter)
+		}
+	})
+
+	t.Run("startupPolicy: LeaderReady with unready leader container restart propagates backoff", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").
+			StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy).
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
+			RestartBackoff(ptr.To(int32(10)), ptr.To(int32(300))).
+			Size(2).
+			Obj()
+
+		now := time.Now()
+		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+		leader.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Second))
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+		}
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		leader.Spec.Hostname = leader.Name
+		leader.Spec.Subdomain = lws.Name
+
+		tempClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		revision, err := revisionutils.NewRevision(context.Background(), tempClient, lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(revision)
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, revision, leader).Build()
+		r := &PodReconciler{Client: fakeClient, Scheme: scheme, Record: fakeEventRecorder{}}
+
+		res, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false))
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
+		}
+
+		// Ensure worker statefulset was not created because leader is unready
+		var workerSts appsv1.StatefulSet
+		if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leader), &workerSts); !apierrors.IsNotFound(err) {
+			t.Fatalf("expected worker StatefulSet not to be created for unready leader, got err = %v", err)
+		}
+	})
 }

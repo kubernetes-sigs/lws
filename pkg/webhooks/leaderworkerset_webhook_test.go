@@ -323,6 +323,40 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "baseSeconds must not be greater than capSeconds",
 		},
+		{
+			name: "RestartBackoff with nil Base and Cap < default Base is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(nil, ptr.To(int32(5))).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "baseSeconds must not be greater than capSeconds",
+		},
+		{
+			name: "RestartBackoff with Base > default Cap and nil Cap is rejected",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(600)), nil).
+				Obj(),
+			wantErr:   true,
+			errSubstr: "baseSeconds must not be greater than capSeconds",
+		},
+		{
+			name: "RestartBackoff with valid single-field Base is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(ptr.To(int32(20)), nil).
+				Obj(),
+			wantErr: false,
+		},
+		{
+			name: "RestartBackoff with valid single-field Cap is allowed",
+			lws: wrappers.BuildLeaderWorkerSet("default").
+				RestartPolicy(v1.RecreateGroupOnPodRestart).
+				RestartBackoff(nil, ptr.To(int32(60))).
+				Obj(),
+			wantErr: false,
+		},
 	}
 
 	r := &LeaderWorkerSetWebhook{}
