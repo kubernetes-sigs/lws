@@ -61,6 +61,13 @@ func HasSchedulingGate(pod *corev1.Pod, name string) bool {
 	return false
 }
 
+// PodUnschedulable reports whether the scheduler tried and failed to place the
+// pod. A pod held by a scheduling gate has not been tried yet and does not count.
+func PodUnschedulable(pod corev1.Pod) bool {
+	_, condition := GetPodCondition(&pod.Status, corev1.PodScheduled)
+	return condition != nil && condition.Status == corev1.ConditionFalse && condition.Reason != corev1.PodReasonSchedulingGated
+}
+
 func LeaderPod(pod corev1.Pod) bool {
 	return pod.Labels[leaderworkerset.WorkerIndexLabelKey] == "0"
 }

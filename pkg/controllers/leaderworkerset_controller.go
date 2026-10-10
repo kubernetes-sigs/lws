@@ -88,6 +88,9 @@ const (
 	// gated hash-identity leader is held back or admitted for scheduling.
 	GroupReplacementDeferred = "GroupReplacementDeferred"
 	GroupReplacementAdmitted = "GroupReplacementAdmitted"
+	// GroupUnschedulable reports a group with a member the scheduler could not
+	// place, for example a gang waiting for capacity.
+	GroupUnschedulable = "GroupUnschedulable"
 
 	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
 	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
@@ -430,6 +433,13 @@ func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 			if e.ObjectOld == nil {
 				return false
 			}
+			// The Progressing reason reports unschedulable leaders, and a scheduling
+			// result changes no StatefulSet status that would otherwise requeue the LWS.
+			oldPod, oldOK := e.ObjectOld.(*corev1.Pod)
+			newPod, newOK := e.ObjectNew.(*corev1.Pod)
+			if oldOK && newOK && podutils.PodUnschedulable(*oldPod) != podutils.PodUnschedulable(*newPod) {
+				return true
+			}
 			return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
 				e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
 		},
@@ -631,6 +641,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	updateStatus := false
 	readyCount, updatedCount := 0, 0
 	readyNonDegradedCount, degradedGroupCount, desiredDegradedGroupCount := 0, 0, 0
+	unschedulableGroupCount := 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -640,6 +651,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		index, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 		if err != nil {
 			return false, false, err
+		}
+		if index < int(*lws.Spec.Replicas) && pod.DeletionTimestamp == nil && podutils.PodUnschedulable(pod) {
+			unschedulableGroupCount++
 		}
 		degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
 		if degraded {
@@ -737,6 +751,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	} else {
 		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetDegraded, lws, "AsExpected", "No replica has exhausted its restart budget"))
 	}
+	explainUnschedulableGroups(conditions, unschedulableGroupCount)
 
 	// updateDone is true when all replicas are updated and ready
 	updateDone := (lwsPartition == 0) && partitionedUpdatedAndReadyCount == int(*lws.Spec.Replicas)
@@ -1183,6 +1198,21 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 	return condition
 }
 
+// explainUnschedulableGroups gives a Progressing=True condition the reason
+// GroupUnschedulable when the scheduler could not place some desired groups,
+// so that a group waiting for capacity does not look like a normal startup.
+func explainUnschedulableGroups(conditions []metav1.Condition, unschedulableGroups int) {
+	if unschedulableGroups == 0 {
+		return
+	}
+	for i := range conditions {
+		if conditions[i].Type == string(leaderworkerset.LeaderWorkerSetProgressing) && conditions[i].Status == metav1.ConditionTrue {
+			conditions[i].Reason = GroupUnschedulable
+			conditions[i].Message = fmt.Sprintf("%d replica(s) cannot be scheduled", unschedulableGroups)
+		}
+	}
+}
+
 func makeFalseCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet, reason, message string) metav1.Condition {
 	condition := makeCondition(conditionType, lws)
 	condition.Status = metav1.ConditionFalse
@@ -1243,6 +1273,13 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
 				lws.Status.Conditions[i].LastTransitionTime = now
 				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				if lws.Status.Conditions[i].Reason == GroupUnschedulable {
+					// The unschedulable count only describes a Progressing LWS; do not
+					// leave it on the condition once the LWS is Available.
+					defaults := makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+					lws.Status.Conditions[i].Reason = defaults.Reason
+					lws.Status.Conditions[i].Message = defaults.Message
+				}
 				shouldUpdate = true
 			}
 		}

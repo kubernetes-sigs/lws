@@ -363,3 +363,30 @@ func TestGetPodCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestPodUnschedulable(t *testing.T) {
+	podScheduled := func(status corev1.ConditionStatus, reason string) corev1.Pod {
+		return corev1.Pod{Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: status, Reason: reason}},
+		}}
+	}
+	tests := []struct {
+		name string
+		pod  corev1.Pod
+		want bool
+	}{
+		{name: "no PodScheduled condition yet", pod: corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}},
+		{name: "scheduled and starting", pod: podScheduled(corev1.ConditionTrue, "")},
+		{name: "held by a scheduling gate", pod: podScheduled(corev1.ConditionFalse, corev1.PodReasonSchedulingGated)},
+		{name: "rejected by the scheduler", pod: podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable), want: true},
+		{name: "not scheduled for another reason", pod: podScheduled(corev1.ConditionFalse, "SchedulerError"), want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PodUnschedulable(tc.pod); got != tc.want {
+				t.Errorf("PodUnschedulable() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
