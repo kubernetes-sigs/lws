@@ -135,6 +135,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			// The LWS may disappear before its terminating Pods. Release our
 			// finalizers so garbage collection can finish without the LWS.
 			if podutils.LeaderPod(pod) {
+				if r.isParallelPodTermination(&pod, nil) && pod.DeletionTimestamp != nil {
+					if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
 				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 			}
 			return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
@@ -146,6 +151,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// without clearing restart accounting or creating a replacement group.
 	if leaderWorkerSet.DeletionTimestamp != nil {
 		if podutils.LeaderPod(pod) {
+			if r.isParallelPodTermination(&pod, &leaderWorkerSet) && pod.DeletionTimestamp != nil {
+				if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
 			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 		}
 		return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
@@ -169,6 +179,13 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		_, err = r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &pod)
 		return ctrl.Result{}, err
+	}
+	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil {
+		if r.isParallelPodTermination(&pod, &leaderWorkerSet) {
+			if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	// Worker Pods need no reconciliation unless they triggered restart-policy
@@ -360,6 +377,10 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
+		if workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
+			log.V(2).Info("waiting for old worker statefulset to be completely deleted before creating a new one", "workerSts", workerSts.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		recreated, err := r.recreateGroupSplitByUpgrade(ctx, &leaderWorkerSet, &pod, &workerSts)
 		if err != nil || recreated {
 			return ctrl.Result{}, err
@@ -1276,6 +1297,38 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, 
 		}
 	}
 	return false, nil
+}
+
+// isParallelPodTermination checks if parallel pod termination is configured either
+// on the LeaderWorkerSet spec or via the leader pod's annotation.
+func (r *PodReconciler) isParallelPodTermination(leaderPod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) bool {
+	if lws != nil && lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
+		return true
+	}
+	if leaderPod != nil && leaderPod.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey] == string(leaderworkerset.ParallelPodTerminationPolicy) {
+		return true
+	}
+	return false
+}
+
+// deleteWorkerStatefulSetIfExists deletes the worker StatefulSet corresponding to a leader pod
+// with foreground deletion propagation so that leader and worker pods terminate concurrently.
+func (r *PodReconciler) deleteWorkerStatefulSetIfExists(ctx context.Context, leaderPod *corev1.Pod) error {
+	var workerSts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(leaderPod), Namespace: leaderPod.Namespace}, &workerSts); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if workerSts.DeletionTimestamp != nil {
+		return nil
+	}
+	if !metav1.IsControlledBy(&workerSts, leaderPod) {
+		return nil
+	}
+	propagation := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, &workerSts, &client.DeleteOptions{PropagationPolicy: &propagation}); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	return nil
 }
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet

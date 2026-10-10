@@ -457,3 +457,72 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestPodTerminationPolicyDefaultAndValidation(t *testing.T) {
+	ctx := context.TODO()
+	webhook := &LeaderWorkerSetWebhook{}
+
+	t.Run("defaulting sets Default policy", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("test-lws").Obj()
+		lws.Spec.PodTerminationPolicy = ""
+		if err := webhook.Default(ctx, lws); err != nil {
+			t.Fatalf("unexpected error during defaulting: %v", err)
+		}
+		if lws.Spec.PodTerminationPolicy != v1.DefaultPodTerminationPolicy {
+			t.Errorf("expected podTerminationPolicy to default to %q, got %q", v1.DefaultPodTerminationPolicy, lws.Spec.PodTerminationPolicy)
+		}
+	})
+
+	t.Run("validate create accepts valid policies", func(t *testing.T) {
+		for _, policy := range []v1.PodTerminationPolicyType{v1.DefaultPodTerminationPolicy, v1.ParallelPodTerminationPolicy} {
+			lws := wrappers.BuildLeaderWorkerSet("test-lws").Obj()
+			lws.Spec.PodTerminationPolicy = policy
+			if _, err := webhook.ValidateCreate(ctx, lws); err != nil {
+				t.Errorf("expected policy %q to be accepted, got error: %v", policy, err)
+			}
+		}
+	})
+
+	t.Run("validate create rejects invalid policy", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("test-lws").Obj()
+		lws.Spec.PodTerminationPolicy = "InvalidPolicy"
+		if _, err := webhook.ValidateCreate(ctx, lws); err == nil {
+			t.Errorf("expected invalid policy to be rejected")
+		}
+	})
+
+	t.Run("validate update rejects mutating policy", func(t *testing.T) {
+		oldLWS := wrappers.BuildLeaderWorkerSet("test-lws").Obj()
+		oldLWS.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+
+		newLWS := oldLWS.DeepCopy()
+		newLWS.Spec.PodTerminationPolicy = v1.ParallelPodTerminationPolicy
+
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
+			t.Errorf("expected policy update from Default to Parallel to be rejected as immutable")
+		}
+
+		// Reverting back to Default should also be rejected
+		parallelLWS := oldLWS.DeepCopy()
+		parallelLWS.Spec.PodTerminationPolicy = v1.ParallelPodTerminationPolicy
+		defaultLWS := oldLWS.DeepCopy()
+		defaultLWS.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+		if _, err := webhook.ValidateUpdate(ctx, parallelLWS, defaultLWS); err == nil {
+			t.Errorf("expected policy update from Parallel to Default to be rejected as immutable")
+		}
+
+		// Same policy should succeed
+		sameLWS := oldLWS.DeepCopy()
+		sameLWS.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+		if _, err := webhook.ValidateUpdate(ctx, oldLWS, sameLWS); err != nil {
+			t.Errorf("expected same policy update to be accepted, got: %v", err)
+		}
+
+		// Updating when unset/empty on old and Default on new should succeed (both normalize to Default)
+		emptyLWS := oldLWS.DeepCopy()
+		emptyLWS.Spec.PodTerminationPolicy = ""
+		if _, err := webhook.ValidateUpdate(ctx, emptyLWS, defaultLWS); err != nil {
+			t.Errorf("expected empty to Default update to be accepted, got: %v", err)
+		}
+	})
+}

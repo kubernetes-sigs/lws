@@ -146,6 +146,11 @@ func (lwsWrapper *LeaderWorkerSetWrapper) SubdomainPolicy(subdomainPolicy leader
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) PodTerminationPolicy(policy leaderworkerset.PodTerminationPolicyType) *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.PodTerminationPolicy = policy
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) MaxGroupRestarts(n int32) *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To[int32](n)
 	return lwsWrapper
@@ -256,6 +261,7 @@ func BuildLeaderWorkerSet(nsName string) *LeaderWorkerSetWrapper {
 	lws.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
 	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityOrdinal
 	lws.Spec.GroupReplacementPolicy = leaderworkerset.GroupReplacementPostTermination
+	lws.Spec.PodTerminationPolicy = leaderworkerset.DefaultPodTerminationPolicy
 	subdomainPolicy := leaderworkerset.SubdomainShared
 	lws.Spec.NetworkConfig = &leaderworkerset.NetworkConfig{
 		SubdomainPolicy: &subdomainPolicy,

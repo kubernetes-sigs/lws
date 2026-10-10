@@ -332,6 +332,18 @@ creates them, overlapping with the teardown of the old group. Only
 supported with groupIdentity Hash.</p>
 </td>
 </tr>
+<tr><td><code>podTerminationPolicy</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PodTerminationPolicyType"><code>PodTerminationPolicyType</code></a>
+</td>
+<td>
+   <p>podTerminationPolicy determines the termination policy for pods in a group.
+Default (default) keeps the sequential termination behavior: worker pods wait for the
+leader pod to be fully deleted before terminating.
+Parallel terminates leader and worker pods concurrently when a group is deleted,
+recreated, or when the LeaderWorkerSet is deleted.
+This field is immutable.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -569,6 +581,20 @@ the headless service, defaults to shared</p>
 </tr>
 </tbody>
 </table>
+
+## `PodTerminationPolicyType`     {#leaderworkerset-x-k8s-io-v1-PodTerminationPolicyType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>PodTerminationPolicyType defines how pods in a group are terminated.</p>
+
+
+
 
 ## `RestartPolicyType`     {#leaderworkerset-x-k8s-io-v1-RestartPolicyType}
     

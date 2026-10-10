@@ -131,6 +131,11 @@ const (
 	// in both group identity modes, so that pod admission can inject
 	// LWS_LEADER_ADDRESS without recomputing it.
 	LeaderAddressAnnotationKey string = "leaderworkerset.sigs.k8s.io/leader-address"
+
+	// PodTerminationPolicyAnnotationKey is set on leader pod template to record the
+	// PodTerminationPolicy so that controllers can tell the termination policy
+	// even if the LeaderWorkerSet object is being deleted.
+	PodTerminationPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/pod-termination-policy"
 )
 
 // GroupReadyConditionType is the pod readiness gate condition set on leader pods when
@@ -223,6 +228,17 @@ type LeaderWorkerSetSpec struct {
 	// +kubebuilder:validation:Enum={Immediate,PostTermination}
 	// +optional
 	GroupReplacementPolicy GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
+
+	// podTerminationPolicy determines the termination policy for pods in a group.
+	// Default (default) keeps the sequential termination behavior: worker pods wait for the
+	// leader pod to be fully deleted before terminating.
+	// Parallel terminates leader and worker pods concurrently when a group is deleted,
+	// recreated, or when the LeaderWorkerSet is deleted.
+	// This field is immutable.
+	// +kubebuilder:default=Default
+	// +kubebuilder:validation:Enum={Default,Parallel}
+	// +optional
+	PodTerminationPolicy PodTerminationPolicyType `json:"podTerminationPolicy,omitempty"`
 }
 
 // LeaderWorkerSetScheduling defines scheduling for all replicas.
@@ -334,6 +350,21 @@ const (
 	// GroupReplacementPostTermination holds replacement groups back until the
 	// groups they replace have been fully deleted.
 	GroupReplacementPostTermination GroupReplacementPolicyType = "PostTermination"
+)
+
+// PodTerminationPolicyType defines how pods in a group are terminated.
+type PodTerminationPolicyType string
+
+const (
+	// DefaultPodTerminationPolicy is the default sequential termination policy:
+	// worker pods wait for the leader pod to be fully deleted before terminating.
+	DefaultPodTerminationPolicy PodTerminationPolicyType = "Default"
+
+	// ParallelPodTerminationPolicy terminates leader and worker pods concurrently
+	// when a group is deleted, recreated, or when the LeaderWorkerSet is deleted.
+	// Note: worker pods receive termination signals concurrently with the leader pod;
+	// workloads that require the leader to remain running during worker shutdown should use Default.
+	ParallelPodTerminationPolicy PodTerminationPolicyType = "Parallel"
 )
 
 // Template of the leader/worker pods, the group will include at least one leader pod.

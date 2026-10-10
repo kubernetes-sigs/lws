@@ -83,6 +83,10 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		lws.Spec.GroupReplacementPolicy = v1.GroupReplacementPostTermination
 	}
 
+	if lws.Spec.PodTerminationPolicy == "" {
+		lws.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+	}
+
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
 		lws.Spec.LeaderWorkerTemplate.RestartPolicy = v1.NoneRestartPolicy
 	}
@@ -148,6 +152,10 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 
 	if normalizeGroupIdentity(newLws.Spec.GroupIdentity) != normalizeGroupIdentity(oldLws.Spec.GroupIdentity) {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("groupIdentity"), newLws.Spec.GroupIdentity, "groupIdentity is immutable"))
+	}
+
+	if normalizePodTerminationPolicy(newLws.Spec.PodTerminationPolicy) != normalizePodTerminationPolicy(oldLws.Spec.PodTerminationPolicy) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("podTerminationPolicy"), newLws.Spec.PodTerminationPolicy, "podTerminationPolicy is immutable"))
 	}
 
 	return nil, allErrs.ToAggregate()
@@ -336,7 +344,27 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("name"), lws.Name, fmt.Sprintf("must be no more than %d characters with groupIdentity Hash", maxLen)))
 		}
 	}
+	allErrs = append(allErrs, ValidatePodTerminationPolicy(specPath, &lws.Spec)...)
 
+	return allErrs
+}
+
+// ValidatePodTerminationPolicy validates that podTerminationPolicy is one of the supported values.
+func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if spec.PodTerminationPolicy == "" {
+		return allErrs
+	}
+	switch spec.PodTerminationPolicy {
+	case v1.DefaultPodTerminationPolicy, v1.ParallelPodTerminationPolicy:
+		return allErrs
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			specPath.Child("podTerminationPolicy"),
+			spec.PodTerminationPolicy,
+			[]string{string(v1.DefaultPodTerminationPolicy), string(v1.ParallelPodTerminationPolicy)},
+		))
+	}
 	return allErrs
 }
 
@@ -369,6 +397,13 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 		return v1.GroupIdentityOrdinal
 	}
 	return gi
+}
+
+func normalizePodTerminationPolicy(policy v1.PodTerminationPolicyType) v1.PodTerminationPolicyType {
+	if policy == "" {
+		return v1.DefaultPodTerminationPolicy
+	}
+	return policy
 }
 
 // ValidateGroupIdentity rejects unsupported groupIdentity combinations.
