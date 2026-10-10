@@ -64,6 +64,11 @@ const (
 	// the old revision finishes draining. A missing, non-integer, or negative
 	// value is treated as unset.
 	InitialReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-replicas"
+
+	// MaxUnavailableAnnotationKey is a controller-owned DisaggregatedSet annotation
+	// mapping role names to their last observed, resolved maxUnavailable counts.
+	// Removed roles retain these counts until their LWS objects have been deleted.
+	MaxUnavailableAnnotationKey string = "disaggregatedset.x-k8s.io/max-unavailable"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.

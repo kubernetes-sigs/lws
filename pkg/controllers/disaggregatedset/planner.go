@@ -91,6 +91,7 @@ type RolloutState struct {
 type roleRolloutSnapshot struct {
 	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
 	AvailabilityBaselineReplicas    int                 // Old-side baseline shared by every candidate for availability checks.
+	UnreplacedReplicas              int                 // Old baseline not yet replaced by a complete, disjoint-role target.
 	ActiveOldSpecReplicas           int                 // Current Spec replicas of the active old revision.
 	ActiveOldCommittedReadyReplicas int                 // Active-old Ready replicas not reserved by a pending deletion.
 	ActiveOldUsableReadyReplicas    int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
@@ -268,7 +269,45 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 			Config:                          state.Config[i],
 		}
 	}
+	if progress, hasTarget := coordinationWindowForProgress(state.Target.DesiredReplicas, targetUsableReady); hasTarget {
+		numerator := min(progress.leastAdvancedReplicas, progress.leastAdvancedTarget)
+		for i, protected := range disjointOldRoles(state) {
+			if protected {
+				// Round replacement credit down: a partial replica cannot
+				// replace an old one. API counts fit in int32; multiply in int64.
+				baseline := state.AvailabilityBaseline[i]
+				credit := int(int64(baseline) * int64(numerator) / int64(progress.leastAdvancedTarget))
+				snapshot[i].UnreplacedReplicas = baseline - credit
+			}
+		}
+	}
 	return snapshot
+}
+
+// disjointOldRoles identifies old roles being replaced without shared identity.
+// Every candidate must protect the same roles: a mixed parked revision may
+// supply old-side readiness that another candidate has already relied on.
+func disjointOldRoles(state RolloutState) []bool {
+	protected := make([]bool, len(state.Config))
+	add := func(requiredRoles []bool, spec RoleReplicaState) {
+		hasOld := false
+		for i, required := range requiredRoles {
+			if required && state.Target.DesiredReplicas[i] > 0 {
+				return
+			}
+			hasOld = hasOld || spec[i] > 0
+		}
+		if hasOld {
+			for i, required := range requiredRoles {
+				protected[i] = protected[i] || required
+			}
+		}
+	}
+	add(state.ActiveOld.RequiredRoles, state.ActiveOld.SpecReplicas)
+	for _, revision := range state.ParkedOld {
+		add(revision.RequiredRoles, revision.SpecReplicas)
+	}
+	return protected
 }
 
 // structurallyCompleteReadyReplicas keeps per-role readiness independent while
@@ -456,16 +495,17 @@ func slicesClone(values RoleReplicaState) RoleReplicaState {
 //	surgeCeiling     = roleReplicaCount + MaxSurge
 //	pendingAllowance = projected(roleReplicaCount, MaxSurge + MaxUnavailable)
 //
-// While old Spec remains, newSpec cannot exceed either
-// surgeCeiling-oldSpec or newReady+pendingAllowance. Once the role has no old
-// Spec left, waiting for target readiness cannot preserve old availability, so
-// only the surge ceiling and desired target remain. Fractional coordination is
-// applied separately.
+// While same-role old Spec remains, or disjoint roles are being replaced,
+// newSpec cannot exceed either surgeCeiling-oldSpec or newReady+pendingAllowance.
+// Otherwise only the surge ceiling and desired target remain. Fractional
+// coordination is applied separately.
 func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	hardLimits := make(RoleReplicaState, len(snapshot))
+	disjointReplacement := false
 	budgetSteps := 0
 	for _, role := range snapshot {
 		budgetSteps = max(budgetSteps, role.InitialOldReplicas, role.NewTargetReplicas)
+		disjointReplacement = disjointReplacement || role.UnreplacedReplicas > 0
 	}
 	for i, role := range snapshot {
 		roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
@@ -473,7 +513,7 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 		newSpecAllowedBySurge := surgeCeiling - role.OldSpecReplicas
 
 		limit := newSpecAllowedBySurge
-		if role.OldSpecReplicas > 0 {
+		if role.OldSpecReplicas > 0 || disjointReplacement {
 			pendingAllowance := projectBudget(
 				roleReplicaCount,
 				role.Config.MaxSurge+role.Config.MaxUnavailable,
@@ -533,7 +573,7 @@ func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 func availabilityFloor(role roleRolloutSnapshot) int {
 	return max(
 		0,
-		min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas)-role.Config.MaxUnavailable,
+		max(min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas), role.UnreplacedReplicas)-role.Config.MaxUnavailable,
 	)
 }
 

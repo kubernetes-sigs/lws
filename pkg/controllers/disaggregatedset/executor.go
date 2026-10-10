@@ -18,8 +18,10 @@ package disaggregatedset
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -553,6 +555,21 @@ func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
 	return false
 }
 
+// Missing or invalid history grants no unavailable replicas. The strategy on an
+// old LWS is not a fallback: it may predate a user's later reduction of the budget.
+func rememberedMaxUnavailable(ds *disaggregatedsetv1.DisaggregatedSet) map[string]int {
+	var budgets map[string]int
+	if err := json.Unmarshal([]byte(ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey]), &budgets); err != nil {
+		return nil
+	}
+	for role, budget := range budgets {
+		if budget < 0 || budget > math.MaxInt32 {
+			delete(budgets, role)
+		}
+	}
+	return budgets
+}
+
 func extractRollingUpdateConfig(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	allRoleNames []string,
@@ -560,12 +577,15 @@ func extractRollingUpdateConfig(
 ) []RollingUpdateConfig {
 	config := make([]RollingUpdateConfig, len(allRoleNames))
 	roleIndex := make(map[string]int, len(allRoleNames))
+	remembered := rememberedMaxUnavailable(ds)
 	for i, name := range allRoleNames {
-		config[i].MaxSurge = 1
+		config[i] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: remembered[name]}
 		roleIndex[name] = i
 	}
 
 	for _, role := range ds.Spec.Roles {
+		// Live policy always wins, including resetting a previously explicit budget.
+		config[roleIndex[role.Name]] = RollingUpdateConfig{MaxSurge: 1}
 		if rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil {
 			replicas := desiredReplicasByRole[role.Name]
 			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.

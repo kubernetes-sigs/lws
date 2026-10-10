@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -29,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -143,6 +145,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		log.Info("Waiting for replica targets before reconciling slices", "roles", unresolvedRoles)
 		result.RequeueAfter = time.Second
 	} else {
+		if err := r.syncMaxUnavailable(ctx, disaggregatedSet, desiredReplicasByRole); err != nil {
+			return ctrl.Result{}, err
+		}
 		for slice := range sliceCount {
 			sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, desiredReplicasByRole)
 			if err != nil {
@@ -168,6 +173,48 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return result, reconcileErr
+}
+
+// syncMaxUnavailable remembers live budgets, including policy-only updates.
+// Persisting resolved counts freezes percentages for removed roles and gives
+// every old-revision candidate the same allowance.
+func (r *DisaggregatedSetReconciler) syncMaxUnavailable(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	desiredReplicasByRole map[string]int,
+) error {
+	// Only a live, ownership-filtered list can safely prune history. Retain even
+	// zero-Spec LWS until deletion, and never erase history due to informer lag.
+	workloads, err := r.LWSManager.listWithReader(ctx, r.LWSManager.apiReader, ds, "")
+	if err != nil {
+		return err
+	}
+	roles := sets.New(disaggregatedsetutils.GetRoleNames(ds)...)
+	for _, lws := range workloads {
+		roles.Insert(lws.Labels[disaggregatedsetv1.RoleLabelKey])
+	}
+	roleNames := sets.List(roles)
+	config := extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole)
+	budgets := make(map[string]int, len(roleNames))
+	for i, role := range roleNames {
+		budgets[role] = config[i].MaxUnavailable
+	}
+	encoded, err := json.Marshal(budgets)
+	if err != nil {
+		return err
+	}
+	if ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] == string(encoded) {
+		return nil
+	}
+	patch := client.MergeFromWithOptions(ds.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if ds.Annotations == nil {
+		ds.Annotations = make(map[string]string)
+	}
+	ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = string(encoded)
+	if err := r.Patch(ctx, ds, patch); err != nil {
+		return fmt.Errorf("persisting rollout maxUnavailable budgets: %w", err)
+	}
+	return nil
 }
 
 // resolveRevision selects the revision hash generation for a DisaggregatedSet.

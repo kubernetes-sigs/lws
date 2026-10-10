@@ -214,21 +214,11 @@ The controller distinguishes LWS `Spec` replicas (work already issued, including
 
 Spec drives the planner's progress calculation. Re-planning from Ready would request the same work again on every reconcile while a pod is starting. Ready instead controls how much additional work may be in flight, whether an old replica can be removed safely, and whether the rollout is complete.
 
-Status counters can lag a scale-down or report terminating groups as Ready.
-The controller uses `replicagroups.Observe` with an uncached API reader and
-`Snapshot.Availability()` to obtain raw whole-group Ready capacity and retained
-Ready credit. Only retained credit can authorize another drain; raw readiness
-remains visible to protect the no-worsening floor.
+Status counters can lag a scale-down or report terminating groups as Ready. The controller uses `replicagroups.Observe` with an uncached API reader and `Snapshot.Availability()` to obtain raw whole-group Ready capacity and retained Ready credit. Only retained credit can authorize another drain; raw readiness remains visible to protect the no-worsening floor.
 
-The shared helper checks ownership and native acknowledgements, excludes
-terminating groups from retained credit, and accounts for outstanding removals
-for both Ordinal and Hash identity. Increasing Spec on rollback does not restore
-credit to terminating Pods. Safe growth need not wait for every deletion to finish.
+The shared helper checks ownership and native acknowledgements, excludes terminating groups from retained credit, and accounts for outstanding removals for both Ordinal and Hash identity. Increasing Spec on rollback does not restore credit to terminating Pods. Safe growth need not wait for every deletion to finish.
 
-If the LWS disappears, is replaced, starts deleting, or changes generation between
-discovery and observation, the executor retries without planning: unknown is not
-zero readiness. No downscale marker or availability summary is persisted. These
-ordered reads are not an atomic snapshot or a reservation against later failures.
+If the LWS disappears, is replaced, starts deleting, or changes generation between discovery and observation, the executor retries without planning: unknown is not zero readiness. No downscale marker or availability summary is persisted. These ordered reads are not an atomic snapshot or a reservation against later failures.
 
 Availability uses two separate checks. **Usable serving capacity** counts a revision's Ready replicas only when every required role has at least one Ready replica in that same revision; otherwise it contributes zero usable serving capacity for every role. **Per-role readiness** protects healthy replicas independently across structurally complete revisions. Structurally complete means that every required role still has at least one Spec replica, even if some are unready. Neither check treats roles from different revisions as a serving pair.
 
@@ -236,18 +226,35 @@ For example, a target revision with `Spec=1P/2D` and `Ready=0P/2D` contributes n
 
 #### Capacity and pending-work bounds
 
-`MaxSurge` and `MaxUnavailable` are the per-role limits for ordinary rollout steps. The two bounded deadlock fallbacks are described below. For each role the ordinary planner enforces:
+`MaxSurge` and `MaxUnavailable` are the per-role limits for ordinary rollout steps. The two bounded deadlock fallbacks are described below.
+
+Roles still present in the DisaggregatedSet use its live rollout settings, including policy-only changes during a rollout. The controller records each role's resolved `maxUnavailable` in the controller-owned `disaggregatedset.x-k8s.io/max-unavailable` annotation on the DisaggregatedSet. When a role is removed or renamed, all old revisions of that role share its last successfully recorded allowance instead of resetting it to zero. Percentages are resolved against the last observed desired replica count before removal; the resulting integer does not shrink as old replicas drain. Entries remain until the role's owned LWS objects are deleted. Missing or invalid history grants zero unavailable replicas; the old LWS's creation-time strategy is not a reliable fallback because later policy-only changes may have reduced it. Removed names still use the default `maxSurge=1`; this retention does not transfer their budgets to differently named target roles.
+
+For each role the ordinary planner enforces:
 
 ```
-roleReplicaCount    = max(initialOld, target)
+roleReplicaCount     = max(initialOld, target)
 availabilityBaseline = max(initial-replicas across non-drained old revisions)
-surgeCeiling        = roleReplicaCount + MaxSurge
-availabilityFloor   = max(0, min(availabilityBaseline, target) - MaxUnavailable)
+surgeCeiling         = roleReplicaCount + MaxSurge
+availabilityFloor    = max(0, max(min(availabilityBaseline, target), unreplaced) - MaxUnavailable)
 
 oldSpec + newSpec <= surgeCeiling
 ```
 
 `oldSpec` includes active and parked old revisions. Existing out-of-bound Spec is never increased.
+
+`unreplaced` is normally zero. When a non-drained old revision and the positive target have **no role names in common**, per-role floors alone would permit every old role to drain before any replacement is Ready. In this case, the planner bridges the two sides with a fractional Ready floor for that revision's old roles:
+
+```
+replacementFraction   = min(1, min(targetCommittedReady[role] / target[role]))  // positive target roles
+unreplaced[oldRole]    = availabilityBaseline[oldRole] - floor(availabilityBaseline[oldRole] * replacementFraction)
+```
+
+Credit uses retained Ready from the target revision, never issued Spec. If any required target role is unready, the fraction is zero. Parked revisions still contribute ordinary same-role readiness, but not cross-role replacement credit: another planner call may retire them. Spending that credit here would require protecting it across candidate changes. Instead, an interrupted rollout may wait longer or need more free capacity until the target revision itself becomes Ready.
+
+The protected roles and their baselines are shared by every candidate. Switching to a mixed-role candidate cannot discard a floor that still protects a parked disjoint revision. Like the baseline, this protection follows the current set of non-drained revisions; it is not a persisted rollout-wide availability promise. After the last disjoint revision drains, any remaining mixed-role revision returns to ordinary overlapping-role rules, even if the target is not fully Ready.
+
+For healthy old `A=4` replaced by `B=2,C=2`, with `maxUnavailable=0`, Ready `B=1,C=0` permits no drain; `B=1,C=1` permits `A=2`; `B=2,C=2` permits retirement. Credit rounds down, so `A=2` replaced by `B=1,C=1` has no safe intermediate fraction. This intentionally waits for the slowest required replacement role. The floor still uses the existing no-worsening and worst-case-deletion checks; it is not a promise that different role types have equal physical resource cost. Cold starts, scale-to-zero, and rollouts where every old revision shares a positive target role are unchanged.
 
 The availability baseline follows the **current set of non-drained old revisions**; it is not a fixed promise captured at the start of an interrupted rollout. A revision participates while at least one of its role Specs is non-zero. Every candidate considered from the same observation uses the same per-role maximum, so merely switching the active candidate cannot lower the floor. Once all of an old revision's role Specs reach zero, it stops contributing to that maximum, whether or not its LWS objects have been deleted. If it carried the largest baseline, the next phase's availability floor may therefore decrease. No separate rollout-wide baseline is persisted; `initial-replicas` remains the per-revision baseline used for fractional coordination.
 
@@ -265,7 +272,7 @@ newSpec - newCommittedReady <= pendingAllowance
 
 This bounded window is what permits pipelining across slow pod starts. It does not grant every role the unscaled `MaxSurge + MaxUnavailable` sum. If independent pending bounds would separate role progress by more than `largestReplicaFraction`, faster roles wait at that coordination boundary.
 
-The target revision does not need to be Ready in every role for its committed Ready counts to limit pending work. Whole-revision readiness is required for usable serving replacement credit, but not for independent per-role credit from a structurally complete target. The pending-readiness bound applies while any old Spec for that role overlaps the target. Once all old Spec for the role is zero, withholding target replicas cannot protect old availability. The controller may issue the rest of that role's target Spec and then waits for it to become Ready.
+The target revision does not need to be Ready in every role for its committed Ready counts to limit pending work. Whole-revision readiness is required for usable serving replacement credit and for the disjoint-role fraction above, but not for independent per-role credit from a structurally complete target. The pending-readiness bound applies while any old Spec for that role overlaps the target, or while disjoint old capacity remains unreplaced as described above. Otherwise withholding target replicas cannot protect old availability: the controller may issue the rest of that role's target Spec and then waits for it to become Ready.
 
 For an old drain, the planner assumes every removed Spec replica could have been Ready. If any surviving required role is absent or could lose its last Ready replica, the entire active revision becomes unusable for every role. Raw Ready capacity determines how much currently serving capacity must be preserved, capped at the current phase's shared availability floor. The proposed post-drain state is checked with committed Ready capacity, so replicas already pending deletion cannot be counted as survivors. This also prevents an interrupted revision from being retired while its still-running replicas are needed to hold the floor; the controller waits for pending deletions to settle or for another revision to replace that capacity.
 
@@ -302,6 +309,8 @@ This is the final fallback. It is considered only when no ordinary or bootstrap 
 For example, assume the target is `1P/4D`, `maxSurge=1`, and `maxUnavailable=0`. Revisions A and B currently provide `A=1P/3D` and `B=1P/1D`. Revision C has `1P/1D`, but its Prefill Pod is unschedulable. The fallback may retire B. This releases B's Prefill capacity for C while temporarily reducing usable Decode capacity from four to three. A remains complete, and no later fallback may reduce Decode below three.
 
 A merely Pending Pod, an image pull, slow readiness, or a recently reported scheduling failure does not activate the fallback. If releasing one old revision is insufficient, the rollout waits rather than relaxing the bound again.
+
+The fallback still requires the same role on both sides. Disjoint-role replacement does not infer which old workload to evict for an unschedulable new role; it may therefore wait for additional cluster capacity to make its next fraction Ready.
 
 #### Reconcile ordering and completion
 
@@ -412,6 +421,8 @@ to implement this enhancement.
 - 2026-03-22: Updated to reflect N-dimensional roles API
 - 2026-03-23: Renamed "phase" to "role" throughout for semantic clarity
 - 2026-09-28: Updated rolling updates with fractional lockstep, readiness and availability bounds, durable intended replica counts, and revision-aware constraint planning for interrupted rollouts, replacing executor recovery actions and documenting committed readiness and bounded drained-revision retention.
+- 2026-10-09: Updated the rollout contract for [#1105](https://github.com/kubernetes-sigs/lws/pull/1105): shared phase-local availability baselines, retained group readiness from merged [#1137](https://github.com/kubernetes-sigs/lws/pull/1137), independent per-role replacement credit to avoid deadlocks between unready old revisions, stale scale-plan and write guards, and fractional replacement of disjoint roles. Clarified the distinction from usable same-revision serving capacity and the per-role policy trade-off.
+- 2026-10-10: Retained removed roles' last observed `maxUnavailable` budgets, including resolved percentages, without changing the planner's availability rules.
 
 ## Drawbacks
 

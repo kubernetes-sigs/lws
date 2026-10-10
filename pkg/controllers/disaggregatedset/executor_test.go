@@ -434,6 +434,30 @@ type reconcilerTestCase struct {
 	expectNewCreated         bool
 }
 
+func TestValidateDisjointReplacementStep(t *testing.T) {
+	for _, tc := range []struct {
+		name                                   string
+		ready, keepOld, invalidOld, invalidNew int
+		errorContains                          string
+	}{
+		{"half-ready replacement cannot retire all old capacity", 1, 2, 0, 1, "usable readiness"},
+		{"unready replacement cannot issue the full target", 0, 4, 4, 2, "outside"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Dimensions A, B, C: A4 is replaced by B2/C2, with one surge each.
+			initial, ready := RoleReplicaState{4, 0, 0}, RoleReplicaState{0, tc.ready, tc.ready}
+			state := rolloutState(initial, initial, initial, nil, nil, ready, ready,
+				RoleReplicaState{0, 2, 2}, configs([]int{1, 1, 1}, []int{0, 0, 0}))
+			require.NoError(t, validateUpdateStep(state, &UpdateStep{
+				Past: RoleReplicaState{tc.keepOld, 0, 0}, New: RoleReplicaState{0, 1, 1},
+			}))
+			require.ErrorContains(t, validateUpdateStep(state, &UpdateStep{
+				Past: RoleReplicaState{tc.invalidOld, 0, 0}, New: RoleReplicaState{0, tc.invalidNew, tc.invalidNew},
+			}), tc.errorContains)
+		})
+	}
+}
+
 func TestReconcilerIntegration(t *testing.T) {
 	testCases := []reconcilerTestCase{
 		{
@@ -1310,6 +1334,146 @@ func TestExtractRollingUpdateConfigWithPercentages(t *testing.T) {
 			assert.Equal(t, tc.expectedDecodeUnavail, config[1].MaxUnavailable)
 		})
 	}
+}
+
+func TestRememberedMaxUnavailableRejectsInvalidHistory(t *testing.T) {
+	for _, tc := range []struct {
+		annotation string
+		want       int
+	}{
+		{"", 0}, {"null", 0}, {"{", 0}, {`{"prefill":-1}`, 0},
+		{`{"prefill":2147483648}`, 0}, {`{"prefill":9223372036854775808}`, 0},
+		{`{"prefill":2,"decode":-1}`, 2},
+	} {
+		t.Run(tc.annotation, func(t *testing.T) {
+			ds := newTestDisaggregatedSet()
+			ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: tc.annotation}
+			config := extractRollingUpdateConfig(ds, testRoleNames(), nil)
+			assert.Equal(t, tc.want, config[0].MaxUnavailable)
+			assert.Zero(t, config[1].MaxUnavailable)
+		})
+	}
+}
+
+func TestReconcileRemembersBudgetBeforeRoleRemoval(t *testing.T) {
+	ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
+	ds.Annotations = map[string]string{
+		disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion,
+		"example.com/keep": "yes",
+	}
+	old := revisionLWS(disaggregatedsetutils.ComputeRevision(ds.Spec.Roles), testRolePrefill, 4, 4, time.Now(), 4)
+	old.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+	base := newTestClient(append(replicaGroupObjects(old, 4, 4), ds)...)
+	failPersistence := false
+	writeFailure := errors.New("budget write failed")
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			obj.SetUID(types.UID(obj.GetName())) // The real observer requires persisted LWS UIDs.
+			return c.Create(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, isDS := obj.(*disaggregatedsetv1.DisaggregatedSet); isDS && failPersistence {
+				return writeFailure
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	r := newTestReconciler(c)
+	r.LWSManager = NewLeaderWorkerSetManager(c) // Use native observations, not the executor test stub.
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
+	reconcile := func() {
+		_, err := r.Reconcile(t.Context(), request)
+		require.NoError(t, err)
+		require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+	}
+	require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+	for _, tc := range []struct {
+		policy *intstr.IntOrString
+		want   int
+	}{
+		{ptr.To(intstr.FromString("50%")), 2}, {ptr.To(intstr.FromInt(1)), 1},
+		{nil, 0}, {ptr.To(intstr.FromString("50%")), 2},
+	} {
+		ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
+		if tc.policy != nil {
+			ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{
+				MaxSurge: intstr.FromInt(1), MaxUnavailable: *tc.policy,
+			}
+		}
+		require.NoError(t, c.Update(t.Context(), ds))
+		// A nil live policy must override an earlier remembered nonzero budget too.
+		assert.Equal(t, tc.want, extractRollingUpdateConfig(ds, []string{testRolePrefill}, resolveDesiredReplicasByRole(ds, nil))[0].MaxUnavailable)
+		reconcile()
+		assert.Equal(t, tc.want, rememberedMaxUnavailable(ds)[testRolePrefill])
+	}
+	version := ds.ResourceVersion
+	reconcile()
+	assert.Equal(t, version, ds.ResourceVersion, "unchanged budgets need no write")
+	assert.Equal(t, "yes", ds.Annotations["example.com/keep"])
+	ds.Spec.Roles[0].Name = "new"
+	ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(0)
+	require.NoError(t, c.Update(t.Context(), ds))
+	failPersistence = true
+	_, err := r.Reconcile(t.Context(), request)
+	require.ErrorIs(t, err, writeFailure)
+	var workloads leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, c.List(t.Context(), &workloads))
+	require.Len(t, workloads.Items, 1, "policy-only edits and failed persistence must not create revisions")
+	assert.Equal(t, old.Name, workloads.Items[0].Name)
+	assert.EqualValues(t, 4, *workloads.Items[0].Spec.Replicas)
+	failPersistence = false
+	r = newTestReconciler(c) // A restarted controller must recover the remembered policy.
+	r.LWSManager = NewLeaderWorkerSetManager(c)
+	reconcile() // Save both policies and create the zero-replica target.
+	reconcile() // With no Ready target, only the remembered allowance permits this drain.
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(old), old))
+	assert.EqualValues(t, 2, *old.Spec.Replicas)
+	reconcile()
+	assert.Equal(t, 2, rememberedMaxUnavailable(ds)[testRolePrefill], "freeze 50%% of four, not the shrinking old Spec")
+	assert.Zero(t, rememberedMaxUnavailable(ds)["new"])
+}
+
+func TestMaxUnavailablePrunesUsingLiveOwnedObjects(t *testing.T) {
+	ds := newTestDisaggregatedSet()
+	ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"prefill":3,"foreign":2}`}
+	first := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 8)
+	last := revisionLWS("B", testRolePrefill, 0, 0, time.Now(), 8)
+	foreign := revisionLWS("A", "foreign", 4, 4, time.Now(), 4)
+	foreign.OwnerReferences[0].UID = "another-set"
+	cache := newTestClient(ds) // The informer has not observed any LWS yet.
+	live := newTestClient(ds, first, last, foreign)
+	require.NoError(t, cache.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+	r := newTestReconciler(cache)
+	r.LWSManager.apiReader = live
+	require.NoError(t, r.syncMaxUnavailable(t.Context(), ds, nil))
+	assert.NotContains(t, rememberedMaxUnavailable(ds), "foreign")
+	for _, old := range []*leaderworkersetv1.LeaderWorkerSet{first, last} {
+		// Revisions share one budget; even the final Spec=0 object retains it.
+		assert.Equal(t, 3, rememberedMaxUnavailable(ds)[testRolePrefill])
+		require.NoError(t, live.Delete(t.Context(), old))
+		require.NoError(t, r.syncMaxUnavailable(t.Context(), ds, nil))
+	}
+	assert.NotContains(t, rememberedMaxUnavailable(ds), testRolePrefill)
+}
+
+func TestMaxUnavailableRejectsConcurrentPolicyChange(t *testing.T) {
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 3}, [2]int{1, 1}, [2]int{2, 0})
+	base := newTestClient(ds)
+	require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			latest := &disaggregatedsetv1.DisaggregatedSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), latest))
+			latest.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(0)
+			latest.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"prefill":0,"decode":0}`}
+			require.NoError(t, c.Update(ctx, latest))
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	err := newTestReconciler(c).syncMaxUnavailable(t.Context(), ds, map[string]int{testRolePrefill: 8, testRoleDecode: 3})
+	require.True(t, apierrors.IsConflict(err), "stale budget persistence must conflict: %v", err)
+	require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+	assert.Zero(t, rememberedMaxUnavailable(ds)[testRolePrefill], "the newer lower budget must survive")
 }
 
 func TestScaleRevisionDownUsesPlannerTargetsVerbatim(t *testing.T) {
