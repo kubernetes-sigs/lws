@@ -2729,7 +2729,8 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if deleted {
 			t.Fatal("expected leader NOT to be deleted within backoff window")
 		}
-		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+		// fake.Client serializes metav1.Time with RFC3339 whole-second precision, which can truncate up to ~1s off CreationTimestamp.
+		if res.RequeueAfter < 5*time.Second || res.RequeueAfter > 9*time.Second {
 			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
 		}
 
@@ -2825,7 +2826,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if deleted {
 			t.Fatal("expected leader NOT to be deleted within count=1 backoff window")
 		}
-		if res.RequeueAfter < 4*time.Second || res.RequeueAfter > 6*time.Second {
+		if res.RequeueAfter < 3*time.Second || res.RequeueAfter > 6*time.Second {
 			t.Fatalf("expected RequeueAfter ~5s, got %v", res.RequeueAfter)
 		}
 	})
@@ -2859,7 +2860,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if deleted {
 			t.Fatal("expected leader NOT to be deleted yet")
 		}
-		if res.RequeueAfter < 6*time.Second || res.RequeueAfter > 8*time.Second {
+		if res.RequeueAfter < 4*time.Second || res.RequeueAfter > 8*time.Second {
 			t.Fatalf("expected RequeueAfter ~7s, got %v", res.RequeueAfter)
 		}
 	})
@@ -3041,7 +3042,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reconcilePod() error = %v", err)
 		}
-		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+		if res.RequeueAfter < 5*time.Second || res.RequeueAfter > 9*time.Second {
 			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
 		}
 
@@ -3081,7 +3082,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reconcilePod() error = %v", err)
 		}
-		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+		if res.RequeueAfter < 5*time.Second || res.RequeueAfter > 9*time.Second {
 			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
 		}
 
@@ -3099,7 +3100,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reconcilePod() on watch update error = %v", err)
 		}
-		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+		if res.RequeueAfter < 5*time.Second || res.RequeueAfter > 9*time.Second {
 			t.Fatalf("expected RequeueAfter ~8s preserved on watch update, got %v", res.RequeueAfter)
 		}
 	})
@@ -3137,7 +3138,7 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reconcilePod() error = %v", err)
 		}
-		if res.RequeueAfter < 7*time.Second || res.RequeueAfter > 9*time.Second {
+		if res.RequeueAfter < 5*time.Second || res.RequeueAfter > 9*time.Second {
 			t.Fatalf("expected RequeueAfter ~8s, got %v", res.RequeueAfter)
 		}
 
