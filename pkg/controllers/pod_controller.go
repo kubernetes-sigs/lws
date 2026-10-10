@@ -468,26 +468,46 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if policy != leaderworkerset.RecreateGroupOnPodRestart && policy != leaderworkerset.RecreateGroupAfterStart {
 		return false, ctrl.Result{}, nil
 	}
-	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
-	if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
-		return false, ctrl.Result{}, nil
+
+	// Check if this pod or its leader already has a pending recreation decision deferred by backoff.
+	isRecreatePending := false
+	if podutils.LeaderPod(pod) {
+		isRecreatePending = pod.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
+	} else {
+		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
+		if leaderPodName == "" {
+			leaderPodName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		}
+		if leaderPodName != "" {
+			var leader corev1.Pod
+			if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err == nil {
+				isRecreatePending = leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
+			}
+		}
 	}
 
-	// Old groups keep their original size during a rollout that changes it.
-	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-	if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-		groupSize = size
-	}
-	pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
-	if err != nil {
-		return false, ctrl.Result{}, err
-	}
+	if !isRecreatePending {
+		// the leader pod will be deleted if the worker pod is deleted or any container was restarted
+		if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
+			return false, ctrl.Result{}, nil
+		}
 
-	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+		// Old groups keep their original size during a rollout that changes it.
+		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+			groupSize = size
+		}
+		pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
 
-	if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
-		log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-		return false, ctrl.Result{}, nil
+		_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+
+		if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
+			log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+			return false, ctrl.Result{}, nil
+		}
 	}
 
 	var leader corev1.Pod
@@ -523,6 +543,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	} else {
 		leader = pod
 	}
+
 	// The caller's objects may come from a lagging cache snapshot. Re-read the
 	// leader and the LWS so that budget enforcement below uses the persisted
 	// restart count and the leader's current annotations; a stale count would
@@ -584,6 +605,20 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 				if elapsed < delay {
 					requeueAfter := delay - elapsed
 					log.V(2).Info("Backing off group recreation", "leader", leader.Name, "requeueAfter", requeueAfter, "restartCount", count)
+					if leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+						if leader.Annotations == nil {
+							leader.Annotations = make(map[string]string)
+						}
+						// Mark that a recreation decision has been made and is pending backoff.
+						// The annotation is cleaned up automatically when the leader pod is deleted during recreation.
+						leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] = time.Now().Format(time.RFC3339)
+						if err := r.Update(ctx, &leader); err != nil {
+							return false, ctrl.Result{}, err
+						}
+						r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, GroupRestartBackoff, Update,
+							fmt.Sprintf("Backing off recreation of group %s for %v (restart count %d)",
+								leader.Labels[leaderworkerset.GroupIndexLabelKey], requeueAfter, count))
+					}
 					return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
 				}
 			}
@@ -603,8 +638,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 }
 
 // maxBackoffExponent prevents bit-shift overflow when computing base * (1 << count).
-// Since 2^30 * 10s is ~340 years, any count >= 30 will exceed maxCap anyway.
-const maxBackoffExponent = 30
+const maxBackoffExponent = 31
 
 func computeBackoffDelay(backoff *leaderworkerset.RestartBackoff, count int32) time.Duration {
 	baseSeconds := int64(leaderworkerset.DefaultRestartBackoffBaseSeconds)
@@ -663,6 +697,10 @@ func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.Leade
 }
 
 func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
+	// Note: When only restartBackoff is configured (without maxGroupRestarts),
+	// this counter increases with each recreation without an upper bound.
+	// This is expected; computeBackoffDelay caps exponentiation at maxBackoffExponent
+	// and returns capSeconds for higher counts.
 	key := client.ObjectKeyFromObject(lws)
 	countKey := groupRestartCountKey(leader)
 	return mutateGroupRestartCounts(ctx, r.Client, key, func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {

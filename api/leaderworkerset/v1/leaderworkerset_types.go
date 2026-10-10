@@ -117,6 +117,10 @@ const (
 	// use "<revision>/<groupIndex>" and values are non-negative integers.
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 
+	// GroupRecreatePendingAnnotationKey is set on a leader Pod when a group
+	// recreation has been triggered but deferred by restartBackoff.
+	GroupRecreatePendingAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-recreate-pending"
+
 	// GroupRestartBudgetExhaustedAnnotationKey is set on a leader Pod after its
 	// group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
@@ -392,6 +396,10 @@ type LeaderWorkerTemplate struct {
 	// restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
 	// or RecreateGroupAfterStart. When specified, the controller applies an exponential
 	// backoff delay between group recreations.
+	// The semantic is that a group must have existed for at least min(baseSeconds * 2^count, capSeconds)
+	// before it can be recreated. The delay is measured from leader pod creation time,
+	// not from the failure time, so a group that has run stably for longer than the backoff
+	// delay recovers immediately on failure.
 	// It is opt-in: when unset (nil), group recreation happens immediately.
 	//
 	// +optional

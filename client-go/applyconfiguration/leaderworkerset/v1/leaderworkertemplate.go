@@ -62,6 +62,10 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
 	// or RecreateGroupAfterStart. When specified, the controller applies an exponential
 	// backoff delay between group recreations.
+	// The semantic is that a group must have existed for at least min(baseSeconds * 2^count, capSeconds)
+	// before it can be recreated. The delay is measured from leader pod creation time,
+	// not from the failure time, so a group that has run stably for longer than the backoff
+	// delay recovers immediately on failure.
 	// It is opt-in: when unset (nil), group recreation happens immediately.
 	RestartBackoff *RestartBackoffApplyConfiguration `json:"restartBackoff,omitempty"`
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
