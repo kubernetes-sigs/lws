@@ -163,6 +163,10 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 		allErrs = append(allErrs, field.Invalid(specPath.Child("groupIdentity"), newLws.Spec.GroupIdentity, "groupIdentity is immutable"))
 	}
 
+	if normalizePodTerminationPolicy(newLws.Spec.PodTerminationPolicy) != normalizePodTerminationPolicy(oldLws.Spec.PodTerminationPolicy) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("podTerminationPolicy"), newLws.Spec.PodTerminationPolicy, "podTerminationPolicy is immutable"))
+	}
+
 	return nil, allErrs.ToAggregate()
 }
 
@@ -479,6 +483,13 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 		return v1.GroupIdentityOrdinal
 	}
 	return gi
+}
+
+func normalizePodTerminationPolicy(policy v1.PodTerminationPolicyType) v1.PodTerminationPolicyType {
+	if policy == "" {
+		return v1.DefaultPodTerminationPolicy
+	}
+	return policy
 }
 
 // ValidateGroupIdentity rejects unsupported groupIdentity combinations.

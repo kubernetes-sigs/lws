@@ -245,6 +245,7 @@ type LeaderWorkerSetSpec struct {
 	// leader pod to be fully deleted before terminating.
 	// Parallel terminates leader and worker pods concurrently when a group is deleted,
 	// recreated, or when the LeaderWorkerSet is deleted.
+	// This field is immutable.
 	// +kubebuilder:default=Default
 	// +kubebuilder:validation:Enum={Default,Parallel}
 	// +optional
@@ -372,6 +373,8 @@ const (
 
 	// ParallelPodTerminationPolicy terminates leader and worker pods concurrently
 	// when a group is deleted, recreated, or when the LeaderWorkerSet is deleted.
+	// Note: worker pods receive termination signals concurrently with the leader pod;
+	// workloads that require the leader to remain running during worker shutdown should use Default.
 	ParallelPodTerminationPolicy PodTerminationPolicyType = "Parallel"
 )
 

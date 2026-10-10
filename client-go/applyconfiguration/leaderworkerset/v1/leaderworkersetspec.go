@@ -82,6 +82,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// leader pod to be fully deleted before terminating.
 	// Parallel terminates leader and worker pods concurrently when a group is deleted,
 	// recreated, or when the LeaderWorkerSet is deleted.
+	// This field is immutable.
 	PodTerminationPolicy *leaderworkersetv1.PodTerminationPolicyType `json:"podTerminationPolicy,omitempty"`
 }
 
