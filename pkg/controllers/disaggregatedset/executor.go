@@ -71,7 +71,7 @@ const (
 )
 
 // ReconcileRevisionTransition is the entry point for rolling update reconciliation.
-// It fetches current cluster state, ensures every role exists in the target
+// It uses the controller's live revision list, ensures every role exists in the target
 // revision, and then continues the rollout by computing and executing its next
 // scale step.
 //
@@ -85,15 +85,13 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet,
 	slice int,
 	revision string,
+	oldRevisions disaggregatedsetutils.RevisionRolesList,
+	newRevision *disaggregatedsetutils.RevisionRoles,
 	desiredReplicasByRole map[string]int,
 ) (ctrl.Result, bool, error) {
 	roleNames := disaggregatedsetutils.GetRoleNames(disaggregatedSet)
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
-	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
-	if err != nil {
-		return ctrl.Result{}, false, err
-	}
 	if len(oldRevisions) == 0 {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}

@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -330,6 +331,153 @@ func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
 				revisions = append(revisions, lws.Labels[disaggregatedsetv1.RevisionLabelKey])
 			}
 			assert.ElementsMatch(t, tc.remainingRevisions, revisions)
+		})
+	}
+}
+
+func TestReconcileSliceScalesAfterPolicySyncWithLaggingCache(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		desired, initial int32
+	}{
+		{"policy only", 4, 4},
+		{"policy and replicas with baseline patch", 6, 4},
+		{"policy and replicas with baseline already persisted", 6, 6},
+		{"policy and scale down", 2, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := revisionLWS("A", testRolePrefill, 4, 4, time.Time{}, tc.initial)
+			lws.Generation = 1
+			lws.Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
+			lws.Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementPostTermination
+			base := newTestClient(lws)
+			cached := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					require.Equal(t, client.ObjectKeyFromObject(lws), key)
+					lws.DeepCopyInto(obj.(*leaderworkersetv1.LeaderWorkerSet))
+					return nil
+				},
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					before := &leaderworkersetv1.LeaderWorkerSet{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), before))
+					require.NoError(t, c.Patch(ctx, obj, patch, opts...))
+					got := obj.(*leaderworkersetv1.LeaderWorkerSet)
+					// Unlike the API server, the fake client does not increment generation.
+					if before.Spec.GroupReplacementPolicy != got.Spec.GroupReplacementPolicy || getLWSReplicas(before) != getLWSReplicas(got) {
+						got.Generation++
+						return c.Update(ctx, got)
+					}
+					return nil
+				},
+			})
+			manager := NewLeaderWorkerSetManager(cached)
+			manager.apiReader = base
+			r := &DisaggregatedSetReconciler{LWSManager: manager}
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{tc.desired, 4}, [2]int{1, 1}, [2]int{})
+			ds.Spec.Roles = ds.Spec.Roles[:1]
+			ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
+			ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+
+			_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
+			require.NoError(t, err, "our own policy write must not cause a stale-observation conflict")
+			stored := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+			require.Equal(t, tc.desired, getLWSReplicas(stored), "scale in the same pass, without waiting for the cache")
+			require.Equal(t, leaderworkersetv1.GroupReplacementImmediate, stored.Spec.GroupReplacementPolicy)
+			initial, ok := disaggregatedsetutils.GetInitialReplicas(stored)
+			require.True(t, ok)
+			require.Equal(t, tc.desired, initial)
+		})
+	}
+}
+
+func TestCachedWorkloadsMatchDesired(t *testing.T) {
+	type state struct {
+		ds        *disaggregatedsetv1.DisaggregatedSet
+		workloads []*leaderworkersetv1.LeaderWorkerSet
+		desired   map[string]int
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*state)
+		want   bool
+	}{
+		{"matching", nil, true},
+		{"status does not require a workload mutation", func(s *state) { s.workloads[0].Status.ReadyReplicas = 0 }, true},
+		{"resolved external target overrides inline replicas", func(s *state) {
+			s.ds.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+			s.ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](99)
+		}, true},
+		{"zero slices", func(s *state) { s.ds.Spec.Slices, s.workloads = ptr.To[int32](0), nil }, true},
+		{"zero replicas", func(s *state) {
+			for i := range s.ds.Spec.Roles {
+				s.ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](0)
+			}
+			for role := range s.desired {
+				s.desired[role] = 0
+			}
+			for _, lws := range s.workloads {
+				lws.Spec.Replicas = ptr.To[int32](0)
+				setInitialReplicasAnnotation(lws, 0)
+			}
+		}, true},
+		{"default Hash policy is equivalent to explicit PostTermination", func(s *state) {
+			s.ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementPostTermination
+			s.workloads[0].Spec.GroupReplacementPolicy = ""
+		}, true},
+		{"Ordinal policy is not synchronized", func(s *state) {
+			s.ds.Spec.Roles[1].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+		}, true},
+		{"unresolved target", func(s *state) { delete(s.desired, testRolePrefill) }, false},
+		{"changed target", func(s *state) { s.desired[testRolePrefill]++ }, false},
+		{"missing workload", func(s *state) { s.workloads = s.workloads[:3] }, false},
+		{"nil workload", func(s *state) { s.workloads[0] = nil }, false},
+		{"extra workload", func(s *state) { s.workloads = append(s.workloads, s.workloads[0]) }, false},
+		{"duplicate replaces a missing role", func(s *state) { s.workloads[3] = s.workloads[0] }, false},
+		{"wrong deterministic name", func(s *state) { s.workloads[0].Name += "-extra" }, false},
+		{"old revision", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.RevisionLabelKey] = "old" }, false},
+		{"terminating workload", func(s *state) { s.workloads[0].DeletionTimestamp = ptr.To(metav1.Now()) }, false},
+		{"unknown role", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.RoleLabelKey] = "removed" }, false},
+		{"malformed slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "bad" }, false},
+		{"noncanonical slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "00" }, false},
+		{"negative slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "-1" }, false},
+		{"removed slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "2" }, false},
+		{"replica drift", func(s *state) { s.workloads[0].Spec.Replicas = ptr.To[int32](3) }, false},
+		{"missing baseline", func(s *state) { s.workloads[0].Annotations = nil }, false},
+		{"malformed baseline", func(s *state) { s.workloads[0].Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = "bad" }, false},
+		{"stale baseline", func(s *state) { setInitialReplicasAnnotation(s.workloads[0], 3) }, false},
+		{"Hash policy changed", func(s *state) {
+			s.ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+		}, false},
+		{"missing budget history", func(s *state) { s.ds.Annotations = nil }, false},
+		{"malformed budget history", func(s *state) { s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = "{" }, false},
+		{"old role still has remembered budget", func(s *state) {
+			s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = `{"decode":0,"prefill":1,"removed":2}`
+		}, false},
+		{"policy reset requires budget update", func(s *state) { s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil }, false},
+		{"percentage budget needs recomputing", func(s *state) {
+			s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("50%")
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := state{ds: newTwoRoleTestDisaggregatedSet([2]int32{4, 2}, [2]int{1, 1}, [2]int{1, 0}), desired: map[string]int{testRolePrefill: 4, testRoleDecode: 2}}
+			s.ds.Spec.Slices = ptr.To[int32](2)
+			s.ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
+			s.ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"decode":0,"prefill":1}`}
+			for slice := range 2 {
+				for _, role := range s.ds.Spec.Roles {
+					lws := revisionLWS("target", role.Name, *role.Spec.Replicas, *role.Spec.Replicas, time.Time{}, *role.Spec.Replicas)
+					lws.Name = disaggregatedsetutils.GenerateName(s.ds.Name, slice, "target", role.Name)
+					lws.UID = types.UID(lws.Name)
+					lws.Labels = disaggregatedsetutils.GenerateLabels(s.ds.Name, slice, "target", role.Name)
+					lws.Spec.GroupIdentity, lws.Spec.GroupReplacementPolicy = role.Spec.GroupIdentity, leaderworkersetv1.GroupReplacementPostTermination
+					s.workloads = append(s.workloads, lws)
+				}
+			}
+			if tc.change != nil {
+				tc.change(&s)
+			}
+			assert.Equal(t, tc.want, cachedWorkloadsMatchDesired(s.ds, s.workloads, "target", s.desired))
 		})
 	}
 }

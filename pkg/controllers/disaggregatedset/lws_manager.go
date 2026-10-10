@@ -41,7 +41,7 @@ import (
 type LeaderWorkerSetManager struct {
 	client           client.Client
 	apiReader        client.Reader
-	observeReadiness func(context.Context, *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error)
+	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
@@ -66,36 +66,44 @@ func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
 	old disaggregatedsetutils.RevisionRolesList,
 	target disaggregatedsetutils.RevisionRoles,
 ) (rolloutReadiness, error) {
-	result := make(rolloutReadiness)
+	var sets []*leaderworkersetv1.LeaderWorkerSet
 	for _, revision := range append(slices.Clone(old), target) {
 		for _, lws := range revision.Roles {
-			observed, err := manager.observeReadiness(ctx, lws)
-			if err != nil {
-				return nil, fmt.Errorf("observing readiness of LeaderWorkerSet %s: %w", lws.Name, err)
-			}
-			result[lws.Name] = observed
+			sets = append(sets, lws)
 		}
 	}
-	return result, nil
+	return manager.observeReadiness(ctx, sets)
 }
 
 // observeLiveReadiness adapts shared group observations to the planner's two counts.
 // Unknown observations must retry, not look like zero serving capacity: that
 // could lower the planner's no-worsening floor. Unacknowledged native decisions
 // still expose raw readiness, but withhold retained credit for another drain.
-func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet) (replicaReadiness, error) {
-	snapshot, err := replicagroups.Observe(ctx, manager.apiReader, lws)
+func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context, sets []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error) {
+	result := make(rolloutReadiness, len(sets))
+	if len(sets) == 0 {
+		return result, nil
+	}
+	// Reobserve only this slice. A broken group in another slice must not block it.
+	snapshots, err := replicagroups.ObserveMany(ctx, manager.apiReader, sets, client.MatchingLabels{
+		disaggregatedsetv1.SetNameLabelKey: sets[0].Labels[disaggregatedsetv1.SetNameLabelKey],
+		disaggregatedsetv1.SliceLabelKey:   sets[0].Labels[disaggregatedsetv1.SliceLabelKey],
+	})
 	if err != nil {
-		return replicaReadiness{}, err
+		return nil, err
 	}
-	if snapshot == nil || snapshot.LWS.Generation != lws.Generation || !snapshot.LWS.DeletionTimestamp.IsZero() {
-		return replicaReadiness{}, errReplicaGroupsPending
+	for _, lws := range sets {
+		snapshot := snapshots[lws.UID]
+		if snapshot == nil || snapshot.LWS.Generation != lws.Generation || !snapshot.LWS.DeletionTimestamp.IsZero() {
+			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
+		}
+		availability := snapshot.Availability()
+		result[lws.Name] = replicaReadiness{
+			raw:       int(availability.ReadyReplicas),
+			committed: int(availability.RetainedReadyReplicas),
+		}
 	}
-	availability := snapshot.Availability()
-	return replicaReadiness{
-		raw:       int(availability.ReadyReplicas),
-		committed: int(availability.RetainedReadyReplicas),
-	}, nil
+	return result, nil
 }
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
