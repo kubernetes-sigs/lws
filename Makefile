@@ -457,7 +457,6 @@ helm-unittest: helm ## Run Helm chart unit tests (helm-unittest plugin).
 helm-verify: update-helm helm helm-unittest ## Verify the Helm chart and generated RBAC templates.
 	$(HELM) lint charts/lws
 	$(HELM) template charts/lws >/dev/null
-	$(HELM) template charts/lws --set gangSchedulingManagement.schedulerProvider=volcano >/dev/null
 
 YQ = $(PROJECT_DIR)/bin/yq
 .PHONY: yq

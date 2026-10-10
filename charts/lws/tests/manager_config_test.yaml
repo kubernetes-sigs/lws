@@ -39,3 +39,12 @@ tests:
       - matchRegex:
           path: data["controller_manager_config.yaml"]
           pattern: "(?m)^featureGates:\\n  WorkloadAwareScheduling: true$"
+
+  - it: configures Volcano gang scheduling
+    set:
+      gangSchedulingManagement:
+        schedulerProvider: volcano
+    asserts:
+      - matchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "(?m)^gangSchedulingManagement:\\n  schedulerProvider: volcano$"
