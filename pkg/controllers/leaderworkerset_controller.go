@@ -1278,6 +1278,12 @@ func exclusiveConditionTypes(condition1 metav1.Condition, condition2 metav1.Cond
 	return false
 }
 
+// deleteWorkerStatefulSets proactively deletes all worker StatefulSets with foreground
+// propagation when the LeaderWorkerSet is being deleted with foreground cascading deletion
+// (where lws.DeletionTimestamp != nil is observed). Under standard background cascading
+// deletion, the LWS object is removed immediately without a finalizer, and the worker
+// StatefulSets are deleted by the pod controller's LWS-not-found path via the leader pod's
+// pod-termination-policy annotation.
 func (r *LeaderWorkerSetReconciler) deleteWorkerStatefulSets(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) error {
 	var workerStsList appsv1.StatefulSetList
 	if err := r.List(ctx, &workerStsList, client.InNamespace(lws.Namespace), client.MatchingLabels{

@@ -71,10 +71,10 @@ We propose adding `spec.podTerminationPolicy` with enum values `Default` and `Pa
 The field is defaulted to `Default` by both the CRD schema and the defaulting webhook.
 
 When configured as `Parallel`:
-1. The `LeaderWorkerSet` controller injects the annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel` into the leader pod template.
+1. The `LeaderWorkerSet` controller injects the annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel` into the leader pod template (stamped only when the policy is `Parallel`).
 2. When a leader pod enters termination (`DeletionTimestamp != nil`), the pod controller detects the `Parallel` policy (via LWS spec or the leader pod annotation) and immediately deletes the associated worker StatefulSet with `metav1.DeletePropagationForeground`.
-3. When the `LeaderWorkerSet` itself is deleted (`DeletionTimestamp != nil`), the `LeaderWorkerSet` controller immediately deletes all worker StatefulSets with `metav1.DeletePropagationForeground`.
-4. If a replacement leader pod is created while the old worker StatefulSet is still terminating, the pod controller requeues reconciliation until the old worker StatefulSet is fully removed, ensuring clean state handoff.
+3. When the `LeaderWorkerSet` itself is deleted with foreground cascading deletion (`DeletionTimestamp != nil`), the `LeaderWorkerSet` controller proactively deletes all worker StatefulSets with `metav1.DeletePropagationForeground`. (Under background cascading deletion, the LWS is removed immediately, and the pod controller handles parallel deletion of the worker StatefulSet via the annotation on the leader pod template).
+4. If a replacement leader pod is created while the old worker StatefulSet is still terminating (and not owned by the new leader), the pod controller requeues reconciliation until the old worker StatefulSet is fully removed, ensuring clean state handoff.
 
 ### User Stories
 
@@ -92,13 +92,14 @@ An operator deletes a `LeaderWorkerSet`. With `podTerminationPolicy: Parallel`, 
 
 ### Notes/Constraints/Caveats
 
+- `spec.podTerminationPolicy` is immutable once the LeaderWorkerSet is created.
 - When using `Parallel`, workers will receive termination signals (`SIGTERM`) at the same time as the leader pod. Workloads relying on the leader remaining alive while workers finish should use `Default`.
-- The leader pod annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy` ensures parallel termination functions correctly even if the parent `LeaderWorkerSet` resource has already been deleted.
+- The leader pod annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy` is stamped on the leader pod template only when the policy is `Parallel`, ensuring parallel termination functions correctly even if the parent `LeaderWorkerSet` resource has already been deleted in background cascading deletion.
 
 ### Risks and Mitigations
 
 - **Risk**: A replacement leader pod might attempt to adopt or create a worker StatefulSet while the previous one is still terminating.
-  - **Mitigation**: The pod controller checks if the existing worker StatefulSet has `DeletionTimestamp != nil`. If so, it requeues reconciliation with a short delay (1s) until the old worker StatefulSet is deleted.
+  - **Mitigation**: The pod controller checks if the existing worker StatefulSet has `DeletionTimestamp != nil` and is not owned by the new leader. If so, it requeues reconciliation with a short delay (1s) until the old worker StatefulSet is deleted.
 - **Risk**: Backward compatibility impact.
   - **Mitigation**: The default value is `Default`, preserving identical existing behavior unless explicitly opted into `Parallel`.
 
@@ -136,17 +137,17 @@ type LeaderWorkerSetSpec struct {
 ### Webhook Defaulting and Validation
 
 - **Defaulting**: If `spec.podTerminationPolicy` is empty, the mutating webhook defaults it to `DefaultPodTerminationPolicy`.
-- **Validation**: The validating webhook verifies that `spec.podTerminationPolicy` is either `Default` or `Parallel`. Invalid values are rejected. Updates between valid values are supported.
+- **Validation**: The validating webhook verifies that `spec.podTerminationPolicy` is either `Default` or `Parallel`. Invalid values are rejected. The field is immutable on update; attempting to change it on an existing `LeaderWorkerSet` is rejected.
 
 ### LeaderWorkerSet Controller Changes
 
-1. **Pod Template Annotation**: In `buildLeaderPodTemplateApplyConfiguration`, the controller injects `leaderworkerset.sigs.k8s.io/pod-termination-policy` into the leader pod template with the value of `lws.Spec.PodTerminationPolicy`.
+1. **Pod Template Annotation**: In `buildLeaderPodTemplateApplyConfiguration`, when `lws.Spec.PodTerminationPolicy == Parallel`, the controller injects `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel` into the leader pod template.
 2. **Proactive LWS Deletion**: In `deleteWorkerStatefulSets`, when `lws.DeletionTimestamp != nil` and `lws.Spec.PodTerminationPolicy == Parallel`, the controller deletes all worker StatefulSets with `metav1.DeletePropagationForeground`.
 
 ### Pod Controller Changes
 
 1. **Helper `isParallelPodTermination`**: Checks whether `lws.Spec.PodTerminationPolicy == Parallel` or the leader pod has `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel`.
-2. **Helper `deleteWorkerStatefulSetIfExists`**: Fetches the worker StatefulSet owned by the leader pod (validating UID) and deletes it with `metav1.DeletePropagationForeground`.
+2. **Helper `deleteWorkerStatefulSetIfExists`**: Looks up the worker StatefulSet using `workerStatefulSetName(leaderPod)` (which resolves to the leader pod's hostname in hash mode and pod name in ordinal mode), verifies it is controlled by the leader pod (`metav1.IsControlledBy`), and deletes it with `metav1.DeletePropagationForeground`.
 3. **Leader Deletion Handling**: When reconciling a leader pod with `DeletionTimestamp != nil`, if `isParallelPodTermination` returns true, `deleteWorkerStatefulSetIfExists` is called.
 
 ### Rebuild Coordination and Race Conditions
@@ -154,7 +155,7 @@ type LeaderWorkerSetSpec struct {
 When group replacement occurs (e.g. `RecreateGroupOnPodRestart` or rolling updates), a new leader pod might be scheduled while the old worker StatefulSet is terminating.
 In `pod_controller.go`:
 ```go
-if workerSts.DeletionTimestamp != nil {
+if workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
     log.V(2).Info("Worker statefulSet is terminating, requeue", "workerSts", workerSts.Name)
     return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }

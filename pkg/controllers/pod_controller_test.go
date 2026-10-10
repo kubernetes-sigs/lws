@@ -2833,6 +2833,15 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 					leaderworkerset.SetNameLabelKey: "test-lws",
 					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
 				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       leader.Name,
+						UID:        leader.UID,
+						Controller: ptr.To(true),
+					},
+				},
 			},
 		}
 
@@ -2860,6 +2869,168 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 		err = fakeClient.Get(ctx, types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace}, &sts)
 		if !apierrors.IsNotFound(err) {
 			t.Errorf("expected worker statefulset to be deleted even when LWS is gone, got err: %v", err)
+		}
+	})
+
+	t.Run("leader pod deletion in hash mode with Parallel policy deletes worker statefulset by hostname", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+		leader := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws-hash-abcde",
+				Namespace: lws.Namespace,
+				UID:       "leader-uid-hash",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  "0",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Hostname: "test-lws-0",
+			},
+		}
+		now := metav1.Now()
+		leader.DeletionTimestamp = &now
+		leader.Finalizers = []string{"test-finalizer"}
+
+		workerStsName := workerStatefulSetName(leader) // "test-lws-0"
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      workerStsName,
+				Namespace: leader.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       leader.Name,
+						UID:        leader.UID,
+						Controller: ptr.To(true),
+					},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, leader, workerSts).
+			Build()
+
+		reconciler := &PodReconciler{
+			Client: fakeClient,
+			Scheme: scheme,
+			Record: events.NewFakeRecorder(10),
+		}
+
+		_, err := reconciler.reconcilePod(ctx, podReconcileRequest{
+			NamespacedName: types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace},
+			UID:            leader.UID,
+		})
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+
+		var sts appsv1.StatefulSet
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: workerStsName, Namespace: leader.Namespace}, &sts)
+		if !apierrors.IsNotFound(err) {
+			t.Errorf("expected worker statefulset to be deleted by hostname in hash mode, got err: %v", err)
+		}
+	})
+
+	t.Run("leader pod deletion does not delete worker statefulset with nil or mismatched owner", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			ownerRefs []metav1.OwnerReference
+		}{
+			{
+				name:      "unowned worker statefulset",
+				ownerRefs: nil,
+			},
+			{
+				name: "mismatched owner UID",
+				ownerRefs: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       "test-lws-0",
+						UID:        "different-uid",
+						Controller: ptr.To(true),
+					},
+				},
+			},
+			{
+				name: "non-pod owner controller",
+				ownerRefs: []metav1.OwnerReference{
+					{
+						APIVersion: "apps/v1",
+						Kind:       "ReplicaSet",
+						Name:       "some-rs",
+						UID:        "rs-uid",
+						Controller: ptr.To(true),
+					},
+				},
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+					WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+					Size(2).
+					Obj()
+				lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+
+				leader := makeLeaderPod(lws, "leader-uid-1")
+				now := metav1.Now()
+				leader.DeletionTimestamp = &now
+				leader.Finalizers = []string{"test-finalizer"}
+
+				workerSts := &appsv1.StatefulSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      leader.Name,
+						Namespace: leader.Namespace,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: "test-lws",
+							leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+						},
+						OwnerReferences: tc.ownerRefs,
+					},
+				}
+
+				fakeClient := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(lws, leader, workerSts).
+					Build()
+
+				reconciler := &PodReconciler{
+					Client: fakeClient,
+					Scheme: scheme,
+					Record: events.NewFakeRecorder(10),
+				}
+
+				_, err := reconciler.reconcilePod(ctx, podReconcileRequest{
+					NamespacedName: types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace},
+					UID:            leader.UID,
+				})
+				if err != nil {
+					t.Fatalf("reconcilePod() error = %v", err)
+				}
+
+				var sts appsv1.StatefulSet
+				err = fakeClient.Get(ctx, types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace}, &sts)
+				if err != nil {
+					t.Errorf("expected worker statefulset to be retained, got err: %v", err)
+				}
+			})
 		}
 	})
 }

@@ -669,12 +669,21 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("update podTerminationPolicy to Parallel should succeed", &testValidationCase{
+		ginkgo.Entry("update podTerminationPolicy should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.DefaultPodTerminationPolicy)
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+			},
+			updateShouldFail: true,
+		}),
+		ginkgo.Entry("update with same podTerminationPolicy should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.ParallelPodTerminationPolicy)
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.Replicas = ptr.To[int32](2)
 			},
 			updateShouldFail: false,
 		}),

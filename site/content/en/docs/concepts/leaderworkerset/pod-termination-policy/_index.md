@@ -44,4 +44,9 @@ Under the `Parallel` policy, leader and worker pods are terminated concurrently.
   - **Safe Rebuild:** If a replacement leader pod starts reconciling while the previous group's worker StatefulSet is still terminating, the controller waits until the old worker StatefulSet is fully cleaned up before provisioning the new group.
 - **Use case:** Distributed training or inference workloads where leader and worker pods can shut down independently, and fast group recovery or rapid scale-down/deletion is critical.
 
+{{% alert title="Note" color="warning" %}}
+- **Immutability:** `spec.podTerminationPolicy` is immutable once the LeaderWorkerSet is created.
+- **Workload Caveat:** When set to `Parallel`, workers will receive termination signals (`SIGTERM`) at the same time as the leader pod. Do not use this policy if your worker pods rely on an active leader pod during shutdown (e.g., to coordinate graceful checkpoint handoff or finish draining).
+{{% /alert %}}
+
 {{< include file="examples/leaderworkerset/pod-termination-policy/parallel.yaml" lang="yaml" >}}

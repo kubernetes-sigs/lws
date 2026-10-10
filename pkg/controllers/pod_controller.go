@@ -377,7 +377,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
-		if workerSts.DeletionTimestamp != nil {
+		if workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
 			log.V(2).Info("waiting for old worker statefulset to be completely deleted before creating a new one", "workerSts", workerSts.Name)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
@@ -1315,14 +1315,13 @@ func (r *PodReconciler) isParallelPodTermination(leaderPod *corev1.Pod, lws *lea
 // with foreground deletion propagation so that leader and worker pods terminate concurrently.
 func (r *PodReconciler) deleteWorkerStatefulSetIfExists(ctx context.Context, leaderPod *corev1.Pod) error {
 	var workerSts appsv1.StatefulSet
-	if err := r.Get(ctx, types.NamespacedName{Name: leaderPod.Name, Namespace: leaderPod.Namespace}, &workerSts); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(leaderPod), Namespace: leaderPod.Namespace}, &workerSts); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	if workerSts.DeletionTimestamp != nil {
 		return nil
 	}
-	owner := metav1.GetControllerOf(&workerSts)
-	if owner != nil && owner.Kind == "Pod" && owner.UID != leaderPod.UID {
+	if !metav1.IsControlledBy(&workerSts, leaderPod) {
 		return nil
 	}
 	propagation := metav1.DeletePropagationForeground
