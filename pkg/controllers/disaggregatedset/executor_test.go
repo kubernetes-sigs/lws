@@ -89,12 +89,12 @@ func newTestExecutor(fakeClient client.Client) *RollingUpdateExecutor {
 }
 
 // reconcileTestTransition supplies the live revision list normally read by the controller.
-func reconcileTestTransition(ctx context.Context, executor *RollingUpdateExecutor, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, desired map[string]int) (ctrl.Result, bool, error) {
-	old, target, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, slice, revision)
+func reconcileTestTransition(ctx context.Context, executor *RollingUpdateExecutor, ds *disaggregatedsetv1.DisaggregatedSet, revision string, desired map[string]int) (ctrl.Result, bool, error) {
+	old, target, err := executor.LWSManager.GetRevisionRolesList(ctx, ds, 0, revision)
 	if err != nil {
 		return ctrl.Result{}, false, err
 	}
-	return executor.ReconcileRevisionTransition(ctx, ds, slice, revision, old, target, desired)
+	return executor.ReconcileRevisionTransition(ctx, ds, 0, revision, old, target, desired)
 }
 
 // Ordinary executor fixtures model settled observations. Pending-work tests
@@ -904,7 +904,7 @@ func TestRollbackUsesLiveRetainedReadiness(t *testing.T) {
 						assert.EqualValues(t, 4, a.Status.ReadyReplicas, "observation must not mutate discovered inputs")
 						executor := newTestExecutor(c)
 						executor.LWSManager = manager // Real observer, reconstructed on every reconcile.
-						_, complete, err := reconcileTestTransition(t.Context(), executor, ds, 0, "A", resolveDesiredReplicasByRole(ds, nil))
+						_, complete, err := reconcileTestTransition(t.Context(), executor, ds, "A", resolveDesiredReplicasByRole(ds, nil))
 						require.NoError(t, err)
 						assert.Equal(t, phase.complete, complete)
 						assert.EqualValues(t, phase.old, getTestLWSReplicas(c, testNamespace, b.Name))
@@ -997,7 +997,7 @@ func TestReconcileRevisionTransitionDoesNotUseTerminatingTargetReadiness(t *test
 	fakeClient := newTestClient(objects...)
 	executor := newTestExecutor(fakeClient)
 
-	_, complete, err := reconcileTestTransition(ctx, executor, ds, 0, targetRevision, resolveDesiredReplicasByRole(ds, nil))
+	_, complete, err := reconcileTestTransition(ctx, executor, ds, targetRevision, resolveDesiredReplicasByRole(ds, nil))
 
 	require.NoError(t, err)
 	assert.False(t, complete)
@@ -2088,7 +2088,7 @@ func TestReconcileRevisionTransitionRepairsPartialTargetRevision(t *testing.T) {
 	fakeClient := newTestClient(objects...)
 	executor := newTestExecutor(fakeClient)
 
-	result, complete, err := reconcileTestTransition(ctx, executor, ds, 0, targetRevision, map[string]int{
+	result, complete, err := reconcileTestTransition(ctx, executor, ds, targetRevision, map[string]int{
 		testRolePrefill: 4,
 		testRoleDecode:  4,
 	})
@@ -2123,7 +2123,7 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 
 	desiredReplicasByRole := resolveDesiredReplicasByRole(ds, nil)
 	targetRevision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
-	result, _, err := reconcileTestTransition(ctx, executor, ds, 0, targetRevision, desiredReplicasByRole)
+	result, _, err := reconcileTestTransition(ctx, executor, ds, targetRevision, desiredReplicasByRole)
 	require.NoError(t, err)
 	assert.NotZero(t, result.RequeueAfter)
 
@@ -2178,7 +2178,7 @@ func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
 			desired := resolveDesiredReplicasByRole(ds, nil)
 			reconcile := func() bool {
 				// Reconstruct the executor each time; there is no carried baseline.
-				_, complete, err := reconcileTestTransition(ctx, newTestExecutor(fakeClient), ds, 0, "C", desired)
+				_, complete, err := reconcileTestTransition(ctx, newTestExecutor(fakeClient), ds, "C", desired)
 				require.NoError(t, err)
 				return complete
 			}
@@ -2224,7 +2224,7 @@ func TestTwoReadinessIncompleteOldRevisionsConverge(t *testing.T) {
 	complete := false
 	for i := 0; i < 10 && !complete; i++ {
 		var err error
-		_, complete, err = reconcileTestTransition(ctx, newTestExecutor(fakeClient), ds, 0, "C", desired)
+		_, complete, err = reconcileTestTransition(ctx, newTestExecutor(fakeClient), ds, "C", desired)
 		require.NoError(t, err)
 
 		// Old Prefill remains broken. Target replicas become Ready and old
