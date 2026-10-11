@@ -34,7 +34,7 @@
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
   - [Alternative 1: Reuse the DisaggregatedSet type](#alternative-1-reuse-the-disaggregatedset-type)
-  - [Alternative 2: Express exclusivity through <code>spec.scheduling</code>](#alternative-2-express-exclusivity-through-)
+  - [Alternative 2: Express exclusivity through spec.scheduling](#alternative-2-express-exclusivity-through-specscheduling)
   - [Alternative 3: Keep only the annotations](#alternative-3-keep-only-the-annotations)
   - [Alternative 4: Wait for exclusive placement in kube-scheduler](#alternative-4-wait-for-exclusive-placement-in-kube-scheduler)
 <!-- /toc -->
@@ -255,7 +255,8 @@ webhook builds the affinity terms from those pod annotations and does not change
 Every other reader of the LeaderWorkerSet annotations moves to the same resolver:
 
 - the replica-level path in the pod controller that waits for the leader to be
-  scheduled and pins workers to its domain;
+  scheduled and pins workers to its domain, which reads the key from the leader
+  pod (see [Migration From the Annotations](#migration-from-the-annotations));
 - the subgroup check in the LeaderWorkerSet webhook;
 - KEP-666 validation rule 10 in `pkg/schedulerprovider/phase_one.go`;
 - the DisaggregatedSet conflict check in `validatePlacement`.
@@ -278,6 +279,28 @@ Every other reader of the LeaderWorkerSet annotations moves to the same resolver
 | --- | --- |
 | Alpha | The field and the annotations are both accepted. Admission returns a warning when an annotation is used. Conflicting values are rejected. |
 | Later | No automatic migration is planned. Removing the annotations is left to a later update of this KEP. |
+
+Moving a value from an annotation to the field in one update must not drop the
+constraint for groups that are still on the old revision. A revision stores
+`leaderWorkerTemplate` but not the LeaderWorkerSet's annotations, so the template
+restored for an old-revision group has no field, and once the annotation is
+removed the live object has no annotation either. If such a group's worker
+StatefulSet were rebuilt during the rollout, for example after a group restart,
+a resolver that reads only the LeaderWorkerSet would find neither source.
+
+To close that gap, the pod controller resolves the key for a group's worker
+StatefulSet from the group's leader pod, which carries the effective key in the
+pod annotations it was created with. The LeaderWorkerSet-level resolver, field
+first and annotation second, is used only when creating leader pod templates.
+An old-revision leader that is recreated below the rollout partition comes from
+the leader StatefulSet's own previous revision, which still has the annotation
+in its pod template. A group therefore keeps the constraint it started with
+until the rollout replaces it.
+
+The validation above also accepts the field and a matching annotation together,
+so an operator can add the field first and remove the annotation in a later
+update. That order is not required for correctness, but it lets the two steps
+be reviewed separately.
 
 ### Interaction With Workload-Aware Scheduling
 
@@ -418,6 +441,9 @@ None identified.
   role that sets the field.
 - A LeaderWorkerSet that uses only the field produces the same pod templates as
   one that uses only the annotation.
+- Moving the value from the annotation to the field in one update: a group still
+  on the old revision whose worker StatefulSet is rebuilt during the rollout
+  keeps its placement constraint.
 
 ##### e2e tests
 
@@ -463,7 +489,7 @@ domain, once with the field and once with the annotation.
 would expose values that LeaderWorkerSet must reject, and the same value name
 would mean a different scope in each API.
 
-### Alternative 2: Express exclusivity through `spec.scheduling`
+### Alternative 2: Express exclusivity through spec.scheduling
 
 **Rejected for now because** WAS cannot express exclusivity (KEP-5732 keeps a
 PodGroup inside a domain but does not keep others out), so this needs
