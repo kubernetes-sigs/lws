@@ -376,7 +376,7 @@ func TestCombinedMixedSizeRestartUsesLeaderStamp(t *testing.T) {
 			restarting.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "test", RestartCount: 1}}
 			c := fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).WithObjects(lws, leader, worker).Build()
 			r := NewPodReconciler(c, c.Scheme(), fakeEventRecorder{}, nil)
-			deleted, err := r.handleRestartPolicy(context.Background(), *restarting, *lws)
+			deleted, _, err := r.handleRestartPolicy(context.Background(), *restarting, *lws)
 			if err != nil || !deleted {
 				t.Fatalf("old size-two group suppressed under live size-one: deleted=%t err=%v", deleted, err)
 			}
@@ -953,10 +953,14 @@ func testCombinedReviewScaleDown(t *testing.T, c client.Client, scheme *runtime.
 				if !reflect.DeepEqual(before.Spec.Template, after.Spec.Template) || *after.Spec.UpdateStrategy.RollingUpdate.Partition < *before.Spec.UpdateStrategy.RollingUpdate.Partition {
 					t.Fatal("scale-only path published a template or exposed more old groups")
 				}
-				for ordinal, reservation := range next.Reservations {
-					if ordinal >= desired || state.Reservations[ordinal] != reservation {
-						t.Fatalf("scale-down retained condemned or changed surviving reservation: %+v", next)
+				wantReservations := make(map[int32]combinedModelReservation)
+				for ordinal, reservation := range state.Reservations {
+					if ordinal < desired {
+						wantReservations[ordinal] = reservation
 					}
+				}
+				if !reflect.DeepEqual(next.Reservations, wantReservations) || next.Generation != state.Generation || next.Revision != state.Revision || next.NativeRevision != state.NativeRevision {
+					t.Fatalf("scale-down changed surviving obligations or protocol identity: before=%+v after=%+v", state, next)
 				}
 				var pods corev1.PodList
 				if err := c.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: f.key.Name}); err != nil {
@@ -966,6 +970,104 @@ func testCombinedReviewScaleDown(t *testing.T, c client.Client, scheme *runtime.
 					if pod.DeletionTimestamp != nil {
 						t.Fatal("scale-only pass explicitly deleted a Pod")
 					}
+				}
+			})
+		}
+	}
+	for _, supersede := range []bool{false, true} {
+		for _, replacementPending := range []bool{false, true} {
+			t.Run(fmt.Sprintf("surviving-reservation/supersede=%t/pending=%t", supersede, replacementPending), func(t *testing.T) {
+				name := fmt.Sprintf("survivor-%t-%t", supersede, replacementPending)
+				f := newCombinedAPIFixture(t, c, scheme, namespace, name, 4)
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+					lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(2)
+				})
+				f.grow(6)
+				original := f.state()
+				if len(original.Reservations) != 2 || original.Reservations[2].UID == "" || original.Reservations[3].UID == "" {
+					t.Fatalf("fixture needs reservations on both sides of boundary: %+v", original)
+				}
+				currentUID := original.Reservations[2].UID
+				if replacementPending {
+					old := &corev1.Pod{}
+					key := client.ObjectKey{Namespace: namespace, Name: name + "-2"}
+					if err := c.Get(ctx, key, old); err != nil {
+						t.Fatal(err)
+					}
+					if err := c.Delete(ctx, old, client.GracePeriodSeconds(0)); err != nil {
+						t.Fatal(err)
+					}
+					leader := f.leader(2, true)
+					currentUID = leader.UID
+					leader.Annotations[leaderworkerset.SizeAnnotationKey] = "2" // Ready leader, missing/unready workers
+					if err := c.Update(ctx, leader); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := f.sts()
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) { lws.Spec.Replicas = ptr.To[int32](3) })
+				f.reconcile()
+				scaled := f.sts()
+				next := f.state()
+				want := map[int32]combinedModelReservation{2: original.Reservations[2]}
+				if !reflect.DeepEqual(next.Reservations, want) || next.Baseline != 4 || next.Desired != 3 || next.Generation != original.Generation || next.Revision != original.Revision || next.NativeRevision != original.NativeRevision || *scaled.Spec.UpdateStrategy.RollingUpdate.Partition != *before.Spec.UpdateStrategy.RollingUpdate.Partition {
+					t.Fatalf("scale-only pass changed a surviving payment/identity: %+v", next)
+				}
+				// No native acknowledgement or cleanup. A superseding template must
+				// freeze, while same-template growth must await the scale acknowledgement.
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+					lws.Spec.Replicas = ptr.To[int32](6)
+					if supersede {
+						lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "test.invalid/newest"
+					}
+				})
+				for range 3 {
+					f.reconcile()
+				}
+				if *f.sts().Spec.Replicas != 3 || f.state().Reservations[2].UID != original.Reservations[2].UID || f.state().Baseline != 4 {
+					t.Fatal("unacknowledged growth lost payment or grew early")
+				}
+				if !reflect.DeepEqual(f.sts().Spec.Template, scaled.Spec.Template) || (supersede && f.state().Phase != combinedFreeze) {
+					t.Fatal("supersession published before freeze acknowledgement")
+				}
+				for range 6 {
+					f.ack(false)
+					f.reconcile()
+					if *f.sts().Spec.Replicas == 6 && f.state().Phase == combinedActive {
+						break
+					}
+				}
+				state := f.state()
+				wantUID := original.Reservations[2].UID
+				if supersede {
+					// The pending replacement is itself stale for the newest template.
+					// Retarget the still-paid obligation, never refund its credit.
+					wantUID = currentUID
+				}
+				if *f.sts().Spec.Replicas != 6 || state.Baseline != 4 || state.Reservations[2].UID != wantUID || state.Reservations[2].Revision != state.Revision {
+					t.Fatalf("acknowledged growth failed or refunded unready/same-UID payment: %+v", state)
+				}
+				if *f.sts().Spec.UpdateStrategy.RollingUpdate.Partition <= 3 && state.Reservations[3].UID != original.Reservations[3].UID {
+					t.Fatal("re-exposed condemned old leader without a new persisted reservation")
+				}
+				// Simulate native replacement/GC and readiness to prove continuation,
+				// not just a stable barrier. No ready credit is fabricated in-place.
+				var pods corev1.PodList
+				if err := c.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: name}); err != nil {
+					t.Fatal(err)
+				}
+				for i := range pods.Items {
+					if err := c.Delete(ctx, &pods.Items[i], client.GracePeriodSeconds(0)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.ack(true)
+				for i := 0; i < 6; i++ {
+					f.leader(i, true)
+				}
+				f.reconcile()
+				if f.sts().Annotations[combinedRolloutAnnotation] != "" {
+					t.Fatal("ready acknowledged continuation did not converge")
 				}
 			})
 		}
