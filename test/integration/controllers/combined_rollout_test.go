@@ -539,6 +539,12 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		gomega.Expect(surge).To(gomega.Equal(int32(2)))
 		gomega.Expect(desired).To(gomega.Equal(int32(8)))
 		gomega.Expect(held.Pending["3"]).To(gomega.Equal(reservation{UID: oldUIDs[3], Revision: targetRevision}))
+		beforeDownscale := getSTS()
+		var previousState struct {
+			Generation int64 `json:"g"`
+		}
+		gomega.Expect(json.Unmarshal([]byte(beforeDownscale.Annotations[annotation]), &previousState)).To(gomega.Succeed())
+		scaleOnly := true
 		change(func(live *leaderworkerset.LeaderWorkerSet) { live.Spec.Replicas = ptr.To[int32](2) })
 		// Observe the atomic replica/reservation reduction BEFORE acknowledging
 		// it to the simulated native controller, cleaning any condemned group,
@@ -549,7 +555,12 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			g.Expect(k8sClient.Get(ctx, key, &sts)).To(gomega.Succeed())
 			g.Expect(k8sClient.Get(ctx, key, &live)).To(gomega.Succeed())
 			g.Expect(*sts.Spec.Replicas).To(gomega.Equal(int32(2)))
-			g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(int32(1)))
+			if scaleOnly {
+				g.Expect(sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(beforeDownscale.Spec.UpdateStrategy.RollingUpdate.Partition))
+				g.Expect(sts.Spec.Template).To(gomega.Equal(beforeDownscale.Spec.Template))
+			} else {
+				g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(int32(1)))
+			}
 			g.Expect(*live.Spec.Replicas).To(gomega.Equal(int32(2)))
 			g.Expect(sts.Annotations[leaderworkerset.ReplicasAnnotationKey]).To(gomega.Equal("2"))
 			var state struct {
@@ -566,11 +577,20 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 			g.Expect(state.Baseline).To(gomega.Equal(baseline))
 			g.Expect(state.Desired).To(gomega.Equal(int32(2)))
 			g.Expect(state.Protected).To(gomega.BeZero())
-			g.Expect(state.Generation).To(gomega.Equal(live.Generation))
+			if scaleOnly {
+				g.Expect(state.Generation).To(gomega.Equal(previousState.Generation))
+			} else {
+				g.Expect(state.Generation).To(gomega.Equal(live.Generation))
+			}
 			g.Expect(state.Revision).To(gomega.Equal(targetRevision))
 			g.Expect(state.NativeRevision).To(gomega.Equal("native-" + targetRevision))
 			g.Expect(state.Phase).To(gomega.Equal("active"))
-			g.Expect(state.Pending).To(gomega.Equal(map[string]reservation{"1": {UID: oldUIDs[1], Revision: targetRevision}}))
+			if scaleOnly {
+				g.Expect(state.Pending).To(gomega.BeEmpty(), "scale-only step must retire condemned reservations without buying new ones")
+				g.Expect(getLeader(1).DeletionTimestamp).To(gomega.BeNil())
+			} else {
+				g.Expect(state.Pending).To(gomega.Equal(map[string]reservation{"1": {UID: oldUIDs[1], Revision: targetRevision}}))
+			}
 			for ordinal := range state.Pending {
 				g.Expect(mustCombinedOrdinal(ordinal)).To(gomega.BeNumerically("<", 2), "no out-of-range reservation before surge reuse")
 			}
@@ -583,7 +603,18 @@ func testCombinedScaleSurge(lws *leaderworkerset.LeaderWorkerSet, options combin
 		}
 		gomega.Eventually(checkDownscale, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 		gomega.Consistently(checkDownscale, 2*time.Second, testing.Interval).Should(gomega.Succeed())
-		ginkgo.By("downscale snapshot BEFORE cleanup or surge reuse: " + getSTS().Annotations[annotation])
+		ginkgo.By("scale-only snapshot BEFORE native acknowledgement, cleanup or surge reuse: " + getSTS().Annotations[annotation])
+		// Acknowledge only the scale-only generation. The next plan must retain
+		// the existing exact old-1 obligation check before its own acknowledgement.
+		gomega.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			sts := getSTS()
+			sts.Status.ObservedGeneration, sts.Status.Replicas = sts.Generation, *sts.Spec.Replicas
+			return k8sClient.Status().Update(ctx, sts)
+		})).To(gomega.Succeed())
+		scaleOnly = false
+		gomega.Eventually(checkDownscale, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Consistently(checkDownscale, 2*time.Second, testing.Interval).Should(gomega.Succeed())
+		ginkgo.By("post-acknowledgement plan BEFORE cleanup or surge reuse: " + getSTS().Annotations[annotation])
 		condemnedUID = oldUIDs[3]
 		for i := int32(2); i < desired; i++ {
 			remove(i)
