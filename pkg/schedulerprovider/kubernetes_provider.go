@@ -122,12 +122,21 @@ func KubernetesLWSGroupName(lws *leaderworkerset.LeaderWorkerSet) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), "lws")
 }
 
-// KubernetesPodGroupName returns a UID-qualified replica PodGroup name.
+// KubernetesPodGroupName returns a UID-qualified replica PodGroup name derived
+// from the plain workload name, KubernetesWorkloadName. It is the PodGroup name
+// of a Hash group, and of an Ordinal group whose leader pod carries no group
+// incarnation, such as one admitted before group incarnations were
+// introduced. An Ordinal leader pod admitted by the pod webhook of this version
+// carries one, so derive the names of its PodGroups from
+// GroupWorkloadName(lws, leaderPod) instead.
 func KubernetesPodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, revision)
 }
 
-// KubernetesRolePodGroupName returns a UID-qualified role PodGroup name.
+// KubernetesRolePodGroupName returns a UID-qualified role PodGroup name derived
+// from the plain workload name. Like KubernetesPodGroupName, it does not match
+// the PodGroups of an Ordinal leader pod that carries a group incarnation, see
+// GroupWorkloadName.
 func KubernetesRolePodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, role, revision string) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, role, revision)
 }

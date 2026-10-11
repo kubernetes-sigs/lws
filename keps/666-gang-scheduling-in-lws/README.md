@@ -1025,6 +1025,13 @@ and violate the user's declared policy.
 - Downgrading LWS leaves running groups running. A group admitted by the newer
   version that is not running yet may wait for PodGroups the previous version
   does not create; deleting its leader pod recreates it.
+- Whenever a previous controller runs, during an upgrade or after a downgrade,
+  it derives PodGroup names from the leader's labels alone and so also creates
+  plain-named PodGroups for every group whose leader carries an incarnation.
+  No pod references them. The newer controller's cleanup deletes them at its
+  next reconciliation of the LeaderWorkerSet, since they are neither desired
+  nor in use. After a downgrade, the previous controller keeps them for as
+  long as the leader exists, as it would for a leader it admitted itself.
 - The new field is alpha and guarded by `WorkloadAwareScheduling`, default
   `false`.
 - Enabling the LWS gate alone does not change existing objects.

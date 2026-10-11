@@ -136,3 +136,10 @@ leader pod, as long as none of its workers is scheduled, and records a
 Downgrading LWS keeps running replicas running. A replica that the newer
 version admitted but that has not started yet can wait for `PodGroup` objects
 the earlier version does not create. Delete its leader pod to recreate it.
+
+Whenever an earlier controller runs, while an upgrade rolls out or after a
+downgrade, it also creates a `PodGroup` named without a group incarnation for
+each replica whose leader pod carries one. No pod of that replica references
+it, so it is harmless. The newer controller deletes it the next time it
+reconciles the LeaderWorkerSet. After a downgrade, the earlier controller keeps
+it for as long as the leader pod exists.
