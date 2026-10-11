@@ -78,6 +78,12 @@ func TestCombinedRolloutAPIPreconditions(t *testing.T) {
 	t.Run("upstream scheduling and restart prerequisites", func(t *testing.T) {
 		testCombinedUpstreamPrerequisites(t, c, scheme, ns.Name)
 	})
+	t.Run("review scale-down barriers and percentage budgets", func(t *testing.T) {
+		testCombinedReviewScaleDown(t, c, scheme, ns.Name)
+	})
+	t.Run("user protocol annotation cannot poison creation publication or cleanup", func(t *testing.T) {
+		testCombinedMetadataLifecycle(t, c, scheme, ns.Name)
+	})
 	t.Run("invalid state warnings and exact-state recovery", func(t *testing.T) {
 		testCombinedInvalidStateWarnings(t, c, scheme, ns.Name)
 	})
