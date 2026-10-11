@@ -590,7 +590,7 @@ type RollingUpdateConfiguration struct {
 	// can be scaled down further, followed by scaling up the new replicas, ensuring
 	// that at least 70% of original number of replicas are available at all times
 	// during the update.
-	// During combined template updates and scale-up, controller-authorized disruption
+	// During combined template updates and scale-up of an Ordinal LeaderWorkerSet, controller-authorized disruption
 	// uses a floor of max(0, min(initial non-surge replicas, desired replicas)-maxUnavailable).
 	// Whole Ready additional groups provide credit; Pending additions do not block
 	// affordable old-group replacement. This is not a guarantee against independent
