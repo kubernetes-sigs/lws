@@ -832,4 +832,241 @@ var _ = ginkgo.Describe("Workload-aware scheduling controller", func() {
 			g.Expect(*sts.Spec.Replicas).To(gomega.Equal(int32(1)))
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
+
+	admitWASLeaderPods := func(leaderStatefulSet *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, start, end int) {
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leaderStatefulSet), leaderStatefulSet)).To(gomega.Succeed())
+		persistedLWS := &leaderworkerset.LeaderWorkerSet{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), persistedLWS)).To(gomega.Succeed())
+		gomega.Expect(testing.CreateLeaderPodsWithInjectFn(ctx, *leaderStatefulSet, k8sClient, persistedLWS, start, end, func(pod *corev1.Pod) {
+			for key, value := range leaderStatefulSet.Spec.Template.Annotations {
+				pod.Annotations[key] = value
+			}
+			pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+			gomega.Expect(schedulerprovider.NewKubernetesProvider(k8sClient).InjectPodGroupMetadata(pod)).To(gomega.Succeed())
+		})).To(gomega.Succeed())
+	}
+
+	clearDeletingPodGroupFinalizers := func(nsName, lwsName string) {
+		groups := &schedulingv1beta1.PodGroupList{}
+		gomega.Expect(k8sClient.List(ctx, groups, client.InNamespace(nsName), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey: lwsName,
+		})).To(gomega.Succeed())
+		for i := range groups.Items {
+			group := &groups.Items[i]
+			if !group.DeletionTimestamp.IsZero() && len(group.Finalizers) > 0 {
+				group.Finalizers = nil
+				_ = k8sClient.Update(ctx, group)
+			}
+		}
+	}
+
+	ginkgo.It("compiles role-level templates, materializes leader and worker PodGroups per incarnation, and cleans them up on scale-down", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-role").
+			Replica(1).
+			Size(3).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			Replica: &leaderworkerset.LeaderWorkerSetReplicaScheduling{
+				Leader: &leaderworkerset.LeaderWorkerSetLeaderScheduling{
+					SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
+						Basic: &schedulingv1alpha3.WorkloadPodGroupBasicSchedulingPolicy{},
+					},
+				},
+				Worker: &leaderworkerset.LeaderWorkerSetWorkerScheduling{
+					SchedulingPolicy: &schedulingv1alpha3.WorkloadPodGroupSchedulingPolicy{
+						Gang: &schedulingv1alpha3.WorkloadPodGroupGangSchedulingPolicy{},
+					},
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			workload := &schedulingv1beta1.Workload{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: schedulerprovider.KubernetesWorkloadName(lws)}, workload)).To(gomega.Succeed())
+			g.Expect(workload.Spec.PodGroupTemplates).To(gomega.HaveLen(2))
+			templatesByName := make(map[string]schedulingv1beta1.PodGroupTemplate, 2)
+			for _, tmpl := range workload.Spec.PodGroupTemplates {
+				templatesByName[tmpl.Name] = tmpl
+			}
+			leaderTmpl, hasLeader := templatesByName["leader"]
+			g.Expect(hasLeader).To(gomega.BeTrue())
+			g.Expect(leaderTmpl.SchedulingPolicy.Basic).NotTo(gomega.BeNil())
+			g.Expect(leaderTmpl.SchedulingPolicy.Gang).To(gomega.BeNil())
+
+			workerTmpl, hasWorker := templatesByName["worker"]
+			g.Expect(hasWorker).To(gomega.BeTrue())
+			g.Expect(workerTmpl.SchedulingPolicy.Basic).To(gomega.BeNil())
+			g.Expect(workerTmpl.SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+			g.Expect(workerTmpl.SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(2)))
+
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey]).To(gomega.Equal(string(schedulerprovider.SchedulingModeRole)))
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.Equal(schedulerprovider.KubernetesWorkloadName(lws)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		admitWASLeaderPods(leaderStatefulSet, lws, 0, 1)
+
+		leader := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, leader)).To(gomega.Succeed())
+		gomega.Expect(leader.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+		revision := leader.Labels[leaderworkerset.RevisionKey]
+		incarnationWorkloadName := leader.Annotations[schedulerprovider.WorkloadNameAnnotationKey]
+		gomega.Expect(incarnationWorkloadName).To(gomega.HavePrefix(schedulerprovider.KubernetesWorkloadName(lws) + "."))
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(2))
+
+			byRole := make(map[string]schedulingv1beta1.PodGroup, 2)
+			for _, group := range groups.Items {
+				byRole[group.Labels[schedulerprovider.PodGroupRoleLabelKey]] = group
+			}
+
+			leaderGroup, hasLeaderGroup := byRole["leader"]
+			g.Expect(hasLeaderGroup).To(gomega.BeTrue())
+			g.Expect(leaderGroup.Name).To(gomega.Equal(*leader.Spec.SchedulingGroup.PodGroupName))
+			g.Expect(leaderGroup.Name).NotTo(gomega.Equal(schedulerprovider.KubernetesRolePodGroupName(lws, "0", "leader", revision)))
+			g.Expect(leaderGroup.Spec.SchedulingPolicy.Basic).NotTo(gomega.BeNil())
+			g.Expect(leaderGroup.Spec.SchedulingPolicy.Gang).To(gomega.BeNil())
+
+			workerGroup, hasWorkerGroup := byRole["worker"]
+			g.Expect(hasWorkerGroup).To(gomega.BeTrue())
+			g.Expect(workerGroup.Name).NotTo(gomega.Equal(schedulerprovider.KubernetesRolePodGroupName(lws, "0", "worker", revision)))
+			g.Expect(workerGroup.Spec.SchedulingPolicy.Basic).To(gomega.BeNil())
+			g.Expect(workerGroup.Spec.SchedulingPolicy.Gang).NotTo(gomega.BeNil())
+			g.Expect(workerGroup.Spec.SchedulingPolicy.Gang.MinCount).To(gomega.Equal(int32(2)))
+
+			updatedLeader := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), updatedLeader)).To(gomega.Succeed())
+			g.Expect(updatedLeader.Spec.SchedulingGates).To(gomega.BeEmpty())
+
+			workerSts := &appsv1.StatefulSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), workerSts)).To(gomega.Succeed())
+			g.Expect(workerSts.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).To(gomega.Equal(incarnationWorkloadName))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		testing.UpdateReplicaCount(ctx, k8sClient, lws, 0)
+		gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, leader))).To(gomega.Succeed())
+		workerSts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name, Name: leader.Name}}
+		_ = client.IgnoreNotFound(k8sClient.Delete(ctx, workerSts))
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			clearDeletingPodGroupFinalizers(ns.Name, lws.Name)
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.BeEmpty())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("coexists old-revision and surge PodGroups during a maxSurge rolling update and cleans up obsolete groups after rollout", func() {
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Name("was-max-surge").
+			Replica(2).
+			Size(2).
+			MaxSurge(1).
+			MaxUnavailable(0).
+			Obj()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		leaderStatefulSet := &appsv1.StatefulSet{}
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(leaderStatefulSet.Spec.Template.Annotations[schedulerprovider.WorkloadNameAnnotationKey]).NotTo(gomega.BeEmpty())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		initialRevision := leaderStatefulSet.Labels[leaderworkerset.RevisionKey]
+		admitWASLeaderPods(leaderStatefulSet, lws, 0, 2)
+		testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+
+		var initialGroupNames []string
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(2))
+			initialGroupNames = nil
+			for _, group := range groups.Items {
+				g.Expect(group.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(initialRevision))
+				initialGroupNames = append(initialGroupNames, group.Name)
+			}
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(*leaderStatefulSet.Spec.Replicas).To(gomega.Equal(int32(3)))
+			g.Expect(leaderStatefulSet.Labels[leaderworkerset.RevisionKey]).NotTo(gomega.Equal(initialRevision))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		updatedRevision := leaderStatefulSet.Labels[leaderworkerset.RevisionKey]
+
+		admitWASLeaderPods(leaderStatefulSet, lws, 2, 3)
+
+		surgeLeader := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-2"}, surgeLeader)).To(gomega.Succeed())
+		surgeGroupName := *surgeLeader.Spec.SchedulingGroup.PodGroupName
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(3))
+			names := make([]string, 0, 3)
+			for _, group := range groups.Items {
+				g.Expect(group.DeletionTimestamp).To(gomega.BeNil())
+				names = append(names, group.Name)
+			}
+			g.Expect(names).To(gomega.ContainElements(initialGroupNames[0], initialGroupNames[1], surgeGroupName))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		replaceOrdinalGroup := func(index int32) {
+			testing.DeleteLeaderPod(ctx, k8sClient, lws, index, index+1)
+			admitWASLeaderPods(leaderStatefulSet, lws, int(index), int(index)+1)
+			testing.SetPodGroupToReady(ctx, k8sClient, fmt.Sprintf("%s-%d", lws.Name, index), lws)
+		}
+
+		testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-2", lws)
+		replaceOrdinalGroup(1)
+		replaceOrdinalGroup(0)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, leaderStatefulSet)).To(gomega.Succeed())
+			g.Expect(*leaderStatefulSet.Spec.Replicas).To(gomega.Equal(int32(2)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		testing.DeleteLeaderPod(ctx, k8sClient, lws, 2, 3)
+
+		leader0 := &corev1.Pod{}
+		leader1 := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, leader0)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-1"}, leader1)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			clearDeletingPodGroupFinalizers(ns.Name, lws.Name)
+			groups := &schedulingv1beta1.PodGroupList{}
+			g.Expect(k8sClient.List(ctx, groups, client.InNamespace(ns.Name), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+			})).To(gomega.Succeed())
+			g.Expect(groups.Items).To(gomega.HaveLen(2))
+			remainingNames := []string{groups.Items[0].Name, groups.Items[1].Name}
+			g.Expect(remainingNames).To(gomega.ConsistOf(
+				*leader0.Spec.SchedulingGroup.PodGroupName,
+				*leader1.Spec.SchedulingGroup.PodGroupName,
+			))
+			for _, group := range groups.Items {
+				g.Expect(group.Labels[leaderworkerset.RevisionKey]).To(gomega.Equal(updatedRevision))
+			}
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
 })
