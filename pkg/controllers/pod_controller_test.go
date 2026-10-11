@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -3157,4 +3158,52 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 			t.Fatalf("expected worker StatefulSet not to be created for unready leader, got err = %v", err)
 		}
 	})
+}
+
+func TestMergeResult(t *testing.T) {
+	tests := []struct {
+		name string
+		r1   ctrl.Result
+		r2   ctrl.Result
+		want ctrl.Result
+	}{
+		{
+			name: "both empty",
+		},
+		{
+			name: "only first sets RequeueAfter",
+			r1:   ctrl.Result{RequeueAfter: 5 * time.Second},
+			want: ctrl.Result{RequeueAfter: 5 * time.Second},
+		},
+		{
+			name: "only second sets RequeueAfter",
+			r2:   ctrl.Result{RequeueAfter: 7 * time.Second},
+			want: ctrl.Result{RequeueAfter: 7 * time.Second},
+		},
+		{
+			name: "both set RequeueAfter keeps the shorter, first shorter",
+			r1:   ctrl.Result{RequeueAfter: 2 * time.Second},
+			r2:   ctrl.Result{RequeueAfter: 9 * time.Second},
+			want: ctrl.Result{RequeueAfter: 2 * time.Second},
+		},
+		{
+			name: "both set RequeueAfter keeps the shorter, second shorter",
+			r1:   ctrl.Result{RequeueAfter: 9 * time.Second},
+			r2:   ctrl.Result{RequeueAfter: 2 * time.Second},
+			want: ctrl.Result{RequeueAfter: 2 * time.Second},
+		},
+		{
+			name: "Requeue is set when either side requests it",
+			r1:   ctrl.Result{Requeue: true},
+			r2:   ctrl.Result{RequeueAfter: 3 * time.Second},
+			want: ctrl.Result{Requeue: true, RequeueAfter: 3 * time.Second},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mergeResult(tc.r1, tc.r2); got != tc.want {
+				t.Errorf("mergeResult(%+v, %+v) = %+v, want %+v", tc.r1, tc.r2, got, tc.want)
+			}
+		})
+	}
 }
