@@ -34,12 +34,13 @@ Only the failed pod is restarted or rescheduled. Other pods in the group continu
 
 ### RecreateGroupAfterStart
 
-When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. If any pod in the replica is still in the `Pending` phase (e.g., during image pulls or initial scheduling), the controller skips the failure event without triggering a group-wide recreation.
+When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. If any pod in the replica is still in the `Pending` phase (e.g., during image pulls or initial scheduling), the controller skips the failure event without triggering a group-wide recreation. If the pod is `Pending` because the scheduler could not place it, the controller also records a `GroupUnschedulable` warning event and reports it on the `Progressing` condition, as described below.
+
 - **Pod Failures:** Recreates the entire group if a pod fails after all pods in the replica have started (no pods are `Pending`). If any pod in the replica is `Pending`, the failure event is skipped, allowing Kubernetes to handle pod restarts individually and preventing restart cascades during rollout.
 - **Node Failures:** If a node fails after all pods in the replica have started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while any pod in the replica is `Pending`, group recreation is not triggered.
 - **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production once running, but want to prevent recreation loops during the initial rollout.
 
-A `Pending` pod can be in one of three states, and LWS does not recreate the group in any of them:
+A `Pending` pod can be in one of three states, and LWS does not recreate the group in any of them. A pod that has no `PodScheduled` condition yet, because the scheduler has not reported a result for it, is treated as starting.
 
 - **Held by a scheduling gate** (`PodScheduled=False` with reason `SchedulingGated`): the scheduler has not tried to place the pod yet. Every leader starts gated until LWS admits it, so a gated leader may not have worker pods yet.
 - **Placed and starting** (`PodScheduled=True`): the pod is on a node and is pulling images or starting containers.

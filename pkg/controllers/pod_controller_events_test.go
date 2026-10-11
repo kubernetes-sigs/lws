@@ -975,6 +975,17 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}
 	}
 
+	// startedWorker is a running worker owned by the current leader.
+	startedWorker := func(mutate func(*corev1.Pod)) *corev1.Pod {
+		return workerPod(func(p *corev1.Pod) {
+			ownedByLeader(leaderPod(nil))(p)
+			started(p)
+			if mutate != nil {
+				mutate(p)
+			}
+		})
+	}
+
 	recreateOnRestart := lwsWith(leaderworkerset.RecreateGroupOnPodRestart, nil)
 	recreateAfterStart := lwsWith(leaderworkerset.RecreateGroupAfterStart, nil)
 
@@ -1156,6 +1167,47 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			pod:         deleting(leaderPod(nil)),
 			objects:     []client.Object{deleting(leaderPod(nil)), workerPod(nil)},
 			wantDeleted: true,
+		},
+		{
+			name: "a started group is recreated under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(nil)),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a lingering pod of a previous incarnation does not defer or report on the current group",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(nil)),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+				deleting(workerPod(func(p *corev1.Pod) {
+					p.Name = "test-sample-0-2"
+					p.UID = "worker-previous"
+					podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)(p)
+				})),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a worker of a previous revision does not count towards the current group",
+			lws:  recreateAfterStart,
+			pod: deleting(leaderPod(func(p *corev1.Pod) {
+				started(p)
+				p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+			})),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(func(p *corev1.Pod) { p.Labels[leaderworkerset.RevisionKey] = "revision-0" }),
+			},
 		},
 		{
 			name:            "a failed pod list is propagated",

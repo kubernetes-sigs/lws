@@ -594,6 +594,9 @@ const (
 	// But this will only happen if all pods in the group have been started
 	// (i.e., are not in Pending phase). Effectively, this is a synchronized
 	// version of RecreateGroupOnPodRestart that waits for initial deployment stability.
+	// A group with a pod that the scheduler cannot place, for example while a
+	// gang waits for capacity, is not recreated either. Such a group is reported
+	// with a GroupUnschedulable warning event and Progressing condition reason.
 	RecreateGroupAfterStart RestartPolicyType = "RecreateGroupAfterStart"
 
 	// Default will follow the same behavior as the StatefulSet where only the failed pod

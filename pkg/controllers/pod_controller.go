@@ -1386,7 +1386,26 @@ func (r *PodReconciler) groupStartState(ctx context.Context, leader corev1.Pod, 
 		return groupStarted, "", err
 	}
 
-	members := podList.Items
+	// Every incarnation of a replica carries the same labels, so pods of a
+	// previous leader or revision can still be listed while they terminate.
+	// Only members of this leader's group say anything about its start.
+	members := make([]corev1.Pod, 0, len(podList.Items))
+	for _, groupPod := range podList.Items {
+		if groupPod.UID == leader.UID {
+			members = append(members, groupPod)
+			continue
+		}
+		if podutils.LeaderPod(groupPod) || revisionutils.GetRevisionKey(&groupPod) != revisionutils.GetRevisionKey(&leader) {
+			continue
+		}
+		belongs, err := r.workerPodBelongsToLeader(ctx, groupPod, leader)
+		if err != nil {
+			return groupStarted, "", err
+		}
+		if belongs {
+			members = append(members, groupPod)
+		}
+	}
 
 	state := groupStarted
 	// Missing members mean the group is still being created. That includes a

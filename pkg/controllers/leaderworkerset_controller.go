@@ -436,8 +436,9 @@ func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 			if e.ObjectOld == nil {
 				return false
 			}
-			// The Progressing reason reports unschedulable leaders, and a scheduling
-			// result changes no StatefulSet status that would otherwise requeue the LWS.
+			// Only leader pods get this far. The Progressing reason reports
+			// unschedulable leaders, and a scheduling result changes no StatefulSet
+			// status that would otherwise requeue the LWS.
 			oldPod, oldOK := e.ObjectOld.(*corev1.Pod)
 			newPod, newOK := e.ObjectNew.(*corev1.Pod)
 			if oldOK && newOK && podutils.PodUnschedulable(*oldPod) != podutils.PodUnschedulable(*newPod) {
