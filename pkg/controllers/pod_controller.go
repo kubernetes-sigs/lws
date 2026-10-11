@@ -276,7 +276,12 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			return ctrl.Result{}, err
 		}
 	} else if groupLws.Spec.Scheduling != nil {
-		return ctrl.Result{}, fmt.Errorf("spec.scheduling requires a configured scheduler provider")
+		// The scheduler provider is loaded from config at startup, so retrying
+		// cannot succeed until the manager restarts, which re-queues every pod.
+		// Surface the problem and stop; the LWS controller drains the object.
+		r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, schedulerprovider.ReasonUnsupportedProviderCapability, Create,
+			"spec.scheduling requires a configured scheduler provider")
+		return ctrl.Result{}, nil
 	}
 
 	// While the leader is gated, only the group's scheduling prerequisites exist:

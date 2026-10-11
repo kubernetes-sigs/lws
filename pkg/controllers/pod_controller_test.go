@@ -143,20 +143,29 @@ func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 		})
 	}
 
-	t.Run("missing scheduler provider rejects opted-in pod reconciliation", func(t *testing.T) {
+	t.Run("missing scheduler provider records a warning without retrying", func(t *testing.T) {
 		scheduledLWS := lws.DeepCopy()
 		scheduledLWS.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		recorder := events.NewFakeRecorder(1)
 		reconciler := &PodReconciler{
 			Client: fake.NewClientBuilder().WithScheme(testScheme).WithObjects(scheduledLWS, leaderPod).Build(),
 			Scheme: testScheme,
-			Record: events.NewFakeRecorder(1),
+			Record: recorder,
 		}
 		result, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leaderPod, false))
-		if err == nil || !strings.Contains(err.Error(), "requires a configured scheduler provider") {
-			t.Fatalf("reconcilePod() error = %v, want missing scheduler provider error", err)
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v, want nil", err)
 		}
 		if !result.IsZero() {
-			t.Fatalf("expected error-based retry without explicit requeue, got %+v", result)
+			t.Fatalf("expected no requeue, got %+v", result)
+		}
+		select {
+		case event := <-recorder.Events:
+			if !strings.Contains(event, "Warning "+schedulerprovider.ReasonUnsupportedProviderCapability) || !strings.Contains(event, "requires a configured scheduler provider") {
+				t.Fatalf("unexpected event: %s", event)
+			}
+		default:
+			t.Fatal("expected missing scheduler provider warning event")
 		}
 	})
 }
