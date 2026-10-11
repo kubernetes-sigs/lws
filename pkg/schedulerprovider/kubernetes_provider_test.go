@@ -50,6 +50,7 @@ func init() {
 func newKubernetesFakeClientBuilder() *fake.ClientBuilder {
 	return fake.NewClientBuilder().WithScheme(scheme).
 		WithIndex(&schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues).
+		WithIndex(&corev1.Pod{}, podSchedulingGroupNameIndex, podSchedulingGroupNameIndexValues).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if obj.GetUID() == "" {
@@ -1313,10 +1314,16 @@ func TestKubernetesProviderCorrectsGangMinimumOfExistingPodGroup(t *testing.T) {
 		assert.Equal(t, int32(3), podGroup.Spec.SchedulingPolicy.Gang.MinCount)
 	}
 
-	// Only the minimum is corrected; the other scheduling fields stay immutable.
+	// An already-admitted (ungated) leader whose PodGroup has the right minCount
+	// short-circuits re-materialization instead of failing every pod reconcile.
 	podGroup.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{All: &schedulingv1beta1.AllDisruptionMode{}}
 	require.NoError(t, fakeClient.Update(ctx, podGroup))
-	err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+	// When gated or repairing a stale minimum, other scheduling fields stay immutable.
+	gatedLeader := leader.DeepCopy()
+	gatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+	err := provider.CreatePodGroupIfNotExists(ctx, lws, gatedLeader)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "immutable scheduling configuration drift")
 }
@@ -1679,4 +1686,142 @@ func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {
 			},
 		},
 	}
+}
+
+func TestKubernetesProviderCleanupUnusedPodGroupsAvoidsFullPodScans(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("steady state replica mode lists only leader pods and skips field index lookups", func(t *testing.T) {
+		lws := testScheduledLWS()
+		var podLists []client.ListOptions
+		fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := obj.(*corev1.PodList); ok {
+					var lo client.ListOptions
+					for _, opt := range opts {
+						opt.ApplyToList(&lo)
+					}
+					podLists = append(podLists, lo)
+				}
+				return c.List(ctx, obj, opts...)
+			},
+		}).Build()
+		provider := NewKubernetesProvider(fakeClient)
+
+		// When no owned PodGroups exist, cleanup returns immediately with zero Pod lists.
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+		assert.Empty(t, podLists)
+
+		leader := ordinalLeaderPod(lws, "0")
+		worker := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-lws-0-1",
+				Namespace: lws.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.GroupIndexLabelKey:  "0",
+					leaderworkerset.WorkerIndexLabelKey: "1",
+					leaderworkerset.RevisionKey:         "revision-1",
+				},
+			},
+			Spec: corev1.PodSpec{
+				SchedulingGroup: &corev1.PodSchedulingGroup{
+					PodGroupName: ptr.To(KubernetesPodGroupName(lws, "0", "revision-1")),
+				},
+			},
+		}
+		require.NoError(t, fakeClient.Create(ctx, leader))
+		require.NoError(t, fakeClient.Create(ctx, worker))
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+		// Steady-state cleanup lists only leader pods (worker-index=0) and zero field lookups.
+		podLists = nil
+		require.NoError(t, provider.cleanupUnusedPodGroups(ctx, lws, nil))
+		require.Len(t, podLists, 1)
+		require.NotNil(t, podLists[0].LabelSelector)
+		assert.Contains(t, podLists[0].LabelSelector.String(), leaderworkerset.WorkerIndexLabelKey+"=0")
+		assert.Nil(t, podLists[0].FieldSelector)
+
+		// When leader is removed while worker still references the PodGroup, cleanup uses indexed Limit=1 lookup and retains the PodGroup.
+		require.NoError(t, fakeClient.Delete(ctx, leader))
+		podLists = nil
+		require.NoError(t, provider.cleanupUnusedPodGroups(ctx, lws, nil))
+		require.Len(t, podLists, 2)
+		assert.NotNil(t, podLists[1].FieldSelector)
+		assert.Equal(t, int64(1), podLists[1].Limit)
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, &schedulingv1beta1.PodGroup{}))
+
+		// Once worker is also deleted, indexed lookup sees 0 pods and deletes the obsolete PodGroup.
+		require.NoError(t, fakeClient.Delete(ctx, worker))
+		require.NoError(t, provider.cleanupUnusedPodGroups(ctx, lws, nil))
+		err := fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, &schedulingv1beta1.PodGroup{})
+		assert.True(t, apierrors.IsNotFound(err))
+	})
+
+	t.Run("steady state whole-LWS mode performs zero pod lists in cleanup", func(t *testing.T) {
+		lws := testScheduledLWS()
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			},
+		}
+		var podLists int
+		fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := obj.(*corev1.PodList); ok {
+					podLists++
+				}
+				return c.List(ctx, obj, opts...)
+			},
+		}).Build()
+		provider := NewKubernetesProvider(fakeClient)
+
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+		podLists = 0
+		desired := map[string]struct{}{KubernetesLWSGroupName(lws): {}}
+		require.NoError(t, provider.cleanupUnusedPodGroups(ctx, lws, desired))
+		assert.Zero(t, podLists)
+	})
+}
+
+func TestKubernetesProviderCreatePodGroupIfNotExistsShortCircuitsAdmittedLeader(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	var workloadLists int
+	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := obj.(*schedulingv1beta1.WorkloadList); ok {
+				workloadLists++
+			}
+			return c.List(ctx, obj, opts...)
+		},
+	}).Build()
+	provider := NewKubernetesProvider(fakeClient)
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+
+	// Initial gated leader creation looks up Workload and creates PodGroup.
+	leader := ordinalLeaderPod(lws, "0")
+	leader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+	workloadLists = 0
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	assert.Equal(t, 1, workloadLists)
+
+	// Once ungated with matching gang minCount, CreatePodGroupIfNotExists skips WorkloadList completely.
+	leader.Spec.SchedulingGates = nil
+	workloadLists = 0
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	assert.Zero(t, workloadLists)
+
+	// If gang minCount is stale, it falls through to findWorkload + ensurePodGroups and repairs it.
+	key := types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}
+	pg := &schedulingv1beta1.PodGroup{}
+	require.NoError(t, fakeClient.Get(ctx, key, pg))
+	pg.Spec.SchedulingPolicy.Gang.MinCount = 5
+	require.NoError(t, fakeClient.Update(ctx, pg))
+
+	workloadLists = 0
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	assert.Equal(t, 1, workloadLists)
+	require.NoError(t, fakeClient.Get(ctx, key, pg))
+	assert.Equal(t, int32(3), pg.Spec.SchedulingPolicy.Gang.MinCount)
 }

@@ -78,6 +78,84 @@ func (*stubSchedulerProvider) InjectPodGroupMetadata(*corev1.Pod) error {
 	return nil
 }
 
+func TestReconcilePodDefersOutdatedGatedHashLeaderBeforeCreatingGroupResources(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+
+	subdomainPolicy := leaderworkerset.SubdomainUniquePerReplica
+	lws := &leaderworkerset.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: leaderworkerset.LeaderWorkerSetSpec{
+			Replicas:      ptr.To[int32](1),
+			GroupIdentity: leaderworkerset.GroupIdentityHash,
+			NetworkConfig: &leaderworkerset.NetworkConfig{
+				SubdomainPolicy: &subdomainPolicy,
+			},
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](2)},
+		},
+	}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lws.Name,
+			Namespace: lws.Namespace,
+			Labels:    map[string]string{leaderworkerset.RevisionKey: "revision-new"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)},
+	}
+	outdatedLeader := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-lws-old",
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+				leaderworkerset.GroupIndexLabelKey:  "group-old",
+				leaderworkerset.RevisionKey:         "revision-old",
+			},
+			Annotations: map[string]string{
+				leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+			},
+		},
+		Spec: corev1.PodSpec{
+			Hostname:        "test-lws-group-old",
+			Subdomain:       "test-lws-group-old",
+			SchedulingGates: []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}},
+		},
+	}
+
+	provider := &stubSchedulerProvider{}
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lws, deploy, outdatedLeader).Build()
+	reconciler := &PodReconciler{
+		Client:            fakeClient,
+		Scheme:            testScheme,
+		Record:            fakeEventRecorder{},
+		SchedulerProvider: provider,
+	}
+
+	res, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(outdatedLeader, false))
+	if err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+	if res.RequeueAfter != groupReplacementRequeueDelay {
+		t.Fatalf("reconcilePod() RequeueAfter = %v, want %v", res.RequeueAfter, groupReplacementRequeueDelay)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("expected CreatePodGroupIfNotExists not to be called for outdated gated Hash leader, got %d calls", provider.calls)
+	}
+	var svc corev1.Service
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: lws.Namespace, Name: outdatedLeader.Spec.Subdomain}, &svc); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected no headless service for outdated gated Hash leader, got err = %v", err)
+	}
+}
+
 func TestPodReconcilerReturnsPodGroupErrors(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(testScheme); err != nil {

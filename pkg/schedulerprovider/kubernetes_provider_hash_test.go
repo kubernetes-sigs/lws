@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -281,4 +282,47 @@ func TestKubernetesProviderHashRejectsLeaderWithoutGroupLabels(t *testing.T) {
 	err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
 	require.Error(t, err)
 	assert.Equal(t, ReasonInvalidSchedulingConfiguration, ReconcileErrorReason(err))
+}
+
+func TestKubernetesProviderHashSteadyStateSkipsWorkloadListAndMemberPodScan(t *testing.T) {
+	ctx := context.Background()
+	lws := testHashScheduledLWS()
+	var workloadLists int
+	var podListOptions []client.ListOptions
+	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
+			switch obj.(type) {
+			case *schedulingv1beta1.WorkloadList:
+				workloadLists++
+			case *corev1.PodList:
+				var lo client.ListOptions
+				for _, opt := range opts {
+					opt.ApplyToList(&lo)
+				}
+				podListOptions = append(podListOptions, lo)
+			}
+			return c.List(ctx, obj, opts...)
+		},
+	}).Build()
+	provider := NewKubernetesProvider(fakeClient)
+
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+	leader := hashLeaderPod(lws, hashGroupKey)
+	leader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+	require.NoError(t, fakeClient.Create(ctx, leader))
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+	// Admit leader (remove scheduling gate) and reconcile again in steady state.
+	leader.Spec.SchedulingGates = nil
+	require.NoError(t, fakeClient.Update(ctx, leader))
+	workloadLists = 0
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	assert.Zero(t, workloadLists, "admitted Hash leader with matching PodGroup should skip WorkloadList lookup")
+
+	// Steady-state LWS reconcile should list only leader pods (worker-index=0), never all member pods.
+	podListOptions = nil
+	require.NoError(t, provider.ReconcileScheduling(ctx, lws, 1, "revision-1"))
+	require.Len(t, podListOptions, 1)
+	assert.NotNil(t, podListOptions[0].LabelSelector)
+	assert.Contains(t, podListOptions[0].LabelSelector.String(), leaderworkerset.WorkerIndexLabelKey+"=0")
 }

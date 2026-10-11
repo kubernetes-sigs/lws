@@ -251,6 +251,17 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 
+	if podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate) {
+		outdated, err := r.isOutdatedGatedHashLeader(ctx, &pod, &leaderWorkerSet)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if outdated {
+			log.V(2).Info("Deferring gated leader from outdated revision before creating group resources")
+			return mergeResult(ctrl.Result{RequeueAfter: groupReplacementRequeueDelay}, backoffResult), nil
+		}
+	}
+
 	if groupLws.Spec.NetworkConfig != nil && *groupLws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		// The per-replica service is named after the leader's subdomain: the pod
 		// name in ordinal mode, a group key derived name in hash mode. A stale or
@@ -1012,6 +1023,22 @@ func mutateGroupRestartCounts(ctx context.Context, c client.Client, key client.O
 }
 
 const groupReplacementRequeueDelay = 10 * time.Second
+
+func (r *PodReconciler) isOutdatedGatedHashLeader(ctx context.Context, pod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+	if lws.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash {
+		return false, nil
+	}
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
+		if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	desiredRevision := revisionutils.GetRevisionKey(&deploy)
+	podRevision := revisionutils.GetRevisionKey(pod)
+	return desiredRevision != "" && podRevision != "" && podRevision != desiredRevision, nil
+}
 
 // reconcileGroupReplacementGate decides whether a gated leader pod may start
 // scheduling and lifts the gate if so. Under PostTermination every group that
