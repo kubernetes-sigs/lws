@@ -205,16 +205,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if err := r.reconcileWorkloadScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
-		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
-		if isNonTransientSchedulingError(err) && leaderSts != nil {
-			if scaleErr := r.scaleDownLeaderStatefulSet(ctx, leaderSts, *lws.Spec.Replicas); scaleErr != nil {
-				return ctrl.Result{}, errors.Join(err, scaleErr)
-			}
-			if _, statusErr := r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision)); statusErr != nil && !apierrors.IsConflict(statusErr) {
-				return ctrl.Result{}, errors.Join(err, statusErr)
-			}
-		}
-		return ctrl.Result{}, err
+		return r.handleWorkloadSchedulingError(ctx, err, leaderSts != nil,
+			func() error { return r.scaleDownLeaderStatefulSet(ctx, leaderSts, *lws.Spec.Replicas) },
+			func() (bool, error) { return r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision)) },
+		)
 	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
@@ -365,13 +359,31 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 	return nil
 }
 
-func isNonTransientSchedulingError(err error) bool {
-	if err == nil {
-		return false
+// handleWorkloadSchedulingError handles errors from reconcileWorkloadScheduling
+// while ensuring scale-down of existing leaders and LWS status updates still
+// proceed, and requeuing cleanly without backoff on status update conflicts.
+func (r *LeaderWorkerSetReconciler) handleWorkloadSchedulingError(
+	ctx context.Context,
+	err error,
+	hasLeaderWorkload bool,
+	scaleDown func() error,
+	updateStatus func() (bool, error),
+) (ctrl.Result, error) {
+	if !apierrors.IsConflict(err) {
+		ctrl.LoggerFrom(ctx).Error(err, "Reconciling workload-aware scheduling prerequisites")
 	}
-	reason := schedulerprovider.ReconcileErrorReason(err)
-	return reason == schedulerprovider.ReasonInvalidSchedulingConfiguration ||
-		reason == schedulerprovider.ReasonUnsupportedProviderCapability
+	if hasLeaderWorkload {
+		if scaleErr := scaleDown(); scaleErr != nil {
+			return ctrl.Result{}, errors.Join(err, scaleErr)
+		}
+		if _, statusErr := updateStatus(); statusErr != nil && !apierrors.IsConflict(statusErr) {
+			return ctrl.Result{}, errors.Join(err, statusErr)
+		}
+	}
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Context, leaderSts *appsv1.StatefulSet, desiredReplicas int32) error {

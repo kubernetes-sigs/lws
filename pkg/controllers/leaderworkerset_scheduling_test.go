@@ -27,8 +27,10 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/lru"
@@ -603,6 +605,161 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			t.Errorf("condition = %v, want False/%s", cond, schedulerprovider.ReasonUnsupportedProviderCapability)
 		}
 	})
+
+	for _, reason := range []string{
+		schedulerprovider.ReasonPodGroupCleanupBlocked,
+		schedulerprovider.ReasonPodGroupCreateFailed,
+	} {
+		for _, tc := range []struct {
+			name     string
+			hashMode bool
+		}{
+			{name: "ordinal mode", hashMode: false},
+			{name: "hash mode", hashMode: true},
+		} {
+			t.Run("transient error ("+reason+") scales down and updates status while blocking scale-up in "+tc.name, func(t *testing.T) {
+				lws := lwsSchedScheduledLWS()
+				if tc.hashMode {
+					lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+				}
+				lws.Spec.Replicas = ptr.To[int32](3)
+				provider := &lwsSchedFakeProvider{}
+				r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+				r.SchedulerProvider = provider
+
+				if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+					t.Fatalf("initial Reconcile() = %v, want nil", err)
+				}
+
+				// Scale down 3 -> 1 while provider reports a transient scheduling failure.
+				fetched := &leaderworkerset.LeaderWorkerSet{}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+					t.Fatalf("getting lws: %v", err)
+				}
+				fetched.Spec.Replicas = ptr.To[int32](1)
+				fetched.Generation = 2
+				if err := k8sClient.Update(ctx, fetched); err != nil {
+					t.Fatalf("updating lws: %v", err)
+				}
+
+				provider.reconcileErr = schedulerprovider.NewReconcileError(
+					reason,
+					errors.New("transient scheduling prerequisite failure"),
+				)
+
+				if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+					t.Fatal("Reconcile() = nil, want transient scheduling error")
+				}
+
+				if got := lwsSchedLeaderReplicas(t, k8sClient, lws, tc.hashMode); got != 1 {
+					t.Errorf("leader replicas = %d, want 1 after scale-down", got)
+				}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+					t.Fatalf("getting updated lws: %v", err)
+				}
+				if fetched.Status.ObservedGeneration != 2 {
+					t.Errorf("status.observedGeneration = %d, want 2", fetched.Status.ObservedGeneration)
+				}
+				cond := lwsSchedGetCondition(t, k8sClient, lws)
+				if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reason {
+					t.Errorf("condition = %v, want False/%s", cond, reason)
+				}
+
+				// Attempt scale-up 1 -> 4 while transient error persists: replicas must stay at 1.
+				fetched.Spec.Replicas = ptr.To[int32](4)
+				fetched.Generation = 3
+				if err := k8sClient.Update(ctx, fetched); err != nil {
+					t.Fatalf("updating lws for scale-up: %v", err)
+				}
+				if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+					t.Fatal("Reconcile() on scale-up = nil, want transient scheduling error")
+				}
+				if got := lwsSchedLeaderReplicas(t, k8sClient, lws, tc.hashMode); got != 1 {
+					t.Errorf("leader replicas = %d, want 1 while scheduling prerequisites fail", got)
+				}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+					t.Fatalf("getting lws after blocked scale-up: %v", err)
+				}
+				if fetched.Status.ObservedGeneration != 3 {
+					t.Errorf("status.observedGeneration = %d, want 3", fetched.Status.ObservedGeneration)
+				}
+			})
+
+			t.Run("transient error ("+reason+") before initial creation does not create replicas in "+tc.name, func(t *testing.T) {
+				lws := lwsSchedScheduledLWS()
+				if tc.hashMode {
+					lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+				}
+				lws.Spec.Replicas = ptr.To[int32](2)
+				provider := &lwsSchedFakeProvider{
+					reconcileErr: schedulerprovider.NewReconcileError(reason, errors.New("not ready yet")),
+				}
+				r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+				r.SchedulerProvider = provider
+
+				if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+					t.Fatal("Reconcile() = nil, want transient scheduling error")
+				}
+
+				var workload client.Object = &appsv1.StatefulSet{}
+				if tc.hashMode {
+					workload = &appsv1.Deployment{}
+				}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), workload); !apierrors.IsNotFound(err) {
+					t.Errorf("Get(%T) = %v, want NotFound while scheduling prerequisites fail", workload, err)
+				}
+				cond := lwsSchedGetCondition(t, k8sClient, lws)
+				if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reason {
+					t.Errorf("condition = %v, want False/%s", cond, reason)
+				}
+			})
+		}
+	}
+
+	t.Run("409 Conflict when updating WorkloadSchedulingCreated requeues cleanly without error in ordinal and hash modes", func(t *testing.T) {
+		for _, hashMode := range []bool{false, true} {
+			lws := lwsSchedScheduledLWS()
+			if hashMode {
+				lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+			}
+			provider := &lwsSchedFakeProvider{}
+			conflictErr := apierrors.NewConflict(
+				schema.GroupResource{Group: leaderworkerset.GroupVersion.Group, Resource: "leaderworkersets"},
+				lws.Name,
+				errors.New("optimistic lock conflict"),
+			)
+			r, _, _ := lwsSchedNewReconciler(t, interceptor.Funcs{
+				SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+					return conflictErr
+				},
+			}, lws)
+			r.SchedulerProvider = provider
+
+			got, err := r.Reconcile(ctx, lwsSchedRequest(lws))
+			if err != nil {
+				t.Fatalf("hashMode=%v: Reconcile() error = %v, want nil on 409 Conflict", hashMode, err)
+			}
+			if got != (ctrl.Result{Requeue: true}) {
+				t.Errorf("hashMode=%v: Reconcile() result = %v, want {Requeue: true}", hashMode, got)
+			}
+		}
+	})
+}
+
+func lwsSchedLeaderReplicas(t *testing.T, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, hashMode bool) int32 {
+	t.Helper()
+	if hashMode {
+		deploy := &appsv1.Deployment{}
+		if err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(lws), deploy); err != nil {
+			t.Fatalf("getting deployment: %v", err)
+		}
+		return *deploy.Spec.Replicas
+	}
+	sts := &appsv1.StatefulSet{}
+	if err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(lws), sts); err != nil {
+		t.Fatalf("getting statefulset: %v", err)
+	}
+	return *sts.Spec.Replicas
 }
 
 // lwsSchedRequest builds the reconcile request for lws.
