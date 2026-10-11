@@ -29,6 +29,8 @@ type UpdateStep struct {
 	// UsesUnavailableFallback reports that Past uses one additional unavailable
 	// replica to release capacity for an unschedulable target role.
 	UsesUnavailableFallback bool
+	// UsesTargetRebalance trims previously issued disjoint surplus to its budget.
+	UsesTargetRebalance bool
 }
 
 // RoleReplicaState contains one replica count per role. The executor resolves
@@ -80,6 +82,7 @@ type RolloutState struct {
 	Target    TargetRevisionState
 	// AvailabilityBaseline is shared by every old-revision candidate so
 	// selecting a smaller interrupted revision cannot weaken maxUnavailable.
+	// Removed roles include only disjoint old revisions; shared roles include all.
 	AvailabilityBaseline RoleReplicaState
 	Config               []RollingUpdateConfig
 }
@@ -134,6 +137,9 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 	}
 	if anyChange(next.Past, next.New, currentOld, currentNew) {
 		return next
+	}
+	if rebalance := disjointSurplusStep(state, snapshot); rebalance != nil {
+		return rebalance
 	}
 
 	if bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets); ok {
@@ -503,6 +509,7 @@ func slicesClone(values RoleReplicaState) RoleReplicaState {
 // is applied separately.
 func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	hardLimits := make(RoleReplicaState, len(snapshot))
+	releasedLimits := disjointGrowthLimits(snapshot)
 	targetReplicas := make(RoleReplicaState, len(snapshot))
 	targetReady := make(RoleReplicaState, len(snapshot))
 	disjointReplacement := false
@@ -536,9 +543,65 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 			pendingReadinessCeiling := readinessCredit + pendingAllowance
 			limit = min(limit, pendingReadinessCeiling)
 		}
+		if releasedLimits != nil {
+			limit = min(limit, releasedLimits[i])
+			if hasTarget && readyProgress.leastAdvancedReplicas == 0 {
+				// Start every required role before issuing a second group.
+				// A later readiness dip must not retract already issued work.
+				limit = min(limit, 1)
+			}
+		}
 		hardLimits[i] = max(role.NewSpecReplicas, min(role.NewTargetReplicas, limit))
 	}
 	return hardLimits
+}
+
+// Disjoint growth follows observed old drain, not hypothetical deletions in the
+// next plan. Fractions coordinate roles; they do not estimate GPU capacity.
+func disjointGrowthLimits(snapshot rolloutSnapshot) RoleReplicaState {
+	initial, drained := make(RoleReplicaState, len(snapshot)), make(RoleReplicaState, len(snapshot))
+	hasOld := false
+	for i, role := range snapshot {
+		if role.NewTargetReplicas == 0 && role.UnreplacedReplicas > 0 {
+			initial[i] = role.AvailabilityBaselineReplicas
+			drained[i] = max(0, initial[i]-role.OldSpecReplicas)
+			hasOld = hasOld || role.OldSpecReplicas > 0
+		}
+	}
+	progress, ok := coordinationWindowForProgress(initial, drained)
+	if !hasOld || !ok {
+		return nil
+	}
+	limits := make(RoleReplicaState, len(snapshot))
+	for i, role := range snapshot {
+		numerator := int64(role.NewTargetReplicas) * int64(progress.leastAdvancedReplicas)
+		denominator := int64(progress.leastAdvancedTarget)
+		limits[i] = int((numerator+denominator-1)/denominator) + role.Config.MaxSurge
+	}
+	return limits
+}
+
+// Repair surplus issued before this gate existed. Only an incomplete target
+// with no shared old roles can shrink: none of its readiness serves an old floor.
+// Preserve its last Ready group even if native deletion chooses Ready first.
+func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateStep {
+	limits := disjointGrowthLimits(snapshot)
+	if limits == nil || allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
+		return nil
+	}
+	next := slicesClone(state.Target.SpecReplicas)
+	for i, role := range snapshot {
+		if role.NewTargetReplicas > 0 && role.AvailabilityBaselineReplicas > 0 {
+			return nil
+		}
+		keepReady := minimumSpecToPreserveReady(role.NewSpecReplicas, role.NewCommittedReadyReplicas, min(1, role.NewCommittedReadyReplicas))
+		keep := max(min(1, role.NewSpecReplicas), keepReady)
+		next[i] = min(next[i], max(limits[i], keep))
+	}
+	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
+		return nil
+	}
+	return &UpdateStep{Past: slicesClone(state.ActiveOld.SpecReplicas), New: next, UsesTargetRebalance: true}
 }
 
 // snapshotWithBootstrapSurge grants enough temporary surge for the first
@@ -551,6 +614,10 @@ func snapshotWithBootstrapSurge(
 	snapshot rolloutSnapshot,
 	phaseTargets RoleReplicaState,
 ) (rolloutSnapshot, bool) {
+	// Removed-role budgets, not emergency surge, fund disjoint replacements.
+	if disjointGrowthLimits(snapshot) != nil {
+		return nil, false
+	}
 	normalLimits := hardNewReplicaLimits(snapshot)
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false

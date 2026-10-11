@@ -472,6 +472,101 @@ func TestValidateDisjointReplacementStep(t *testing.T) {
 	}
 }
 
+func TestValidateDisjointSurplusStep(t *testing.T) {
+	// Target P has two Ready groups while D has none. Only P's surplus may
+	// shrink; W3 remains protected by the old baseline four and budget one.
+	state := rolloutState([]int{0, 0, 4}, []int{0, 0, 3}, []int{0, 0, 3}, nil, nil,
+		[]int{2, 1, 0}, []int{2, 0, 0}, []int{2, 2, 0}, configs([]int{0, 0, 0}, []int{1, 1, 1}))
+	valid := &UpdateStep{Past: []int{0, 0, 3}, New: []int{1, 1, 0}, UsesTargetRebalance: true}
+	require.Equal(t, valid, ComputeNextStep(state))
+	require.NoError(t, validateUpdateStep(state, valid))
+	for _, tc := range []struct {
+		name string
+		edit func(*UpdateStep)
+	}{
+		{"old drain", func(step *UpdateStep) { step.Past[2]-- }},
+		{"last Ready group", func(step *UpdateStep) { step.New[0] = 0 }},
+		{"target growth", func(step *UpdateStep) { step.New[1]++ }},
+		{"unmarked shrink", func(step *UpdateStep) { step.UsesTargetRebalance = false }},
+		{"bootstrap flag", func(step *UpdateStep) { step.UsesBootstrapSurge = true }},
+		{"unavailable flag", func(step *UpdateStep) { step.UsesUnavailableFallback = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := &UpdateStep{Past: slicesClone(valid.Past), New: slicesClone(valid.New), UsesTargetRebalance: true}
+			tc.edit(step)
+			require.Error(t, validateUpdateStep(state, step))
+		})
+	}
+	state.Target.ReadyReplicas[1] = 1
+	require.Error(t, validateUpdateStep(state, valid), "a complete target cannot be rebalanced")
+	state.Target.ReadyReplicas[1] = 0
+	state.AvailabilityBaseline[0] = 2
+	require.Error(t, validateUpdateStep(state, valid), "shared old roles may already rely on target readiness")
+}
+
+func TestDisjointSurplusReconcileUsesGuardedTargetOnlyWrites(t *testing.T) {
+	for _, concurrentWrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("concurrentWrite=%t", concurrentWrite), func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{}, [2]int{1, 1})
+			ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"worker":1}`}
+			createdAt := time.Unix(1000, 0)
+			old := revisionLWS("old", "worker", 3, 3, createdAt, 4)
+			prefill := revisionLWS("new", testRolePrefill, 2, 2, createdAt, 2)
+			decode := revisionLWS("new", testRoleDecode, 1, 0, createdAt, 2)
+			base := newTestClient(ds, old, prefill, decode)
+			patches, race := 0, concurrentWrite
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					patches++
+					require.Equal(t, prefill.Name, obj.GetName(), "only the surplus target may change")
+					data, err := patch.Data(obj)
+					require.NoError(t, err)
+					assert.Contains(t, string(data), "resourceVersion", "scale writes must retain optimistic locking")
+					if race {
+						race = false
+						latest := &leaderworkersetv1.LeaderWorkerSet{}
+						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(prefill), latest))
+						latest.Annotations["example.com/concurrent"] = "keep"
+						require.NoError(t, c.Update(ctx, latest))
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			for attempt := range 4 {
+				// Reconstruct the executor on every attempt; no recovery annotation
+				// or in-memory hold is needed to keep the target from growing back.
+				executor := newTestExecutor(c)
+				oldRevisions, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "new")
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, oldRevisions, *target,
+					map[string]int{testRolePrefill: 2, testRoleDecode: 2})
+				if concurrentWrite && attempt == 0 {
+					require.True(t, apierrors.IsConflict(err), "the raced scale must fail without changing replicas")
+					assert.EqualValues(t, 2, getTestLWSReplicas(c, testNamespace, prefill.Name))
+					continue
+				}
+				require.NoError(t, err)
+				assert.False(t, complete)
+				assert.EqualValues(t, 1, getTestLWSReplicas(c, testNamespace, prefill.Name))
+				assert.EqualValues(t, 1, getTestLWSReplicas(c, testNamespace, decode.Name))
+				assert.EqualValues(t, 3, getTestLWSReplicas(c, testNamespace, old.Name))
+			}
+			wantPatches := 1
+			if concurrentWrite {
+				wantPatches++
+			}
+			assert.Equal(t, wantPatches, patches, "only the initial trim and optional failed race require writes")
+			stored := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(prefill), stored))
+			assert.NotContains(t, stored.Annotations, "disaggregatedset.x-k8s.io/scheduling-recovery")
+			if concurrentWrite {
+				assert.Equal(t, "keep", stored.Annotations["example.com/concurrent"])
+			}
+		})
+	}
+}
+
 func TestReconcilerIntegration(t *testing.T) {
 	testCases := []reconcilerTestCase{
 		{
@@ -1360,6 +1455,7 @@ func TestRememberedMaxUnavailableRejectsInvalidHistory(t *testing.T) {
 		want       int
 	}{
 		{"", 0}, {"null", 0}, {"{", 0}, {`{"prefill":-1}`, 0},
+		{`{"prefill":0}`, 0}, {`{"prefill":1}`, 1},
 		{`{"prefill":2147483648}`, 0}, {`{"prefill":9223372036854775808}`, 0},
 		{`{"prefill":2,"decode":-1}`, 2},
 	} {
@@ -1367,9 +1463,24 @@ func TestRememberedMaxUnavailableRejectsInvalidHistory(t *testing.T) {
 			ds := newTestDisaggregatedSet()
 			ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: tc.annotation}
 			config := extractRollingUpdateConfig(ds, testRoleNames(), nil)
-			assert.Equal(t, tc.want, config[0].MaxUnavailable)
-			assert.Zero(t, config[1].MaxUnavailable)
+			assert.Equal(t, tc.want, rememberedMaxUnavailable(ds)[testRolePrefill])
+			assert.Equal(t, max(1, tc.want), config[0].MaxUnavailable, "removed roles always permit one unavailable group")
+			assert.Equal(t, 1, config[1].MaxUnavailable)
 		})
+	}
+}
+
+func TestRemovedRoleMinimumDoesNotOverrideLivePolicy(t *testing.T) {
+	ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
+	ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"prefill":3,"decode":0,"removed":4}`}
+	for _, explicitPolicy := range []bool{true, false} {
+		if !explicitPolicy {
+			ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
+		}
+		config := extractRollingUpdateConfig(ds, []string{testRolePrefill, testRoleDecode, "removed"},
+			resolveDesiredReplicasByRole(ds, nil))
+		assert.Equal(t, configs([]int{1, 1, 1}, []int{0, 1, 4}), config,
+			"the live zero/default wins; removed zero becomes one and larger saved budgets survive")
 	}
 }
 
@@ -2179,6 +2290,69 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	assert.False(t, complete)
 	assert.NotZero(t, result.RequeueAfter)
 	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{8, 4})
+}
+
+func TestDisjointAvailabilityBaselineExcludesOverlappingHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		initial, current, targetReady int32
+		overlapSpec                   [2]int32
+		wantOld                       int
+	}{
+		{"smaller disjoint revision can drain", 2, 2, 2, [2]int32{0, 1}, 1},
+		{"original singleton still rounds credit down", 1, 1, 3, [2]int32{0, 1}, 1},
+		{"drain does not reset frozen baseline", 4, 2, 2, [2]int32{0, 1}, 2},
+		{"overlap uses initial roles not surviving spec", 2, 2, 2, [2]int32{1, 0}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			createdAt := time.Unix(1000, 0)
+			makeRevision := func(name string, lwss ...*leaderworkersetv1.LeaderWorkerSet) disaggregatedsetutils.RevisionRoles {
+				revision := disaggregatedsetutils.RevisionRoles{Revision: name, Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{}}
+				for _, lws := range lwss {
+					revision.Roles[lws.Labels[disaggregatedsetv1.RoleLabelKey]] = lws
+				}
+				return revision
+			}
+			// A once had many X replicas but overlaps target C through Y. B's
+			// smaller X baseline must govern its disjoint replacement instead.
+			a := makeRevision("A",
+				revisionLWS("A", "X", tc.overlapSpec[0], tc.overlapSpec[0], createdAt, 8),
+				revisionLWS("A", "Y", tc.overlapSpec[1], tc.overlapSpec[1], createdAt, 4))
+			b := makeRevision("B", revisionLWS("B", "X", tc.current, tc.current, createdAt, tc.initial))
+			c := makeRevision("C",
+				revisionLWS("C", "Y", tc.targetReady, tc.targetReady, createdAt, 4),
+				revisionLWS("C", "Z", tc.targetReady, tc.targetReady, createdAt, 4))
+			// Neither drained disjoint nor drained overlapping history can inflate
+			// the baseline, even before their LWS objects have been cleaned up.
+			d := makeRevision("D", revisionLWS("D", "X", 0, 0, createdAt, 20))
+			e := makeRevision("E", revisionLWS("E", "Y", 0, 0, createdAt, 20))
+			old := disaggregatedsetutils.RevisionRolesList{a, b, d, e}
+			readiness := rolloutReadiness{}
+			for _, revision := range append(slices.Clone(old), c) {
+				for _, lws := range revision.Roles {
+					ready := int(lws.Status.ReadyReplicas)
+					readiness[lws.Name] = replicaReadiness{raw: ready, committed: ready}
+				}
+			}
+			for range 2 {
+				for _, active := range old {
+					state := rolloutStateForRevision([]string{"X", "Y", "Z"}, old, active, c,
+						[]int{0, 4, 4}, configs([]int{0, 1, 1}, []int{0, 0, 0}), readiness)
+					assert.Equal(t, RoleReplicaState{int(tc.initial), 4, 0}, state.AvailabilityBaseline,
+						"the same frozen baselines apply regardless of candidate or ordering")
+					if active.Revision == "B" {
+						past := state.ActiveOld.SpecReplicas
+						if step := ComputeNextStep(state); step != nil {
+							past = step.Past
+							require.NoError(t, validateUpdateStep(state, step))
+						}
+						assert.Equal(t, tc.wantOld, past[0])
+					}
+				}
+				slices.Reverse(old)
+			}
+		})
+	}
 }
 
 func TestRolloutStateSeparatesRawAndCommittedReadiness(t *testing.T) {

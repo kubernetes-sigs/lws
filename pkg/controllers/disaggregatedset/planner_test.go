@@ -346,10 +346,14 @@ func TestDisjointRoleReplacementBoundsPendingGrowth(t *testing.T) {
 	state.Target.ReadyReplicas, state.Target.RawReadyReplicas = step.New, step.New
 	step = ComputeNextStep(state)
 	require.NotNil(t, step)
-	assert.Equal(t, RoleReplicaState{0, 2, 2}, step.New)
+	assert.Equal(t, RoleReplicaState{0, 1, 1}, step.New, "observe the old drain before growing again")
 	assert.Equal(t, RoleReplicaState{2, 0, 0}, step.Past)
 	require.NoError(t, validateUpdateStep(state, step))
 	state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+	step = ComputeNextStep(state)
+	require.NotNil(t, step)
+	assert.Equal(t, RoleReplicaState{0, 2, 2}, step.New)
+	require.NoError(t, validateUpdateStep(state, step))
 	state.Target.SpecReplicas = step.New
 	assert.Nil(t, ComputeNextStep(state), "the second batch also waits for replacement readiness")
 	state.Target.ReadyReplicas, state.Target.RawReadyReplicas = step.New, step.New
@@ -855,7 +859,15 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 		}
 
 		if config[0].MaxSurge+config[0].MaxUnavailable > 0 && config[1].MaxSurge+config[1].MaxUnavailable > 0 {
-			steps := ComputeAllSteps(initial, target, config)
+			// The executor grants removed roles their minimum one-group budget.
+			// Keep the raw-state safety corpus above, including explicit zero.
+			rolloutConfig := slices.Clone(config)
+			for role := range initial {
+				if initial[role] > 0 && target[role] == 0 {
+					rolloutConfig[role].MaxUnavailable = max(1, rolloutConfig[role].MaxUnavailable)
+				}
+			}
+			steps := ComputeAllSteps(initial, target, rolloutConfig)
 			last := steps[len(steps)-1]
 			require.Equal(t, make(RoleReplicaState, len(initial)), last.Past,
 				"scenario %d did not drain: initial=%v target=%v config=%v", scenario, initial, target, config)
@@ -896,6 +908,241 @@ func hasFeasibleMutation(state RolloutState) bool {
 	if hasNewMutation(hardNewReplicaLimits(snapshot)) {
 		return true
 	}
+	// Independently enumerate whether even one surplus target replica can be
+	// removed without touching old service or risking the last Ready replica.
+	limits := disjointGrowthLimits(snapshot)
+	if limits != nil && !allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
+		sharedOld := false
+		for _, role := range snapshot {
+			sharedOld = sharedOld || role.NewTargetReplicas > 0 && role.AvailabilityBaselineReplicas > 0
+		}
+		for i, role := range snapshot {
+			if !sharedOld && role.NewSpecReplicas > max(1, limits[i]) && role.NewCommittedReadyReplicas != 1 {
+				return true
+			}
+		}
+	}
 	bootstrap, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets)
 	return ok && hasNewMutation(hardNewReplicaLimits(bootstrap))
+}
+
+func TestComputeNextStepDisjointGrowthUsesSharedReadyFraction(t *testing.T) {
+	// Dimensions are W, P, D. New-role budgets are S=0/U=1; W's remembered
+	// unavailable budget is separate. Specs alone cannot advance the next batch.
+	for _, tc := range []struct {
+		name                       string
+		baseline, old, unavailable int
+		spec, ready, target        RoleReplicaState
+		want                       *UpdateStep
+	}{
+		{"release old budget before creating the first pair", 4, 4, 2,
+			[]int{0, 0}, []int{0, 0}, []int{2, 2},
+			&UpdateStep{Past: []int{2, 0, 0}, New: []int{0, 0, 0}}},
+		{"observed drain permits the first pair", 4, 2, 2,
+			[]int{0, 0}, []int{0, 0}, []int{2, 2},
+			&UpdateStep{Past: []int{2, 0, 0}, New: []int{0, 1, 1}}},
+		{"ready Prefill waits for first Decode", 4, 2, 2,
+			[]int{1, 1}, []int{1, 0}, []int{2, 2}, nil},
+		{"ready Decode waits for first Prefill", 4, 2, 2,
+			[]int{1, 1}, []int{0, 1}, []int{2, 2}, nil},
+		{"first ready pair releases the next pair", 4, 2, 2,
+			[]int{1, 1}, []int{1, 1}, []int{2, 2},
+			&UpdateStep{Past: []int{0, 0, 0}, New: []int{0, 1, 1}}},
+		{"larger rollout advances after first ready pair", 8, 6, 2,
+			[]int{1, 1}, []int{1, 1}, []int{4, 4},
+			&UpdateStep{Past: []int{4, 0, 0}, New: []int{0, 1, 1}}},
+		{"observed second drain permits the second pair", 8, 4, 2,
+			[]int{1, 1}, []int{1, 1}, []int{4, 4},
+			&UpdateStep{Past: []int{4, 0, 0}, New: []int{0, 2, 2}}},
+		{"second ready Prefill waits for second Decode", 8, 4, 2,
+			[]int{2, 2}, []int{2, 1}, []int{4, 4}, nil},
+		{"second ready pair releases the third pair", 8, 4, 2,
+			[]int{2, 2}, []int{2, 2}, []int{4, 4},
+			&UpdateStep{Past: []int{2, 0, 0}, New: []int{0, 2, 2}}},
+		{"old U1 still releases only one slot", 4, 4, 1,
+			[]int{0, 0}, []int{0, 0}, []int{2, 2},
+			&UpdateStep{Past: []int{3, 0, 0}, New: []int{0, 0, 0}}},
+		{"old U1 cannot complete a half-ready pair", 4, 3, 1,
+			[]int{1, 1}, []int{1, 0}, []int{2, 2}, nil},
+		{"unequal targets round shared ready credit down", 8, 4, 2,
+			[]int{1, 2}, []int{1, 2}, []int{3, 5},
+			&UpdateStep{Past: []int{4, 0, 0}, New: []int{0, 2, 2}}},
+		{"API-sized targets preserve precise shared fractions", 2147483647, 715827883, 2,
+			[]int{1431655764, 2}, []int{1431655764, 2}, []int{2147483647, 3},
+			&UpdateStep{Past: []int{715827881, 0, 0}, New: []int{0, 1431655764, 2}}},
+		{"already issued surplus is not retracted", 8, 4, 2,
+			[]int{3, 2}, []int{2, 1}, []int{4, 4}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := rolloutState(
+				[]int{tc.baseline, 0, 0}, []int{tc.old, 0, 0}, []int{tc.old, 0, 0}, nil, nil,
+				append([]int{0}, tc.spec...), append([]int{0}, tc.ready...), append([]int{0}, tc.target...),
+				configs([]int{0, 0, 0}, []int{tc.unavailable, 1, 1}),
+			)
+			step := ComputeNextStep(state)
+			require.Equal(t, tc.want, step)
+			if step != nil {
+				require.NoError(t, validateUpdateStep(state, step))
+			}
+		})
+	}
+}
+
+func TestComputeNextStepDisjointGrowthUsesCommittedTargetReadiness(t *testing.T) {
+	state := rolloutState(
+		[]int{8, 0, 0}, []int{4, 0, 0}, []int{4, 0, 0}, nil, nil,
+		[]int{0, 2, 2}, []int{0, 2, 1}, []int{0, 4, 4},
+		configs([]int{0, 0, 0}, []int{2, 1, 1}),
+	)
+	state.Target.RawReadyReplicas = RoleReplicaState{0, 2, 2}
+	assert.Nil(t, ComputeNextStep(state), "Decode reserved for deletion cannot release a third Prefill")
+}
+
+func TestComputeNextStepDisjointGrowthDoesNotRelaxOldBudgetForUnschedulablePair(t *testing.T) {
+	state := rolloutState(
+		[]int{4, 0, 0}, []int{3, 0, 0}, []int{3, 0, 0}, nil, nil,
+		[]int{0, 1, 1}, []int{0, 1, 0}, []int{0, 2, 2},
+		configs([]int{0, 0, 0}, []int{1, 1, 1}),
+	)
+	state.Target.UnschedulableRoles[2] = true
+	assert.Nil(t, ComputeNextStep(state), "the growth cap does not make old U1 sufficient for a two-role pair")
+}
+
+func TestComputeNextStepDisjointGrowthKeepsSharedFractionForOverlappingCandidate(t *testing.T) {
+	// The active revision shares P with the target, but parked W still makes
+	// this a disjoint replacement. Target D readiness must also bound P growth.
+	state := rolloutState(
+		[]int{0, 1, 0}, []int{0, 1, 0}, []int{0, 1, 0}, []int{4, 0, 0}, []int{4, 0, 0},
+		[]int{0, 1, 1}, []int{0, 1, 0}, []int{0, 4, 4},
+		configs([]int{1, 1, 1}, []int{0, 0, 0}),
+	)
+	assert.Nil(t, ComputeNextStep(state))
+}
+
+func TestComputeNextStepDisjointGrowthDoesNotUseParkedTargetReadiness(t *testing.T) {
+	state := rolloutState(
+		[]int{8, 0, 0}, []int{4, 0, 0}, []int{4, 0, 0}, []int{0, 1, 1}, []int{0, 1, 1},
+		[]int{0, 2, 2}, []int{0, 2, 1}, []int{0, 4, 4},
+		configs([]int{0, 0, 0}, []int{2, 1, 1}),
+	)
+	assert.Nil(t, ComputeNextStep(state), "parked Decode cannot release a third target Prefill")
+}
+
+func TestComputeNextStepSameRoleGrowthKeepsPerRoleReadyCredit(t *testing.T) {
+	state := rolloutState(
+		[]int{4, 4}, []int{3, 3}, []int{3, 3}, nil, nil,
+		[]int{1, 1}, []int{1, 0}, []int{4, 4},
+		configs([]int{1, 1}, []int{0, 0}),
+	)
+	step := ComputeNextStep(state)
+	require.Equal(t, &UpdateStep{Past: []int{3, 3}, New: []int{2, 1}}, step)
+	require.NoError(t, validateUpdateStep(state, step))
+}
+
+func TestRolloutSwapsRoleResourceCosts(t *testing.T) {
+	for _, renamed := range []bool{false, true} {
+		for _, replicas := range []int{2, 5} {
+			initial, target := []int{replicas, replicas}, []int{replicas, replicas}
+			oldCost, newCost := []int{2, 4}, []int{4, 2}
+			unavailable := []int{1, 1}
+			if renamed {
+				initial, target = []int{replicas, replicas, 0, 0}, []int{0, 0, replicas, replicas}
+				oldCost, newCost = []int{2, 4, 0, 0}, []int{0, 0, 4, 2}
+				unavailable = []int{1, 1, 2, 1} // Independent target budgets.
+			}
+			zero := make([]int, len(initial))
+			state := rolloutState(initial, initial, initial, nil, nil, zero, zero, target, configs(zero, unavailable))
+			for attempt := range 40 {
+				step := ComputeNextStep(state)
+				if step == nil {
+					break
+				}
+				require.NoError(t, validateUpdateStep(state, step))
+				require.False(t, step.UsesBootstrapSurge || step.UsesUnavailableFallback || step.UsesTargetRebalance)
+				resources := 0
+				for role := range initial {
+					resources += step.Past[role]*oldCost[role] + step.New[role]*newCost[role]
+				}
+				// Every requested group fits, even if either role schedules first.
+				require.LessOrEqual(t, resources, 6*replicas, "renamed=%v step=%d: %+v", renamed, attempt, step)
+				state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+				state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas = step.New, step.New, step.New
+			}
+			require.Equal(t, zero, state.ActiveOld.SpecReplicas, "renamed=%v replicas=%d", renamed, replicas)
+			require.Equal(t, target, state.Target.SpecReplicas)
+		}
+	}
+}
+
+func TestDisjointGrowthStartsMissingRoleBeforeRepeatingAnother(t *testing.T) {
+	state := rolloutState([]int{4, 4, 0, 0}, []int{2, 2, 0, 0}, []int{2, 2, 0, 0}, nil, nil,
+		[]int{0, 0, 1, 0}, []int{0, 0, 1, 0}, []int{0, 0, 4, 4},
+		configs([]int{0, 0, 0, 0}, []int{2, 2, 4, 1}))
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	require.Equal(t, RoleReplicaState{0, 0, 1, 1}, step.New, "P's larger budget must not consume D's startup capacity")
+	require.Equal(t, state.ActiveOld.SpecReplicas, step.Past)
+	state.Target.SpecReplicas = step.New
+	for range 100 {
+		state.Target.UnschedulableRoles[3] = true
+		require.Nil(t, ComputeNextStep(state), "a broken placement configuration cannot spend another old replica")
+	}
+}
+
+func TestDisjointSurplusDoesNotRetractOnReadinessFlaps(t *testing.T) {
+	// P3 is legitimate: ceil(8 * min(3/8, 1/3)) = 3. Losing D readiness
+	// may block more growth, but must not turn the startup cap into deletion.
+	state := rolloutState([]int{8, 3, 0, 0}, []int{5, 2, 0, 0}, []int{5, 2, 0, 0}, nil, nil,
+		[]int{0, 0, 3, 1}, []int{0, 0, 3, 0}, []int{0, 0, 8, 3},
+		configs([]int{0, 0, 0, 0}, []int{1, 1, 1, 1}))
+	for pass := range 20 {
+		state.Target.ReadyReplicas[3] = pass % 2
+		require.Nil(t, disjointSurplusStep(state, snapshotForRolloutState(state)))
+		if step := ComputeNextStep(state); step != nil {
+			require.False(t, step.UsesTargetRebalance)
+			require.GreaterOrEqual(t, step.New[2], 3)
+		}
+	}
+}
+
+func TestDisjointSurplusSafety(t *testing.T) {
+	rng := rand.New(rand.NewSource(1105))
+	checked := 0
+	for range 10000 {
+		old := 1 + rng.Intn(4)
+		desired := []int{0, 2 + rng.Intn(6), 2 + rng.Intn(6)}
+		spec := []int{0, 1 + rng.Intn(desired[1]), 1 + rng.Intn(desired[2])}
+		ready := []int{0, rng.Intn(spec[1] + 1), 0}
+		state := rolloutState([]int{4, 0, 0}, []int{old, 0, 0}, []int{old, 0, 0}, nil, nil,
+			spec, ready, desired, configs([]int{0, rng.Intn(2), 0}, []int{4 - old, 2, 2}))
+		step := ComputeNextStep(state)
+		if step == nil || !step.UsesTargetRebalance {
+			continue
+		}
+		checked++
+		require.NoError(t, validateUpdateStep(state, step))
+		require.Equal(t, state.ActiveOld.SpecReplicas, step.Past)
+		for role := range spec {
+			removed := spec[role] - step.New[role]
+			require.GreaterOrEqual(t, removed, 0)
+			// A native controller may delete Ready groups before unready ones.
+			require.GreaterOrEqual(t, max(0, ready[role]-removed), min(1, ready[role]))
+			if spec[role] > 0 {
+				require.Positive(t, step.New[role])
+			}
+			state.Target.ReadyReplicas[role] = max(0, ready[role]-removed)
+		}
+		state.Target.SpecReplicas = step.New
+		state.Target.RawReadyReplicas = slices.Clone(state.Target.ReadyReplicas)
+		require.Nil(t, disjointSurplusStep(state, snapshotForRolloutState(state)), "the same fixed budget cannot reclaim repeatedly")
+		for range 3 {
+			if next := ComputeNextStep(state); next != nil {
+				require.Equal(t, step.Past, next.Past)
+				for role := range step.New {
+					require.LessOrEqual(t, next.New[role], step.New[role], "a restart must not regrow the surplus")
+				}
+			}
+		}
+	}
+	require.Greater(t, checked, 100)
 }

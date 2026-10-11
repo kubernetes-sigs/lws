@@ -316,6 +316,9 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	log := logf.FromContext(ctx)
 	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(inputs.allRoleNames, selectedStep)...)
 	log.Info("Next rollout step computed", logArgs...)
+	if selectedStep.UsesTargetRebalance {
+		return executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, selectedStep.New, scaleDown)
+	}
 	// Apply drains before growth so ordinary steps cannot transiently exceed
 	// their surge ceilings. A marked bootstrap step is the sole exception.
 	if err := executor.scaleRevision(ctx, disaggregatedSet, selectedRevision, inputs.allRoleNames, selectedStep.Past, scaleDown); err != nil {
@@ -461,23 +464,33 @@ func rolloutStateForRevision(
 			DesiredReplicas:    slicesClone(targetReplicas),
 			UnschedulableRoles: make([]bool, len(roleNames)),
 		},
-		AvailabilityBaseline: slicesClone(initial),
+		AvailabilityBaseline: make(RoleReplicaState, len(roleNames)),
 		Config:               slices.Clone(config),
 	}
+	// Shared roles retain every old baseline. Removed roles need only the
+	// disjoint baselines: an overlapping revision must not inflate their floor.
+	includeBaseline := func(initial, spec RoleReplicaState) {
+		if replicaSum(spec) == 0 {
+			return
+		}
+		overlapsTarget := false
+		for i, replicas := range initial {
+			overlapsTarget = overlapsTarget || replicas > 0 && targetReplicas[i] > 0
+		}
+		for i, replicas := range initial {
+			if targetReplicas[i] > 0 || !overlapsTarget {
+				state.AvailabilityBaseline[i] = max(state.AvailabilityBaseline[i], replicas)
+			}
+		}
+	}
+	includeBaseline(initial, activeState.SpecReplicas)
 	for _, revision := range oldRevisions {
 		if revision.Revision == active.Revision {
 			continue
 		}
 		parkedInitial, parked := observeOldRevision(revision, roleNames, readiness)
 		state.ParkedOld = append(state.ParkedOld, parked)
-		// All candidates share the non-drained old set's baseline. A fully
-		// drained revision leaves this set, so the next phase's floor may fall.
-		if replicaSum(parked.SpecReplicas) == 0 {
-			continue
-		}
-		for i := range state.AvailabilityBaseline {
-			state.AvailabilityBaseline[i] = max(state.AvailabilityBaseline[i], parkedInitial[i])
-		}
+		includeBaseline(parkedInitial, parked.SpecReplicas)
 	}
 	for i, roleName := range roleNames {
 		state.Target.RequiredRoles[i] = targetReplicas[i] > 0
@@ -553,8 +566,8 @@ func isExternal(ds *disaggregatedsetv1.DisaggregatedSet, roleName string) bool {
 	return false
 }
 
-// Missing or invalid history grants no unavailable replicas. The strategy on an
-// old LWS is not a fallback: it may predate a user's later reduction of the budget.
+// Ignore invalid history; removed roles receive the minimum allowance below.
+// An old LWS strategy may predate a user's later reduction of the budget.
 func rememberedMaxUnavailable(ds *disaggregatedsetv1.DisaggregatedSet) map[string]int {
 	var budgets map[string]int
 	if err := json.Unmarshal([]byte(ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey]), &budgets); err != nil {
@@ -577,7 +590,9 @@ func extractRollingUpdateConfig(
 	roleIndex := make(map[string]int, len(allRoleNames))
 	remembered := rememberedMaxUnavailable(ds)
 	for i, name := range allRoleNames {
-		config[i] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: remembered[name]}
+		// Removed roles retain larger saved budgets, but can always release one
+		// group. Current roles below keep their explicitly configured policy.
+		config[i] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: max(1, remembered[name])}
 		roleIndex[name] = i
 	}
 
@@ -691,6 +706,14 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 	}
 
 	snapshot := snapshotForRolloutState(state)
+	if step.UsesTargetRebalance {
+		expected := disjointSurplusStep(state, snapshot)
+		if expected == nil || step.UsesBootstrapSurge || step.UsesUnavailableFallback ||
+			!slices.Equal(step.Past, expected.Past) || !slices.Equal(step.New, expected.New) {
+			return fmt.Errorf("target rebalance does not match the disjoint surplus limit")
+		}
+		return nil
+	}
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
 	normalLimits := hardNewReplicaLimits(snapshot)
 	newLimits, availabilitySnapshot, err := validateFallbackSelection(state, step, snapshot, phaseTargets, normalLimits)
