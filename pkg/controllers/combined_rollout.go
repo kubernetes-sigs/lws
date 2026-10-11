@@ -178,9 +178,12 @@ func combinedModelPlanUpdate(in combinedModelInput) (combinedModelPlan, error) {
 		return p, fmt.Errorf("invalid maxUnavailable")
 	}
 	surge, err := intstr.GetScaledValueFromIntOrPercent(&in.surge, int(in.desired), true)
-	if err != nil || surge < 0 || (in.desired > 0 && u == 0 && surge == 0) {
-		return p, fmt.Errorf("invalid maxSurge or zero resolved budgets")
+	if err != nil || surge < 0 {
+		return p, fmt.Errorf("invalid maxSurge")
 	}
+	// The scale subresource can reduce D until a percentage rounds to zero.
+	// Preserve that zero allowance: scale-down and already-authorized work may
+	// proceed, but never invent disruption credit to finish the rollout.
 	s := combinedModelState{Version: 1, Baseline: in.baseline, Desired: in.desired, Generation: in.generation, Revision: in.revision, NativeRevision: in.nativeRevision, Reservations: make(map[int32]combinedModelReservation)}
 	if in.state != "" {
 		s, err = combinedModelDecode(in.state)

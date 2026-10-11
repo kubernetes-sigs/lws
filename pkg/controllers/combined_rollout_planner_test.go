@@ -147,6 +147,22 @@ func TestCombinedPlannerReservationsAndRestart(t *testing.T) {
 	}
 }
 
+func TestCombinedPlannerRoundedZeroBudgetAfterScale(t *testing.T) {
+	in := combinedTestInput(4, 6, 1)
+	in.unavailable = intstr.FromString("25%")
+	p := combinedTestPlan(t, in)
+	in.state, in.partition = p.state, p.partition
+	in.desired, in.generation = 2, in.generation+1
+	p = combinedTestPlan(t, in)
+	if p.replicas != 2 || p.floor != 2 || len(p.deletes) != 0 {
+		t.Fatalf("rounded-zero allowance must permit scale-down without extra disruption: %+v", p)
+	}
+	s, err := combinedModelDecode(p.state)
+	if err != nil || s.Baseline != 4 || s.Desired != 2 || len(s.Reservations) != 0 {
+		t.Fatalf("downscale must retire only condemned obligations: %+v %v", s, err)
+	}
+}
+
 func TestCombinedPlannerNeutralRepairDoesNotSerializePaidReplacement(t *testing.T) {
 	in := combinedTestInput(3, 4, 2)
 	in.groups[2] = combinedTestGroup(2, "old", false)

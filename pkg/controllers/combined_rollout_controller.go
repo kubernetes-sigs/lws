@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -34,8 +35,11 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
 
@@ -46,6 +50,29 @@ func (r *LeaderWorkerSetReconciler) combinedReader() client.Reader {
 	// Direct-client tests and embedders without a manager may supply Client.
 	// The production manager always installs its uncached APIReader.
 	return r.Client
+}
+
+// Health, identity and termination changes can affect group credit. Ignore
+// heartbeat timestamps and unrelated status updates, but retain both sides of
+// ownership/label changes so stale group membership also triggers observation.
+func combinedPodWatchPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return e.Object != nil },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return e.Object != nil },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, oldOK := e.ObjectOld.(*corev1.Pod)
+			newPod, newOK := e.ObjectNew.(*corev1.Pod)
+			if !oldOK || !newOK || oldPod == nil || newPod == nil {
+				return false
+			}
+			return oldPod.UID != newPod.UID || podutils.PodRunningAndReady(*oldPod) != podutils.PodRunningAndReady(*newPod) ||
+				!reflect.DeepEqual(oldPod.DeletionTimestamp, newPod.DeletionTimestamp) ||
+				!reflect.DeepEqual(oldPod.OwnerReferences, newPod.OwnerReferences) ||
+				!reflect.DeepEqual(oldPod.Labels, newPod.Labels) ||
+				oldPod.Annotations[leaderworkerset.SizeAnnotationKey] != newPod.Annotations[leaderworkerset.SizeAnnotationKey]
+		},
+	}
 }
 
 func combinedBaseline(sts *appsv1.StatefulSet) (int32, error) {
@@ -113,6 +140,26 @@ func (r *LeaderWorkerSetReconciler) reconcileCombinedRollout(ctx context.Context
 		}
 	} else {
 		state = combinedModelState{Version: 1, Baseline: baseline, Desired: *lws.Spec.Replicas, Generation: lws.Generation, Revision: revision, Phase: combinedFreeze}
+	}
+	if active && *lws.Spec.Replicas < state.Desired && *lws.Spec.Replicas < *sts.Spec.Replicas {
+		// Explicit scale-down is independent of template publication, native
+		// acknowledgements and scheduler availability. Preserve all surviving
+		// obligations and eligibility; the native controller removes the tail.
+		next := sts.DeepCopy()
+		next.Spec.Replicas = ptr.To(*lws.Spec.Replicas)
+		state.Desired = *lws.Spec.Replicas
+		for ordinal := range state.Reservations {
+			if ordinal >= state.Desired {
+				delete(state.Reservations, ordinal)
+			}
+		}
+		next.Annotations[combinedRolloutAnnotation] = combinedModelEncode(state)
+		next.Annotations[leaderworkerset.ReplicasAnnotationKey] = strconv.Itoa(int(state.Desired))
+		if err := r.Patch(ctx, next, client.MergeFromWithOptions(sts, client.MergeFromWithOptimisticLock{}), client.FieldOwner(fieldManager)); err != nil {
+			return true, wait, err
+		}
+		_, err := r.updateStatus(ctx, lws, revision)
+		return true, wait, err
 	}
 	// Initial entry and supersession freeze the ACTUAL old template first.
 	// A native per-set sync must acknowledge that fence before publication.
@@ -221,7 +268,10 @@ func (r *LeaderWorkerSetReconciler) reconcileCombinedRollout(ctx context.Context
 	// Legacy status is informational only; it never clears this persisted
 	// protocol or truncates protected history during an active operation.
 	_, err = r.updateStatus(ctx, lws, revision)
-	return true, wait, err
+	// Watches provide prompt progress. Keep a slower bounded resync as a
+	// fallback for missed/coalesced events; never poll whole groups each second
+	// indefinitely while capacity or native progress is unavailable.
+	return true, ctrl.Result{RequeueAfter: 30 * time.Second}, err
 }
 
 // Only persisted-state validation after a successful observation fence emits

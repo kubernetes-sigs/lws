@@ -216,6 +216,12 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if handled, result, err := r.reconcileCombinedRollout(ctx, lws, leaderSts, revisionutils.GetRevisionKey(revision), lwsUpdated); handled {
+		// A changed observation is normal workqueue contention, including our
+		// own prerequisite/status writes. Discard the plan and re-observe; never
+		// refresh its RV in place or report an expected retry as a reconcile error.
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		return result, err
 	}
 
@@ -490,7 +496,7 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(r.podWatchPredicate())).
 		// Whole-group health also depends on ordinary leader and worker updates.
 		// Keep the Ordinal-only mapping separate from the upstream cleanup watch.
-		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.enqueueOrdinalPodRequests)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.enqueueOrdinalPodRequests), builder.WithPredicates(combinedPodWatchPredicate())).
 		Watches(&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(enqueueLWSRequests))
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
@@ -1221,6 +1227,8 @@ func leaderMetadata(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (m
 	annotations := mergeMetadata(lws.Annotations, map[string]string{
 		leaderworkerset.ReplicasAnnotationKey: strconv.Itoa(int(*lws.Spec.Replicas)),
 	})
+	// Protocol state belongs to the controller, not propagated user metadata.
+	delete(annotations, combinedRolloutAnnotation)
 	return labels, annotations
 }
 

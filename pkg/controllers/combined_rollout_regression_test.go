@@ -26,8 +26,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +40,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -445,8 +448,8 @@ func testCombinedUpstreamPrerequisites(t *testing.T, c client.Client, scheme *ru
 			}
 			provider.reconcileErr = nil
 			oldLWS := f.lws()
-			if err := reconcile(); !apierrors.IsConflict(err) {
-				t.Fatalf("%s: condition RV write must conflict, got %v", stage, err)
+			if err := reconcile(); err != nil {
+				t.Fatalf("%s: condition RV write must retry without a reconcile error, got %v", stage, err)
 			}
 			unchanged(before.ResourceVersion)
 			if f.lws().ResourceVersion == oldLWS.ResourceVersion {
@@ -475,7 +478,7 @@ func testCombinedUpstreamPrerequisites(t *testing.T, c client.Client, scheme *ru
 					t.Fatal("fresh pass did not resume exactly the authorized deletion")
 				}
 			}
-			t.Logf("%s: provider failure blocked; condition write conflicted; fresh pass progressed", stage)
+			t.Logf("%s: provider failure blocked; condition write discarded plan; fresh pass progressed", stage)
 		}
 	})
 
@@ -492,8 +495,8 @@ func testCombinedUpstreamPrerequisites(t *testing.T, c client.Client, scheme *ru
 		})
 		before := f.sts()
 		_, err := f.reconciler().Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
-		if !apierrors.IsConflict(err) {
-			t.Fatalf("pruning RV write must conflict: %v", err)
+		if err != nil {
+			t.Fatalf("pruning RV write must retry without a reconcile error: %v", err)
 		}
 		if f.sts().ResourceVersion != before.ResourceVersion {
 			t.Fatal("pruning pass changed persisted reservations")
@@ -816,4 +819,183 @@ func TestCombinedOrdinalPodMapping(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestCombinedProtocolMetadataIsNotUserMetadata(t *testing.T) {
+	for _, value := range []string{"", "{", `{"v":1}`} {
+		lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+		lws.Annotations = map[string]string{combinedRolloutAnnotation: value, "user.example/note": "keep"}
+		_, annotations := leaderMetadata(lws, "revision")
+		if _, found := annotations[combinedRolloutAnnotation]; found {
+			t.Fatalf("controller-owned protocol key propagated from LWS: %q", value)
+		}
+		if annotations["user.example/note"] != "keep" || lws.Annotations[combinedRolloutAnnotation] != value {
+			t.Fatal("filter altered user metadata or the source object")
+		}
+	}
+}
+
+func TestCombinedPodWatchOnlyRelevantChanges(t *testing.T) {
+	pod := combinedTestGroup(0, "old", true).leader
+	predicate := combinedPodWatchPredicate()
+	if !predicate.Create(event.CreateEvent{Object: pod}) || !predicate.Delete(event.DeleteEvent{Object: pod}) || predicate.Generic(event.GenericEvent{Object: pod}) {
+		t.Fatal("unexpected lifecycle predicate")
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*corev1.Pod)
+		want   bool
+	}{
+		{"condition timestamp", func(p *corev1.Pod) { p.Status.Conditions[0].LastTransitionTime = metav1.Now() }, false},
+		{"resource version", func(p *corev1.Pod) { p.ResourceVersion = "11" }, false},
+		{"unrelated annotation", func(p *corev1.Pod) { p.Annotations["user.example/note"] = "new" }, false},
+		{"readiness lost", func(p *corev1.Pod) { p.Status.Conditions[0].Status = corev1.ConditionFalse }, true},
+		{"phase", func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending }, true},
+		{"termination", func(p *corev1.Pod) { p.DeletionTimestamp = ptr.To(metav1.Now()) }, true},
+		{"owner", func(p *corev1.Pod) { p.OwnerReferences[0].UID = "replacement" }, true},
+		{"revision", func(p *corev1.Pod) { p.Labels[leaderworkerset.RevisionKey] = "new" }, true},
+		{"size", func(p *corev1.Pod) { p.Annotations[leaderworkerset.SizeAnnotationKey] = "2" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := pod.DeepCopy()
+			tc.change(next)
+			if got := predicate.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: next}); got != tc.want {
+				t.Fatalf("predicate=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func testCombinedMetadataLifecycle(t *testing.T, c client.Client, scheme *runtime.Scheme, namespace string) {
+	lws := wrappers.BuildLeaderWorkerSet(namespace).Replica(1).Size(1).Obj()
+	lws.Name = "protocol-user-metadata"
+	lws.Annotations = map[string]string{combinedRolloutAnnotation: "{", "user.example/note": "keep"}
+	if err := c.Create(context.Background(), lws); err != nil {
+		t.Fatal(err)
+	}
+	f := &combinedAPIFixture{t: t, c: c, scheme: scheme, key: client.ObjectKeyFromObject(lws)}
+	f.reconcile()
+	if _, found := f.sts().Annotations[combinedRolloutAnnotation]; found {
+		t.Fatal("creation propagated injected protocol state")
+	}
+	f.ack(true)
+	f.leader(0, true)
+	f.grow(2)
+	if f.state().Phase != combinedActive {
+		t.Fatal("injected user metadata prevented controller-owned publication")
+	}
+	old := &corev1.Pod{}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: lws.Name + "-0"}, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), old, client.GracePeriodSeconds(0)); err != nil {
+		t.Fatal(err)
+	}
+	f.leader(0, true)
+	f.leader(1, true)
+	f.ack(true)
+	f.reconcile()
+	f.reconcile() // ordinary SSA after controller cleanup must not reintroduce it
+	if _, found := f.sts().Annotations[combinedRolloutAnnotation]; found {
+		t.Fatal("ordinary SSA reintroduced user-supplied protocol state after cleanup")
+	}
+	if f.sts().Annotations["user.example/note"] != "keep" || f.lws().Annotations[combinedRolloutAnnotation] != "{" {
+		t.Fatal("lifecycle filtering mutated source or unrelated metadata")
+	}
+}
+
+func testCombinedReviewScaleDown(t *testing.T, c client.Client, scheme *runtime.Scheme, namespace string) {
+	ctx := context.Background()
+	for _, phase := range []string{combinedFreeze, combinedPublish, combinedActive} {
+		for _, desired := range []int32{0, 2} {
+			t.Run(fmt.Sprintf("%s-to-%d", phase, desired), func(t *testing.T) {
+				f := newCombinedAPIFixture(t, c, scheme, namespace, fmt.Sprintf("drain-%s-%d", phase, desired), 4)
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+					lws.Spec.Replicas = ptr.To[int32](6)
+					lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "test.invalid/new"
+				})
+				f.reconcile()
+				if phase != combinedFreeze {
+					f.ack(false)
+					f.reconcile()
+				}
+				if phase == combinedActive {
+					f.ack(false)
+					f.reconcile()
+					f.reconcile()
+					f.ack(false)
+				}
+				before, state := f.sts(), f.state()
+				if state.Phase != phase {
+					t.Fatalf("wrong starting phase: %+v", state)
+				}
+				// Scale subresource does not match the LWS validating webhook rule.
+				// Add scheduling here to exercise a permanently unavailable provider.
+				f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+					lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+				})
+				scale := &autoscalingv1.Scale{}
+				if err := c.SubResource("scale").Get(ctx, f.lws(), scale); err != nil {
+					t.Fatal(err)
+				}
+				scale.Spec.Replicas = desired
+				if err := c.SubResource("scale").Update(ctx, f.lws(), client.WithSubResourceBody(scale)); err != nil {
+					t.Fatal(err)
+				}
+				r := f.reconciler() // intentionally no scheduling provider
+				if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key}); err != nil {
+					t.Fatalf("explicit scale-down must not wait for scheduling or native acknowledgement: %v", err)
+				}
+				after, next := f.sts(), f.state()
+				if *after.Spec.Replicas != desired || next.Desired != desired || next.Baseline != state.Baseline || next.Phase != state.Phase {
+					t.Fatalf("scale-down lost target/baseline/phase: replicas=%d state=%+v", *after.Spec.Replicas, next)
+				}
+				if !reflect.DeepEqual(before.Spec.Template, after.Spec.Template) || *after.Spec.UpdateStrategy.RollingUpdate.Partition < *before.Spec.UpdateStrategy.RollingUpdate.Partition {
+					t.Fatal("scale-only path published a template or exposed more old groups")
+				}
+				for ordinal, reservation := range next.Reservations {
+					if ordinal >= desired || state.Reservations[ordinal] != reservation {
+						t.Fatalf("scale-down retained condemned or changed surviving reservation: %+v", next)
+					}
+				}
+				var pods corev1.PodList
+				if err := c.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: f.key.Name}); err != nil {
+					t.Fatal(err)
+				}
+				for _, pod := range pods.Items {
+					if pod.DeletionTimestamp != nil {
+						t.Fatal("scale-only pass explicitly deleted a Pod")
+					}
+				}
+			})
+		}
+	}
+	t.Run("scale subresource rounds unavailable to zero without increasing disruption", func(t *testing.T) {
+		f := newCombinedAPIFixture(t, c, scheme, namespace, "percentage-scale", 4)
+		f.change(func(lws *leaderworkerset.LeaderWorkerSet) {
+			lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
+		})
+		f.grow(6)
+		scale := &autoscalingv1.Scale{}
+		if err := c.SubResource("scale").Get(ctx, f.lws(), scale); err != nil {
+			t.Fatal(err)
+		}
+		scale.Spec.Replicas = 2
+		if err := c.SubResource("scale").Update(ctx, f.lws(), client.WithSubResourceBody(scale)); err != nil {
+			t.Fatal(err)
+		}
+		f.reconcile()
+		f.ack(false)
+		f.reconcile() // persist the post-downscale generation/partition plan
+		f.ack(false)
+		for range 3 {
+			result, err := f.reconciler().Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
+			if err != nil || result.RequeueAfter < 30*time.Second {
+				t.Fatalf("blocked rollout must use bounded slow resync, got %+v %v", result, err)
+			}
+		}
+		if *f.sts().Spec.Replicas != 2 || f.state().Baseline != 4 || len(f.state().Reservations) != 0 {
+			t.Fatal("rounded-zero budget wedged scale-down or authorized another replacement")
+		}
+	})
 }

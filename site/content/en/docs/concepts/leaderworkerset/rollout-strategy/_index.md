@@ -95,6 +95,17 @@ Surge can provide capacity when desired growth no longer does. Both budgets can
 be positive. The bound concerns controller-authorized disruption based on observed
 health, not independent failures or a strict rollout-first/scale-first order.
 
+An explicit reduction in desired replicas can shrink the leader StatefulSet even
+while template publication is waiting or scheduling prerequisites are unavailable.
+This scale-only step preserves the template and partition and atomically removes
+only reservations outside the reduced replica range. It does not authorize extra
+old-group replacement. Invalid persisted state still fails closed.
+
+Scaling through the scale subresource can make a percentage unavailable budget
+round down to zero. The controller honors that zero allowance rather than silently
+rounding it up: scale-down can proceed, while further healthy old-group replacement
+waits for whole-group credit or a budget change.
+
 The native StatefulSet remains `RollingUpdate`. The controller reserves all stale
 leaders exposed by its partition and can directly delete an authorized lower old
 leader behind an updated Pending ordinal. It conservatively blocks when repairing
