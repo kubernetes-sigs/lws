@@ -579,7 +579,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
 			groupSize = size
 		}
-		startState, unschedulablePod, err := r.groupStartState(ctx, leader, groupSize)
+		startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
 		if err != nil {
 			return false, ctrl.Result{}, err
 		}
@@ -1371,8 +1371,9 @@ const (
 )
 
 // groupStartState returns the start state of the leader's group and, for
-// groupUnschedulable, the name of a member the scheduler could not place.
-func (r *PodReconciler) groupStartState(ctx context.Context, leader corev1.Pod, groupSize int) (groupStartState, string, error) {
+// groupUnschedulable, the name of a member the scheduler could not place. pod
+// is the member being reconciled.
+func (r *PodReconciler) groupStartState(ctx context.Context, leader, pod corev1.Pod, groupSize int) (groupStartState, string, error) {
 	groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
 	lwsName := leader.Labels[leaderworkerset.SetNameLabelKey]
 
@@ -1405,6 +1406,20 @@ func (r *PodReconciler) groupStartState(ctx context.Context, leader corev1.Pod, 
 		if belongs {
 			members = append(members, groupPod)
 		}
+	}
+	// A deleted pod with no running containers is removed right away, so the
+	// pod being reconciled may no longer be listed. The caller has checked that
+	// it belongs to this group, so it still counts, unless a replacement with
+	// the same name has already taken its place.
+	listed := false
+	for _, member := range members {
+		if member.UID == pod.UID || member.Name == pod.Name {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		members = append(members, pod)
 	}
 
 	state := groupStarted

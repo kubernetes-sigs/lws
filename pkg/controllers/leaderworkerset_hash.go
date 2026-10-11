@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -439,13 +440,10 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	}
 	explainUnschedulableGroups(conditions, unschedulableGroupCount)
 
+	previousConditions := slices.Clone(lws.Status.Conditions)
 	updateCondition := setConditions(lws, conditions)
 	if updateCondition {
-		eventCondition := conditions[0]
-		if degraded {
-			eventCondition = conditions[len(conditions)-1]
-		}
-		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, eventCondition.Reason, Update, eventCondition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", deploy.Status.ReadyReplicas, lwsReplicas))
+		r.recordConditionEvents(lws, previousConditions, conditions, degraded, fmt.Sprintf(", with %d groups ready of total %d groups", deploy.Status.ReadyReplicas, lwsReplicas))
 	}
 	if updateStatus || updateCondition {
 		if err := r.Status().Update(ctx, lws); err != nil {

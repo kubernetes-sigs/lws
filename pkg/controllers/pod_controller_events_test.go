@@ -1210,6 +1210,37 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			},
 		},
 		{
+			name: "an unschedulable worker that is already gone is still reported",
+			lws:  recreateAfterStart,
+			pod: deleting(workerPod(func(p *corev1.Pod) {
+				ownedByLeader(leaderPod(nil))(p)
+				podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)(p)
+			})),
+			objects:           []client.Object{leaderPod(podScheduled(corev1.ConditionTrue, ""))},
+			wantEventContains: GroupUnschedulable,
+		},
+		{
+			name:              "a started worker that is already gone recreates the group",
+			lws:               recreateAfterStart,
+			pod:               deleting(startedWorker(nil)),
+			objects:           []client.Object{leaderPod(started)},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a deleted worker is not counted next to its replacement",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(func(p *corev1.Pod) { p.UID = "worker-previous" })),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
 			name:            "a failed pod list is propagated",
 			lws:             recreateAfterStart,
 			pod:             deleting(workerPod(ownedByLeader(leaderPod(nil)))),
