@@ -205,10 +205,15 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if err := r.reconcileWorkloadScheduling(ctx, lws, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
-		return r.handleWorkloadSchedulingError(ctx, err, leaderSts != nil,
-			func() error { return r.scaleDownLeaderStatefulSet(ctx, leaderSts, *lws.Spec.Replicas) },
-			func() (bool, error) { return r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision)) },
-		)
+		var scaleDown func() error
+		var updateStatus func() (bool, error)
+		if leaderSts != nil {
+			// replicas is the target of the rollout, which includes the surge
+			// replicas, so a scheduling error during a rollout keeps them.
+			scaleDown = func() error { return r.scaleDownLeaderStatefulSet(ctx, leaderSts, replicas) }
+			updateStatus = func() (bool, error) { return r.updateStatus(ctx, lws, revisionutils.GetRevisionKey(revision)) }
+		}
+		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
 
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
@@ -331,7 +336,16 @@ func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Cont
 	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
 		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
 	}
-	return r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created")
+	if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+		// The LWS changed since it was read, and the watch event of that change
+		// triggers another reconcile, which writes the condition. The
+		// prerequisites exist, so do not hold back the rest of this reconcile.
+		ctrl.LoggerFrom(ctx).V(2).Info("Deferring the WorkloadSchedulingCreated condition after a conflict", "error", err)
+	}
+	return nil
 }
 
 func (r *LeaderWorkerSetReconciler) failWorkloadScheduling(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, reason string, reconcileErr error) error {
@@ -359,29 +373,28 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 	return nil
 }
 
-// handleWorkloadSchedulingError handles errors from reconcileWorkloadScheduling
-// while ensuring scale-down of existing leaders and LWS status updates still
-// proceed, and requeuing cleanly without backoff on status update conflicts.
+// handleWorkloadSchedulingError handles an error of reconcileWorkloadScheduling.
+// Scale-up and rollouts stay blocked, since new leader pods need the scheduling
+// prerequisites, whether the error is retryable or not. Scale-down and status
+// updates need none of them, so they still run: scaleDown and updateStatus are
+// nil when the leader workload does not exist yet. The error is returned so
+// the reconcile is retried.
 func (r *LeaderWorkerSetReconciler) handleWorkloadSchedulingError(
 	ctx context.Context,
 	err error,
-	hasLeaderWorkload bool,
 	scaleDown func() error,
 	updateStatus func() (bool, error),
 ) (ctrl.Result, error) {
-	if !apierrors.IsConflict(err) {
-		ctrl.LoggerFrom(ctx).Error(err, "Reconciling workload-aware scheduling prerequisites")
-	}
-	if hasLeaderWorkload {
+	ctrl.LoggerFrom(ctx).Error(err, "Reconciling workload-aware scheduling prerequisites")
+	if scaleDown != nil {
 		if scaleErr := scaleDown(); scaleErr != nil {
 			return ctrl.Result{}, errors.Join(err, scaleErr)
 		}
+	}
+	if updateStatus != nil {
 		if _, statusErr := updateStatus(); statusErr != nil && !apierrors.IsConflict(statusErr) {
 			return ctrl.Result{}, errors.Join(err, statusErr)
 		}
-	}
-	if apierrors.IsConflict(err) {
-		return ctrl.Result{Requeue: true}, nil
 	}
 	return ctrl.Result{}, err
 }

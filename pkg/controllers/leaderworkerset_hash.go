@@ -95,10 +95,14 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// pod; the pod controller materializes them while the leader is still
 	// scheduling gated.
 	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, revisionutils.GetRevisionKey(revision)); err != nil {
-		return r.handleWorkloadSchedulingError(ctx, err, deploy != nil,
-			func() error { return r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas) },
-			func() (bool, error) { return r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)) },
-		)
+		var scaleDown func() error
+		var updateStatus func() (bool, error)
+		if deploy != nil {
+			// The Deployment controller adds the surge pods of a rollout itself.
+			scaleDown = func() error { return r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas) }
+			updateStatus = func() (bool, error) { return r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)) }
+		}
+		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
 
 	if err := r.SSAWithDeployment(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
