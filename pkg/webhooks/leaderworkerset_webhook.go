@@ -236,6 +236,18 @@ func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws,
 				))
 			}
 		}
+		// The delegated parent Workload is resolved from the controller owner on
+		// every reconcile, so pointing the LWS at a different controller would
+		// silently move it to another parent's Workload.
+		if _, delegated := oldLws.Annotations[schedulerprovider.GroupTemplateNameAnnotation]; delegated {
+			oldOwner, newOwner := metav1.GetControllerOf(oldLws), metav1.GetControllerOf(lws)
+			if oldOwner != nil && newOwner != nil && oldOwner.UID != newOwner.UID {
+				allErrs = append(allErrs, field.Forbidden(
+					field.NewPath("metadata", "ownerReferences"),
+					"controller owner cannot be swapped for delegated scheduling",
+				))
+			}
+		}
 	}
 	if oldLws != nil && oldLws.Spec.Scheduling == nil {
 		allErrs = append(allErrs, field.Forbidden(path, "cannot add scheduling after creation"))

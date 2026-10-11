@@ -375,6 +375,64 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 		unchanged.Annotations["example.com/other"] = "value"
 		assert.Empty(t, hook.validateScheduling(context.Background(), delegatedLWS, unchanged))
 	})
+
+	t.Run("controller owner cannot be swapped for delegated scheduling", func(t *testing.T) {
+		controller := true
+		ownerA := metav1.OwnerReference{APIVersion: "example.test/v1", Kind: "Parent", Name: "parent-a", UID: "uid-a", Controller: &controller}
+		ownerB := metav1.OwnerReference{APIVersion: "example.test/v1", Kind: "Parent", Name: "parent-b", UID: "uid-b", Controller: &controller}
+
+		delegatedLWS := validScheduledLWS()
+		delegatedLWS.OwnerReferences = []metav1.OwnerReference{ownerA}
+		delegatedLWS.Annotations = map[string]string{schedulerprovider.GroupTemplateNameAnnotation: "template-a"}
+
+		standaloneLWS := validScheduledLWS()
+		standaloneLWS.OwnerReferences = []metav1.OwnerReference{ownerA}
+
+		cases := []struct {
+			name    string
+			oldLWS  *leaderworkerset.LeaderWorkerSet
+			mutate  func(*leaderworkerset.LeaderWorkerSet)
+			wantErr bool
+		}{
+			{
+				name:    "swapping the controller owner fails",
+				oldLWS:  delegatedLWS,
+				mutate:  func(l *leaderworkerset.LeaderWorkerSet) { l.OwnerReferences = []metav1.OwnerReference{ownerB} },
+				wantErr: true,
+			},
+			{
+				name:   "keeping the controller owner succeeds",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) { l.Spec.Replicas = ptr.To[int32](3) },
+			},
+			{
+				name:   "adding a non-controller owner reference succeeds",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
+					l.OwnerReferences = append(l.OwnerReferences, metav1.OwnerReference{APIVersion: "example.test/v1", Kind: "Other", Name: "other", UID: "uid-other"})
+				},
+			},
+			{
+				name:   "swapping the controller owner of a non-delegated LWS succeeds",
+				oldLWS: standaloneLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) { l.OwnerReferences = []metav1.OwnerReference{ownerB} },
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				newLWS := tc.oldLWS.DeepCopy()
+				tc.mutate(newLWS)
+				errs := hook.validateScheduling(context.Background(), tc.oldLWS, newLWS)
+				if tc.wantErr {
+					assert.NotEmpty(t, errs)
+					assert.Contains(t, errs.ToAggregate().Error(), "controller owner cannot be swapped for delegated scheduling")
+				} else {
+					assert.Empty(t, errs)
+				}
+			})
+		}
+	})
 }
 
 func TestValidateSchedulingKEPConstraints(t *testing.T) {
