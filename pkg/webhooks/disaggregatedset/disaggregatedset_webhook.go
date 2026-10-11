@@ -276,13 +276,6 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 func validateRoleMaxSurgeUnavailable(ruc *leaderworkerset.RollingUpdateConfiguration, replicas *int32, rucPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
-	// Roles with zero (or unset) replicas are exempt – an all-zero DisaggregatedSet is
-	// legitimate and accepted by the LWS webhook too.
-	if replicas == nil || *replicas == 0 {
-		return nil
-	}
-	replicaCount := int(*replicas)
-
 	maxUnavailable := ruc.MaxUnavailable
 	maxUnavailablePath := rucPath.Child("maxUnavailable")
 
@@ -299,6 +292,13 @@ func validateRoleMaxSurgeUnavailable(ruc *leaderworkerset.RollingUpdateConfigura
 		// Skip the combined check if individual fields are already invalid.
 		return allErrs
 	}
+
+	// Zero-replica roles may use two zero budgets, but each budget must still
+	// be valid so the generated LWS can pass admission.
+	if replicas == nil || *replicas == 0 {
+		return nil
+	}
+	replicaCount := int(*replicas)
 
 	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, replicaCount, false)
 	if err != nil {
