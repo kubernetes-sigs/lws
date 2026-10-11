@@ -267,12 +267,15 @@ The planner also limits issued-but-unready target work while old Spec remains. L
 ```
 projected(role, budget) = ceil(roleReplicaCount * budget / budgetScale)
 pendingAllowance        = projected(role, MaxSurge + MaxUnavailable)
-newSpec - newCommittedReady <= pendingAllowance
+readinessCredit         = disjointReplacement ? floor(target * replacementFraction) : newCommittedReady
+newSpec <= readinessCredit + pendingAllowance
 ```
 
 This bounded window is what permits pipelining across slow pod starts. It does not grant every role the unscaled `MaxSurge + MaxUnavailable` sum. If independent pending bounds would separate role progress by more than `largestReplicaFraction`, faster roles wait at that coordination boundary.
 
-The target revision does not need to be Ready in every role for its committed Ready counts to limit pending work. Whole-revision readiness is required for usable serving replacement credit and for the disjoint-role fraction above, but not for independent per-role credit from a structurally complete target. The pending-readiness bound applies while any old Spec for that role overlaps the target, or while disjoint old capacity remains unreplaced as described above. Otherwise withholding target replicas cannot protect old availability: the controller may issue the rest of that role's target Spec and then waits for it to become Ready.
+For ordinary same-role replacement, the target revision does not need to be Ready in every role for its own committed Ready counts to limit pending work. While disjoint old capacity remains unreplaced, growth instead uses the same slowest-target Ready fraction as old removal. Otherwise, a faster role could keep requesting replicas that occupy the space needed by a slower role, while that slower role prevents further old removal. The shared fraction applies to every batch, not just the first replica of each target role. It may reduce parallel startup for faster roles; it does not retract already-issued Spec, increase availability budgets, or guarantee enough physical capacity to finish the rollout.
+
+The pending-readiness bound applies while any old Spec for that role overlaps the target, or while disjoint old capacity remains unreplaced as described above. Otherwise withholding target replicas cannot protect old availability: the controller may issue the rest of that role's target Spec and then waits for it to become Ready.
 
 For an old drain, the planner assumes every removed Spec replica could have been Ready. If any surviving required role is absent or could lose its last Ready replica, the entire active revision becomes unusable for every role. Raw Ready capacity determines how much currently serving capacity must be preserved, capped at the current phase's shared availability floor. The proposed post-drain state is checked with committed Ready capacity, so replicas already pending deletion cannot be counted as survivors. This also prevents an interrupted revision from being retired while its still-running replicas are needed to hold the floor; the controller waits for pending deletions to settle or for another revision to replace that capacity.
 
@@ -423,6 +426,7 @@ to implement this enhancement.
 - 2026-09-28: Updated rolling updates with fractional lockstep, readiness and availability bounds, durable intended replica counts, and revision-aware constraint planning for interrupted rollouts, replacing executor recovery actions and documenting committed readiness and bounded drained-revision retention.
 - 2026-10-09: Updated the rollout contract for [#1105](https://github.com/kubernetes-sigs/lws/pull/1105): shared phase-local availability baselines, retained group readiness from merged [#1137](https://github.com/kubernetes-sigs/lws/pull/1137), independent per-role replacement credit to avoid deadlocks between unready old revisions, stale scale-plan and write guards, and fractional replacement of disjoint roles. Clarified the distinction from usable same-revision serving capacity and the per-role policy trade-off.
 - 2026-10-10: Retained removed roles' last observed `maxUnavailable` budgets, including resolved percentages, without changing the planner's availability rules.
+- 2026-10-11: Applied the shared target Ready fraction to growth during disjoint-role replacement, so faster roles cannot keep opening new batches ahead of slower roles while old removal waits for them. Existing budgets, issued Spec, and ordinary same-role growth are unchanged.
 
 ## Drawbacks
 

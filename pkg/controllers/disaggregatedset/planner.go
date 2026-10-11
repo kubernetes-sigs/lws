@@ -496,17 +496,24 @@ func slicesClone(values RoleReplicaState) RoleReplicaState {
 //	pendingAllowance = projected(roleReplicaCount, MaxSurge + MaxUnavailable)
 //
 // While same-role old Spec remains, or disjoint roles are being replaced,
-// newSpec cannot exceed either surgeCeiling-oldSpec or newReady+pendingAllowance.
-// Otherwise only the surge ceiling and desired target remain. Fractional
-// coordination is applied separately.
+// newSpec cannot exceed either surgeCeiling-oldSpec or readinessCredit+pendingAllowance.
+// Readiness credit is the role's own committed Ready count for same-role
+// replacement, or its share of the least-ready target fraction for disjoint
+// replacement. Existing issued Spec is never reduced. Fractional coordination
+// is applied separately.
 func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	hardLimits := make(RoleReplicaState, len(snapshot))
+	targetReplicas := make(RoleReplicaState, len(snapshot))
+	targetReady := make(RoleReplicaState, len(snapshot))
 	disjointReplacement := false
 	budgetSteps := 0
-	for _, role := range snapshot {
+	for i, role := range snapshot {
+		targetReplicas[i] = role.NewTargetReplicas
+		targetReady[i] = role.NewCommittedReadyReplicas
 		budgetSteps = max(budgetSteps, role.InitialOldReplicas, role.NewTargetReplicas)
 		disjointReplacement = disjointReplacement || role.UnreplacedReplicas > 0
 	}
+	readyProgress, hasTarget := coordinationWindowForProgress(targetReplicas, targetReady)
 	for i, role := range snapshot {
 		roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
 		surgeCeiling := roleReplicaCount + role.Config.MaxSurge
@@ -519,7 +526,14 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 				role.Config.MaxSurge+role.Config.MaxUnavailable,
 				budgetSteps,
 			)
-			pendingReadinessCeiling := role.NewCommittedReadyReplicas + pendingAllowance
+			readinessCredit := role.NewCommittedReadyReplicas
+			if disjointReplacement && hasTarget {
+				// Old removal waits for the slowest target role. Use the same
+				// progress so faster readiness alone cannot open another batch.
+				numerator := min(readyProgress.leastAdvancedReplicas, readyProgress.leastAdvancedTarget)
+				readinessCredit = int(int64(role.NewTargetReplicas) * int64(numerator) / int64(readyProgress.leastAdvancedTarget))
+			}
+			pendingReadinessCeiling := readinessCredit + pendingAllowance
 			limit = min(limit, pendingReadinessCeiling)
 		}
 		hardLimits[i] = max(role.NewSpecReplicas, min(role.NewTargetReplicas, limit))
