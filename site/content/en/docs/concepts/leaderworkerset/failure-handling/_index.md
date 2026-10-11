@@ -35,10 +35,15 @@ Only the failed pod is restarted or rescheduled. Other pods in the group continu
 ### RecreateGroupAfterStart
 
 When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. If any pod in the replica is still in the `Pending` phase (e.g., during image pulls or initial scheduling), the controller skips the failure event without triggering a group-wide recreation.
-
 - **Pod Failures:** Recreates the entire group if a pod fails after all pods in the replica have started (no pods are `Pending`). If any pod in the replica is `Pending`, the failure event is skipped, allowing Kubernetes to handle pod restarts individually and preventing restart cascades during rollout.
 - **Node Failures:** If a node fails after all pods in the replica have started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while any pod in the replica is `Pending`, group recreation is not triggered.
 - **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production once running, but want to prevent recreation loops during the initial rollout.
+
+A `Pending` pod can be in one of three states, and LWS does not recreate the group in any of them:
+
+- **Held by a scheduling gate** (`PodScheduled=False` with reason `SchedulingGated`): the scheduler has not tried to place the pod yet. Every leader starts gated until LWS admits it, so a gated leader may not have worker pods yet.
+- **Placed and starting** (`PodScheduled=True`): the pod is on a node and is pulling images or starting containers.
+- **Unschedulable** (`PodScheduled=False` with any other reason, such as `Unschedulable`): the scheduler tried and failed to place the pod, for example while a gang-scheduled group waits for capacity. LWS keeps waiting rather than recreate a group that cannot be placed, and records a `GroupUnschedulable` warning event when it skips a recreation. While a leader is unschedulable, the LWS `Progressing` condition also has reason `GroupUnschedulable` and reports how many replicas cannot be scheduled.
 
 {{% alert title="Note" color="info" %}}
 The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.

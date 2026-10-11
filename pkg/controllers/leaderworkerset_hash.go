@@ -348,8 +348,12 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	degradedReadyCount := int32(0)
 	currentRevisionPodCount := 0
 	oldRevisionPodCount := 0
+	unschedulableGroupCount := 0
 	for i := range leaderPodList.Items {
 		pod := &leaderPodList.Items[i]
+		if pod.DeletionTimestamp == nil && podutils.PodUnschedulable(*pod) {
+			unschedulableGroupCount++
+		}
 		if deployRevision != "" {
 			if revisionutils.GetRevisionKey(pod) == deployRevision {
 				currentRevisionPodCount++
@@ -433,6 +437,7 @@ func (r *LeaderWorkerSetReconciler) updateStatusHash(ctx context.Context, lws *l
 	} else {
 		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetDegraded, lws, "AsExpected", "No replica has exhausted its restart budget"))
 	}
+	explainUnschedulableGroups(conditions, unschedulableGroupCount)
 
 	updateCondition := setConditions(lws, conditions)
 	if updateCondition {

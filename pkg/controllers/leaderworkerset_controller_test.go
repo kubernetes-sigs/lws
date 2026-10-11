@@ -1453,6 +1453,23 @@ func TestLeaderWorkerSetPodWatchPredicate(t *testing.T) {
 		if pred.Update(event.UpdateEvent{ObjectOld: workerPod, ObjectNew: workerWithAnnotation}) {
 			t.Errorf("expected Update(workerPod -> workerWithAnnotation) to be false, got true")
 		}
+		unschedulable := func(pod *corev1.Pod, reason string) *corev1.Pod {
+			pod = pod.DeepCopy()
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: reason}}
+			return pod
+		}
+		if !pred.Update(event.UpdateEvent{ObjectOld: leaderPod, ObjectNew: unschedulable(leaderPod, corev1.PodReasonUnschedulable)}) {
+			t.Errorf("expected Update(leaderPod -> unschedulable leaderPod) to be true, got false")
+		}
+		if !pred.Update(event.UpdateEvent{ObjectOld: unschedulable(leaderPod, corev1.PodReasonUnschedulable), ObjectNew: leaderPod}) {
+			t.Errorf("expected Update(unschedulable leaderPod -> leaderPod) to be true, got false")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: leaderPod, ObjectNew: unschedulable(leaderPod, corev1.PodReasonSchedulingGated)}) {
+			t.Errorf("expected Update(leaderPod -> gated leaderPod) to be false, got true")
+		}
+		if pred.Update(event.UpdateEvent{ObjectOld: workerPod, ObjectNew: unschedulable(workerPod, corev1.PodReasonUnschedulable)}) {
+			t.Errorf("expected Update(workerPod -> unschedulable workerPod) to be false, got true")
+		}
 		if pred.Update(event.UpdateEvent{ObjectOld: nil, ObjectNew: leaderPod}) {
 			t.Errorf("expected Update(nil, leaderPod) to be false, got true")
 		}
@@ -1562,6 +1579,88 @@ func TestUpdateConditionsKeepsProgressingForAnotherReplica(t *testing.T) {
 	}
 	if degradedCondition == nil || degradedCondition.Status != metav1.ConditionTrue {
 		t.Fatalf("Degraded condition = %#v, want True", degradedCondition)
+	}
+}
+
+func TestUpdateConditionsReportsUnschedulableGroups(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaderworkerset.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := func(status corev1.ConditionStatus, reason string) func(*corev1.Pod) {
+		return func(pod *corev1.Pod) {
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: status, Reason: reason}}
+		}
+	}
+	tests := []struct {
+		name        string
+		leaders     []func(*corev1.Pod)
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:        "an unschedulable leader explains Progressing",
+			leaders:     []func(*corev1.Pod){scheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable), scheduled(corev1.ConditionTrue, "")},
+			wantReason:  GroupUnschedulable,
+			wantMessage: "1 replica(s) cannot be scheduled",
+		},
+		{
+			name:        "a gated leader has not been tried by the scheduler",
+			leaders:     []func(*corev1.Pod){scheduled(corev1.ConditionFalse, corev1.PodReasonSchedulingGated), scheduled(corev1.ConditionTrue, "")},
+			wantReason:  GroupsProgressing,
+			wantMessage: "Replicas are progressing",
+		},
+		{
+			name:        "a placed leader that is still starting keeps the default reason",
+			leaders:     []func(*corev1.Pod){scheduled(corev1.ConditionTrue, ""), scheduled(corev1.ConditionTrue, "")},
+			wantReason:  GroupsProgressing,
+			wantMessage: "Replicas are progressing",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(1).Obj()
+			objects := []client.Object{lws}
+			for i, mutate := range tc.leaders {
+				leader := wrappers.MakePodWithLabels(lws.Name, strconv.Itoa(i), "0", lws.Namespace, 1)
+				leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+				mutate(leader)
+				objects = append(objects, leader)
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			r := &LeaderWorkerSetReconciler{Client: fakeClient, Record: fakeEventRecorder{}}
+			if _, _, err := r.updateConditions(context.Background(), lws, "revision-a"); err != nil {
+				t.Fatal(err)
+			}
+			progressing := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetProgressing))
+			if progressing == nil || progressing.Status != metav1.ConditionTrue {
+				t.Fatalf("Progressing condition = %#v, want True", progressing)
+			}
+			if progressing.Reason != tc.wantReason || progressing.Message != tc.wantMessage {
+				t.Errorf("Progressing reason, message = %q, %q, want %q, %q", progressing.Reason, progressing.Message, tc.wantReason, tc.wantMessage)
+			}
+		})
+	}
+}
+
+func TestSetConditionsClearsUnschedulableReasonWhenAvailable(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	conditions := []metav1.Condition{makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)}
+	explainUnschedulableGroups(conditions, 1)
+	lws.Status.Conditions = conditions
+
+	setConditions(lws, []metav1.Condition{makeCondition(leaderworkerset.LeaderWorkerSetAvailable, lws)})
+
+	got := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetProgressing))
+	if got == nil || got.Status != metav1.ConditionFalse {
+		t.Fatalf("Progressing condition = %#v, want False", got)
+	}
+	if got.Reason != GroupsProgressing || got.Message != "Replicas are progressing" {
+		t.Errorf("Progressing reason, message = %q, %q, want the defaults", got.Reason, got.Message)
 	}
 }
 

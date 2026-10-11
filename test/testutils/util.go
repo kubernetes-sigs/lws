@@ -401,6 +401,19 @@ func SetPodToPending(ctx context.Context, k8sClient client.Client, podName strin
 	}, Timeout, Interval).Should(gomega.Succeed())
 }
 
+// SetPodScheduled sets the pod to phase Pending with the given PodScheduled condition, as the scheduler would.
+func SetPodScheduled(ctx context.Context, k8sClient client.Client, podName string, lws *leaderworkerset.LeaderWorkerSet, status corev1.ConditionStatus, reason string) {
+	gomega.Eventually(func() error {
+		var pod corev1.Pod
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: lws.Namespace, Name: podName}, &pod); err != nil {
+			return err
+		}
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: status, Reason: reason}}
+		return k8sClient.Status().Update(ctx, &pod)
+	}, Timeout, Interval).Should(gomega.Succeed())
+}
+
 // SetPodGroupToReady set one podGroup(leaderPod+workerStatefulset) of leaderWorkerSet to ready state, workerPods not included.
 func SetPodGroupToReady(ctx context.Context, k8sClient client.Client, statefulsetName string, lws *leaderworkerset.LeaderWorkerSet) {
 	SetLeaderPodToReady(ctx, k8sClient, statefulsetName, lws)
