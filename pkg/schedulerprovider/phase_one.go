@@ -117,16 +117,21 @@ func WorkloadSchedulingValue(lws *leaderworkerset.LeaderWorkerSet) string {
 }
 
 // leafMembership returns the number of pods in a PodGroup materialized from
-// the named leaf template for a replica of the given size: the leader alone,
-// the workers, or the whole replica.
+// the named per-replica leaf template for a replica of the given size: the
+// leader alone, the workers, or the whole replica. It returns 0 for any other
+// template, such as the whole-LWS one, whose membership spans replicas; 0 is
+// not a valid gang minCount, so a misuse fails validation or PodGroup creation
+// instead of silently gangging the wrong number of pods.
 func leafMembership(templateName string, size int32) int32 {
 	switch templateName {
 	case leaderWorkloadTemplateName:
 		return 1
 	case workerWorkloadTemplateName:
 		return size - 1
-	default:
+	case replicaWorkloadTemplateName:
 		return size
+	default:
+		return 0
 	}
 }
 

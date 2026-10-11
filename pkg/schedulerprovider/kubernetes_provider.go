@@ -36,8 +36,10 @@ import (
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/dump"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -253,12 +255,26 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 		if err != nil {
 			return NewReconcileError(ReasonInvalidSchedulingConfiguration, fmt.Errorf("materialize PodGroup %q: %w", name, err))
 		}
-		allowMinCountUpdate := group.allowMinCountUpdate
-		if gang := podGroup.Spec.SchedulingPolicy.Gang; gang != nil && group.gangMinCount != nil && !delegated {
-			gang.MinCount = *group.gangMinCount
-			// Also correct an existing PodGroup that was materialized from the
-			// template of another size, as earlier versions did after a size change.
-			allowMinCountUpdate = true
+		minCount := minCountImmutable
+		if group.allowMinCountUpdate {
+			minCount = minCountUpdate
+		}
+		if gang := podGroup.Spec.SchedulingPolicy.Gang; gang != nil && group.gangMinCount != nil {
+			if delegated {
+				// The parent owns the template and its minimum, which can only
+				// follow one size. After a size change, the PodGroups of groups
+				// the rollout has not replaced yet keep the minimum they were
+				// created with rather than failing every reconcile of their
+				// leader with drift.
+				if minCount == minCountImmutable {
+					minCount = minCountKeep
+				}
+			} else {
+				gang.MinCount = *group.gangMinCount
+				// Also correct an existing PodGroup that was materialized from the
+				// template of another size, as earlier versions did after a size change.
+				minCount = minCountUpdate
+			}
 		}
 		podGroup.TypeMeta = metav1.TypeMeta{
 			APIVersion: schedulingv1beta1.SchemeGroupVersion.String(),
@@ -274,7 +290,7 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 			if !existing.DeletionTimestamp.IsZero() {
 				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
 			}
-			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, allowMinCountUpdate); err != nil {
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, minCount); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		} else if !apierrors.IsNotFound(err) {
@@ -289,7 +305,7 @@ func (p *KubernetesProvider) ensurePodGroups(ctx context.Context, lws *leaderwor
 			if !existing.DeletionTimestamp.IsZero() {
 				return NewReconcileError(ReasonPodGroupCleanupBlocked, fmt.Errorf("PodGroup %s is still terminating", key))
 			}
-			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, allowMinCountUpdate); err != nil {
+			if err := updateMutablePodGroupFields(ctx, p.client, existing, podGroup, minCount); err != nil {
 				return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 			}
 		}
@@ -304,8 +320,9 @@ type desiredPodGroup struct {
 	allowMinCountUpdate bool
 	// gangMinCount, when set, replaces the gang minCount of the template, which
 	// follows the current size, with the membership of the groups the PodGroup
-	// covers. It is ignored for delegated Workloads, whose templates belong to
-	// the parent.
+	// covers. For delegated Workloads, whose templates belong to the parent,
+	// the template minimum is used instead, and an existing per-replica
+	// PodGroup keeps its minimum.
 	gangMinCount *int32
 }
 
@@ -355,7 +372,7 @@ func (p *KubernetesProvider) wholeLWSGangMinCount(ctx context.Context, lws *lead
 		if ref := leader.Spec.SchedulingGroup; ref == nil || ptr.Deref(ref.PodGroupName, "") != podGroupName {
 			continue
 		}
-		groupSizes = append(groupSizes, groupSize(lws, leader))
+		groupSizes = append(groupSizes, groupSize(ctx, lws, leader))
 	}
 	return wholeLWSMembership(ptr.Deref(lws.Spec.Replicas, 1), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1), groupSizes), nil
 }
@@ -428,7 +445,21 @@ func replicaPodGroups(lws *leaderworkerset.LeaderWorkerSet, mode SchedulingMode,
 	return groups
 }
 
-func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.PodGroup, allowMinCountUpdate bool) error {
+// minCountPolicy says how updateMutablePodGroupFields treats an existing
+// PodGroup whose gang minCount differs from the desired one.
+type minCountPolicy int
+
+const (
+	// minCountImmutable reports the difference as drift, like any other spec
+	// field.
+	minCountImmutable minCountPolicy = iota
+	// minCountUpdate updates the existing PodGroup to the desired minCount.
+	minCountUpdate
+	// minCountKeep leaves the existing minCount as it is.
+	minCountKeep
+)
+
+func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, desired *schedulingv1beta1.PodGroup, minCount minCountPolicy) error {
 	currentOwner := metav1.GetControllerOf(current)
 	desiredOwner := metav1.GetControllerOf(desired)
 	ownerMatches := controllerReferencesEqual(currentOwner, desiredOwner)
@@ -446,8 +477,8 @@ func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, 
 	defaultDisruptionMode(currentSpec)
 	defaultDisruptionMode(desiredSpec)
 	var changed bool
-	if allowMinCountUpdate && currentSpec.SchedulingPolicy.Gang != nil && desiredSpec.SchedulingPolicy.Gang != nil {
-		if currentSpec.SchedulingPolicy.Gang.MinCount != desiredSpec.SchedulingPolicy.Gang.MinCount {
+	if minCount != minCountImmutable && currentSpec.SchedulingPolicy.Gang != nil && desiredSpec.SchedulingPolicy.Gang != nil {
+		if minCount == minCountUpdate && currentSpec.SchedulingPolicy.Gang.MinCount != desiredSpec.SchedulingPolicy.Gang.MinCount {
 			current.Spec.SchedulingPolicy.Gang.MinCount = desired.Spec.SchedulingPolicy.Gang.MinCount
 			changed = true
 		}
@@ -813,7 +844,7 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 // gang minimum of the new size. The PodGroups of a group keep the minimum of
 // the group's own size until the rollout replaces the group.
 func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
-	groups, err := leaderPodGroups(lws, leaderPod)
+	groups, err := leaderPodGroups(ctx, lws, leaderPod)
 	if err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
@@ -829,7 +860,7 @@ func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws 
 
 // leaderPodGroups returns the PodGroups that back the group of leaderPod, or
 // nothing when the LWS does not need pod-driven materialization.
-func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) ([]desiredPodGroup, error) {
+func leaderPodGroups(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) ([]desiredPodGroup, error) {
 	if lws.Spec.Scheduling == nil {
 		return nil, nil
 	}
@@ -851,7 +882,7 @@ func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod
 		return nil, fmt.Errorf("leader pod %s/%s has no %s label", leaderPod.Namespace, leaderPod.Name, leaderworkerset.RevisionKey)
 	}
 	groups := replicaPodGroups(lws, mode, GroupWorkloadName(lws, leaderPod), groupIndex, revision)
-	size := groupSize(lws, leaderPod)
+	size := groupSize(ctx, lws, leaderPod)
 	for i := range groups {
 		groups[i].gangMinCount = ptr.To(leafMembership(groups[i].templateName, size))
 	}
@@ -863,11 +894,19 @@ func leaderPodGroups(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod
 // yet. The size annotation records the size of the revision the leader pod was
 // created from; lws has that revision applied too, unless the pod controller
 // could not find it.
-func groupSize(lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) int32 {
-	if size, err := strconv.ParseInt(leaderPod.Annotations[leaderworkerset.SizeAnnotationKey], 10, 32); err == nil && size > 0 {
+//
+// The pod webhook rejects LWS pods without the size annotation, so the fallback
+// is logged: with the current size instead of the group's own, the group's
+// PodGroups get the minimum of the wrong size after a size change.
+func groupSize(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) int32 {
+	annotation := leaderPod.Annotations[leaderworkerset.SizeAnnotationKey]
+	if size, err := strconv.ParseInt(annotation, 10, 32); err == nil && size > 0 {
 		return int32(size)
 	}
-	return ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
+	size := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
+	ctrl.LoggerFrom(ctx).V(2).Info("Leader pod has no valid size annotation, using the LeaderWorkerSet size for its group",
+		"pod", klog.KObj(leaderPod), "annotation", annotation, "size", size)
+	return size
 }
 
 // findWorkload looks up the Workload that already backs the LeaderWorkerSet
