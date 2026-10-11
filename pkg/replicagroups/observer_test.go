@@ -18,6 +18,7 @@ package replicagroups
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -31,6 +32,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -52,9 +54,13 @@ type fixture struct {
 	workers    [][]*corev1.Pod
 }
 
-func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int) *fixture {
+func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int, names ...string) *fixture {
+	name := "role-a"
+	if len(names) > 0 {
+		name = names[0]
+	}
 	f := &fixture{lws: &leaderworkersetv1.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "role-a", Namespace: "test", UID: "lws-uid", Generation: 7},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test", UID: types.UID(name + "-lws-uid"), Generation: 7},
 		Spec: leaderworkersetv1.LeaderWorkerSetSpec{
 			Replicas: ptr.To(int32(replicas)), GroupIdentity: identity,
 			LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To(int32(size))},
@@ -186,7 +192,7 @@ func TestObserveGroups(t *testing.T) {
 				holdTermination(f.leaders[2])
 				objects := f.objects()
 				slices.Reverse(objects)
-				observed, err := Observe(t.Context(), newReader(t, objects...), f.lws)
+				observed, err := observeWithBatchParity(t, newReader(t, objects...), f.lws)
 				require.NoError(t, err)
 				require.NotNil(t, observed)
 				require.Len(t, observed.Groups, 4)
@@ -269,7 +275,7 @@ func TestObserveWholeGroupReadinessAndTermination(t *testing.T) {
 			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
 				f := newFixture(identity, 1, 3)
 				tc.change(f)
-				observed, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+				observed, err := observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 				if tc.unknown {
 					require.ErrorContains(t, err, "invalid group size")
 					assert.Nil(t, observed, "unknown must not become observed zero readiness")
@@ -309,7 +315,7 @@ func TestAvailabilityUsesEachGroupsRevisionSize(t *testing.T) {
 					f.workers[0][0].Status.Conditions[0].Status = corev1.ConditionFalse
 					want = 1
 				}
-				observed, err := Observe(t.Context(), newReader(t, objects...), f.lws)
+				observed, err := observeWithBatchParity(t, newReader(t, objects...), f.lws)
 				require.NoError(t, err)
 				assert.Equal(t, Availability{ReadyReplicas: want, RetainedReadyReplicas: want}, observed.Availability())
 			}
@@ -336,7 +342,7 @@ func TestObserveRejectsStaleOwnershipAtEveryLink(t *testing.T) {
 			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
 				f := newFixture(identity, 1, 3)
 				tc.change(f)
-				observed, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+				observed, err := observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 				require.NoError(t, err)
 				require.Len(t, observed.Groups, tc.wantGroups)
 				assert.Zero(t, observed.Availability())
@@ -350,7 +356,7 @@ func TestObserveRejectsStaleOwnershipAtEveryLink(t *testing.T) {
 	t.Run("Hash leaders belong to old ReplicaSet", func(t *testing.T) {
 		f := newFixture(leaderworkersetv1.GroupIdentityHash, 1, 3)
 		f.replicaSet.UID = "replacement-rs"
-		observed, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+		observed, err := observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 		require.NoError(t, err)
 		assert.Empty(t, observed.Groups)
 	})
@@ -372,7 +378,7 @@ func TestObserveAbsentOrReplacedObjects(t *testing.T) {
 			case "leader":
 				objects = slices.DeleteFunc(objects, func(object client.Object) bool { return object == f.leaders[0] })
 			}
-			observed, err := Observe(t.Context(), newReader(t, objects...), expected)
+			observed, err := observeWithBatchParity(t, newReader(t, objects...), expected)
 			require.NoError(t, err)
 			if absent == "LWS" || absent == "replacement LWS" {
 				assert.Nil(t, observed)
@@ -410,7 +416,7 @@ func TestObserveScopesListsAndPreservesMultipleReplicaSets(t *testing.T) {
 	otherSet.Name, otherSet.UID = "other-set", "other-set"
 	otherSet.Labels[leaderworkersetv1.SetNameLabelKey] = "other"
 	objects := append(f.objects(), old, oldLeader, foreign, foreignLeader, otherNamespace, otherSet)
-	observed, err := Observe(t.Context(), newReader(t, objects...), f.lws)
+	observed, err := observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	require.Len(t, observed.ReplicaSets, 2)
 	assert.Equal(t, old.UID, observed.ReplicaSets[0].UID)
@@ -428,7 +434,7 @@ func TestObserveOrdinalsAndResidualWorkers(t *testing.T) {
 	f := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 12, 12)
 	// Ordinals come from the native StatefulSet names, not mutable labels.
 	f.leaders[0].Labels[leaderworkersetv1.GroupIndexLabelKey] = "not-an-ordinal"
-	observed, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+	observed, err := observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 	require.NoError(t, err)
 	for i, group := range observed.Groups {
 		assert.Equal(t, i, group.Ordinal)
@@ -443,7 +449,7 @@ func TestObserveOrdinalsAndResidualWorkers(t *testing.T) {
 	f = newFixture(leaderworkersetv1.GroupIdentityOrdinal, 1, 3)
 	f.lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
 	holdTermination(f.workers[0][1])
-	observed, err = Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+	observed, err = observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 	require.NoError(t, err)
 	require.Len(t, observed.Groups, 1)
 	assert.Len(t, observed.Groups[0].Pods, 3)
@@ -464,7 +470,7 @@ func TestObserveReadsLiveLWSAndControllersBeforeOnePodList(t *testing.T) {
 			}
 			holdTermination(f.workers[0][0])
 			var calls []string
-			reader := interceptor.NewClient(newReader(t, f.objects()...), interceptor.Funcs{
+			trace := interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					calls = append(calls, fmt.Sprintf("get %T", obj))
 					return c.Get(ctx, key, obj, opts...)
@@ -473,7 +479,8 @@ func TestObserveReadsLiveLWSAndControllersBeforeOnePodList(t *testing.T) {
 					calls = append(calls, fmt.Sprintf("list %T", list))
 					return c.List(ctx, list, opts...)
 				},
-			})
+			}
+			reader := interceptor.NewClient(newReader(t, f.objects()...), trace)
 			observed, err := Observe(t.Context(), reader, expected)
 			require.NoError(t, err)
 			assert.Equal(t, int32(1), *expected.Spec.Replicas, "input must remain untouched")
@@ -494,15 +501,46 @@ func TestObserveReadsLiveLWSAndControllersBeforeOnePodList(t *testing.T) {
 				assert.Equal(t, int64(3), observed.LeaderStatefulSet.Status.ObservedGeneration)
 			}
 			assert.Equal(t, want, calls)
+			// Fallback lookup must also preserve positive availability for settled groups.
+			f = newFixture(identity, 1, 3)
+			expected = f.lws.DeepCopy()
+			reader = interceptor.NewClient(newReader(t, f.objects()...), trace)
+			for _, label := range []string{f.lws.Name, "", "wrong"} {
+				f.workload.SetLabels(map[string]string{leaderworkersetv1.SetNameLabelKey: label})
+				require.NoError(t, reader.Update(t.Context(), f.workload))
+				single, err := Observe(t.Context(), reader, expected)
+				require.NoError(t, err)
+				calls = nil
+				batch, err := ObserveMany(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{expected})
+				require.NoError(t, err)
+				assert.Equal(t, single, batch[expected.UID])
+				assert.EqualValues(t, 1, single.Availability().RetainedReadyReplicas)
+				want = []string{"list *v1.LeaderWorkerSetList", "list *v1.StatefulSetList"}
+				if identity == leaderworkersetv1.GroupIdentityHash {
+					want = append(want, "list *v1.DeploymentList")
+				}
+				if label != f.lws.Name {
+					want = append(want, fmt.Sprintf("get %T", f.workload))
+				}
+				if identity == leaderworkersetv1.GroupIdentityHash {
+					want = append(want, "list *v1.ReplicaSetList")
+				}
+				assert.Equal(t, append(want, "list *v1.PodList"), calls, "native leaders, including fallback GETs, precede their descendants")
+			}
 		})
 	}
 }
 
 func TestObserveReadErrorsReturnNoPartialSnapshot(t *testing.T) {
-	for _, operation := range []string{"lws", "workload", "replicasets", "workers", "pods"} {
+	for _, operation := range []string{"lws", "workload", "deployments", "replicasets", "workers", "pods", "next page", "expired page"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newFixture(leaderworkersetv1.GroupIdentityHash, 1, 3)
+			f.workload.SetLabels(nil) // Exercise the named fallback, including failures of its GET.
 			failure := errors.New("API read unavailable")
+			if operation == "expired page" {
+				failure = apierrors.NewResourceExpired("the observation's page token expired")
+			}
+			paged := operation == "next page" || operation == "expired page"
 			reader := interceptor.NewClient(newReader(t, f.objects()...), interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					_, isLWS := obj.(*leaderworkersetv1.LeaderWorkerSet)
@@ -512,8 +550,15 @@ func TestObserveReadErrorsReturnNoPartialSnapshot(t *testing.T) {
 					return c.Get(ctx, key, obj, opts...)
 				},
 				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if paged && (&client.ListOptions{}).ApplyOptions(opts).Continue != "" {
+						return failure
+					}
 					var fail bool
 					switch list.(type) {
+					case *leaderworkersetv1.LeaderWorkerSetList:
+						fail = operation == "lws"
+					case *appsv1.DeploymentList:
+						fail = operation == "deployments"
 					case *appsv1.ReplicaSetList:
 						fail = operation == "replicasets"
 					case *appsv1.StatefulSetList:
@@ -524,12 +569,21 @@ func TestObserveReadErrorsReturnNoPartialSnapshot(t *testing.T) {
 					if fail {
 						return failure
 					}
-					return c.List(ctx, list, opts...)
+					err := c.List(ctx, list, opts...)
+					if _, pods := list.(*corev1.PodList); pods && paged {
+						list.SetContinue("next")
+					}
+					return err
 				},
 			})
-			observed, err := Observe(t.Context(), reader, f.lws)
+			if operation != "deployments" && !paged { // These reads exist only in the batch API.
+				observed, err := Observe(t.Context(), reader, f.lws)
+				assert.ErrorIs(t, err, failure)
+				assert.Nil(t, observed)
+			}
+			batch, err := ObserveMany(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{f.lws})
 			assert.ErrorIs(t, err, failure)
-			assert.Nil(t, observed)
+			assert.Nil(t, batch)
 		})
 	}
 	t.Run("list NotFound is not an empty successful snapshot", func(t *testing.T) {
@@ -600,7 +654,7 @@ func TestAvailability(t *testing.T) {
 				if tc.change != nil {
 					tc.change(f)
 				}
-				observed, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+				observed, err := observeWithBatchParity(t, newReader(t, f.objects()...), f.lws)
 				require.NoError(t, err)
 				retained := tc.wantOrdinal
 				if identity == leaderworkersetv1.GroupIdentityHash {
@@ -620,7 +674,7 @@ func TestHashAvailabilityReservesVictimsPerReplicaSet(t *testing.T) {
 	second := f.replicaSet.DeepCopy()
 	second.Name, second.UID, second.Spec.Replicas = "other-rs", "other-rs", ptr.To[int32](2)
 	objects := append(f.objects(), second)
-	observed, err := Observe(t.Context(), newReader(t, objects...), f.lws)
+	observed, err := observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	// All 3 Ready groups belong to the RS targeting 1. The other RS's unused
 	// target of 2 must not erase the first RS's two pending deletions.
@@ -630,20 +684,20 @@ func TestHashAvailabilityReservesVictimsPerReplicaSet(t *testing.T) {
 	for _, leader := range f.leaders[1:] {
 		leader.Status.Conditions[0].Status = corev1.ConditionFalse
 	}
-	observed, err = Observe(t.Context(), newReader(t, objects...), f.lws)
+	observed, err = observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	// Conversely, the first RS's excess unready groups must not withhold the
 	// second RS's one Ready group, which is not exposed to its deletions.
 	assert.EqualValues(t, 1, observed.Availability().RetainedReadyReplicas)
 
 	second.Generation++
-	observed, err = Observe(t.Context(), newReader(t, objects...), f.lws)
+	observed, err = observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	assert.Zero(t, observed.Availability().RetainedReadyReplicas)
 
 	second.Status.ObservedGeneration++
 	second.Spec.Replicas = ptr.To[int32](1)
-	observed, err = Observe(t.Context(), newReader(t, objects...), f.lws)
+	observed, err = observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	assert.Zero(t, observed.Availability().RetainedReadyReplicas, "unfinished target redistribution")
 }
@@ -687,6 +741,177 @@ func TestAvailabilityExhaustiveVictimSets(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// Run the existing ownership, readiness, deletion-credit and absent-object cases
+// through both APIs, without maintaining a second copy of those fixtures.
+func observeWithBatchParity(t *testing.T, reader client.Reader, expected *leaderworkersetv1.LeaderWorkerSet) (*Snapshot, error) {
+	t.Helper()
+	single, err := Observe(t.Context(), reader, expected)
+	batch, batchErr := ObserveMany(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{expected})
+	require.Equal(t, err == nil, batchErr == nil, "single=%v; batch=%v", err, batchErr)
+	if err != nil {
+		require.Nil(t, batch)
+	} else {
+		require.Equal(t, single, batch[expected.UID])
+	}
+	return single, err
+}
+
+func TestObserveManyScopedPaginatedSnapshot(t *testing.T) {
+	a := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 2, 3, "a")
+	b := newFixture(leaderworkersetv1.GroupIdentityHash, 2, 3, "b")
+	for _, f := range []*fixture{a, b} {
+		f.lws.Labels = map[string]string{"slice": "selected"}
+		f.scale(1)
+	}
+	holdTermination(b.workers[1][0])
+	expected := []*leaderworkersetv1.LeaderWorkerSet{a.lws.DeepCopy(), b.lws.DeepCopy()}
+	a.lws.Generation++ // The batch returns the live generation, not its input.
+	a.lws.Spec.Replicas = ptr.To[int32](2)
+	excluded := newFixture(leaderworkersetv1.GroupIdentityHash, 1, 1, "excluded")
+	excluded.leaders[0].Labels[leaderworkersetv1.SetNameLabelKey] = a.lws.Name // Wrong owner despite matching label.
+	expected = append(expected, excluded.lws)                                  // The caller's selector must still exclude this expected LWS.
+	unrequested := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 1, 1, "unrequested")
+	unrequested.lws.Labels = a.lws.Labels
+	unrequested.leaders[0].Annotations = nil // Matching labels cannot put an unrequested LWS into the batch.
+	otherNamespace := a.leaders[0].DeepCopy()
+	otherNamespace.Namespace = "elsewhere"
+	objects := append(a.objects(), b.objects()...)
+	objects = append(objects, excluded.objects()...)
+	objects = append(objects, unrequested.objects()...)
+	objects = append(objects, otherNamespace)
+	base := newReader(t, objects...)
+	var calls []string
+	reader := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			t.Fatal("correctly labelled workloads must not require individual GETs")
+			return nil
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			options := (&client.ListOptions{}).ApplyOptions(opts)
+			require.Equal(t, "test", options.Namespace)
+			require.Positive(t, options.Limit)
+			start := 0
+			if options.Continue != "" {
+				var err error
+				start, err = strconv.Atoi(options.Continue)
+				require.NoError(t, err)
+				assert.Empty(t, options.AsListOptions().ResourceVersion, "continued pages use their token, not the initial resource version")
+			}
+			options.Continue, options.Limit = "", 0
+			page := list.DeepCopyObject().(client.ObjectList)
+			require.NoError(t, c.List(ctx, page, options))
+			items, err := meta.ExtractList(page)
+			require.NoError(t, err)
+			end := min(start+1, len(items)) // Force every object onto a separate page.
+			require.NoError(t, meta.SetList(page, items[start:end]))
+			page.SetContinue("") // The final response omits "continue", as the real API does.
+			if end < len(items) {
+				page.SetContinue(strconv.Itoa(end))
+			}
+			data, err := json.Marshal(page)
+			require.NoError(t, err)
+			// Unlike the fake client, a real decoder can reuse the destination's
+			// backing array and overwrite objects retained from earlier pages.
+			require.NoError(t, json.Unmarshal(data, list))
+			calls = append(calls, fmt.Sprintf("%T", list))
+			require.Less(t, len(calls), 100, "final-page metadata must not retain the previous continuation token")
+			return nil
+		},
+	})
+	raw := &metav1.ListOptions{ResourceVersion: "42"}
+	batch, err := ObserveMany(t.Context(), reader, expected, client.MatchingLabels{"slice": "selected"}, &client.ListOptions{Raw: raw})
+	require.NoError(t, err)
+	assert.Equal(t, &metav1.ListOptions{ResourceVersion: "42"}, raw, "pagination must not mutate the caller's options")
+	require.Len(t, batch, 2)
+	for _, lws := range expected[:2] {
+		single, err := Observe(t.Context(), base, lws)
+		require.NoError(t, err)
+		assert.Equal(t, single, batch[lws.UID])
+	}
+	assert.Equal(t, int64(7), expected[0].Generation, "input is read-only")
+	assert.Equal(t, int64(8), batch[a.lws.UID].LWS.Generation)
+	assert.Equal(t, int32(2), *batch[a.lws.UID].LWS.Spec.Replicas)
+	phase := map[string]int{"*v1.LeaderWorkerSetList": 0, "*v1.StatefulSetList": 1, "*v1.DeploymentList": 1, "*v1.ReplicaSetList": 1, "*v1.PodList": 2}
+	for i := 1; i < len(calls); i++ {
+		assert.LessOrEqual(t, phase[calls[i-1]], phase[calls[i]], "LWS before workloads before Pods: %v", calls)
+	}
+}
+
+func TestObserveManyValidatesExpectedIdentities(t *testing.T) {
+	lws := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 1, 1).lws
+	for _, change := range []func(*leaderworkersetv1.LeaderWorkerSet){
+		func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.UID = "" },
+		func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.Name = "" },
+		func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.Namespace = "" },
+		func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.Namespace = "other" },
+		func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.UID = "conflicting" },
+	} {
+		invalid := lws.DeepCopy()
+		change(invalid)
+		batch, err := ObserveMany(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{lws, invalid})
+		assert.Error(t, err)
+		assert.Nil(t, batch)
+	}
+	batch, err := ObserveMany(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{nil})
+	assert.Error(t, err)
+	assert.Nil(t, batch)
+	batch, err = ObserveMany(t.Context(), nil, nil)
+	assert.NoError(t, err)
+	assert.Empty(t, batch)
+}
+
+func TestObserveManyRequestCount(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, n := range []int{1, 24, 101} {
+			t.Run(fmt.Sprintf("%s/%d", identity, n), func(t *testing.T) {
+				var expected []*leaderworkersetv1.LeaderWorkerSet
+				var objects []client.Object
+				for i := range n {
+					f := newFixture(identity, 1, 1, fmt.Sprintf("role-%03d", i))
+					expected = append(expected, f.lws)
+					objects = append(objects, f.objects()...)
+				}
+				base := newReader(t, objects...)
+				lists := 0
+				reader := interceptor.NewClient(base, interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						t.Fatal("normal batching must not read individual objects")
+						return nil
+					},
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						lists++
+						return c.List(ctx, list, opts...)
+					},
+				})
+				batch, err := ObserveMany(t.Context(), reader, expected)
+				require.NoError(t, err)
+				require.Len(t, batch, n)
+				for _, lws := range expected {
+					require.NotNil(t, batch[lws.UID])
+					assert.Equal(t, lws.UID, batch[lws.UID].LWS.UID)
+					assert.Len(t, batch[lws.UID].Groups, 1)
+					assert.Equal(t, Availability{ReadyReplicas: 1, RetainedReadyReplicas: 1}, batch[lws.UID].Availability())
+				}
+				perChunk := 2 // StatefulSets and Pods; Hash also needs Deployments and ReplicaSets.
+				if identity == leaderworkersetv1.GroupIdentityHash {
+					perChunk = 4
+				}
+				assert.Equal(t, 1+perChunk*((n+99)/100), lists)
+				if n == 101 {
+					last := objects[len(objects)-1].(*corev1.Pod)
+					last.Annotations = nil // A malformed last group must discard the earlier 100 snapshots.
+					require.NoError(t, base.Update(t.Context(), last))
+					lists = 0
+					batch, err = ObserveMany(t.Context(), reader, expected)
+					assert.ErrorContains(t, err, "invalid group size")
+					assert.Nil(t, batch)
+					assert.Equal(t, 1+2*perChunk, lists, "the first chunk completed before the second failed")
+				}
+			})
 		}
 	}
 }

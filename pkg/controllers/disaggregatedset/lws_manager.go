@@ -18,8 +18,10 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,15 +34,76 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
 type LeaderWorkerSetManager struct {
-	client client.Client
+	client           client.Client
+	apiReader        client.Reader
+	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
-	return &LeaderWorkerSetManager{client: c}
+	manager := &LeaderWorkerSetManager{client: c, apiReader: c}
+	manager.observeReadiness = manager.observeLiveReadiness
+	return manager
+}
+
+var errReplicaGroupsPending = errors.New("replica-group observation no longer matches the rollout")
+
+type replicaReadiness struct {
+	raw       int // Ready groups, including groups committed to removal.
+	committed int // Ready groups that can authorize another drain.
+}
+
+// rolloutReadiness is local to one slice and one reconciliation. It never
+// changes LWS status or carries deletion reservations between reconciliations.
+type rolloutReadiness map[string]replicaReadiness
+
+func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
+	ctx context.Context,
+	old disaggregatedsetutils.RevisionRolesList,
+	target disaggregatedsetutils.RevisionRoles,
+) (rolloutReadiness, error) {
+	var sets []*leaderworkersetv1.LeaderWorkerSet
+	for _, revision := range append(slices.Clone(old), target) {
+		for _, lws := range revision.Roles {
+			sets = append(sets, lws)
+		}
+	}
+	return manager.observeReadiness(ctx, sets)
+}
+
+// observeLiveReadiness adapts shared group observations to the planner's two counts.
+// Unknown observations must retry, not look like zero serving capacity: that
+// could lower the planner's no-worsening floor. Unacknowledged native decisions
+// still expose raw readiness, but withhold retained credit for another drain.
+func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context, sets []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error) {
+	result := make(rolloutReadiness, len(sets))
+	if len(sets) == 0 {
+		return result, nil
+	}
+	// Reobserve only this slice. A broken group in another slice must not block it.
+	snapshots, err := replicagroups.ObserveMany(ctx, manager.apiReader, sets, client.MatchingLabels{
+		disaggregatedsetv1.SetNameLabelKey: sets[0].Labels[disaggregatedsetv1.SetNameLabelKey],
+		disaggregatedsetv1.SliceLabelKey:   sets[0].Labels[disaggregatedsetv1.SliceLabelKey],
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, lws := range sets {
+		snapshot := snapshots[lws.UID]
+		if snapshot == nil || snapshot.LWS.Generation != lws.Generation || !snapshot.LWS.DeletionTimestamp.IsZero() {
+			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
+		}
+		availability := snapshot.Availability()
+		result[lws.Name] = replicaReadiness{
+			raw:       int(availability.ReadyReplicas),
+			committed: int(availability.RetainedReadyReplicas),
+		}
+	}
+	return result, nil
 }
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
@@ -138,26 +201,30 @@ func (manager *LeaderWorkerSetManager) Create(
 	return nil
 }
 
-// Scale patches the LWS named name to replicas, but only if it's actually
-// controller-owned by ds. A same-named LWS that exists but isn't owned by ds
-// — e.g. left over from a same-named DisaggregatedSet that was deleted and
-// recreated before garbage collection ran — is refused rather than mutated;
-// see #981.
-func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, name string, replicas int) error {
+// Scale applies an observed scale intent only while its object and Spec still
+// match. Status-only updates are harmless; a replaced object or changed Spec
+// needs a new plan. The optimistic patch also guards changes after the live Get.
+func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int) error {
+	name := observed.Name
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
+	if err := manager.apiReader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s for scaling: %w", name, err)
 	}
 	if !metav1.IsControlledBy(leaderWorkerSet, ds) {
 		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to scale it", name, ds.Name)
 	}
-
-	if int(getLWSReplicas(leaderWorkerSet)) == replicas {
-		return nil
+	if leaderWorkerSet.UID != observed.UID || leaderWorkerSet.Generation != observed.Generation ||
+		getLWSReplicas(leaderWorkerSet) != getLWSReplicas(observed) || !leaderWorkerSet.DeletionTimestamp.IsZero() {
+		return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), name,
+			errors.New("LeaderWorkerSet changed since scale observation"))
 	}
 
+	currentReplicas := int(getLWSReplicas(leaderWorkerSet))
+	if currentReplicas == replicas {
+		return nil
+	}
 	replicas32 := int32(replicas)
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	leaderWorkerSet.Spec.Replicas = &replicas32
 	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
 		return fmt.Errorf("failed to scale LeaderWorkerSet %s: %w", name, err)
@@ -244,6 +311,10 @@ func (manager *LeaderWorkerSetManager) ListAll(ctx context.Context, disaggregate
 // from a same-named DisaggregatedSet that was deleted and recreated — cannot be
 // mistaken for one of this DisaggregatedSet's own replicas.
 func (manager *LeaderWorkerSetManager) list(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
+	return manager.listWithReader(ctx, manager.client, disaggregatedSet, role, options...)
+}
+
+func (manager *LeaderWorkerSetManager) listWithReader(ctx context.Context, reader client.Reader, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name}
@@ -253,7 +324,7 @@ func (manager *LeaderWorkerSetManager) list(ctx context.Context, disaggregatedSe
 
 	listOptions := []client.ListOption{client.InNamespace(disaggregatedSet.Namespace), labels}
 	listOptions = append(listOptions, options...)
-	if err := manager.client.List(ctx, lwsObjList, listOptions...); err != nil {
+	if err := reader.List(ctx, lwsObjList, listOptions...); err != nil {
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", disaggregatedSet.Namespace, disaggregatedSet.Name, err)
 	}
 
@@ -308,7 +379,11 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	lwsList, err := manager.ListForSlice(ctx, disaggregatedSet, slice, "")
+	// Pair live Pod observations with live scale intents. A cached Spec from
+	// before our previous drain would otherwise spend the same capacity twice.
+	lwsList, err := manager.listWithReader(ctx, manager.apiReader, disaggregatedSet, "", client.MatchingLabels{
+		disaggregatedsetv1.SliceLabelKey: strconv.Itoa(slice),
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list LWS: %w", err)
 	}
