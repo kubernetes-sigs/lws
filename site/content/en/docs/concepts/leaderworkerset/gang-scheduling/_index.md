@@ -28,6 +28,9 @@ LWS supports three mutually exclusive scheduling levels in `spec.scheduling`:
   `PodGroup` for the entire LeaderWorkerSet (`replicas * size` pods across all
   replicas). While a rollout increases `size`, its `gang.minCount` counts the
   replicas that the rollout has not replaced yet with their previous size.
+  The gang admits the initial replicas together; during a rollout, once the
+  running pods meet `gang.minCount`, the pods of a replacement or surge
+  replica can be placed one at a time rather than all-or-nothing.
 - **Role level (`spec.scheduling.replica.leader` or
   `spec.scheduling.replica.worker`)**: Setting either role selects this level.
   LWS creates separate `PodGroup` objects for the leader and workers within
