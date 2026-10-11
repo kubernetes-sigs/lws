@@ -290,6 +290,7 @@ func TestKubernetesProviderHashSteadyStateSkipsWorkloadListAndMemberPodScan(t *t
 	var workloadLists int
 	var podListOptions []client.ListOptions
 	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Create: createWithGeneratedUID,
 		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
 			switch obj.(type) {
 			case *schedulingv1beta1.WorkloadList:

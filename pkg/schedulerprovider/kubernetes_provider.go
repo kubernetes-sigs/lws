@@ -65,7 +65,7 @@ const (
 	PodGroupRoleLabelKey = "leaderworkerset.sigs.k8s.io/role"
 
 	workloadControllerUIDIndex  = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
-	podSchedulingGroupNameIndex = "spec.schedulingGroup.podGroupName"
+	podSchedulingGroupNameIndex = "leaderworkerset.sigs.k8s.io/pod-scheduling-group-name"
 	// groupIncarnationSeparator separates the group incarnation from the
 	// workload name. Workload names never contain it, LeaderWorkerSet names
 	// are DNS labels.
@@ -913,6 +913,16 @@ func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws 
 	return p.ensurePodGroups(ctx, lws, persisted, groups)
 }
 
+// podGroupsReadyForAdmittedLeader reports whether the PodGroups of an admitted
+// leader pod need no work, so CreatePodGroupIfNotExists can skip the Workload
+// lookup and the PodGroup materialization on every reconcile of a running
+// leader. The PodGroups only gate admission, which is over once the group
+// replacement gate is lifted. A PodGroup that is missing, terminating, has a
+// gang minimum of another size, or lacks the labels or the Workload owner
+// reference that ensurePodGroups maintains takes the full path, which
+// recreates or repairs it. Changes to the immutable scheduling fields of the
+// PodGroup of an admitted leader are not reported: they no longer affect the
+// group, and reporting them used to fail every reconcile of the leader.
 func (p *KubernetesProvider) podGroupsReadyForAdmittedLeader(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod, groups []desiredPodGroup) bool {
 	if podutils.HasSchedulingGate(leaderPod, leaderworkerset.GroupReplacementSchedulingGate) {
 		return false
@@ -920,14 +930,23 @@ func (p *KubernetesProvider) podGroupsReadyForAdmittedLeader(ctx context.Context
 	delegated := lws.Annotations[GroupTemplateNameAnnotation] != ""
 	for _, group := range groups {
 		existing := &schedulingv1beta1.PodGroup{}
+		// PodGroups live in the namespace of the LWS and its Workload, as
+		// materialized by ensurePodGroups.
 		key := types.NamespacedName{Namespace: lws.Namespace, Name: group.name}
 		if err := p.client.Get(ctx, key, existing); err != nil || !existing.DeletionTimestamp.IsZero() {
 			return false
 		}
-		if group.gangMinCount != nil && existing.Spec.SchedulingPolicy.Gang != nil && !delegated {
-			if existing.Spec.SchedulingPolicy.Gang.MinCount != *group.gangMinCount {
+		if group.gangMinCount != nil && existing.Spec.SchedulingPolicy.Gang != nil && !delegated &&
+			existing.Spec.SchedulingPolicy.Gang.MinCount != *group.gangMinCount {
+			return false
+		}
+		for k, v := range group.labels {
+			if existing.Labels[k] != v {
 				return false
 			}
+		}
+		if !delegated && workloadOwnerReference(existing) == nil {
+			return false
 		}
 	}
 	return true

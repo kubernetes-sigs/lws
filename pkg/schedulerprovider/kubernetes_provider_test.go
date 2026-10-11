@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,14 +52,16 @@ func newKubernetesFakeClientBuilder() *fake.ClientBuilder {
 	return fake.NewClientBuilder().WithScheme(scheme).
 		WithIndex(&schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues).
 		WithIndex(&corev1.Pod{}, podSchedulingGroupNameIndex, podSchedulingGroupNameIndexValues).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if obj.GetUID() == "" {
-					obj.SetUID(types.UID(obj.GetName() + "-generated-uid"))
-				}
-				return c.Create(ctx, obj, opts...)
-			},
-		})
+		WithInterceptorFuncs(interceptor.Funcs{Create: createWithGeneratedUID})
+}
+
+// createWithGeneratedUID assigns the UID the API server would. Tests that
+// install their own interceptors replace the builder's, so they set it too.
+func createWithGeneratedUID(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	if obj.GetUID() == "" {
+		obj.SetUID(types.UID(obj.GetName() + "-generated-uid"))
+	}
+	return c.Create(ctx, obj, opts...)
 }
 
 func ordinalLeaderPod(lws *leaderworkerset.LeaderWorkerSet, groupIndex string) *corev1.Pod {
@@ -1688,6 +1691,8 @@ func testScheduledLWS() *leaderworkerset.LeaderWorkerSet {
 	}
 }
 
+// The tests below count List calls through interceptors to catch regressions
+// back to listing every pod of the LWS on each reconcile.
 func TestKubernetesProviderCleanupUnusedPodGroupsAvoidsFullPodScans(t *testing.T) {
 	ctx := context.Background()
 
@@ -1695,6 +1700,7 @@ func TestKubernetesProviderCleanupUnusedPodGroupsAvoidsFullPodScans(t *testing.T
 		lws := testScheduledLWS()
 		var podLists []client.ListOptions
 		fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: createWithGeneratedUID,
 			List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
 				if _, ok := obj.(*corev1.PodList); ok {
 					var lo client.ListOptions
@@ -1767,6 +1773,7 @@ func TestKubernetesProviderCleanupUnusedPodGroupsAvoidsFullPodScans(t *testing.T
 		}
 		var podLists int
 		fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: createWithGeneratedUID,
 			List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
 				if _, ok := obj.(*corev1.PodList); ok {
 					podLists++
@@ -1789,6 +1796,7 @@ func TestKubernetesProviderCreatePodGroupIfNotExistsShortCircuitsAdmittedLeader(
 	lws := testScheduledLWS()
 	var workloadLists int
 	fakeClient := newKubernetesFakeClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Create: createWithGeneratedUID,
 		List: func(ctx context.Context, c client.WithWatch, obj client.ObjectList, opts ...client.ListOption) error {
 			if _, ok := obj.(*schedulingv1beta1.WorkloadList); ok {
 				workloadLists++
@@ -1824,4 +1832,16 @@ func TestKubernetesProviderCreatePodGroupIfNotExistsShortCircuitsAdmittedLeader(
 	assert.Equal(t, 1, workloadLists)
 	require.NoError(t, fakeClient.Get(ctx, key, pg))
 	assert.Equal(t, int32(3), pg.Spec.SchedulingPolicy.Gang.MinCount)
+
+	// A missing label or Workload owner reference, as on PodGroups created by
+	// earlier versions, also takes the full path and is repaired.
+	delete(pg.Labels, leaderworkerset.RevisionKey)
+	pg.OwnerReferences = slices.DeleteFunc(pg.OwnerReferences, func(ref metav1.OwnerReference) bool { return ref.Kind == "Workload" })
+	require.NoError(t, fakeClient.Update(ctx, pg))
+	workloadLists = 0
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	assert.Equal(t, 1, workloadLists)
+	require.NoError(t, fakeClient.Get(ctx, key, pg))
+	assert.Equal(t, "revision-1", pg.Labels[leaderworkerset.RevisionKey])
+	assert.NotNil(t, workloadOwnerReference(pg))
 }

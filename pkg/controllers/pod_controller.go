@@ -1024,20 +1024,39 @@ func mutateGroupRestartCounts(ctx context.Context, c client.Client, key client.O
 
 const groupReplacementRequeueDelay = 10 * time.Second
 
+// hashDesiredRevision returns the revision key of the leader Deployment of a
+// groupIdentity Hash LWS, or "" if the Deployment does not exist yet.
+func (r *PodReconciler) hashDesiredRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (string, error) {
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
+		if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
+			return "", err
+		}
+		return "", nil
+	}
+	return revisionutils.GetRevisionKey(&deploy), nil
+}
+
+// outdatedRevision reports whether pod belongs to a revision other than the
+// desired one. An unknown revision on either side is never outdated.
+func outdatedRevision(pod *corev1.Pod, desiredRevision string) bool {
+	podRevision := revisionutils.GetRevisionKey(pod)
+	return desiredRevision != "" && podRevision != "" && podRevision != desiredRevision
+}
+
+// isOutdatedGatedHashLeader reports whether pod is a leader of a groupIdentity
+// Hash LWS from a revision the leader Deployment has moved past. Such a leader
+// is never admitted by reconcileGroupReplacementGate and is deleted by the
+// rollout, so the caller must not create its PodGroups or headless service.
 func (r *PodReconciler) isOutdatedGatedHashLeader(ctx context.Context, pod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
 	if lws.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash {
 		return false, nil
 	}
-	var deploy appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
-		if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
-			return false, err
-		}
-		return false, nil
+	desiredRevision, err := r.hashDesiredRevision(ctx, lws)
+	if err != nil {
+		return false, err
 	}
-	desiredRevision := revisionutils.GetRevisionKey(&deploy)
-	podRevision := revisionutils.GetRevisionKey(pod)
-	return desiredRevision != "" && podRevision != "" && podRevision != desiredRevision, nil
+	return outdatedRevision(pod, desiredRevision), nil
 }
 
 // reconcileGroupReplacementGate decides whether a gated leader pod may start
@@ -1056,16 +1075,12 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 	}
 	var desiredRevision string
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
-		var deploy appsv1.Deployment
-		if err := r.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy); err != nil {
-			if !apierrors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) {
-				return false, err
-			}
-		} else {
-			desiredRevision = revisionutils.GetRevisionKey(&deploy)
+		var err error
+		if desiredRevision, err = r.hashDesiredRevision(ctx, lws); err != nil {
+			return false, err
 		}
 		podRevision := revisionutils.GetRevisionKey(pod)
-		if desiredRevision != "" && podRevision != "" && podRevision != desiredRevision {
+		if outdatedRevision(pod, desiredRevision) {
 			log.V(2).Info("Deferring gated leader from outdated revision", "podRevision", podRevision, "desiredRevision", desiredRevision)
 			return false, nil
 		}
