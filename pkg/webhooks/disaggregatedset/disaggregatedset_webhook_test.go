@@ -655,6 +655,59 @@ func TestValidateCreate(t *testing.T) {
 	}
 }
 
+func TestValidateZeroReplicaRolloutStrategy(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	for _, fieldName := range []string{"maxSurge", "maxUnavailable"} {
+		for _, tc := range []struct {
+			name      string
+			value     intstr.IntOrString
+			wantError bool
+		}{
+			{name: "negative integer", value: intstr.FromInt32(-1), wantError: true},
+			{name: "invalid percentage", value: intstr.FromString("invalid"), wantError: true},
+			{name: "percentage above 100", value: intstr.FromString("101%"), wantError: true},
+			{name: "zero integer", value: intstr.FromInt32(0)},
+			{name: "zero percentage", value: intstr.FromString("0%")},
+		} {
+			t.Run(fieldName+"/"+tc.name, func(t *testing.T) {
+				obj := &disaggv1.DisaggregatedSet{
+					ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				}
+				for _, name := range []string{"prefill", "decode"} {
+					obj.Spec.Roles = append(obj.Spec.Roles, disaggv1.DisaggregatedRoleSpec{
+						Name: name,
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+							Spec: leaderworkerset.LeaderWorkerSetSpec{
+								Replicas: ptr.To[int32](0),
+								RolloutStrategy: leaderworkerset.RolloutStrategy{
+									RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{},
+								},
+							},
+						},
+					})
+				}
+				oldObj := obj.DeepCopy()
+				rollout := obj.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration
+				if fieldName == "maxSurge" {
+					rollout.MaxSurge = tc.value
+				} else {
+					rollout.MaxUnavailable = tc.value
+				}
+
+				_, createErr := webhook.ValidateCreate(context.Background(), obj)
+				_, updateErr := webhook.ValidateUpdate(context.Background(), oldObj, obj)
+				for _, err := range []error{createErr, updateErr} {
+					if tc.wantError {
+						require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration."+fieldName)
+					} else {
+						require.NoError(t, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestValidateUpdate(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()

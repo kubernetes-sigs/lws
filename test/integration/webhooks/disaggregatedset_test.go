@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -147,6 +148,37 @@ var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
 		err := k8sClient.Update(ctx, &fetched)
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(leaderworkerset.ExclusiveKeyAnnotationKey))
+	})
+})
+
+var _ = ginkgo.Describe("disaggregatedset zero-replica rollout validation", func() {
+	ginkgo.It("rejects invalid rollout budgets on create and update", func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ns-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+		disagg := wrappers.BuildDisaggregatedSet("zero-replicas", ns.Name).
+			WithRole("prefill", 0, "nginx:1.14.2").
+			WithRole("decode", 0, "nginx:1.14.2").Obj()
+		for i := range disagg.Spec.Roles {
+			disagg.Spec.Roles[i].Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
+				Type:                       leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{},
+			}
+			disagg.Spec.Roles[i].Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+		}
+
+		invalid := disagg.DeepCopy()
+		invalid.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(-1)
+		err := k8sClient.Create(ctx, invalid)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("maxSurge"))
+
+		// Zero budgets are valid while all roles are scaled to zero.
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+		disagg.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("101%")
+		err = k8sClient.Update(ctx, disagg)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("maxUnavailable"))
 	})
 })
 
