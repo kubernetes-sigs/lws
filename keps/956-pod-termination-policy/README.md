@@ -17,6 +17,7 @@
   - [Webhook Defaulting and Validation](#webhook-defaulting-and-validation)
   - [LeaderWorkerSet Controller Changes](#leaderworkerset-controller-changes)
   - [Pod Controller Changes](#pod-controller-changes)
+  - [DisaggregatedSet Integration](#disaggregatedset-integration)
   - [Rebuild Coordination and Race Conditions](#rebuild-coordination-and-race-conditions)
   - [Test Plan](#test-plan)
     - [Unit tests](#unit-tests)
@@ -148,7 +149,12 @@ type LeaderWorkerSetSpec struct {
 
 1. **Helper `isParallelPodTermination`**: Checks whether `lws.Spec.PodTerminationPolicy == Parallel` or the leader pod has `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel`.
 2. **Helper `deleteWorkerStatefulSetIfExists`**: Looks up the worker StatefulSet using `workerStatefulSetName(leaderPod)` (which resolves to the leader pod's hostname in hash mode and pod name in ordinal mode), verifies it is controlled by the leader pod (`metav1.IsControlledBy`), and deletes it with `metav1.DeletePropagationForeground`.
-3. **Leader Deletion Handling**: When reconciling a leader pod with `DeletionTimestamp != nil`, if `isParallelPodTermination` returns true, `deleteWorkerStatefulSetIfExists` is called.
+3. **Leader Deletion Handling**: When reconciling a leader pod with `DeletionTimestamp != nil`, if `isParallelPodTermination` returns true, `deleteWorkerStatefulSetIfExists` is called. The reconciler then returns early `(ctrl.Result{}, nil)` for terminating leader pods after handling finalizers, preventing resource creation or tight create/delete loops while the leader terminates.
+
+### DisaggregatedSet Integration
+
+- `DisaggregatedRoleSpec.Spec` embeds `LeaderWorkerSetSpec`. `DisaggregatedSetWebhook` validates `podTerminationPolicy` on role specs during admission.
+- In `ComputeRevision`, `DefaultPodTerminationPolicy` is normalized to `""` so upgrading CRDs does not change SHA-256 revision hashes or trigger unwanted coordinated rollouts for existing `DisaggregatedSet` workloads.
 
 ### Rebuild Coordination and Race Conditions
 
@@ -160,7 +166,7 @@ if workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod
     return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }
 ```
-This guarantees that the replacement leader will wait for the old worker StatefulSet to be fully purged from etcd before creating a fresh worker StatefulSet.
+This check is placed before the `hashIdentity` controller check so a terminating worker StatefulSet requeues without recording a spurious `FailedCreate` warning event. This guarantees that the replacement leader will wait for the old worker StatefulSet to be fully purged from etcd before creating a fresh worker StatefulSet.
 
 ### Test Plan
 

@@ -597,7 +597,7 @@ the headless service, defaults to shared</p>
 </table>
 
 ## `PodTerminationPolicyType`     {#leaderworkerset-x-k8s-io-v1-PodTerminationPolicyType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -606,6 +606,7 @@ the headless service, defaults to shared</p>
 
 
 <p>PodTerminationPolicyType defines how pods in a group are terminated.</p>
+
 
 
 
@@ -643,7 +644,6 @@ Defaults to 300.</p>
 </tr>
 </tbody>
 </table>
-
 
 ## `RestartPolicyType`     {#leaderworkerset-x-k8s-io-v1-RestartPolicyType}
     

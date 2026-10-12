@@ -1033,3 +1033,67 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateCreatePodTerminationPolicy(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+
+	buildDisaggregatedSet := func(policy leaderworkerset.PodTerminationPolicyType) *disaggv1.DisaggregatedSet {
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Roles: []disaggv1.DisaggregatedRoleSpec{
+					{
+						Name: "prefill",
+						LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+							Spec: leaderworkerset.LeaderWorkerSetSpec{
+								PodTerminationPolicy: policy,
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		policy      leaderworkerset.PodTerminationPolicyType
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "empty policy is accepted",
+			policy:      "",
+			expectError: false,
+		},
+		{
+			name:        "Default policy is accepted",
+			policy:      leaderworkerset.DefaultPodTerminationPolicy,
+			expectError: false,
+		},
+		{
+			name:        "Parallel policy is accepted",
+			policy:      leaderworkerset.ParallelPodTerminationPolicy,
+			expectError: false,
+		},
+		{
+			name:        "invalid policy is rejected",
+			policy:      "InvalidPolicy",
+			expectError: true,
+			errorMsg:    "Unsupported value",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := webhook.ValidateCreate(ctx, buildDisaggregatedSet(tc.policy))
+			if tc.expectError {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

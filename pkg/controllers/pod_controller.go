@@ -178,6 +178,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
+	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil && r.isParallelPodTermination(&pod, &leaderWorkerSet) {
+		if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if podutils.LeaderPod(pod) && pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		teardown, err := r.groupLifecycleTeardownRequested(ctx, &leaderWorkerSet, &pod)
 		if err != nil {
@@ -199,11 +204,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, err
 	}
 	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil {
-		if r.isParallelPodTermination(&pod, &leaderWorkerSet) {
-			if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
+		return ctrl.Result{}, nil
 	}
 	// Worker Pods need no reconciliation unless they triggered restart-policy
 	// handling or their group has a pending recreation. Avoid looking up a
@@ -391,6 +392,10 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	workerStsReady := false
 	var workerSts appsv1.StatefulSet
 	err = r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(&pod), Namespace: leaderWorkerSet.Namespace}, &workerSts)
+	if err == nil && workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
+		log.V(2).Info("waiting for old worker statefulset to be completely deleted before creating a new one", "workerSts", workerSts.Name)
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	if err == nil && hashIdentity && !metav1.IsControlledBy(&workerSts, &pod) {
 		// Two groups whose keys share an 8 character prefix get the same host name.
 		err = fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
@@ -410,10 +415,6 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
-		if workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
-			log.V(2).Info("waiting for old worker statefulset to be completely deleted before creating a new one", "workerSts", workerSts.Name)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		}
 		recreated, err := r.recreateGroupSplitByUpgrade(ctx, &leaderWorkerSet, &pod, &workerSts)
 		if err != nil || recreated {
 			return ctrl.Result{}, err

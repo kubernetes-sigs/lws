@@ -3672,4 +3672,218 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("terminating leader pod reconciliation after worker statefulset is gone does not recreate worker statefulset", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+		lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.NoneRestartPolicy
+
+		leader := makeLeaderPod(lws, "leader-uid-1")
+		now := metav1.Now()
+		leader.DeletionTimestamp = &now
+		leader.Finalizers = []string{"test-finalizer"}
+
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      workerStatefulSetName(leader),
+				Namespace: leader.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       leader.Name,
+						UID:        leader.UID,
+						Controller: ptr.To(true),
+					},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, leader, workerSts).
+			Build()
+
+		reconciler := &PodReconciler{
+			Client: fakeClient,
+			Scheme: scheme,
+			Record: events.NewFakeRecorder(10),
+		}
+
+		req := podReconcileRequest{
+			NamespacedName: types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace},
+			UID:            leader.UID,
+		}
+
+		// First reconcile: deletes the worker statefulset
+		res, err := reconciler.reconcilePod(ctx, req)
+		if err != nil {
+			t.Fatalf("first reconcilePod() error = %v", err)
+		}
+		if res.Requeue || res.RequeueAfter != 0 {
+			t.Errorf("expected no requeue for terminating leader on first reconcile, got %v", res)
+		}
+
+		var sts appsv1.StatefulSet
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(leader), Namespace: leader.Namespace}, &sts)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("expected worker statefulset to be deleted on first reconcile, got err: %v", err)
+		}
+
+		// Second reconcile (simulating re-enqueue from worker statefulset deletion event):
+		// must return early without re-creating the worker statefulset.
+		res, err = reconciler.reconcilePod(ctx, req)
+		if err != nil {
+			t.Fatalf("second reconcilePod() error = %v", err)
+		}
+		if res.Requeue || res.RequeueAfter != 0 {
+			t.Errorf("expected no requeue for terminating leader on second reconcile, got %v", res)
+		}
+
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(leader), Namespace: leader.Namespace}, &sts)
+		if !apierrors.IsNotFound(err) {
+			t.Errorf("expected worker statefulset not to be re-created on second reconcile, got err: %v", err)
+		}
+	})
+
+	t.Run("terminating leader pod with exhausted budget still deletes worker statefulset", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+
+		leader := makeLeaderPod(lws, "leader-uid-1")
+		now := metav1.Now()
+		leader.DeletionTimestamp = &now
+		leader.Finalizers = []string{"test-finalizer"}
+		leader.Annotations = map[string]string{
+			leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true",
+		}
+
+		workerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      leader.Name,
+				Namespace: leader.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       leader.Name,
+						UID:        leader.UID,
+						Controller: ptr.To(true),
+					},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, leader, workerSts).
+			Build()
+
+		reconciler := &PodReconciler{
+			Client: fakeClient,
+			Scheme: scheme,
+			Record: events.NewFakeRecorder(10),
+		}
+
+		_, err := reconciler.reconcilePod(ctx, podReconcileRequest{
+			NamespacedName: types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace},
+			UID:            leader.UID,
+		})
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+
+		var sts appsv1.StatefulSet
+		err = fakeClient.Get(ctx, types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace}, &sts)
+		if !apierrors.IsNotFound(err) {
+			t.Errorf("expected worker statefulset to be deleted for exhausted terminating leader, got err: %v", err)
+		}
+	})
+
+	t.Run("replacement leader waits if old worker statefulset is still deleting in hash mode without FailedCreate event", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Size(2).
+			Obj()
+		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+		leader := makeLeaderPod(lws, "leader-uid-new")
+		leader.Name = "test-lws-hash-new123"
+		leader.Spec.Hostname = "test-lws-0"
+		leader.Spec.Subdomain = "test-lws-0"
+
+		cr, err := revisionutils.NewRevision(ctx, fake.NewClientBuilder().WithScheme(scheme).Build(), lws, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leader.Labels[leaderworkerset.RevisionKey] = revisionutils.GetRevisionKey(cr)
+
+		now := metav1.Now()
+		terminatingWorkerSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              leader.Spec.Hostname,
+				Namespace:         leader.Namespace,
+				DeletionTimestamp: &now,
+				Finalizers:        []string{"test-finalizer"},
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       "test-lws-hash-old456",
+						UID:        "leader-uid-old",
+						Controller: ptr.To(true),
+					},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(lws, leader, terminatingWorkerSts, cr).
+			Build()
+
+		recorder := events.NewFakeRecorder(10)
+		reconciler := &PodReconciler{
+			Client: fakeClient,
+			Scheme: scheme,
+			Record: recorder,
+		}
+
+		res, err := reconciler.reconcilePod(ctx, podReconcileRequest{
+			NamespacedName: types.NamespacedName{Name: leader.Name, Namespace: leader.Namespace},
+			UID:            leader.UID,
+		})
+		if err != nil {
+			t.Fatalf("reconcilePod() error = %v", err)
+		}
+		if res.RequeueAfter != time.Second {
+			t.Errorf("expected RequeueAfter = 1s while worker statefulset is deleting in hash mode, got %v", res.RequeueAfter)
+		}
+
+		close(recorder.Events)
+		for e := range recorder.Events {
+			if strings.Contains(e, "FailedCreate") {
+				t.Errorf("unexpected FailedCreate event recorded while waiting for terminating worker statefulset in hash mode: %s", e)
+			}
+		}
+	})
 }
