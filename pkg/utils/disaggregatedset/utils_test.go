@@ -27,7 +27,7 @@ func TestSubRoleRolloutConfig(t *testing.T) {
 		surge, unavailable *intstr.IntOrString
 		want               leaderworkersetv1.RollingUpdateConfiguration
 	}{
-		{name: "defaults", want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}},
+		{name: "defaults", want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: intstr.FromInt(1)}},
 		{name: "inherit", parent: parent, want: *parent},
 		{name: "explicit zero surge", parent: parent, surge: ptr.To(intstr.FromInt(0)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: parent.MaxUnavailable}},
 		{name: "explicit zero unavailable", parent: parent, unavailable: ptr.To(intstr.FromInt(0)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: parent.MaxSurge}},
