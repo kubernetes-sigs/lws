@@ -872,6 +872,7 @@ func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
 }
 
 func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
+	executor := newTestExecutor(newTestClient())
 	rng := rand.New(rand.NewSource(81259))
 	for range 1000 {
 		initial := []int{rng.Intn(6), rng.Intn(6)}
@@ -883,7 +884,7 @@ func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 			}
 		}
 		state.Target.AllUnscheduled = make([]bool, 2)
-		assertMovingRolloutConverges(t, &state, 120, func(tick int) {
+		assertMovingRolloutConverges(t, executor, &state, 120, func(tick int) {
 			if tick < 4 {
 				state.Target.DesiredReplicas = []int{rng.Intn(8), rng.Intn(8)}
 			}
@@ -896,7 +897,8 @@ func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 
 // Both convergence populations use the same delayed native-controller model:
 // readiness catches up every third tick; an issued deletion reserves it immediately.
-func assertMovingRolloutConverges(t *testing.T, state *RolloutState, ticks int, editTarget func(int)) {
+// Selection only reads the empty fake client, so each test reuses its executor.
+func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor, state *RolloutState, ticks int, editTarget func(int)) {
 	t.Helper()
 	roleNames := make([]string, len(state.Config))
 	for i := range roleNames {
@@ -923,7 +925,6 @@ func assertMovingRolloutConverges(t *testing.T, state *RolloutState, ticks int, 
 	target := makeRevision("target", state.Target.DesiredReplicas, state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas)
 	// Only planner inputs are simulated; candidate ordering, saved baselines,
 	// and choosing another old revision when the first stalls are production code.
-	executor := newTestExecutor(newTestClient())
 	history := []string{fmt.Sprintf("initial=%v parked=%+v config=%v", state.ActiveOld.InitialReplicas, state.ParkedOld, state.Config)}
 	for tick := range ticks {
 		if tick%3 == 2 {
@@ -940,6 +941,15 @@ func assertMovingRolloutConverges(t *testing.T, state *RolloutState, ticks int, 
 			state.Target.RawReadyReplicas[i], state.Target.ReadyReplicas[i] = readiness[lws.Name].raw, readiness[lws.Name].committed
 		}
 		editTarget(tick)
+		// Keep every edit and RNG draw, but avoid replanning once old Spec is
+		// zero and target Spec matches demand. Later edits resume planning.
+		converged := slices.Equal(state.Target.SpecReplicas, state.Target.DesiredReplicas)
+		for _, role := range roleNames {
+			converged = converged && old.GetTotalReplicasPerRole(role) == 0
+		}
+		if converged {
+			continue
+		}
 		for i, role := range roleNames {
 			lws := target.Roles[role]
 			observed := readiness[lws.Name]
@@ -949,14 +959,15 @@ func assertMovingRolloutConverges(t *testing.T, state *RolloutState, ticks int, 
 		inputs := rolloutInputs{allRoleNames: roleNames, targetReplicas: state.Target.DesiredReplicas,
 			config: state.Config, readiness: readiness, scaleDownDuringRollout: true}
 		selected := disaggregatedsetutils.RevisionRoles{}
-		observed := rolloutStateForRevision(roleNames, old, selected, target, inputs.targetReplicas, inputs.config, readiness)
-		observed.ScaleDownDuringRollout = true
+		var observed RolloutState
 		var step *UpdateStep
 		if candidates := orderedRevisionCandidates(old, readiness); len(candidates) > 0 {
 			var err error
 			selected, observed, step, err = executor.selectNextRolloutStep(t.Context(), candidates, old, target, inputs)
 			require.NoError(t, err)
 		} else {
+			observed = rolloutStateForRevision(roleNames, old, selected, target, inputs.targetReplicas, inputs.config, readiness)
+			observed.ScaleDownDuringRollout = true
 			step = ComputeNextStep(observed)
 		}
 		if tick < 15 {
@@ -1045,13 +1056,14 @@ func TestScalingDuringRolloutFiveEditsReachPhysicalExcess(t *testing.T) {
 }
 
 func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
+	executor := newTestExecutor(newTestClient())
 	for _, seed := range []int64{4041023, 9071105, 11371023} {
 		rng := rand.New(rand.NewSource(seed))
 		for range 5000 {
 			initial := []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
 			state := rolloutState(initial, initial, initial, nil, nil, []int{0, 0}, []int{0, 0}, initial,
 				configs([]int{0, 1}, []int{1, 1}))
-			assertMovingRolloutConverges(t, &state, 100, func(tick int) {
+			assertMovingRolloutConverges(t, executor, &state, 100, func(tick int) {
 				if tick < 5 {
 					state.Target.DesiredReplicas = []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
 				}
