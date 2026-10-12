@@ -752,9 +752,9 @@ func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready i
 	}
 	objects = append(objects, owner)
 	for i := int32(0); i < actual; i++ {
-		status := corev1.ConditionFalse
+		status, nodeName := corev1.ConditionFalse, ""
 		if i < ready {
-			status = corev1.ConditionTrue
+			status, nodeName = corev1.ConditionTrue, "node"
 		}
 		name := fmt.Sprintf("%s-%d", lws.Name, i)
 		objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
@@ -762,6 +762,7 @@ func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready i
 			Annotations:     map[string]string{leaderworkersetv1.SizeAnnotationKey: "1"},
 			Labels:          map[string]string{leaderworkersetv1.SetNameLabelKey: lws.Name, leaderworkersetv1.WorkerIndexLabelKey: "0"},
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, appsv1.SchemeGroupVersion.WithKind(kind))}},
+			Spec:   corev1.PodSpec{NodeName: nodeName},
 			Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}}}})
 	}
 	return objects

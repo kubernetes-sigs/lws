@@ -114,41 +114,14 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 // unscheduled; an assigned worker protects the role even if its leader is unbound.
 // These are facts from the existing observation, not a scheduling reservation.
 func allGroupsUnscheduled(snapshot *replicagroups.Snapshot) bool {
-	lws := snapshot.LWS
-	replicas := getLWSReplicas(lws)
-	if replicas == 0 || len(snapshot.Groups) != int(replicas) || lws.Status.ObservedGeneration < lws.Generation {
+	replicas := int(getLWSReplicas(snapshot.LWS))
+	if replicas == 0 || len(snapshot.Groups) != replicas {
 		return false
 	}
-	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
-		deployment := snapshot.LeaderDeployment
-		if deployment == nil || !deployment.DeletionTimestamp.IsZero() ||
-			ptr.Deref(deployment.Spec.Replicas, 1) != replicas || deployment.Status.ObservedGeneration < deployment.Generation {
-			return false
-		}
-		issued := int32(0)
-		for _, rs := range snapshot.ReplicaSets {
-			if !rs.DeletionTimestamp.IsZero() || rs.Status.ObservedGeneration < rs.Generation {
-				return false
-			}
-			issued += ptr.Deref(rs.Spec.Replicas, 1)
-		}
-		if issued != replicas {
-			return false
-		}
-	} else {
-		sts := snapshot.LeaderStatefulSet
-		if sts == nil || !sts.DeletionTimestamp.IsZero() ||
-			ptr.Deref(sts.Spec.Replicas, 1) != replicas || sts.Status.ObservedGeneration < sts.Generation {
-			return false
-		}
-	}
 	for _, group := range snapshot.Groups {
-		size, err := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
-		if err != nil || group.Terminating || group.Ready || len(group.Pods) != size {
-			return false
-		}
-		if workers := group.WorkerStatefulSet; size > 1 && (workers == nil ||
-			ptr.Deref(workers.Spec.Replicas, 1) != int32(size-1) || workers.Status.ObservedGeneration < workers.Generation) {
+		// The observer already validates group ownership and the size annotation.
+		size, _ := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
+		if group.Terminating || len(group.Pods) != size {
 			return false
 		}
 		for _, pod := range group.Pods {

@@ -56,8 +56,7 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 ## Scaling during a rollout
 
-To apply changing replica targets while old and target revisions still overlap,
-opt in on the DisaggregatedSet:
+To apply new replica targets while old and target revisions overlap, opt in:
 
 ```yaml
 spec:
@@ -65,48 +64,24 @@ spec:
     duringRollout: AdvanceRollout
 ```
 
-This applies to both static `roles[].spec.replicas` and External
-[RoleScaler](role-scaler) targets. Replica or policy edits do not create another
-template revision. Omitting the policy, or choosing `RolloutCoupled`, preserves
-the existing rollout behavior and defers target-revision reductions.
+This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets.
+Replica and policy edits do not create a new revision. Omitting the policy, or choosing
+`RolloutCoupled`, preserves existing behavior and defers target-revision reductions.
 
-With `AdvanceRollout`, each reconciliation uses the latest target for the surge
-ceiling (`target + maxSurge`) and availability floor (`target - maxUnavailable`,
-clamped to zero). Raising a target does not make pending Pods Ready: the existing
-pending-work and fractional-coordination bounds still apply. If observed Ready
-capacity is already below the new floor, the planner does not deliberately
-reduce it further.
+`AdvanceRollout` uses the latest desired count for the surge ceiling (`desired + maxSurge`)
+and availability floor (`max(0, desired - maxUnavailable)`). Pending-work limits still apply:
+new requests do not add Ready capacity. If availability is already below the floor,
+the planner does not deliberately reduce it further.
 
-Safe old-revision drains are preferred over target-revision reductions. If old
-capacity cannot safely drain, excess target replicas can be reduced using the
-same retained-readiness checks. Old and target revisions never spend the same
-Ready credit in one decision. Completion requires exact target Spec and Ready,
-including when the desired replica count is zero.
+The controller reduces old revisions first whenever safe; otherwise it may reduce excess target groups.
+Groups already committed to deletion cannot authorize another reduction. Completion requires
+target Spec and Ready to equal desired, including zero.
 
-Ordinal and Hash use the same rule to preserve startup work. If any Pod in a target role is already assigned to a node, an ordinary target-size correction does not reduce that role below its final desired count. Pending Pods may already be assigned and loading a model; they do not need to be Ready to receive this protection. Only a target whose groups are all confirmed unscheduled can be reduced further toward the latest surge ceiling. Incomplete observations keep the protective bound.
+For both Ordinal and Hash, if any target Pod is assigned to a node, ordinary target-size corrections stop at the final desired count, even if Pods are not Ready. Only a role whose groups are all confirmed unscheduled can be reduced further. Unknown placement uses the conservative bound.
 
-For example, with old Spec/Ready 4, target Spec 5, desired 4, `maxSurge: 1`, and `maxUnavailable: 0`, a target with scheduled Pods can reduce to 4 rather than 1. The controller temporarily keeps 8 total groups above the new ceiling of 5 until readiness allows old groups to drain. A mixed target keeps some unscheduled groups too; replicas genuinely above the final desired count can still be removed. This is based on observed scheduling state, not a reservation against a Pod becoming scheduled before deletion.
+For example, per role: old Spec/Ready 4, target Spec 5 with none Ready, desired 4, `maxSurge: 1`, and `maxUnavailable: 0`. A scheduled target reduces to 4; an entirely unscheduled target can reduce to 1. The first case keeps 8 total groups above the new ceiling of 5 until new readiness permits old groups to drain, potentially for a long time if startup stalls.
 
-When old and target role names are disjoint, target readiness also replaces a
-fraction of the old roles' availability baseline. A target reduction must retain
-that already-used replacement credit: the target's own `maxUnavailable` cannot
-spend an old role's budget. This uses the same retained-readiness checks, including
-pending deletions and the no-worsening rule when availability is already low.
+Mixed or incomplete observations can retain unscheduled groups too. This protects the final count, not individual Pods: removing genuine excess above desired can still delete scheduled work, and placement may change after observation.
 
-Scale changes can leave a role above its latest surge ceiling while historical
-old-role fractions block its reduction. Under `AdvanceRollout`, an old drain
-may bypass that fraction window only to release existing excess:
-`max(0, totalOldSpec + targetSpec - desired - maxSurge)`. The exception cannot
-drain below the ceiling, bypass availability or split required old roles.
-Only roles with a positive desired count use this correction; removed roles
-keep their old fraction window.
-Ordinary retirement keeps its historical fraction window; pending-work budgets
-keep their original size baseline. This is an opt-in scale correction, not an
-extra growth allowance.
-
-The existing bounded emergency behavior remains: an unavailable target role
-can need one bootstrap surge slot; with a moving target, a Ready role blocked
-by fractional coordination at its new ceiling can also need one slot. Slots
-cannot be stacked while that role is above its ceiling or awaiting readiness.
-The scheduler-unschedulable availability fallback remains a last resort after
-ordinary work and bootstrap progress are unavailable.
+See [KEP-1022](https://github.com/kubernetes-sigs/lws/tree/main/keps/1022-DisaggregatedSet-Scaling-During-Rollout)
+for renamed-role availability, coordinated retirement, and bounded recovery rules.

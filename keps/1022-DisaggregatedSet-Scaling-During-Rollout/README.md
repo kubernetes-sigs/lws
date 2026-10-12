@@ -212,7 +212,7 @@ else:
 always keep the existing availability and first-group safeguards
 ```
 
-A group has started scheduling when any of its Pods has a node assigned (`spec.nodeName`), even if it is still Pending or loading a model. A partially scheduled group therefore protects the role's startup progress too. Missing or incomplete observations do not prove that all groups are unscheduled; they use the same conservative bound. This information comes from the existing replica-group observation, without additional API reads.
+A group has started scheduling when any of its Pods has a node assigned (`spec.nodeName`), even if it is still Pending or loading a model. A partially scheduled group therefore protects the role's startup progress too. Missing or incomplete observations do not prove that all groups are unscheduled; they use the same conservative bound. This information comes from the existing replica-group observation, without additional API reads. When every expected group and member Pod is present and unassigned, this check does not wait for controller status to catch up. Availability is still checked separately before any reduction.
 
 For example, per role, old Spec and Ready are 4, target Spec is 5 with no Ready groups, desired is 4, `maxSurge` is 1, and `maxUnavailable` is 0. If any target Pod is assigned to a node, reduce the target to 4, not 1. This temporarily retains 8 total groups above the new ceiling of 5, preserving the startup work needed for the final workload. If all target groups are confirmed unscheduled, the existing correction can reduce the target to 1 while the old revision continues serving. The new revision later grows to its final 4 as the old revision drains.
 
@@ -344,4 +344,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 
 - 2026-09-02: Initial KEP draft.
 - 2026-10-12: Align the proposal with the opt-in implementation, shared replica-group observations, and current rollout-availability safeguards. Clarify candidate selection, bounded recovery, target reductions, and exact completion.
-- 2026-10-12: Preserve scheduled target startup during demand decreases with one rule for Ordinal and Hash. Keep below-target cancellation only for confidently unscheduled groups; document temporary surge excess and observation limits.
+- 2026-10-12: Preserve scheduled target startup during demand decreases with one rule for Ordinal and Hash. Use complete Pod observations for below-target cancellation; document temporary surge excess and observation limits.

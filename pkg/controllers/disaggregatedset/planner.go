@@ -193,48 +193,38 @@ func ordinaryReplicaTargets(state RolloutState, snapshot rolloutSnapshot, phaseT
 	return past, newTargets
 }
 
-// targetDrainSnapshot views the target revision as the one being reduced and
-// all old revisions as unchanged replacement capacity. This reuses the exact
-// same availability accounting as old-revision drain, without applying an
-// old-side fractional rollout curve to a target-size correction.
-func targetDrainSnapshot(state RolloutState) rolloutSnapshot {
-	n := len(state.Config)
-	parked := append(slices.Clone(state.ParkedOld), ParkedRevisionState{
-		RequiredRoles: state.ActiveOld.RequiredRoles, SpecReplicas: state.ActiveOld.SpecReplicas,
-		RawReadyReplicas: state.ActiveOld.RawReadyReplicas, ReadyReplicas: state.ActiveOld.ReadyReplicas,
-	})
-	snapshot := snapshotForRolloutState(RolloutState{
-		ActiveOld: ActiveRevisionState{
-			RequiredRoles: state.Target.RequiredRoles, InitialReplicas: state.Target.DesiredReplicas,
-			SpecReplicas: state.Target.SpecReplicas, RawReadyReplicas: state.Target.RawReadyReplicas,
-			ReadyReplicas: state.Target.ReadyReplicas,
-		},
-		ParkedOld: parked,
-		Target: TargetRevisionState{
-			RequiredRoles: make([]bool, n), SpecReplicas: make(RoleReplicaState, n),
-			RawReadyReplicas: make(RoleReplicaState, n), ReadyReplicas: make(RoleReplicaState, n),
-			DesiredReplicas: state.Target.DesiredReplicas,
-		},
-		AvailabilityBaseline: state.AvailabilityBaseline, Config: state.Config, ScaleDuringRollout: true,
-	})
-	observed := snapshotForRolloutState(state)
+// targetDrainSnapshot remaps only availability fields: the target is draining,
+// and old revisions provide replacement capacity. Raw observations stay intact.
+// This view is not used for growth limits or old-side rollout coordination.
+func targetDrainSnapshot(state RolloutState, observed rolloutSnapshot) rolloutSnapshot {
+	old, target := state.ActiveOld, state.Target
+	oldReady := summarizeReadiness(old.RequiredRoles, old.SpecReplicas, old.RawReadyReplicas, old.ReadyReplicas)
+	targetReady := summarizeReadiness(target.RequiredRoles, target.SpecReplicas, target.RawReadyReplicas, target.ReadyReplicas)
+	snapshot := slices.Clone(observed)
 	for i := range snapshot {
-		// The dummy target above has no Ready credit. Keep the real residual
-		// only when this correction can remove replicas of that source role.
-		snapshot[i].UnreplacedReplicas = 0
-		if state.Target.SpecReplicas[i] > 0 {
-			snapshot[i].UnreplacedReplicas = observed[i].UnreplacedReplicas
+		role := &snapshot[i]
+		role.ActiveOldSpecReplicas = target.SpecReplicas[i]
+		role.ActiveOldCommittedReadyReplicas = target.ReadyReplicas[i]
+		role.ActiveOldUsableReadyReplicas = targetReady[i].usable
+		role.ReplacementUsableReadyReplicas = observed[i].ActiveOldUsableReadyReplicas + observed[i].ParkedUsableReadyReplicas
+		role.ReplacementPerRoleReadyReplicas += oldReady[i].perRole - targetReady[i].perRole
+		if target.DesiredReplicas[i] > 0 {
+			role.AvailabilityBaselineReplicas = target.DesiredReplicas[i]
+		}
+		if target.SpecReplicas[i] == 0 {
+			role.UnreplacedReplicas = 0
 		}
 	}
 	return snapshot
 }
 
-// minimumTargetAvailableTargets also preserves target-only fractional credit
+// targetScaleDownBounds also preserves target-only fractional credit
 // already needed by disjoint old roles; parked target-role Ready cannot supply it.
 // Scheduled or unknown groups additionally retain the final desired count.
-func minimumTargetAvailableTargets(state RolloutState, snapshot rolloutSnapshot) RoleReplicaState {
+func targetScaleDownBounds(state RolloutState, observed rolloutSnapshot) (rolloutSnapshot, RoleReplicaState) {
+	snapshot := targetDrainSnapshot(state, observed)
 	minimum := minimumAvailableTargets(snapshot, state.Target.RequiredRoles)
-	numerator, denominator := disjointTargetReadyFraction(state, snapshotForRolloutState(state))
+	numerator, denominator := disjointTargetReadyFraction(state, observed)
 	for i, desired := range state.Target.DesiredReplicas {
 		required := int((int64(desired)*int64(numerator) + int64(denominator) - 1) / int64(denominator))
 		required = min(required, state.Target.RawReadyReplicas[i])
@@ -244,7 +234,7 @@ func minimumTargetAvailableTargets(state RolloutState, snapshot rolloutSnapshot)
 			minimum[i] = max(minimum[i], min(state.Target.SpecReplicas[i], desired))
 		}
 	}
-	return minimum
+	return snapshot, minimum
 }
 
 // disjointTargetReadyFraction is the replacement fraction still needed after
@@ -281,8 +271,7 @@ func disjointTargetReadyFraction(state RolloutState, observed rolloutSnapshot) (
 // be unscheduled. Required roles always retain their first bootstrap replica.
 func furthestTargetScaleDownTargets(state RolloutState, snapshot rolloutSnapshot) RoleReplicaState {
 	targets := slices.Clone(state.Target.SpecReplicas)
-	drainSnapshot := targetDrainSnapshot(state)
-	minimum := minimumTargetAvailableTargets(state, drainSnapshot)
+	drainSnapshot, minimum := targetScaleDownBounds(state, snapshot)
 	for i, role := range snapshot {
 		if role.NewSpecReplicas <= role.NewTargetReplicas {
 			continue
@@ -307,8 +296,7 @@ func furthestTargetScaleDownTargets(state RolloutState, snapshot rolloutSnapshot
 // Ready replicas can authorize a reduction, even when roles scale oppositely.
 func targetScaleDownPreservesAvailability(state RolloutState, targets RoleReplicaState) bool {
 	drainsOnly := slices.Clone(targets)
-	snapshot := targetDrainSnapshot(state)
-	minimum := minimumTargetAvailableTargets(state, snapshot)
+	snapshot, minimum := targetScaleDownBounds(state, snapshotForRolloutState(state))
 	for i := range drainsOnly {
 		drainsOnly[i] = min(drainsOnly[i], state.Target.SpecReplicas[i])
 		if drainsOnly[i] < minimum[i] {
