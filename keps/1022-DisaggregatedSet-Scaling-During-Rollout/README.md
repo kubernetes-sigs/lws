@@ -201,6 +201,25 @@ When every old role has been renamed, the target revision replaces old capacity 
 
 During overlap, an already-created required target role keeps its first group. With no old capacity left, the target can converge exactly to the desired count, including zero.
 
+When correcting a target revision that exceeds its latest desired count, Ordinal and Hash use the same startup-preservation rule:
+
+```text
+if every target group is confirmed unscheduled:
+    allow the existing correction toward desired + maxSurge - old Spec
+else:
+    do not reduce the target below its final desired count
+
+always keep the existing availability and first-group safeguards
+```
+
+A group has started scheduling when any of its Pods has a node assigned (`spec.nodeName`), even if it is still Pending or loading a model. A partially scheduled group therefore protects the role's startup progress too. Missing or incomplete observations do not prove that all groups are unscheduled; they use the same conservative bound. This information comes from the existing replica-group observation, without additional API reads.
+
+For example, per role, old Spec and Ready are 4, target Spec is 5 with no Ready groups, desired is 4, `maxSurge` is 1, and `maxUnavailable` is 0. If any target Pod is assigned to a node, reduce the target to 4, not 1. This temporarily retains 8 total groups above the new ceiling of 5, preserving the startup work needed for the final workload. If all target groups are confirmed unscheduled, the existing correction can reduce the target to 1 while the old revision continues serving. The new revision later grows to its final 4 as the old revision drains.
+
+In a mixed target, this deliberately keeps some unscheduled groups too. It avoids separate Ordinal and Hash victim-selection rules. The protection applies to reductions below the final target: genuinely excess replicas above that target can still be removed, including scheduled ones. Observing an unscheduled Pod does not reserve it; the scheduler may assign it after the observation and before native deletion. This rule avoids knowingly discarding needed startup work, not all possible scheduling races.
+
+This changes ordinary opt-in target-size corrections only. It does not add reductions when target Spec is already at or below desired, change the default policy, or alter #1105's separate correction of surplus during fully renamed-role rollouts.
+
 ### Keep bounded recovery
 
 This policy retains the existing bounded recovery rules rather than promising that every cluster configuration can progress:
@@ -215,7 +234,8 @@ These exceptions remain explicit planner decisions validated by the executor. Th
 
 ```text
 read latest desired replicas and the scaling policy
-observe old and target Spec, observed Ready, and retained Ready
+observe old and target Spec, observed Ready, retained Ready,
+and whether all target groups are confirmed unscheduled
 
 for old revisions in preference order:
     ask the planner for a safe step using all revisions' capacity
@@ -266,6 +286,7 @@ Use planner transitions, with target or readiness changes between reconciles, an
 - Scale-down handles desired counts above, equal to, and below current target Spec, including zero.
 - A safe old-revision step is preferred to target scale-down, including when another old candidate is blocked.
 - Target scale-down remains safe when old capacity cannot absorb the reduction.
+- Ordinal and Hash preserve the final target size when any target member is assigned to a node; entirely unscheduled targets retain bounded cancellation. Mixed, partially scheduled, and incomplete observations use the protective bound, and the executor rejects a step that bypasses it.
 - Old and target reductions cannot double-spend Ready capacity; proposed growth cannot fund a reduction.
 - Incomplete revisions, healthy individual roles, pending deletions, and already-degraded availability retain #1105's protections.
 - Target correction preserves already-used replacement capacity after all old roles are renamed.
@@ -301,7 +322,9 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 
 **Autoscaler feedback:** status includes old and target capacity, including surge. Rapidly changing targets can cause churn. This policy does not replace autoscaler stabilization windows.
 
-**Wasted startup work:** a target reduction can remove recently started target groups. Preferring safe old-revision progress reduces that cost but cannot eliminate it when targets change substantially.
+**Wasted startup work:** prefer safe old-revision progress and avoid ordinary target corrections below the final desired count once any target group has started scheduling. Genuine final excess can still be removed, and a Pod may become scheduled after observation but before deletion.
+
+**Temporary excess capacity:** preserving startup work can leave old plus target Spec above the latest surge ceiling, potentially for a long time if startup stalls. Mixed or incompletely observed targets also retain unscheduled groups. New growth remains bounded; the excess is resolved as readiness permits old-revision retirement.
 
 **More possible transitions:** target Spec is no longer monotonic. Reusing availability checks, separating old and target reductions, and testing repeated edits are necessary to keep that behavior safe.
 
@@ -321,3 +344,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 
 - 2026-09-02: Initial KEP draft.
 - 2026-10-12: Align the proposal with the opt-in implementation, shared replica-group observations, and current rollout-availability safeguards. Clarify candidate selection, bounded recovery, target reductions, and exact completion.
+- 2026-10-12: Preserve scheduled target startup during demand decreases with one rule for Ordinal and Hash. Keep below-target cancellation only for confidently unscheduled groups; document temporary surge excess and observation limits.

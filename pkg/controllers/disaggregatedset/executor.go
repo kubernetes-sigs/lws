@@ -505,6 +505,7 @@ func rolloutStateForRevision(
 			ReadyReplicas:      make(RoleReplicaState, len(roleNames)),
 			DesiredReplicas:    slicesClone(targetReplicas),
 			UnschedulableRoles: make([]bool, len(roleNames)),
+			AllUnscheduled:     make([]bool, len(roleNames)),
 		},
 		AvailabilityBaseline: make(RoleReplicaState, len(roleNames)),
 		Config:               slices.Clone(config),
@@ -541,6 +542,7 @@ func rolloutStateForRevision(
 			state.Target.SpecReplicas[i] = int(getLWSReplicas(lws))
 			state.Target.RawReadyReplicas[i] = readiness[lws.Name].raw
 			state.Target.ReadyReplicas[i] = readiness[lws.Name].committed
+			state.Target.AllUnscheduled[i] = readiness[lws.Name].allUnscheduled
 		}
 	}
 	return state

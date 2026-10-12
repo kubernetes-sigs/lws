@@ -83,6 +83,10 @@ same retained-readiness checks. Old and target revisions never spend the same
 Ready credit in one decision. Completion requires exact target Spec and Ready,
 including when the desired replica count is zero.
 
+Ordinal and Hash use the same rule to preserve startup work. If any Pod in a target role is already assigned to a node, an ordinary target-size correction does not reduce that role below its final desired count. Pending Pods may already be assigned and loading a model; they do not need to be Ready to receive this protection. Only a target whose groups are all confirmed unscheduled can be reduced further toward the latest surge ceiling. Incomplete observations keep the protective bound.
+
+For example, with old Spec/Ready 4, target Spec 5, desired 4, `maxSurge: 1`, and `maxUnavailable: 0`, a target with scheduled Pods can reduce to 4 rather than 1. The controller temporarily keeps 8 total groups above the new ceiling of 5 until readiness allows old groups to drain. A mixed target keeps some unscheduled groups too; replicas genuinely above the final desired count can still be removed. This is based on observed scheduling state, not a reservation against a Pod becoming scheduled before deletion.
+
 When old and target role names are disjoint, target readiness also replaces a
 fraction of the old roles' availability baseline. A target reduction must retain
 that already-used replacement credit: the target's own `maxUnavailable` cannot

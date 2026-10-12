@@ -74,6 +74,9 @@ type TargetRevisionState struct {
 	ReadyReplicas      RoleReplicaState
 	DesiredReplicas    RoleReplicaState
 	UnschedulableRoles []bool
+	// AllUnscheduled permits cancelling below DesiredReplicas. Missing evidence
+	// (nil or false) protects work that may already be scheduled and loading.
+	AllUnscheduled []bool
 }
 
 // RolloutState is the value-only input to revision-aware planning. Kubernetes
@@ -228,6 +231,7 @@ func targetDrainSnapshot(state RolloutState) rolloutSnapshot {
 
 // minimumTargetAvailableTargets also preserves target-only fractional credit
 // already needed by disjoint old roles; parked target-role Ready cannot supply it.
+// Scheduled or unknown groups additionally retain the final desired count.
 func minimumTargetAvailableTargets(state RolloutState, snapshot rolloutSnapshot) RoleReplicaState {
 	minimum := minimumAvailableTargets(snapshot, state.Target.RequiredRoles)
 	numerator, denominator := disjointTargetReadyFraction(state, snapshotForRolloutState(state))
@@ -235,6 +239,10 @@ func minimumTargetAvailableTargets(state RolloutState, snapshot rolloutSnapshot)
 		required := int((int64(desired)*int64(numerator) + int64(denominator) - 1) / int64(denominator))
 		required = min(required, state.Target.RawReadyReplicas[i])
 		minimum[i] = max(minimum[i], minimumSpecToPreserveReady(state.Target.SpecReplicas[i], state.Target.ReadyReplicas[i], required))
+		if i >= len(state.Target.AllUnscheduled) || !state.Target.AllUnscheduled[i] ||
+			state.Target.RawReadyReplicas[i] > 0 || state.Target.ReadyReplicas[i] > 0 {
+			minimum[i] = max(minimum[i], min(state.Target.SpecReplicas[i], desired))
+		}
 	}
 	return minimum
 }
@@ -269,8 +277,8 @@ func disjointTargetReadyFraction(state RolloutState, observed rolloutSnapshot) (
 
 // furthestTargetScaleDownTargets repairs excess over the latest surge ceiling
 // when old revisions cannot safely absorb it. Once old Spec is zero, target
-// Spec converges exactly. Already-issued required roles retain a first replica
-// so correction cannot erase the target revision's bootstrap progress.
+// Spec converges exactly. Keep the final target unless every group is known to
+// be unscheduled. Required roles always retain their first bootstrap replica.
 func furthestTargetScaleDownTargets(state RolloutState, snapshot rolloutSnapshot) RoleReplicaState {
 	targets := slices.Clone(state.Target.SpecReplicas)
 	drainSnapshot := targetDrainSnapshot(state)

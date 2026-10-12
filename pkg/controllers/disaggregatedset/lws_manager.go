@@ -55,6 +55,8 @@ var errReplicaGroupsPending = errors.New("replica-group observation no longer ma
 type replicaReadiness struct {
 	raw       int // Ready groups, including groups committed to removal.
 	committed int // Ready groups that can authorize another drain.
+	// Positive evidence only: missing or incomplete observations stay false.
+	allUnscheduled bool
 }
 
 // rolloutReadiness is local to one slice and one reconciliation. It never
@@ -75,7 +77,7 @@ func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
 	return manager.observeReadiness(ctx, sets)
 }
 
-// observeLiveReadiness adapts shared group observations to the planner's two counts.
+// observeLiveReadiness adapts shared group observations to readiness and scheduling facts.
 // sets must come from this reconciliation's live GetRevisionRolesList. Scale
 // independently checks live identity and Spec before writing a planned change.
 // Unknown observations must retry, not look like zero serving capacity: that
@@ -99,11 +101,63 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 		}
 		availability := snapshot.Availability()
 		result[lws.Name] = replicaReadiness{
-			raw:       int(availability.ReadyReplicas),
-			committed: int(availability.RetainedReadyReplicas),
+			raw:            int(availability.ReadyReplicas),
+			committed:      int(availability.RetainedReadyReplicas),
+			allUnscheduled: allGroupsUnscheduled(snapshot),
 		}
 	}
 	return result, nil
+}
+
+// allGroupsUnscheduled permits cancelling below the final target only when no
+// group has begun using a node. Missing groups or workers are unknown, not
+// unscheduled; an assigned worker protects the role even if its leader is unbound.
+// These are facts from the existing observation, not a scheduling reservation.
+func allGroupsUnscheduled(snapshot *replicagroups.Snapshot) bool {
+	lws := snapshot.LWS
+	replicas := getLWSReplicas(lws)
+	if replicas == 0 || len(snapshot.Groups) != int(replicas) || lws.Status.ObservedGeneration < lws.Generation {
+		return false
+	}
+	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
+		deployment := snapshot.LeaderDeployment
+		if deployment == nil || !deployment.DeletionTimestamp.IsZero() ||
+			ptr.Deref(deployment.Spec.Replicas, 1) != replicas || deployment.Status.ObservedGeneration < deployment.Generation {
+			return false
+		}
+		issued := int32(0)
+		for _, rs := range snapshot.ReplicaSets {
+			if !rs.DeletionTimestamp.IsZero() || rs.Status.ObservedGeneration < rs.Generation {
+				return false
+			}
+			issued += ptr.Deref(rs.Spec.Replicas, 1)
+		}
+		if issued != replicas {
+			return false
+		}
+	} else {
+		sts := snapshot.LeaderStatefulSet
+		if sts == nil || !sts.DeletionTimestamp.IsZero() ||
+			ptr.Deref(sts.Spec.Replicas, 1) != replicas || sts.Status.ObservedGeneration < sts.Generation {
+			return false
+		}
+	}
+	for _, group := range snapshot.Groups {
+		size, err := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
+		if err != nil || group.Terminating || group.Ready || len(group.Pods) != size {
+			return false
+		}
+		if workers := group.WorkerStatefulSet; size > 1 && (workers == nil ||
+			ptr.Deref(workers.Spec.Replicas, 1) != int32(size-1) || workers.Status.ObservedGeneration < workers.Generation) {
+			return false
+		}
+		for _, pod := range group.Pods {
+			if pod.Spec.NodeName != "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {
