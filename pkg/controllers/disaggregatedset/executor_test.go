@@ -2168,7 +2168,7 @@ func TestInterruptedRolloutKeepsInitialBaseline(t *testing.T) {
 	assert.Equal(t, 2, old.GetTotalReplicasPerRole(testRoleDecode))
 }
 
-func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
+func TestRolloutAvailabilityDoesNotDropWithOldHistory(t *testing.T) {
 	for _, cleanup := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cleanup=%t", cleanup), func(t *testing.T) {
 			ctx := context.Background()
@@ -2195,10 +2195,10 @@ func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
 				require.NoError(t, newTestReconciler(fakeClient).cleanupDrainedLWS(ctx, ds, 0, "C", false))
 			}
 
-			// B's zero Spec, not object cleanup, starts the next phase. A's
-			// baseline is one, so it may retire before C's growth becomes Ready.
+			// Retiring B must not lower the floor to A's smaller history.
+			// Keep A+C at two Ready while requesting C's second group.
 			require.False(t, reconcile())
-			assertRevisionReplicas(t, fakeClient, "A", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{1, 1})
 			assertRevisionReplicas(t, fakeClient, "C", [2]int32{2, 2})
 			for _, roleName := range testRoleNames() {
 				target, err := newTestExecutor(fakeClient).LWSManager.GetForRole(ctx, ds, 0, "C", roleName)
@@ -2207,7 +2207,10 @@ func TestRolloutAvailabilityBaselineFollowsNonDrainedRevisions(t *testing.T) {
 				assert.EqualValues(t, 1, target.Status.ReadyReplicas)
 			}
 
-			// Completion still requires the full target to become Ready.
+			// Once C is fully Ready, A may retire without crossing the floor.
+			simulateAllReady(fakeClient)
+			require.False(t, reconcile())
+			assertRevisionReplicas(t, fakeClient, "A", [2]int32{})
 			simulateAllReady(fakeClient)
 			require.True(t, reconcile())
 		})
@@ -2777,10 +2780,11 @@ func TestSubRoleMigrationFromOrdinaryToOrdinal(t *testing.T) {
 			state := rolloutStateForRevision(inputs.allRoleNames, disaggregatedsetutils.RevisionRolesList{old}, old, target, inputs.targetReplicas, inputs.config, observed)
 			require.Equal(t, []string{"model/a", "model/b", "model"}, inputs.allRoleNames)
 			require.Equal(t, RoleReplicaState{0, 0, 2}, state.AvailabilityBaseline)
-			// The children do not inherit ordinary counts; disjoint replacement preserves model's floor.
+			// Each child protects its desired count without inheriting ordinary history;
+			// disjoint replacement separately preserves the removed model's floor.
 			snapshot := snapshotForRolloutState(state)
-			require.Zero(t, availabilityFloor(snapshot[0]))
-			require.Zero(t, availabilityFloor(snapshot[1]))
+			require.Equal(t, 1, availabilityFloor(snapshot[0]))
+			require.Equal(t, 1, availabilityFloor(snapshot[1]))
 			require.Equal(t, 1, availabilityFloor(snapshot[2]), "removed ordinary roles can release one group")
 			executor := newTestExecutor(f.manager.client)
 			executor.LWSManager = f.manager

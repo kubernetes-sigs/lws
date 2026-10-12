@@ -85,8 +85,8 @@ type RolloutState struct {
 	ActiveOld ActiveRevisionState
 	ParkedOld []ParkedRevisionState
 	Target    TargetRevisionState
-	// AvailabilityBaseline is shared by every old-revision candidate so
-	// selecting a smaller interrupted revision cannot weaken maxUnavailable.
+	// AvailabilityBaseline shares historical counts across old candidates for
+	// rollout progress and removed-role availability.
 	// Rebuild it from non-drained old revisions on each observation: removed
 	// roles include only disjoint revisions; shared roles include all.
 	AvailabilityBaseline RoleReplicaState
@@ -105,7 +105,7 @@ type RolloutState struct {
 // matching the old revisions that supply their availability baseline.
 type roleRolloutSnapshot struct {
 	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
-	AvailabilityBaselineReplicas    int                 // Availability baseline for this drain, shared by old-revision candidates.
+	AvailabilityBaselineReplicas    int                 // Historical old baseline used for rollout progress.
 	UnreplacedReplicas              int                 // Old baseline not yet replaced by a complete, disjoint-role target.
 	DrainingSpecReplicas            int                 // Current Spec of the revision being reduced.
 	DrainingCommittedReadyReplicas  int                 // Its Ready replicas not reserved by a pending deletion.
@@ -218,11 +218,6 @@ func targetDrainSnapshot(state RolloutState, observed rolloutSnapshot) rolloutSn
 		role.DrainingReadinessExcluded = false
 		role.ReplacementUsableReadyReplicas = oldCapacity.usable + observed[i].ParkedUsableReadyReplicas
 		role.ReplacementPerRoleReadyReplicas += oldCapacity.perRole - targetReady[i].perRole
-		if target.DesiredReplicas[i] > 0 {
-			// Target reductions must protect the desired capacity, even when
-			// this role has no old baseline or has grown since rollout began.
-			role.AvailabilityBaselineReplicas = target.DesiredReplicas[i]
-		}
 		if target.SpecReplicas[i] == 0 {
 			role.UnreplacedReplicas = 0
 		}
@@ -771,15 +766,19 @@ func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateSt
 // snapshotWithBootstrapSurge grants enough temporary surge for the first
 // replica of each missing required target role. This includes interrupted
 // rollouts where parked old revisions already consume a positive MaxSurge.
-// With moving targets, a Ready role at its new ceiling can also need one slot
-// to unblock fractional coordination. The slot cannot be stacked: a role
-// already above its ceiling or still waiting for Ready replicas is ineligible.
+// A Ready role at its ceiling can also need one slot to unblock fractional
+// coordination: during opt-in scaling, or when demand exceeds old capacity.
+// The slot cannot be stacked: a role already above its ceiling or still waiting
+// for Ready replicas is ineligible.
 // ComputeNextStep considers this only when no ordinary mutation exists.
 func snapshotWithBootstrapSurge(
 	snapshot rolloutSnapshot,
 	phaseTargets RoleReplicaState,
 ) (rolloutSnapshot, bool) {
 	disjointReplacement := disjointGrowthLimits(snapshot) != nil
+	scaleUp := slices.ContainsFunc(snapshot, func(role roleRolloutSnapshot) bool {
+		return role.NewTargetReplicas > role.AvailabilityBaselineReplicas
+	})
 	normalLimits := hardNewReplicaLimits(snapshot)
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false
@@ -790,7 +789,7 @@ func snapshotWithBootstrapSurge(
 			continue
 		}
 		atSurgeCeiling := role.OldSpecReplicas+role.NewSpecReplicas == role.SurgeBaselineReplicas+role.Config.MaxSurge
-		coordinationBlocked := role.ScaleDownDuringRollout && atSurgeCeiling && role.NewCommittedReadyReplicas >= role.NewSpecReplicas
+		coordinationBlocked := (role.ScaleDownDuringRollout || scaleUp) && atSurgeCeiling && role.NewCommittedReadyReplicas >= role.NewSpecReplicas
 		if role.Config.MaxSurge+role.Config.MaxUnavailable > 0 &&
 			phaseTargets[i] > role.NewSpecReplicas && normalLimits[i] == role.NewSpecReplicas &&
 			(role.NewSpecReplicas == 0 || coordinationBlocked) {
@@ -819,12 +818,10 @@ func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 }
 
 // availabilityFloor is the minimum committed Ready capacity required for one
-// role in the observed rollout state.
+// role. Existing roles use current demand; removed roles keep the historical
+// capacity not yet replaced. Both old and target reductions use this floor.
 func availabilityFloor(role roleRolloutSnapshot) int {
-	return max(
-		0,
-		max(min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas), role.UnreplacedReplicas)-role.Config.MaxUnavailable,
-	)
+	return max(0, max(role.NewTargetReplicas, role.UnreplacedReplicas)-role.Config.MaxUnavailable)
 }
 
 // availabilityPreserved checks the worst case after the requested Spec drain:

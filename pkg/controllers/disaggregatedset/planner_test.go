@@ -248,9 +248,43 @@ func TestRemovedRoleBaselineDistinguishesRemovalFromReplacement(t *testing.T) {
 				[]int{0, 1}, []int{0, 0}, []int{0, 4}, configs([]int{1, 1}, []int{0, 0}))
 			assert.Equal(t, tc.floor, state.AvailabilityBaseline)
 			for i, role := range snapshotForRolloutState(state) {
-				assert.Equal(t, tc.floor[i], availabilityFloor(role), "role %d", i)
+				assert.Equal(t, max(tc.floor[i], state.Target.DesiredReplicas[i]), availabilityFloor(role), "role %d", i)
 			}
 		})
+	}
+}
+
+func TestScaleUpCoordinationBootstrapPreservesDesiredFloor(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		state := rolloutState([]int{2, 3}, []int{2, 2}, []int{2, 2}, nil, nil,
+			[]int{2, 1}, []int{2, 1}, []int{4, 3}, configs([]int{2, 0}, []int{0, 1}))
+		state.ScaleDownDuringRollout = immediate
+		step := ComputeNextStep(state)
+		require.Equal(t, &UpdateStep{Past: []int{2, 2}, New: []int{4, 2}, UsesBootstrapSurge: true}, step)
+		require.NoError(t, validateUpdateStep(state, step))
+		assertScalingSafety(t, state, step)
+		state.Target.SpecReplicas = step.New
+		if pending := ComputeNextStep(state); pending != nil {
+			require.False(t, pending.UsesBootstrapSurge, "do not stack another slot while the first one is unready")
+			require.Equal(t, step.New, pending.New)
+			require.NoError(t, validateUpdateStep(state, pending))
+			assertScalingSafety(t, state, pending)
+		}
+		// Once observed Ready, that extra group unblocks ordinary coordinated
+		// progress. Neither policy needs to relax the desired availability floor.
+		for range 20 {
+			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = state.Target.SpecReplicas, state.Target.SpecReplicas
+			step = ComputeNextStep(state)
+			if step == nil {
+				break
+			}
+			require.NoError(t, validateUpdateStep(state, step))
+			assertScalingSafety(t, state, step)
+			state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+			state.Target.SpecReplicas = step.New
+		}
+		require.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas)
+		require.Equal(t, state.Target.DesiredReplicas, state.Target.SpecReplicas)
 	}
 }
 
@@ -292,6 +326,8 @@ func TestRemovedRoleReadinessUsesItsHistoricalRevisions(t *testing.T) {
 		require.Equal(t, 1, snapshot[2].DrainingUsableReadyReplicas, "physical W readiness still controls revision completeness")
 		if active == 0 {
 			state.ParkedOld[0].ReadyReplicas[2] = 0 // Disjoint W is already committed to deletion.
+			require.Nil(t, ComputeNextStep(state), "target A2 cannot replace old A1 below the desired A4 floor")
+			state.Target.RawReadyReplicas[0], state.Target.ReadyReplicas[0] = 4, 4
 			step := ComputeNextStep(state)
 			require.NotNil(t, step)
 			require.Equal(t, []int{0, 0, 0}, step.Past, "unrelated pending W loss must not prevent retiring A/W")
@@ -420,6 +456,8 @@ func TestDisjointRoleReplacementDoesNotSpendParkedCreditAcrossCandidates(t *test
 	next := rolloutState([]int{0, 1}, []int{0, 1}, []int{0, 1}, first.Past, first.Past,
 		first.New, state.Target.ReadyReplicas, state.Target.DesiredReplicas, state.Config)
 	next.AvailabilityBaseline = state.AvailabilityBaseline // X4/Y1 remains the shared baseline.
+	require.Nil(t, ComputeNextStep(next), "Y1 remains needed while target Y is below its desired floor")
+	next.Target.SpecReplicas, next.Target.RawReadyReplicas, next.Target.ReadyReplicas = []int{0, 4}, []int{0, 4}, []int{0, 4}
 	second := ComputeNextStep(next)
 	require.NotNil(t, second)
 	assert.Equal(t, RoleReplicaState{0, 0}, second.Past)
@@ -435,8 +473,8 @@ func TestDisjointRoleReplacementKeepsFloorWhenOverlappingCandidateSelected(t *te
 	require.NotNil(t, first)
 	assert.Equal(t, RoleReplicaState{3, 0}, first.Past, "only standalone X contributes to its disjoint baseline")
 	require.NoError(t, validateUpdateStep(state, first))
-	// The overlapping X2/Y1 may retire through shared Y readiness without
-	// spending the standalone X3 that still preserves the disjoint floor.
+	// The overlapping X2/Y1 may shed excess X, but must keep Y1 while target
+	// Y is below its desired floor. Standalone X3 still has its separate floor.
 	next := rolloutState([]int{2, 1}, []int{2, 1}, []int{2, 1}, first.Past, first.Past,
 		first.New, state.Target.ReadyReplicas, state.Target.DesiredReplicas, state.Config)
 	next.AvailabilityBaseline = state.AvailabilityBaseline
@@ -445,8 +483,9 @@ func TestDisjointRoleReplacementKeepsFloorWhenOverlappingCandidateSelected(t *te
 		past = second.Past
 		require.NoError(t, validateUpdateStep(next, second))
 	}
-	assert.Equal(t, RoleReplicaState{0, 0}, past, "overlapping retirement does not remove disjoint X capacity")
+	assert.Equal(t, RoleReplicaState{1, 1}, past, "shared Y1 and its same-revision X must remain together")
 	assert.GreaterOrEqual(t, first.Past[0]+next.Target.ReadyReplicas[1], 4)
+	assert.Equal(t, 2, past[1]+next.Target.ReadyReplicas[1], "do not worsen Y's existing readiness shortfall")
 }
 
 func TestDisjointRoleReplacementBoundsIntroducedRoleWhenOverlappingCandidateSelected(t *testing.T) {
@@ -466,6 +505,7 @@ func TestDisjointRoleReplacementDoesNotSpendPendingDeletionCredit(t *testing.T) 
 			switch revision {
 			case "target":
 				state.Target.RawReadyReplicas = RoleReplicaState{0, 2, 2}
+				wantOld = 4 // Wait for the target's pending loss to settle below its desired floor.
 			case "active":
 				state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas = []int{3, 0, 0}, []int{3, 0, 0}
 				state.ActiveOld.ReadyReplicas = RoleReplicaState{2, 0, 0}
@@ -948,9 +988,15 @@ func assertPlannerRolloutInvariants(
 			if bootstrapActive[role] {
 				ceiling++
 			}
-			floor := max(0, min(initial[role], target[role])-config[role].MaxUnavailable)
+			beforeReady, targetReady := initial[role], 0
+			if stepIndex > 0 {
+				previous := steps[stepIndex-1]
+				beforeReady = previous.Past[role] + previous.New[role]
+				targetReady = min(previous.New[role], current.New[role])
+			}
+			floor := min(beforeReady, max(0, target[role]-config[role].MaxUnavailable))
 			assert.LessOrEqual(t, total, ceiling, "step %d role %d exceeds surge", stepIndex, role)
-			assert.GreaterOrEqual(t, total, floor, "step %d role %d crosses availability", stepIndex, role)
+			assert.GreaterOrEqual(t, current.Past[role]+targetReady, floor, "step %d role %d crosses availability", stepIndex, role)
 			if stepIndex > 0 {
 				previous := steps[stepIndex-1]
 				assert.LessOrEqual(t, current.Past[role], previous.Past[role])
