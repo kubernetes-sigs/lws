@@ -56,32 +56,32 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 ## Scaling during a rollout
 
-To apply new replica targets while old and target revisions overlap, opt in:
+This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets. Changing replicas or the scaling policy does not create a new revision.
+
+| `scalingPolicy.scaleDownDuringRollout` | Scale-up during a rollout | Scale-down during a rollout |
+| --- | --- | --- |
+| `Deferred` (default) | Adds target-revision replicas toward the requested count, within rollout budgets. | Defers shrinking already-created target replicas until old revisions drain. Old replicas can still be retired during the rollout. |
+| `Immediate` | Adds target-revision replicas toward the requested count, within rollout budgets. | Tries to remove excess old replicas first. If they must remain to serve traffic, it can shrink excess target replicas instead. |
+
+To allow scale-down before old revisions finish draining:
 
 ```yaml
 spec:
   scalingPolicy:
-    duringRollout: AdvanceRollout
+    scaleDownDuringRollout: Immediate
 ```
 
-This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets.
-Replica and policy edits do not create a new revision. Omitting the policy, or choosing
-`RolloutCoupled`, preserves existing behavior and defers target-revision reductions.
+Omitting the policy preserves `Deferred` behavior. `Immediate` means the controller considers reductions now, not that Pods disappear instantly: availability and startup safeguards can delay them. Raising the requested count does not raise the availability requirement used for retiring the old revision.
 
-`AdvanceRollout` uses the latest desired count for the surge ceiling (`desired + maxSurge`)
-and availability floor (`max(0, desired - maxUnavailable)`). Pending-work limits still apply:
-new requests do not add Ready capacity. If availability is already below the floor,
-the planner does not deliberately reduce it further.
+When an `Immediate` target revision has more replicas than its latest desired count, both Ordinal and Hash follow the same rule for each role:
 
-The controller reduces old revisions first whenever safe; otherwise it may reduce excess target groups.
-Groups already committed to deletion cannot authorize another reduction. Completion requires
-target Spec and Ready to equal desired, including zero.
+- If any target Pod is assigned to a node, even if it is still loading, keep at least the final desired count. The same protection applies when scheduling information is incomplete.
+- If every target group is confirmed unscheduled, the count may go below desired toward `desired + maxSurge - old replicas`. Availability checks and the first group of each required role still limit that reduction. This does not shrink a target already at or below desired.
 
-For both Ordinal and Hash, if any target Pod is assigned to a node, ordinary target-size corrections stop at the final desired count, even if Pods are not Ready. Only a role whose groups are all confirmed unscheduled can be reduced further. Unknown placement uses the conservative bound.
+For example, per role: old Spec/Ready 4, target Spec 5 with none Ready, desired 4, `maxSurge: 1`, and `maxUnavailable: 0`. A scheduled target can reduce to 4; an entirely unscheduled target can reduce to 1. The first case keeps 8 total groups above the latest ceiling of 5 until new readiness permits old groups to drain, potentially for a long time if startup stalls.
 
-For example, per role: old Spec/Ready 4, target Spec 5 with none Ready, desired 4, `maxSurge: 1`, and `maxUnavailable: 0`. A scheduled target reduces to 4; an entirely unscheduled target can reduce to 1. The first case keeps 8 total groups above the new ceiling of 5 until new readiness permits old groups to drain, potentially for a long time if startup stalls.
+This protects the replica count, not particular Pods. It can keep some unscheduled groups alongside scheduled ones; removing excess above desired can still delete scheduled work, and placement may change before deletion.
 
-Mixed or incomplete observations can retain unscheduled groups too. This protects the final count, not individual Pods: removing genuine excess above desired can still delete scheduled work, and placement may change after observation.
+Renamed-role rollouts can start a bounded next batch using Ready replacements without waiting for another old group to leave; if a target role later loses all Ready groups, recovery under either policy may reclaim extra groups, even Ready ones, while preserving the last Ready group per role and protected old capacity. `Immediate` finishes when old replicas are gone and target Spec and Ready equal the latest desired count, including zero.
 
-See [KEP-1022](https://github.com/kubernetes-sigs/lws/tree/main/keps/1022-DisaggregatedSet-Scaling-During-Rollout)
-for renamed-role availability, coordinated retirement, and bounded recovery rules.
+See [KEP-1022](https://github.com/kubernetes-sigs/lws/tree/main/keps/1022-DisaggregatedSet-Scaling-During-Rollout) for the exact budgets, renamed-role availability, and recovery rules.

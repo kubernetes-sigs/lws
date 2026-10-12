@@ -41,7 +41,7 @@ var _ = Describe("Scaling During a Rolling Update", func() {
 				role.Labels = map[string]string{"scaling-test-version": "target"}
 			}
 			config := fixtures.PrefillDecode(name, role, role)
-			config.ScalingDuringRolloutPolicy = "AdvanceRollout"
+			config.RolloutScaleDownPolicy = "Immediate"
 			return config.YAML()
 		}
 		By("stabilizing the source revision")

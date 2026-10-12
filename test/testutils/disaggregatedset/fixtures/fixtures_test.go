@@ -61,12 +61,12 @@ func TestYAMLWithoutRollout(t *testing.T) {
 
 func TestYAMLWithScalingPolicyAndHeldHashReadiness(t *testing.T) {
 	config := PrefillDecode("moving-target", Role{Replicas: 8, HoldReadiness: true, GroupIdentity: "Hash"}, Role{Replicas: 8})
-	config.ScalingDuringRolloutPolicy = "AdvanceRollout"
+	config.RolloutScaleDownPolicy = "Immediate"
 	yaml := config.YAML()
-	require.Contains(t, yaml, "  scalingPolicy:\n    duringRollout: AdvanceRollout")
+	require.Contains(t, yaml, "  scalingPolicy:\n    scaleDownDuringRollout: Immediate")
 	require.Contains(t, yaml, "      groupIdentity: Hash")
 	require.Contains(t, yaml, `command: ["test", "-f", "/tmp/ready"]`)
-	config.ScalingDuringRolloutPolicy = ""
+	config.RolloutScaleDownPolicy = ""
 	require.NotContains(t, config.YAML(), "scalingPolicy:")
 }
 

@@ -17998,18 +17998,19 @@ spec:
                   x-kubernetes-list-type: map
                 scalingPolicy:
                   description: |-
-                    ScalingPolicy controls how replica target changes interact with an active
-                    rolling update. Omit it to preserve the default RolloutCoupled behavior.
+                    ScalingPolicy controls scale-down during rolling updates. Omit it to
+                    preserve the default Deferred behavior.
                   properties:
-                    duringRollout:
-                      default: RolloutCoupled
+                    scaleDownDuringRollout:
+                      default: Deferred
                       description: |-
-                        DuringRollout controls whether the current rolling update may apply a new
-                        replica target. RolloutCoupled preserves the default behavior;
-                        AdvanceRollout opts into scaling during the rollout.
+                        ScaleDownDuringRollout controls demand-driven target replica reductions.
+                        Deferred waits until old revisions finish draining. Immediate considers
+                        reductions during the rollout, preferring safe old-revision drains.
+                        Both policies allow scale-up and old-revision drains within rollout bounds.
                       enum:
-                        - RolloutCoupled
-                        - AdvanceRollout
+                        - Deferred
+                        - Immediate
                       type: string
                   type: object
                 slices:

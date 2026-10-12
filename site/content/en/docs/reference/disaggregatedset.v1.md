@@ -244,13 +244,14 @@ with DisaggregatedSet reconciliation.</p>
 <tbody>
     
   
-<tr><td><code>duringRollout</code><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-ScalingDuringRolloutPolicy"><code>ScalingDuringRolloutPolicy</code></a>
+<tr><td><code>scaleDownDuringRollout</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy"><code>RolloutScaleDownPolicy</code></a>
 </td>
 <td>
-   <p>DuringRollout controls whether the current rolling update may apply a new
-replica target. RolloutCoupled preserves the default behavior;
-AdvanceRollout opts into scaling during the rollout.</p>
+   <p>ScaleDownDuringRollout controls demand-driven target replica reductions.
+Deferred waits until old revisions finish draining. Immediate considers
+reductions during the rollout, preferring safe old-revision drains.
+Both policies allow scale-up and old-revision drains within rollout bounds.</p>
 </td>
 </tr>
 </tbody>
@@ -297,8 +298,8 @@ Changing Slices scales copies up or down and does not trigger a rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
 </td>
 <td>
-   <p>ScalingPolicy controls how replica target changes interact with an active
-rolling update. Omit it to preserve the default RolloutCoupled behavior.</p>
+   <p>ScalingPolicy controls scale-down during rolling updates. Omit it to
+preserve the default Deferred behavior.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>
@@ -502,7 +503,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </tbody>
 </table>
 
-## `ScalingDuringRolloutPolicy`     {#disaggregatedset-x-k8s-io-v1-ScalingDuringRolloutPolicy}
+## `RolloutScaleDownPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy}
     
 (Alias of `string`)
 
@@ -511,8 +512,9 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 - [DisaggregatedSetScalingPolicy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy)
 
 
-<p>ScalingDuringRolloutPolicy controls how replica target changes interact with
-an active revision transition.</p>
+<p>RolloutScaleDownPolicy controls when demand-driven target replica reductions are
+considered during an active rolling update. Both policies allow scale-up and
+old-revision retirement within the rollout's availability and surge bounds.</p>
 
 
 

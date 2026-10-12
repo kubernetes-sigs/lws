@@ -48,10 +48,10 @@ type Role struct {
 
 // Config holds configuration for generating DisaggregatedSet YAML.
 type Config struct {
-	Name                       string
-	Namespace                  string
-	Roles                      []Role
-	ScalingDuringRolloutPolicy string
+	Name                   string
+	Namespace              string
+	Roles                  []Role
+	RolloutScaleDownPolicy string
 	// PlacementType, when non-empty, adds a spec.placementPolicy block
 	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
 	// topologyKey and is required for a non-None type.
@@ -83,8 +83,8 @@ spec:
 		}
 	}
 
-	if c.ScalingDuringRolloutPolicy != "" {
-		sb.WriteString(fmt.Sprintf("  scalingPolicy:\n    duringRollout: %s\n", c.ScalingDuringRolloutPolicy))
+	if c.RolloutScaleDownPolicy != "" {
+		sb.WriteString(fmt.Sprintf("  scalingPolicy:\n    scaleDownDuringRollout: %s\n", c.RolloutScaleDownPolicy))
 	}
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {

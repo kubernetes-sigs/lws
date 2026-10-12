@@ -57,12 +57,12 @@ type RollingUpdateExecutor struct {
 }
 
 type rolloutInputs struct {
-	targetRoleNames    []string
-	allRoleNames       []string
-	targetReplicas     RoleReplicaState
-	config             []RollingUpdateConfig
-	readiness          rolloutReadiness
-	scaleDuringRollout bool
+	targetRoleNames        []string
+	allRoleNames           []string
+	targetReplicas         RoleReplicaState
+	config                 []RollingUpdateConfig
+	readiness              rolloutReadiness
+	scaleDownDuringRollout bool
 }
 
 type scaleDirection string
@@ -187,7 +187,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 
-	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas, inputs.readiness, inputs.scaleDuringRollout)
+	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas, inputs.readiness, inputs.scaleDownDuringRollout)
 	if specComplete {
 		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
@@ -199,11 +199,11 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	}
 	candidates := orderedRevisionCandidates(oldRevisions, inputs.readiness)
 	if len(candidates) == 0 {
-		if inputs.scaleDuringRollout {
+		if inputs.scaleDownDuringRollout {
 			// Drained objects may still exist. The target must converge exactly,
 			// using the same retained-readiness bounds as any other reduction.
 			state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, disaggregatedsetutils.RevisionRoles{}, targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
-			state.ScaleDuringRollout = true
+			state.ScaleDownDuringRollout = true
 			if step := ComputeNextStep(state); step != nil {
 				if err := executor.applyRolloutStep(ctx, disaggregatedSet, targetRevision, inputs, disaggregatedsetutils.RevisionRoles{}, state, step); err != nil {
 					return ctrl.Result{}, false, err
@@ -246,17 +246,17 @@ func buildRolloutInputs(
 	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
 	allRoleNames := append(slices.Clone(targetRoleNames), removedRoleNames...)
 	return rolloutInputs{
-		targetRoleNames:    targetRoleNames,
-		allRoleNames:       allRoleNames,
-		targetReplicas:     rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole),
-		config:             extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole),
-		scaleDuringRollout: scalingDuringRolloutEnabled(disaggregatedSet),
+		targetRoleNames:        targetRoleNames,
+		allRoleNames:           allRoleNames,
+		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole),
+		config:                 extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole),
+		scaleDownDuringRollout: scaleDownDuringRolloutEnabled(disaggregatedSet),
 	}
 }
 
-func scalingDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
+func scaleDownDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
 	return ds.Spec.ScalingPolicy != nil &&
-		ds.Spec.ScalingPolicy.DuringRollout == disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout
+		ds.Spec.ScalingPolicy.ScaleDownDuringRollout == disaggregatedsetv1.RolloutScaleDownImmediate
 }
 
 // selectNextRolloutStep asks the planner about old revisions in preference
@@ -278,7 +278,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	candidateStates := make([]RolloutState, len(candidates))
 	for i, candidate := range candidates {
 		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
-		state.ScaleDuringRollout = inputs.scaleDuringRollout
+		state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
 		candidateStates[i] = state
 		step := ComputeNextStep(state)
 		if step == nil {
@@ -294,7 +294,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 		}
 		// Keep looking for an ordinary old drain before reducing the target.
 		// A safe target reduction still beats an emergency bootstrap step.
-		if inputs.scaleDuringRollout && targetRevisionScalesDown(state, step) {
+		if inputs.scaleDownDuringRollout && targetRevisionScalesDown(state, step) {
 			if selectedStep == nil || selectedStep.UsesBootstrapSurge {
 				selectedRevision, selectedState, selectedStep = candidate, state, step
 			}
@@ -361,7 +361,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	if err := executor.scaleRevision(ctx, disaggregatedSet, selectedRevision, inputs.allRoleNames, selectedStep.Past, scaleDown); err != nil {
 		return err
 	}
-	if inputs.scaleDuringRollout {
+	if inputs.scaleDownDuringRollout {
 		if err := executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.targetRoleNames, selectedStep.New, scaleDown); err != nil {
 			return err
 		}
@@ -594,7 +594,7 @@ func rolloutTargetReplicas(
 		// Keep an External target from shrinking only while old capacity for
 		// this role still overlaps it. Drained old objects or another role's
 		// old replicas must not keep this target artificially high.
-		if !scalingDuringRolloutEnabled(ds) && isExternal(ds, roleName) && oldRevisions.GetTotalReplicasPerRole(roleName) > 0 && lws != nil {
+		if !scaleDownDuringRolloutEnabled(ds) && isExternal(ds, roleName) && oldRevisions.GetTotalReplicasPerRole(roleName) > 0 && lws != nil {
 			targets[i] = max(targets[i], int(getLWSReplicas(lws)))
 		}
 	}
@@ -769,7 +769,7 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 		return err
 	}
 	if targetRevisionScalesDown(state, step) {
-		if !state.ScaleDuringRollout || !slices.Equal(step.Past, state.ActiveOld.SpecReplicas) {
+		if !state.ScaleDownDuringRollout || !slices.Equal(step.Past, state.ActiveOld.SpecReplicas) {
 			return fmt.Errorf("target reduction requires opt-in and cannot accompany an old drain")
 		}
 		if !targetScaleDownPreservesAvailability(state, step.New) {
@@ -855,8 +855,8 @@ func validateReplicaTargets(
 	changed := false
 	usedBootstrapSurge := false
 	for i, role := range snapshot {
-		if step.Past[i] < 0 || step.Past[i] > role.ActiveOldSpecReplicas {
-			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, role.ActiveOldSpecReplicas)
+		if step.Past[i] < 0 || step.Past[i] > role.DrainingSpecReplicas {
+			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, role.DrainingSpecReplicas)
 		}
 		maxNew := min(newLimits[i], phaseTargets[i])
 		minNew := min(role.NewSpecReplicas, ordinaryNew[i])
@@ -864,7 +864,7 @@ func validateReplicaTargets(
 			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, minNew, maxNew)
 		}
 		usedBootstrapSurge = usedBootstrapSurge || step.New[i] > min(normalLimits[i], phaseTargets[i])
-		changed = changed || step.Past[i] < role.ActiveOldSpecReplicas || step.New[i] != role.NewSpecReplicas
+		changed = changed || step.Past[i] < role.DrainingSpecReplicas || step.New[i] != role.NewSpecReplicas
 	}
 	if step.UsesBootstrapSurge != usedBootstrapSurge {
 		return fmt.Errorf("bootstrap surge marker does not match the new replica targets")

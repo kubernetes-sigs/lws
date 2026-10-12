@@ -18,9 +18,11 @@ package disaggregatedset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -55,7 +58,7 @@ func TestMovingTargetKeepsDisjointStartupBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			state := rolloutState([]int{4, 4, 0, 0}, tc.old, tc.old, nil, nil, tc.issued, tc.ready,
 				[]int{0, 0, 4, 4}, configs([]int{0, 0, 0, 0}, []int{1, 1, 1, 1}))
-			state.ScaleDuringRollout = true
+			state.ScaleDownDuringRollout = true
 			state.Target.UnschedulableRoles = []bool{false, false, true, true}
 			step := ComputeNextStep(state)
 			if tc.wantNew == nil {
@@ -79,7 +82,7 @@ func TestMovingTargetKeepsRemovedRoleCoordination(t *testing.T) {
 	for _, advance := range []bool{false, true} {
 		state := rolloutState([]int{10, 10, 0, 0}, []int{10, 10, 0, 0}, []int{10, 10, 0, 0}, nil, nil,
 			[]int{0, 0, 0, 0}, []int{0, 0, 0, 0}, []int{0, 0, 10, 10}, configs([]int{1, 1, 0, 0}, []int{9, 1, 1, 1}))
-		state.ScaleDuringRollout = advance
+		state.ScaleDownDuringRollout = advance
 		step := ComputeNextStep(state)
 		require.NotNil(t, step)
 		assert.Equal(t, []int{8, 9, 0, 0}, step.Past, "advance=%v", advance)
@@ -89,63 +92,231 @@ func TestMovingTargetKeepsRemovedRoleCoordination(t *testing.T) {
 }
 
 func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
+	type layout struct {
+		name               string
+		initial, current   [][]int32
+		desired, target    []int32
+		surge, unavailable []int
+	}
+	cases := []layout{{
+		name:    "reported-A-B-C",
+		initial: [][]int32{{6, 6, 0, 0}, {4, 0, 2, 2}}, current: [][]int32{{1, 1, 0, 0}, {4, 0, 2, 2}},
+		desired: []int32{0, 0, 6, 6}, surge: []int{1, 1, 1, 1}, unavailable: []int{1, 1, 0, 0},
+	}, {
+		name: "interrupted-4306-mixed-removed-roles",
+		initial: [][]int32{
+			{5, 0, 0, 0, 0, 7, 4, 13, 0}, {20, 0, 0, 0, 0, 7, 0, 0, 0}, {0, 0, 0, 0, 0, 20, 0, 0, 20},
+		},
+		current: [][]int32{
+			{1, 0, 0, 0, 0, 1, 1, 1, 0}, {1, 0, 0, 0, 0, 4, 0, 0, 0}, {0, 0, 0, 0, 0, 1, 0, 0, 5},
+		},
+		desired: []int32{3, 6, 17, 3, 11, 0, 0, 0, 0}, target: []int32{2, 6, 13, 3, 11, 0, 0, 0, 0},
+		surge: []int{0, 2, 1, 1, 3, 1, 1, 1, 1}, unavailable: []int{1, 2, 1, 0, 2, 1, 1, 1, 1},
+	}}
+	rng := rand.New(rand.NewSource(5492154225))
+	for roles := 4; roles <= 6; roles++ {
+		for old := 2; old <= 4; old++ {
+			for trial := range 4 {
+				tc := layout{name: fmt.Sprintf("roles=%d/old=%d/trial=%d", roles, old, trial),
+					desired: make([]int32, roles), surge: make([]int, roles), unavailable: make([]int, roles)}
+				for role := range roles {
+					tc.surge[role] = 1 // Removed roles use the executor's default surge.
+					tc.unavailable[role] = 1 + rng.Intn(2)
+					if role >= roles/2 {
+						tc.desired[role] = int32(2 + rng.Intn(7))
+						tc.surge[role], tc.unavailable[role] = rng.Intn(3), rng.Intn(3)
+						if tc.surge[role]+tc.unavailable[role] == 0 {
+							tc.surge[role] = 1
+						}
+					}
+				}
+				for revision := range old {
+					initial, current := make([]int32, roles), make([]int32, roles)
+					for role := range roles {
+						// At least one disjoint and one overlapping history. Extra
+						// revisions vary their shared roles, not just replica counts.
+						present := revision%2 == 0 && role < roles/2 || revision%2 == 1 && (role == 0 || role >= roles/2)
+						if revision > 1 && role > 0 && role != roles-1 && rng.Intn(2) == 0 {
+							present = false
+						}
+						if present {
+							initial[role] = int32(2 + rng.Intn(7))
+							current[role] = int32(1 + rng.Intn(int(initial[role])))
+						}
+					}
+					tc.initial, tc.current = append(tc.initial, initial), append(tc.current, current)
+				}
+				cases = append(cases, tc)
+			}
+		}
+	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
-		for _, policy := range []disaggregatedsetv1.ScalingDuringRolloutPolicy{disaggregatedsetv1.ScalingDuringRolloutPolicyRolloutCoupled, disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout} {
-			t.Run(fmt.Sprintf("%s/%s", identity, policy), func(t *testing.T) {
-				ds := newTestDisaggregatedSet(
-					makeRoleSpec("b", 6, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)),
-					makeRoleSpec("d", 6, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
-				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{DuringRollout: policy}
-				// A is fully renamed; B still shares b/d with the target. B.a must
-				// not consume the drain allowance released by A's a/c groups.
-				workloads := []*leaderworkersetv1.LeaderWorkerSet{
-					revisionLWS("old-a", "a", 1, 1, time.Unix(0, 0), 6),
-					revisionLWS("old-a", "c", 1, 1, time.Unix(0, 0), 6),
-					revisionLWS("old-b", "a", 4, 4, time.Unix(1, 0), 4),
-					revisionLWS("old-b", "b", 2, 2, time.Unix(1, 0), 2),
-					revisionLWS("old-b", "d", 2, 2, time.Unix(1, 0), 2),
-					revisionLWS("target", "b", 0, 0, time.Unix(2, 0), 6),
-					revisionLWS("target", "d", 0, 0, time.Unix(2, 0), 6),
-				}
-				for tick := range 16 {
-					var objects []client.Object
-					var before, after []int32
-					for _, lws := range workloads {
-						count := getLWSReplicas(lws)
-						before = append(before, count)
-						lws.Spec.GroupIdentity, lws.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
-						lws.Status.ObservedGeneration = lws.Generation
-						objects = append(objects, replicaGroupObjects(lws, count, count)...)
+		for _, policy := range []disaggregatedsetv1.RolloutScaleDownPolicy{disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+			for _, tc := range cases {
+				t.Run(fmt.Sprintf("%s/%s/%s", identity, policy, tc.name), func(t *testing.T) {
+					t.Logf("initial=%v current=%v desired=%v surge=%v unavailable=%v", tc.initial, tc.current, tc.desired, tc.surge, tc.unavailable)
+					ds := newTestDisaggregatedSet()
+					ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: policy}
+					desired, budgets := map[string]int{}, map[string]int{}
+					for role, count := range tc.desired {
+						name := fmt.Sprintf("role-%d", role)
+						budgets[name] = tc.unavailable[role]
+						if count > 0 {
+							desired[name] = int(count)
+							ds.Spec.Roles = append(ds.Spec.Roles, makeRoleSpec(name, count, corev1.PodSpec{}, intstr.FromInt(tc.surge[role]), intstr.FromInt(tc.unavailable[role])))
+						}
 					}
-					c := newTestClient(objects...)
-					executor := newTestExecutor(c)
-					executor.LWSManager = NewLeaderWorkerSetManager(c) // Real shared observer, not status stubs.
-					_, complete, err := reconcileTestTransition(t.Context(), executor, ds, "target", map[string]int{"b": 6, "d": 6})
+					encoded, err := json.Marshal(budgets)
 					require.NoError(t, err)
-					for _, lws := range workloads {
-						require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
-						after = append(after, getLWSReplicas(lws))
-					}
-					t.Logf("tick=%d [A.a A.c B.a B.b B.d C.b C.d]: %v -> %v", tick, before, after)
-					for role := range 2 {
-						require.LessOrEqual(t, after[3+role]+after[5+role], int32(7), "b/d keep their 6+1 surge limit")
-						// Only previously Ready groups can fund a deletion this tick.
-						retained := min(before[5+role], after[5+role])
-						if after[2] > 0 && after[3] > 0 && after[4] > 0 {
-							retained += min(before[3+role], after[3+role])
+					ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: string(encoded)}
+					var workloads []*leaderworkersetv1.LeaderWorkerSet
+					var workloadRole, workloadRevision []int
+					for revision, initial := range append(slices.Clone(tc.initial), tc.desired) {
+						name := fmt.Sprintf("old-%d", revision)
+						if revision == len(tc.initial) {
+							name = "target"
 						}
-						if policy == disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout {
-							require.GreaterOrEqual(t, retained, min(int32(6), before[3+role]+before[5+role]), "do not worsen the latest availability floor")
+						for role, count := range initial {
+							if count == 0 {
+								continue
+							}
+							var current int32
+							if revision < len(tc.initial) {
+								current = tc.current[revision][role]
+							} else if tc.target != nil {
+								current = tc.target[role]
+							}
+							workloads = append(workloads, revisionLWS(name, fmt.Sprintf("role-%d", role), current, current, time.Unix(int64(revision), 0), count))
+							workloadRole, workloadRevision = append(workloadRole, role), append(workloadRevision, revision)
 						}
 					}
-					if complete {
-						require.Equal(t, []int32{0, 0, 0, 0, 0, 6, 6}, after)
-						return
+					for tick := range 256 {
+						var objects []client.Object
+						var before, after []int32
+						for _, lws := range workloads {
+							count := getLWSReplicas(lws)
+							before = append(before, count)
+							lws.Spec.GroupIdentity, lws.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
+							lws.Status.ObservedGeneration = lws.Generation
+							objects = append(objects, replicaGroupObjects(lws, count, count)...)
+						}
+						c := newTestClient(objects...)
+						executor := newTestExecutor(c)
+						executor.LWSManager = NewLeaderWorkerSetManager(c) // Real shared observer, not status stubs.
+						_, complete, err := reconcileTestTransition(t.Context(), executor, ds, "target", desired)
+						require.NoError(t, err)
+						for _, lws := range workloads {
+							require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
+							after = append(after, getLWSReplicas(lws))
+						}
+						t.Logf("tick=%d: %v -> %v", tick, before, after)
+						bootstrap, targetDrain := false, false
+						recorded := executor.Record.(*events.FakeRecorder).Events
+						for len(recorded) > 0 {
+							bootstrap = strings.Contains(<-recorded, EventReasonBootstrapSurge) || bootstrap
+						}
+						for i, count := range after {
+							if workloadRevision[i] == len(tc.initial) {
+								targetDrain = targetDrain || count < before[i]
+							} else {
+								require.LessOrEqual(t, count, before[i], "never scale old revisions up")
+							}
+						}
+						// Replacement credit uses only the slowest target role's Ready
+						// fraction. Newly issued groups cannot fund the current step.
+						replacementFraction := func(retained bool) (numerator, denominator int64) {
+							numerator, denominator = 1, 1
+							for i, count := range before {
+								if workloadRevision[i] != len(tc.initial) {
+									continue
+								}
+								if retained {
+									count = min(count, after[i])
+								}
+								desired := int64(tc.desired[workloadRole[i]])
+								if int64(count)*denominator < numerator*desired {
+									numerator, denominator = int64(count), desired
+								}
+							}
+							return
+						}
+						beforeNumerator, beforeDenominator := replacementFraction(false)
+						afterNumerator, afterDenominator := replacementFraction(true)
+						// Independent safety: incomplete revisions provide no usable
+						// capacity. Removed roles count only their disjoint histories.
+						for role, desired := range tc.desired {
+							var baseline, beforeTotal, afterTotal, beforeReady, retained int32
+							for revision := range len(tc.initial) + 1 {
+								if desired == 0 && revision < len(tc.initial) {
+									overlaps := false
+									for other, initial := range tc.initial[revision] {
+										overlaps = overlaps || initial > 0 && tc.desired[other] > 0
+									}
+									if overlaps {
+										continue
+									}
+								}
+								beforeComplete, afterComplete, live := true, true, false
+								var roleBefore, roleRetained int32
+								for i, count := range before {
+									if workloadRevision[i] != revision {
+										continue
+									}
+									live = live || count > 0
+									beforeComplete = beforeComplete && count > 0
+									afterComplete = afterComplete && min(count, after[i]) > 0
+									if workloadRole[i] == role {
+										beforeTotal, afterTotal = beforeTotal+count, afterTotal+after[i]
+										roleBefore, roleRetained = count, min(count, after[i])
+									}
+								}
+								if revision < len(tc.initial) && live {
+									baseline = max(baseline, tc.initial[revision][role])
+								}
+								if beforeComplete {
+									beforeReady += roleBefore
+								}
+								if afterComplete {
+									retained += roleRetained
+								}
+							}
+							floor := min(baseline, desired)
+							if desired == 0 {
+								beforeReady += int32(int64(baseline) * beforeNumerator / beforeDenominator)
+								retained += int32(int64(baseline) * afterNumerator / afterDenominator)
+								floor = baseline
+							} else if targetDrain {
+								floor = desired
+							}
+							floor = max(0, floor-int32(tc.unavailable[role]))
+							require.GreaterOrEqual(t, retained, min(beforeReady, floor), "role %d preserves previously Ready capacity", role)
+							if desired == 0 {
+								continue
+							}
+							ceiling := desired + int32(tc.surge[role])
+							if policy == disaggregatedsetv1.RolloutScaleDownDeferred {
+								ceiling = max(baseline, desired) + int32(tc.surge[role])
+							}
+							if bootstrap {
+								ceiling = max(ceiling+1, beforeTotal+1)
+							}
+							require.LessOrEqual(t, afterTotal, max(beforeTotal, ceiling), "role %d must not increase physical excess", role)
+						}
+						if complete {
+							for i, count := range after {
+								want := int32(0)
+								if workloadRevision[i] == len(tc.initial) {
+									want = tc.desired[workloadRole[i]]
+								}
+								require.Equal(t, want, count, "workload %s", workloads[i].Name)
+							}
+							return
+						}
+						require.NotEqual(t, before, after, "all groups are Ready but neither retirement nor growth makes progress")
 					}
-					require.NotEqual(t, before, after, "all groups are Ready but neither retirement nor growth makes progress")
-				}
-				t.Fatal("rollout did not complete")
-			})
+					t.Fatal("rollout did not complete")
+				})
+			}
 		}
 	}
 }
@@ -166,12 +337,12 @@ func TestDisjointTargetCorrectionReadiness(t *testing.T) {
 		{"pending target deletion reserves credit", 5, 5, 100, 95, 0, 10, 0, 110},
 		{"pending old loss does not freeze unready target excess", 100, 90, 0, 0, 0, 10, 0, 100},
 		{"pending source deletion does not impose dummy full floor", 50, 40, 100, 100, 0, 50, 0, 100},
-		{"parked readiness is not target replacement credit", 5, 5, 95, 95, 0, 10, 5, 105},
+		{"overlapping parked readiness is not replacement credit", 5, 5, 95, 95, 0, 10, 5, 110},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := rolloutState([]int{100, 0}, []int{tc.oldReady, 0}, []int{tc.oldReady, 0}, nil, nil,
 				[]int{0, 110}, []int{0, tc.newReady}, []int{0, 100}, configs([]int{1, 1}, []int{tc.oldUnavailable, tc.targetUnavailable}))
-			state.ScaleDuringRollout = true
+			state.ScaleDownDuringRollout = true
 			state.ActiveOld.RawReadyReplicas = []int{tc.oldRaw, 0}
 			state.Target.RawReadyReplicas = []int{0, tc.newRaw}
 			if tc.parked > 0 {
@@ -194,10 +365,28 @@ func TestDisjointTargetCorrectionReadiness(t *testing.T) {
 func TestDisjointTargetCorrectionKeepsWholeRevisionFraction(t *testing.T) {
 	state := rolloutState([]int{3, 0, 0}, []int{1, 0, 0}, []int{1, 0, 0}, nil, nil,
 		[]int{0, 4, 4}, []int{0, 2, 3}, []int{0, 2, 3}, configs([]int{1, 1, 1}, []int{0, 1, 1}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	assert.Equal(t, []int{0, 4, 3}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
 	assert.True(t, targetScaleDownPreservesAvailability(state, []int{0, 4, 3}))
 	assert.False(t, targetScaleDownPreservesAvailability(state, []int{0, 3, 3}), "B must retain ceil(2*2/3)=2 Ready; B1 replaces only one A")
+}
+
+func TestDisjointTargetCorrectionIgnoresOverlappingOldReadyCredit(t *testing.T) {
+	for _, retainedOld := range []int{0, 1} {
+		state := rolloutState([]int{1, 0, 1}, []int{1, 0, 1}, []int{1, 0, 1}, []int{0, 0, 1}, []int{0, 0, retainedOld},
+			[]int{5, 5, 0}, []int{2, 2, 0}, []int{4, 4, 0}, configs([]int{0, 0, 0}, []int{4, 4, 1}))
+		state.ScaleDownDuringRollout = true
+		state.AvailabilityBaseline = []int{1, 0, 4}
+		state.ParkedOld[0].RawReadyReplicas = []int{0, 0, 1}
+		// The W baseline comes from the disjoint revision, not active A/W.
+		// Its one W plus target half-readiness supply the floor of three.
+		numerator, denominator := disjointTargetReadyFraction(state, snapshotForRolloutState(state))
+		require.Equal(t, float64(3-retainedOld)/4, float64(numerator)/float64(denominator))
+		require.Equal(t, []int{5, 5, 0}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
+		for _, next := range [][]int{{4, 5, 0}, {5, 4, 0}} {
+			require.False(t, targetScaleDownPreservesAvailability(state, next), "either deletion could consume required Ready credit")
+		}
+	}
 }
 
 func TestDisjointTargetCorrectionKeepsResidualSourceRole(t *testing.T) {
@@ -205,7 +394,7 @@ func TestDisjointTargetCorrectionKeepsResidualSourceRole(t *testing.T) {
 	// replicas until B replaces more than 90% of the shared A100 baseline.
 	state := rolloutState([]int{100, 0}, []int{5, 0}, []int{5, 0}, nil, nil,
 		[]int{10, 110}, []int{10, 90}, []int{0, 100}, configs([]int{1, 1}, []int{0, 30}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	assert.Equal(t, []int{5, 110}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
 	assert.True(t, targetScaleDownPreservesAvailability(state, []int{5, 110}))
 	assert.False(t, targetScaleDownPreservesAvailability(state, []int{4, 110}))
@@ -240,13 +429,13 @@ func TestScalingDuringRolloutDecisions(t *testing.T) {
 			name:    "growth creates no readiness credit",
 			current: []int{1, 5}, ready: []int{0, 4}, desired: []int{2, 4}, wantNew: []int{2, 5},
 		}, {
-			name: "raised floor preserves old ready", old: []int{4, 4}, oldReady: []int{4, 4},
+			name: "scale up preserves the old floor", old: []int{4, 4}, oldReady: []int{4, 4},
 			current: []int{1, 1}, ready: []int{1, 1}, desired: []int{8, 8},
-			wantOld: []int{4, 4}, wantNew: []int{2, 2},
+			wantOld: []int{3, 3}, wantNew: []int{2, 2},
 		}, {
 			name: "grow while previous batch is unready", old: []int{8, 8}, oldReady: []int{8, 8},
 			current: []int{2, 2}, ready: []int{0, 0}, desired: []int{12, 12},
-			surge: []int{2, 2}, unavailable: []int{2, 2}, wantOld: []int{8, 8}, wantNew: []int{4, 4},
+			surge: []int{2, 2}, unavailable: []int{2, 2}, wantOld: []int{6, 6}, wantNew: []int{4, 4},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,7 +452,7 @@ func TestScalingDuringRolloutDecisions(t *testing.T) {
 				tc.unavailable = []int{0, 0}
 			}
 			state := rolloutState(tc.old, tc.old, tc.oldReady, nil, nil, tc.current, tc.ready, tc.desired, configs(tc.surge, tc.unavailable))
-			state.ScaleDuringRollout = true
+			state.ScaleDownDuringRollout = true
 			state.Target.AllUnscheduled = tc.allUnscheduled
 			step := ComputeNextStep(state)
 			if tc.wantNew == nil {
@@ -282,7 +471,7 @@ func TestScalingDuringRolloutDecisions(t *testing.T) {
 func TestTargetCorrectionPreservesScheduledWork(t *testing.T) {
 	state := rolloutState([]int{4}, []int{4}, []int{4}, nil, nil,
 		[]int{5}, []int{0}, []int{4}, configs([]int{1}, []int{0}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	for _, knownUnscheduled := range [][]bool{nil, {false}, {true}} {
 		state.Target.AllUnscheduled = knownUnscheduled
 		step := ComputeNextStep(state)
@@ -307,8 +496,23 @@ func TestTargetCorrectionPreservesScheduledWork(t *testing.T) {
 	state.Target.SpecReplicas = []int{4}
 	assert.Nil(t, ComputeNextStep(state), "even all-unscheduled work is not retracted at or below desired")
 	state.Target.SpecReplicas = []int{5}
-	state.ScaleDuringRollout = false
-	assert.Nil(t, ComputeNextStep(state), "RolloutCoupled does not gain target corrections")
+	state.ScaleDownDuringRollout = false
+	assert.Nil(t, ComputeNextStep(state), "Deferred does not gain target corrections")
+}
+
+func TestScaleUpKeepsSharedHistoricalAvailabilityFloor(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		for _, active := range []int{4, 6} {
+			parked := 10 - active
+			state := rolloutState([]int{active}, []int{active}, []int{active}, []int{parked}, []int{parked},
+				[]int{1}, []int{1}, []int{8}, configs([]int{1}, []int{0}))
+			state.ScaleDownDuringRollout = immediate
+			observed := snapshotForRolloutState(state)
+			assert.Equal(t, 6, availabilityFloor(observed[0]), "both candidates retain the shared old baseline")
+			assert.Equal(t, []int{max(0, 6-parked-1)}, minimumAvailableTargets(observed, state.ActiveOld.RequiredRoles))
+			assert.Equal(t, 8, availabilityFloor(targetDrainSnapshot(state, observed)[0]), "target reduction keeps the full desired floor")
+		}
+	}
 }
 
 // Ownership and missing native/worker objects are covered by the shared
@@ -351,7 +555,7 @@ func TestScalingDuringRolloutObservesScheduledGroups(t *testing.T) {
 		for _, boundMember := range []string{"none", "leader", "worker"} {
 			t.Run(fmt.Sprintf("%s/bound=%s", identity, boundMember), func(t *testing.T) {
 				ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
-				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{DuringRollout: disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout}
+				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
 				old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1000, 0), 4)
 				target := revisionLWS("target", testRolePrefill, 5, 0, time.Unix(2000, 0), 5)
 				old.Spec.GroupIdentity, target.Spec.GroupIdentity = identity, identity
@@ -409,14 +613,14 @@ func TestTargetDrainUsesRetainedNotRawReadiness(t *testing.T) {
 	state := rolloutState([]int{0, 0}, []int{0, 0}, []int{0, 0}, nil, nil,
 		[]int{5, 5}, []int{4, 4}, []int{3, 3}, configs([]int{1, 1}, []int{0, 0}))
 	state.Target.RawReadyReplicas = []int{5, 5} // One victim per role is already reserved.
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
 	assert.Equal(t, []int{4, 4}, step.New)
 	require.NoError(t, validateUpdateStep(state, step))
 	require.Error(t, validateUpdateStep(state, &UpdateStep{Past: []int{0, 0}, New: []int{3, 3}}))
 
-	state.ScaleDuringRollout = false
+	state.ScaleDownDuringRollout = false
 	assert.Nil(t, ComputeNextStep(state), "default remains growth-only")
 	require.Error(t, validateUpdateStep(state, step), "the executor independently rejects opt-out target shrink")
 }
@@ -424,7 +628,7 @@ func TestTargetDrainUsesRetainedNotRawReadiness(t *testing.T) {
 func TestMovingTargetUnschedulableFallbackUsesLatestSurgeCeiling(t *testing.T) {
 	state := rolloutState([]int{8, 8}, []int{4, 4}, []int{3, 3}, nil, nil,
 		[]int{1, 1}, []int{0, 0}, []int{3, 3}, configs([]int{1, 1}, []int{0, 0}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	require.Nil(t, ComputeNextStep(state), "wait for the issued target group rather than stacking emergency slots")
 	// Old+target Spec is 5: above the latest ceiling 3+1, but below
 	// the historical ceiling 8+1. Only scheduler rejection permits a fallback.
@@ -439,9 +643,13 @@ func TestMovingTargetUnschedulableFallbackUsesLatestSurgeCeiling(t *testing.T) {
 }
 
 func TestMovingTargetCoordinationBootstrapDoesNotStack(t *testing.T) {
-	state := rolloutState([]int{2, 3}, []int{2, 2}, []int{2, 2}, nil, nil,
-		[]int{4, 2}, []int{4, 2}, []int{6, 4}, configs([]int{2, 0}, []int{0, 2}))
-	state.ScaleDuringRollout = true
+	state := rolloutState([]int{2, 3}, []int{2, 2}, []int{2, 2}, []int{1, 0}, []int{0, 0},
+		[]int{4, 2}, []int{4, 2}, []int{6, 4}, configs([]int{3, 0}, []int{0, 2}))
+	// A larger interrupted revision keeps the historical floor, but its
+	// incomplete required roles provide no serving capacity.
+	state.ParkedOld[0].RequiredRoles = []bool{true, true}
+	state.AvailabilityBaseline = []int{6, 4}
+	state.ScaleDownDuringRollout = true
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
 	require.True(t, step.UsesBootstrapSurge)
@@ -531,15 +739,27 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 	phaseTargets, growing, oldReference, oldProgress, oldNext := make([]int, n), make([]int, n), make([]int, n), make([]int, n), make([]int, n)
 	scaleCorrection := make([]bool, n)
 	steps := 0
+	hasTarget, targetComplete, hasRemovedBaseline := false, true, false
+	for i, desired := range state.Target.DesiredReplicas {
+		if desired > 0 {
+			hasTarget = true
+			targetComplete = targetComplete && state.Target.ReadyReplicas[i] >= desired
+		} else {
+			hasRemovedBaseline = hasRemovedBaseline || state.AvailabilityBaseline[i] > 0
+		}
+	}
 	for i := range state.Config {
-		phaseTargets[i] = state.Target.DesiredReplicas[i] - parkedServing[i]
+		phaseTargets[i] = state.Target.DesiredReplicas[i]
+		if !hasTarget || targetComplete || !hasRemovedBaseline {
+			phaseTargets[i] -= parkedServing[i]
+		}
 		if state.Target.DesiredReplicas[i] > 0 {
 			phaseTargets[i] = max(1, phaseTargets[i])
 		}
 		phaseTargets[i] = max(state.Target.SpecReplicas[i], phaseTargets[i])
 		growing[i] = max(state.Target.SpecReplicas[i], step.New[i])
 		oldReference[i] = state.ActiveOld.InitialReplicas[i]
-		if state.ScaleDuringRollout && state.Target.DesiredReplicas[i] > 0 {
+		if state.ScaleDownDuringRollout && state.Target.DesiredReplicas[i] > 0 {
 			physical := oldSpec[i] + state.Target.SpecReplicas[i]
 			excess := max(0, physical-state.Target.DesiredReplicas[i]-state.Config[i].MaxSurge)
 			scaleCorrection[i] = state.ActiveOld.SpecReplicas[i]-step.Past[i] <= excess
@@ -550,12 +770,20 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 	}
 	assertMovingWindow(t, state.Target.SpecReplicas, phaseTargets, growing, nil)
 	assertMovingWindow(t, oldProgress, oldReference, oldNext, scaleCorrection)
+	targetDrain := false
+	for i, count := range step.New {
+		targetDrain = targetDrain || count < state.Target.SpecReplicas[i]
+	}
 	for i, config := range state.Config {
 		if !step.UsesTargetRebalance && (i >= len(state.Target.AllUnscheduled) || !state.Target.AllUnscheduled[i] ||
 			state.Target.RawReadyReplicas[i] > 0 || state.Target.ReadyReplicas[i] > 0) {
 			require.GreaterOrEqual(t, step.New[i], min(state.Target.SpecReplicas[i], state.Target.DesiredReplicas[i]), "preserve scheduled or unknown work")
 		}
-		floor := max(0, state.Target.DesiredReplicas[i]-config.MaxUnavailable)
+		baseline := state.Target.DesiredReplicas[i]
+		if !targetDrain {
+			baseline = min(baseline, state.AvailabilityBaseline[i])
+		}
+		floor := max(0, baseline-config.MaxUnavailable)
 		if step.UsesUnavailableFallback && floor > 1 {
 			floor--
 		}
@@ -614,7 +842,7 @@ func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
 		}
 		state := rolloutState(initial, make([]int, n), make([]int, n), make([]int, n), make([]int, n),
 			make([]int, n), make([]int, n), make([]int, n), make([]RollingUpdateConfig, n))
-		state.ScaleDuringRollout = true
+		state.ScaleDownDuringRollout = true
 		state.Target.AllUnscheduled = make([]bool, n)
 		for i := range n {
 			state.ActiveOld.SpecReplicas[i] = rng.Intn(6)
@@ -634,6 +862,8 @@ func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
 		}
 		state.Target.RequiredRoles = requiredRoles(state.Target.DesiredReplicas)
 		state.ParkedOld[0].RequiredRoles = requiredRoles(initial)
+		state.AvailabilityBaseline = rolloutState(initial, state.ActiveOld.SpecReplicas, nil,
+			state.ParkedOld[0].SpecReplicas, nil, nil, nil, state.Target.DesiredReplicas, nil).AvailabilityBaseline
 		if step := ComputeNextStep(state); step != nil {
 			require.NoError(t, validateUpdateStep(state, step), "scenario %d state=%+v step=%+v", scenario, state, step)
 			assertScalingSafety(t, state, step)
@@ -668,52 +898,100 @@ func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 // readiness catches up every third tick; an issued deletion reserves it immediately.
 func assertMovingRolloutConverges(t *testing.T, state *RolloutState, ticks int, editTarget func(int)) {
 	t.Helper()
-	state.ScaleDuringRollout = true
-	history := []string{fmt.Sprintf("initial=%v", state.ActiveOld.InitialReplicas)}
+	roleNames := make([]string, len(state.Config))
+	for i := range roleNames {
+		roleNames[i] = fmt.Sprintf("role-%d", i)
+	}
+	readiness := rolloutReadiness{}
+	makeRevision := func(name string, initial, spec, raw, ready []int) disaggregatedsetutils.RevisionRoles {
+		revision := disaggregatedsetutils.RevisionRoles{Revision: name, Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{}}
+		for i, role := range roleNames {
+			if initial[i] == 0 && spec[i] == 0 && name != "target" {
+				continue
+			}
+			lws := revisionLWS(name, role, int32(spec[i]), int32(raw[i]), time.Unix(0, 0), int32(initial[i]))
+			revision.Roles[role] = lws
+			readiness[lws.Name] = replicaReadiness{raw: raw[i], committed: ready[i]}
+		}
+		return revision
+	}
+	old := disaggregatedsetutils.RevisionRolesList{makeRevision("old-0", state.ActiveOld.InitialReplicas,
+		state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas)}
+	for i, parked := range state.ParkedOld {
+		old = append(old, makeRevision(fmt.Sprintf("old-%d", i+1), parked.SpecReplicas, parked.SpecReplicas, parked.RawReadyReplicas, parked.ReadyReplicas))
+	}
+	target := makeRevision("target", state.Target.DesiredReplicas, state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas)
+	// Only planner inputs are simulated; candidate ordering, saved baselines,
+	// and choosing another old revision when the first stalls are production code.
+	executor := newTestExecutor(newTestClient())
+	history := []string{fmt.Sprintf("initial=%v parked=%+v config=%v", state.ActiveOld.InitialReplicas, state.ParkedOld, state.Config)}
 	for tick := range ticks {
 		if tick%3 == 2 {
-			state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = slices.Clone(state.ActiveOld.SpecReplicas), slices.Clone(state.ActiveOld.SpecReplicas)
-			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = slices.Clone(state.Target.SpecReplicas), slices.Clone(state.Target.SpecReplicas)
+			for _, revision := range append(slices.Clone(old), target) {
+				for _, lws := range revision.Roles {
+					count := int(getLWSReplicas(lws))
+					readiness[lws.Name] = replicaReadiness{raw: count, committed: count}
+				}
+			}
+		}
+		for i, role := range roleNames {
+			lws := target.Roles[role]
+			state.Target.SpecReplicas[i] = int(getLWSReplicas(lws))
+			state.Target.RawReadyReplicas[i], state.Target.ReadyReplicas[i] = readiness[lws.Name].raw, readiness[lws.Name].committed
 		}
 		editTarget(tick)
-		state.Target.RequiredRoles = requiredRoles(state.Target.DesiredReplicas)
-		// Rebuild baselines as the executor does after edits and retirement.
-		var parkedSpec []int
-		if len(state.ParkedOld) > 0 {
-			parkedSpec = state.ParkedOld[0].SpecReplicas
+		for i, role := range roleNames {
+			lws := target.Roles[role]
+			observed := readiness[lws.Name]
+			observed.allUnscheduled = i < len(state.Target.AllUnscheduled) && state.Target.AllUnscheduled[i]
+			readiness[lws.Name] = observed
 		}
-		state.AvailabilityBaseline = rolloutState(state.ActiveOld.InitialReplicas, state.ActiveOld.SpecReplicas,
-			nil, parkedSpec, nil, nil, nil, state.Target.DesiredReplicas, nil).AvailabilityBaseline
-		step := ComputeNextStep(*state)
+		inputs := rolloutInputs{allRoleNames: roleNames, targetReplicas: state.Target.DesiredReplicas,
+			config: state.Config, readiness: readiness, scaleDownDuringRollout: true}
+		selected := disaggregatedsetutils.RevisionRoles{}
+		observed := rolloutStateForRevision(roleNames, old, selected, target, inputs.targetReplicas, inputs.config, readiness)
+		observed.ScaleDownDuringRollout = true
+		var step *UpdateStep
+		if candidates := orderedRevisionCandidates(old, readiness); len(candidates) > 0 {
+			var err error
+			selected, observed, step, err = executor.selectNextRolloutStep(t.Context(), candidates, old, target, inputs)
+			require.NoError(t, err)
+		} else {
+			step = ComputeNextStep(observed)
+		}
 		if tick < 15 {
-			history = append(history, fmt.Sprintf("tick=%d desired=%v old=%v oldReady=%v target=%v targetReady=%v step=%+v", tick,
-				state.Target.DesiredReplicas, state.ActiveOld.SpecReplicas, state.ActiveOld.ReadyReplicas, state.Target.SpecReplicas, state.Target.ReadyReplicas, step))
+			history = append(history, fmt.Sprintf("tick=%d desired=%v selected=%s old=%v target=%v targetReady=%v step=%+v", tick,
+				state.Target.DesiredReplicas, selected.Revision, observed.ActiveOld.SpecReplicas, state.Target.SpecReplicas, state.Target.ReadyReplicas, step))
 		}
 		if step != nil {
+			*state = observed
 			require.NoError(t, validateUpdateStep(*state, step), "history=%v", history)
 			assertScalingSafety(t, *state, step)
-			for i := range state.Config {
-				state.ActiveOld.ReadyReplicas[i] = max(0, state.ActiveOld.ReadyReplicas[i]-(state.ActiveOld.SpecReplicas[i]-step.Past[i]))
-				state.Target.ReadyReplicas[i] = max(0, state.Target.ReadyReplicas[i]-max(0, state.Target.SpecReplicas[i]-step.New[i]))
+			for _, change := range []struct {
+				revision disaggregatedsetutils.RevisionRoles
+				next     []int
+			}{{selected, step.Past}, {target, step.New}} {
+				for i, role := range roleNames {
+					if lws := change.revision.Roles[role]; lws != nil {
+						ready := readiness[lws.Name]
+						ready.committed = max(0, ready.committed-max(0, int(getLWSReplicas(lws))-change.next[i]))
+						readiness[lws.Name] = ready
+						*lws.Spec.Replicas = int32(change.next[i])
+					}
+				}
 			}
-			state.ActiveOld.SpecReplicas, state.Target.SpecReplicas = step.Past, step.New
-		}
-		if slices.Equal(state.ActiveOld.SpecReplicas, []int{0, 0}) && len(state.ParkedOld) > 0 {
-			parked := state.ParkedOld[0]
-			state.ActiveOld = ActiveRevisionState{RequiredRoles: parked.RequiredRoles, InitialReplicas: []int{1, 1},
-				SpecReplicas: parked.SpecReplicas, RawReadyReplicas: parked.RawReadyReplicas, ReadyReplicas: parked.ReadyReplicas}
-			state.ParkedOld = nil
 		}
 	}
-	require.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas, "history=%v", history)
-	require.Empty(t, state.ParkedOld)
-	require.Equal(t, state.Target.DesiredReplicas, state.Target.SpecReplicas, "history=%v", history)
+	for i, role := range roleNames {
+		require.Zero(t, old.GetTotalReplicasPerRole(role), "history=%v", history)
+		require.Equal(t, state.Target.DesiredReplicas[i], int(getLWSReplicas(target.Roles[role])), "history=%v", history)
+	}
 }
 
 func TestScalingDuringRolloutFiveEditsReachPhysicalExcess(t *testing.T) {
 	state := rolloutState([]int{9, 2}, []int{9, 2}, []int{9, 2}, nil, nil,
 		[]int{0, 0}, []int{0, 0}, []int{9, 2}, configs([]int{0, 1}, []int{1, 1}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	// Replay legal historical-window steps, proving the stalled snapshot is
 	// reachable from a complete old revision rather than an invented state.
 	for tick, change := range []struct{ desired, old, target []int }{
@@ -746,21 +1024,23 @@ func TestScalingDuringRolloutFiveEditsReachPhysicalExcess(t *testing.T) {
 	state.Target.RawReadyReplicas, state.Target.ReadyReplicas = slices.Clone(state.Target.SpecReplicas), slices.Clone(state.Target.SpecReplicas)
 	step := ComputeNextStep(state)
 	require.NotNil(t, step, "latest-scale excess must not deadlock old and target fractional windows")
-	require.Equal(t, []int{4, 2}, step.Past, "only the one existing physical excess group may bypass coordination")
+	require.Equal(t, []int{3, 1}, step.Past, "the capped old floor also permits coordinated retirement")
 	require.Equal(t, []int{2, 5}, step.New)
 	require.NoError(t, validateUpdateStep(state, step))
 	assertScalingSafety(t, state, step)
+	excessOnly := &UpdateStep{Past: []int{4, 2}, New: step.New}
+	require.NoError(t, validateUpdateStep(state, excessOnly), "one physical excess group may also drain independently")
 	require.ErrorContains(t, validateUpdateStep(state, &UpdateStep{Past: []int{3, 2}, New: step.New}), "fractional coordination",
 		"availability would permit two deletions, but only one is excess")
 	state.ActiveOld.ReadyReplicas = []int{3, 2}
-	require.Nil(t, ComputeNextStep(state), "physical excess is not permission to spend already-reserved Ready capacity")
+	require.Equal(t, 5, ComputeNextStep(state).Past[0], "physical excess cannot spend already-reserved Ready capacity")
 	state.ActiveOld.ReadyReplicas = []int{5, 2}
-	state.ScaleDuringRollout = false
-	require.ErrorContains(t, validateUpdateStep(state, step), "fractional coordination", "RolloutCoupled retains its historical window")
+	state.ScaleDownDuringRollout = false
+	require.ErrorContains(t, validateUpdateStep(state, excessOnly), "fractional coordination", "Deferred retains its historical window")
 
 	state = rolloutState([]int{1, 2}, []int{1, 2}, []int{1, 2}, nil, nil,
 		[]int{3, 3}, []int{3, 3}, []int{2, 2}, configs([]int{0, 0}, []int{0, 0}))
-	state.ScaleDuringRollout = true
+	state.ScaleDownDuringRollout = true
 	require.ErrorContains(t, validateUpdateStep(state, &UpdateStep{Past: []int{0, 1}, New: []int{3, 3}}), "required roles incomplete")
 }
 
@@ -782,8 +1062,8 @@ func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
 
 func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 	for _, policy := range []*disaggregatedsetv1.DisaggregatedSetScalingPolicy{
-		nil, {}, {DuringRollout: disaggregatedsetv1.ScalingDuringRolloutPolicyRolloutCoupled},
-		{DuringRollout: disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout},
+		nil, {}, {ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownDeferred},
+		{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate},
 	} {
 		ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 2}, [2]int{1, 1}, [2]int{})
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
@@ -796,7 +1076,7 @@ func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 		_, err := r.reconcileSlice(context.Background(), r.createRollingUpdateExecutor(), ds, 0, revision, resolveDesiredReplicasByRole(ds, nil))
 		require.NoError(t, err)
 		want := [2]int32{5, 3}
-		if scalingDuringRolloutEnabled(ds) {
+		if scaleDownDuringRolloutEnabled(ds) {
 			want = [2]int32{4, 2}
 		}
 		assertRevisionReplicas(t, c, revision, want)
@@ -810,7 +1090,7 @@ func TestScalingDuringRolloutPrefersAnyOldDrainOverTargetShrink(t *testing.T) {
 	objects = append(objects, revisionLWSObjects("hashC", [2]int32{3, 3}, [2]int32{}, [2]int32{3, 3}, now.Add(2*time.Hour))...)
 	c := newTestClient(objects...)
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{1, 1}, [2]int{})
-	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{DuringRollout: disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout}
+	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
 	reconcileExistingForTest(t, newTestExecutor(c), ds, "hashC")
 	assertRevisionReplicas(t, c, "hashA", [2]int32{2, 2})
 	assertRevisionReplicas(t, c, "hashB", [2]int32{})
@@ -847,7 +1127,7 @@ func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
 		{true, "hashA", UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}},
 	} {
 		t.Run(fmt.Sprintf("advance=%v", tc.advance), func(t *testing.T) {
-			inputs.scaleDuringRollout = tc.advance
+			inputs.scaleDownDuringRollout = tc.advance
 			selected, state, step, err := executor.selectNextRolloutStep(context.Background(), candidates, old, *target, inputs)
 			require.NoError(t, err)
 			require.Equal(t, tc.revision, selected.Revision)
@@ -870,7 +1150,7 @@ func TestScalingDuringRolloutExposesLatestExternalTarget(t *testing.T) {
 		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2})
 	}
 	assert.Equal(t, []int{5}, readTarget(), "default keeps the in-flight External target")
-	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{DuringRollout: disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout}
+	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
 	assert.Equal(t, []int{2}, readTarget(), "opt-in exposes the actual RoleScaler target")
 }
 
@@ -895,8 +1175,8 @@ func TestScalingDuringRolloutAppliesTargetDrainBeforeGrowth(t *testing.T) {
 			require.NotNil(t, target)
 			state := rolloutState([]int{0, 0}, []int{0, 0}, []int{0, 0}, nil, nil,
 				[]int{4, 8}, []int{4, 8}, []int{8, 4}, configs([]int{1, 1}, []int{0, 0}))
-			state.ScaleDuringRollout = true
-			inputs := rolloutInputs{allRoleNames: testRoleNames(), targetRoleNames: testRoleNames(), scaleDuringRollout: true}
+			state.ScaleDownDuringRollout = true
+			inputs := rolloutInputs{allRoleNames: testRoleNames(), targetRoleNames: testRoleNames(), scaleDownDuringRollout: true}
 			err = executor.applyRolloutStep(context.Background(), ds, *target, inputs, disaggregatedsetutils.RevisionRoles{}, state, ComputeNextStep(state))
 			if failDrain {
 				require.ErrorContains(t, err, "injected drain failure")
