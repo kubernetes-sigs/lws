@@ -184,12 +184,17 @@ func (m *LeaderWorkerSetManager) checkSubRoleLWS(ctx context.Context, expected *
 func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *leaderv1.LeaderWorkerSet, group replicagroups.Group, name string) error {
 	// Workers first, leader last. A partial write supplies neither child's Ready credit.
 	pods := append(slices.Clone(group.Pods[1:]), group.Leader)
-	for _, pod := range pods {
-		if value, exists := pod.Labels[disaggv1.SubRoleLabelKey]; value == name && (name != "" || !exists) {
-			continue
-		}
-		if err := m.checkSubRoleLWS(ctx, lws); err != nil {
-			return err
+	pods = slices.DeleteFunc(pods, func(pod *corev1.Pod) bool {
+		value, exists := pod.Labels[disaggv1.SubRoleLabelKey]
+		return value == name && (name != "" || !exists)
+	})
+	for i, pod := range pods {
+		// Check once before starting and again before making the group coherent.
+		// During repair, the final changed Pod may be a worker, not the leader.
+		if i == 0 || i == len(pods)-1 {
+			if err := m.checkSubRoleLWS(ctx, lws); err != nil {
+				return err
+			}
 		}
 		labels := mergeLabels(pod.Labels, map[string]string{disaggv1.SubRoleLabelKey: name})
 		if name == "" {
@@ -359,6 +364,7 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 		prefix.Groups = nil
 	}
 	// Partial writes and newborn labels must finish before application health can gate progress.
+	labelled := false
 	for _, group := range s.Groups {
 		name, coherent := groupSubRole(group)
 		assignment, retained := assignments[group.Leader.UID]
@@ -366,8 +372,11 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 			if err := m.labelSubRoleGroup(ctx, s.LWS, group, assignment); err != nil {
 				return err
 			}
-			return errReplicaGroupsPending
+			labelled = true
 		}
+	}
+	if labelled {
+		return errReplicaGroupsPending
 	}
 	healthy := complete && int(prefix.Availability().RetainedReadyReplicas) == survivors
 	if pending != nil && !removing && !healthy {

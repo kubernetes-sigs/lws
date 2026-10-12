@@ -3153,6 +3153,94 @@ func TestSubRoleTransitions(t *testing.T) {
 	}
 }
 
+func TestSubRoleLabelsBatchBeforePlanning(t *testing.T) {
+	for _, newborn := range []bool{true, false} {
+		t.Run(fmt.Sprintf("newborn=%t", newborn), func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a", "a", "a", "a")
+			for _, group := range f.observe().Groups {
+				for _, pod := range group.Pods {
+					if newborn {
+						delete(pod.Labels, disaggregatedsetv1.SubRoleLabelKey)
+					} else if pod != group.Leader {
+						pod.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
+					}
+					require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				}
+			}
+			lwsReads, podLists := 0, 0
+			f.manager.apiReader = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						lwsReads++
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*corev1.PodList); ok {
+						podLists++
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.lws, subRoleUpdate{})
+			require.ErrorIs(t, err, errReplicaGroupsPending, "observe all label writes before planning")
+			require.Equal(t, 1, podLists)
+			require.Equal(t, 2+2*4, lwsReads, "two observation checks plus at most two checks per group")
+			for _, group := range f.observe().Groups {
+				name, coherent := groupSubRole(group)
+				require.True(t, coherent)
+				require.Equal(t, "a", name, "every group must be labeled in the same pass")
+			}
+		})
+	}
+
+	f := newSubRoleFixture(t, 0, "a", "a", "b")
+	_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.lws, subRoleUpdate{target: map[string]int{"a": 1, "b": 1}})
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+	for _, group := range f.observe().Groups {
+		pod := group.Pods[1]
+		pod.Labels[disaggregatedsetv1.SubRoleLabelKey] = "incomplete"
+		require.NoError(t, f.manager.client.Update(t.Context(), pod))
+	}
+	f.sync()
+	require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS), "repairing every label must not publish the smaller physical target in the same pass")
+	f.sync()
+	require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS))
+}
+
+func TestSubRoleLabelsCheckIntentBeforeCompletingGroup(t *testing.T) {
+	for _, repair := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a")
+			name := "b"
+			if repair {
+				name = "a"
+				for _, pod := range f.observe().Groups[0].Pods[1:] {
+					pod.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
+					require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				}
+			}
+			s := f.observe()
+			changed := false
+			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				err := c.Patch(ctx, obj, patch, opts...)
+				if !changed && err == nil {
+					changed = true
+					lws := s.LWS.DeepCopy()
+					lws.Annotations[subRolePlanAnnotation] = `{"a":1}`
+					require.NoError(t, c.Update(ctx, lws))
+				}
+				return err
+			}})
+			require.ErrorIs(t, f.manager.labelSubRoleGroup(t.Context(), s.LWS, s.Groups[0], name), errReplicaGroupsPending)
+			after := f.observe()
+			child, coherent := groupSubRole(after.Groups[0])
+			require.Equal(t, "a", child, "an obsolete intent must not commit the leader")
+			require.False(t, coherent, "repaired workers must also recheck intent before making the group coherent")
+		})
+	}
+}
+
 func TestSubRoleInterruptedWrites(t *testing.T) {
 	for _, failure := range []string{"model-1-1", "model-1-2", "model-1", "model-2-2", "publish", "RV", "UID"} {
 		t.Run(failure, func(t *testing.T) {
