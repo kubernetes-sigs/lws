@@ -5,9 +5,9 @@ authors:
 status: provisional
 creation-date: 2026-09-02
 reviewers:
-  - TBD
+  - ahg-g
 approvers:
-  - TBD
+  - ahg-g
 
 see-also:
   - "/keps/766-DisaggregatedSet"
