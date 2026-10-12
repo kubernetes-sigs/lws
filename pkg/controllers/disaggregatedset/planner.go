@@ -29,6 +29,8 @@ type UpdateStep struct {
 	// UsesUnavailableFallback reports that Past uses one additional unavailable
 	// replica to release capacity for an unschedulable target role.
 	UsesUnavailableFallback bool
+	// UsesTargetRebalance trims previously issued disjoint surplus to its budget.
+	UsesTargetRebalance bool
 }
 
 // RoleReplicaState contains one replica count per role. The executor resolves
@@ -78,7 +80,12 @@ type RolloutState struct {
 	ActiveOld ActiveRevisionState
 	ParkedOld []ParkedRevisionState
 	Target    TargetRevisionState
-	Config    []RollingUpdateConfig
+	// AvailabilityBaseline is shared by every old-revision candidate so
+	// selecting a smaller interrupted revision cannot weaken maxUnavailable.
+	// Rebuild it from non-drained old revisions on each observation: removed
+	// roles include only disjoint revisions; shared roles include all.
+	AvailabilityBaseline RoleReplicaState
+	Config               []RollingUpdateConfig
 }
 
 // roleRolloutSnapshot is the per-role observed state rebuilt each reconcile.
@@ -87,16 +94,19 @@ type RolloutState struct {
 // a pending termination; observed Ready does not.
 type roleRolloutSnapshot struct {
 	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
+	AvailabilityBaselineReplicas    int                 // Old-side baseline shared by every candidate for availability checks.
+	UnreplacedReplicas              int                 // Old baseline not yet replaced by a complete, disjoint-role target.
 	ActiveOldSpecReplicas           int                 // Current Spec replicas of the active old revision.
 	ActiveOldCommittedReadyReplicas int                 // Active-old Ready replicas not reserved by a pending deletion.
 	ActiveOldUsableReadyReplicas    int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
 	OldSpecReplicas                 int                 // Current Spec replicas summed across all old revisions.
-	OldUsableReadyReplicas          int                 // Ready replicas from complete old revisions only.
+	ParkedUsableReadyReplicas       int                 // Committed Ready from complete parked revisions.
 	ObservedUsableReadyReplicas     int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
-	ObservedPerRoleReadyReplicas    int                 // Active raw Ready plus raw Ready from complete replacement revisions.
+	ObservedPerRoleReadyReplicas    int                 // Raw Ready from all structurally complete revisions.
+	ReplacementPerRoleReadyReplicas int                 // Committed per-role Ready from structurally complete parked and target revisions.
 	NewSpecReplicas                 int                 // Current Spec replicas of the target revision.
 	NewCommittedReadyReplicas       int                 // Target Ready replicas excluding replicas committed to termination.
-	NewUsableReadyReplicas          int                 // Target Ready replicas, or zero when a required role is not Ready.
+	ReplacementUsableReadyReplicas  int                 // Committed Ready from complete parked and target revisions.
 	NewTargetReplicas               int                 // Desired target-revision replicas after rollout.
 	Config                          RollingUpdateConfig // Surge and availability limits configured for this role.
 }
@@ -128,6 +138,9 @@ func ComputeNextStep(state RolloutState) *UpdateStep {
 	}
 	if anyChange(next.Past, next.New, currentOld, currentNew) {
 		return next
+	}
+	if rebalance := disjointSurplusStep(state, snapshot); rebalance != nil {
+		return rebalance
 	}
 
 	if bootstrapSnapshot, ok := snapshotWithBootstrapSurge(snapshot, phaseTargets); ok {
@@ -184,6 +197,7 @@ func validRolloutState(state RolloutState) bool {
 		len(state.ActiveOld.SpecReplicas) != roleCount ||
 		len(state.ActiveOld.RawReadyReplicas) != roleCount ||
 		len(state.ActiveOld.ReadyReplicas) != roleCount ||
+		len(state.AvailabilityBaseline) != roleCount ||
 		len(state.Target.RequiredRoles) != roleCount ||
 		len(state.Target.SpecReplicas) != roleCount ||
 		len(state.Target.RawReadyReplicas) != roleCount ||
@@ -204,66 +218,95 @@ func validRolloutState(state RolloutState) bool {
 }
 
 func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
-	activeUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.ReadyReplicas)
-	activeObservedUsableReady := usableReadyReplicas(state.ActiveOld.RequiredRoles, state.ActiveOld.RawReadyReplicas)
-	targetUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.ReadyReplicas)
-	targetObservedUsableReady := usableReadyReplicas(state.Target.RequiredRoles, state.Target.RawReadyReplicas)
-	parkedSpec := make(RoleReplicaState, len(state.Config))
-	parkedUsableReady := make(RoleReplicaState, len(state.Config))
-	parkedObservedUsableReady := make(RoleReplicaState, len(state.Config))
-	for _, revision := range state.ParkedOld {
-		ready := usableReadyReplicas(revision.RequiredRoles, revision.ReadyReplicas)
-		observedReady := usableReadyReplicas(revision.RequiredRoles, revision.RawReadyReplicas)
-		for i := range parkedSpec {
-			parkedSpec[i] += revision.SpecReplicas[i]
-			parkedUsableReady[i] += ready[i]
-			parkedObservedUsableReady[i] += observedReady[i]
-		}
+	old, target := state.ActiveOld, state.Target
+	activeReady := summarizeReadiness(old.RequiredRoles, old.SpecReplicas, old.RawReadyReplicas, old.ReadyReplicas)
+	targetReady := summarizeReadiness(target.RequiredRoles, target.SpecReplicas, target.RawReadyReplicas, target.ReadyReplicas)
+	progress, hasTarget := coordinationWindowForProgress(target.DesiredReplicas, target.ReadyReplicas)
+	if !allRequiredRolesPresent(target.RequiredRoles, target.ReadyReplicas) {
+		progress.leastAdvancedReplicas = 0
 	}
-
 	snapshot := make(rolloutSnapshot, len(state.Config))
 	for i := range snapshot {
 		snapshot[i] = roleRolloutSnapshot{
-			InitialOldReplicas:              state.ActiveOld.InitialReplicas[i],
-			ActiveOldSpecReplicas:           state.ActiveOld.SpecReplicas[i],
-			ActiveOldCommittedReadyReplicas: state.ActiveOld.ReadyReplicas[i],
-			ActiveOldUsableReadyReplicas:    activeUsableReady[i],
-			OldSpecReplicas:                 state.ActiveOld.SpecReplicas[i] + parkedSpec[i],
-			OldUsableReadyReplicas:          activeUsableReady[i] + parkedUsableReady[i],
-			ObservedUsableReadyReplicas: activeObservedUsableReady[i] + parkedObservedUsableReady[i] +
-				targetObservedUsableReady[i],
-			ObservedPerRoleReadyReplicas: state.ActiveOld.RawReadyReplicas[i] +
-				parkedObservedUsableReady[i] + targetObservedUsableReady[i],
-			NewSpecReplicas:           state.Target.SpecReplicas[i],
-			NewCommittedReadyReplicas: state.Target.ReadyReplicas[i],
-			NewUsableReadyReplicas:    targetUsableReady[i],
-			NewTargetReplicas:         state.Target.DesiredReplicas[i],
-			Config:                    state.Config[i],
+			InitialOldReplicas:              old.InitialReplicas[i],
+			AvailabilityBaselineReplicas:    state.AvailabilityBaseline[i],
+			ActiveOldSpecReplicas:           old.SpecReplicas[i],
+			ActiveOldCommittedReadyReplicas: old.ReadyReplicas[i],
+			ActiveOldUsableReadyReplicas:    activeReady[i].usable,
+			OldSpecReplicas:                 old.SpecReplicas[i],
+			ObservedUsableReadyReplicas:     activeReady[i].rawUsable + targetReady[i].rawUsable,
+			ObservedPerRoleReadyReplicas:    activeReady[i].rawPerRole + targetReady[i].rawPerRole,
+			ReplacementPerRoleReadyReplicas: targetReady[i].perRole,
+			NewSpecReplicas:                 target.SpecReplicas[i],
+			NewCommittedReadyReplicas:       target.ReadyReplicas[i],
+			ReplacementUsableReadyReplicas:  targetReady[i].usable,
+			NewTargetReplicas:               target.DesiredReplicas[i],
+			Config:                          state.Config[i],
+		}
+		// Removed-role baselines already include only disjoint old revisions.
+		if hasTarget && target.DesiredReplicas[i] == 0 {
+			baseline := state.AvailabilityBaseline[i]
+			numerator := min(progress.leastAdvancedReplicas, progress.leastAdvancedTarget)
+			credit := int(int64(baseline) * int64(numerator) / int64(progress.leastAdvancedTarget))
+			snapshot[i].UnreplacedReplicas = baseline - credit
+		}
+	}
+	for _, revision := range state.ParkedOld {
+		ready := summarizeReadiness(revision.RequiredRoles, revision.SpecReplicas, revision.RawReadyReplicas, revision.ReadyReplicas)
+		for i, capacity := range ready {
+			role := &snapshot[i]
+			role.OldSpecReplicas += revision.SpecReplicas[i]
+			role.ParkedUsableReadyReplicas += capacity.usable
+			role.ReplacementUsableReadyReplicas += capacity.usable
+			role.ObservedUsableReadyReplicas += capacity.rawUsable
+			role.ObservedPerRoleReadyReplicas += capacity.rawPerRole
+			role.ReplacementPerRoleReadyReplicas += capacity.perRole
 		}
 	}
 	return snapshot
 }
 
-// usableReadyReplicas returns no capacity until every required role has at
-// least one committed Ready replica. This prevents one role from a partial
-// revision from authorizing retirement of its counterpart in another revision.
-func usableReadyReplicas(requiredRoles []bool, readyReplicas RoleReplicaState) RoleReplicaState {
-	usable := make(RoleReplicaState, len(readyReplicas))
+type roleReadiness struct {
+	usable, rawUsable   int // Serving capacity: every required role is Ready.
+	perRole, rawPerRole int // Independent capacity: every required role still has Spec.
+}
+
+// summarizeReadiness keeps serving and per-role capacity separate, in both
+// observed (raw) and retained (committed) form, for every kind of revision.
+func summarizeReadiness(requiredRoles []bool, spec, raw, committed RoleReplicaState) []roleReadiness {
+	usable := allRequiredRolesPresent(requiredRoles, committed)
+	rawUsable := allRequiredRolesPresent(requiredRoles, raw)
+	complete := allRequiredRolesPresent(requiredRoles, spec)
+	result := make([]roleReadiness, len(spec))
+	for i := range result {
+		if usable {
+			result[i].usable = committed[i]
+		}
+		if rawUsable {
+			result[i].rawUsable = raw[i]
+		}
+		if complete {
+			result[i].perRole = committed[i]
+			result[i].rawPerRole = raw[i]
+		}
+	}
+	return result
+}
+
+// allRequiredRolesPresent reports whether at least one role is required and
+// every required role has a positive replica count.
+func allRequiredRolesPresent(requiredRoles []bool, replicas RoleReplicaState) bool {
 	hasRequiredRole := false
 	for i, required := range requiredRoles {
 		if !required {
 			continue
 		}
 		hasRequiredRole = true
-		if readyReplicas[i] == 0 {
-			return usable
+		if replicas[i] == 0 {
+			return false
 		}
 	}
-	if !hasRequiredRole {
-		return usable
-	}
-	copy(usable, readyReplicas)
-	return usable
+	return hasRequiredRole
 }
 
 // targetReplicasForActiveRevision subtracts capacity supplied by complete
@@ -273,7 +316,7 @@ func usableReadyReplicas(requiredRoles []bool, readyReplicas RoleReplicaState) R
 func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState {
 	targets := make(RoleReplicaState, len(snapshot))
 	for i, role := range snapshot {
-		parkedReady := max(0, role.OldUsableReadyReplicas-role.ActiveOldUsableReadyReplicas)
+		parkedReady := max(0, role.ParkedUsableReadyReplicas)
 		residualTarget := role.NewTargetReplicas - parkedReady
 		if role.NewTargetReplicas > 0 {
 			residualTarget = max(1, residualTarget)
@@ -314,14 +357,12 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 		activeUsableReadyToPreserve := make(RoleReplicaState, len(snapshot))
 		activeMustRemainUsable := false
 		for i, role := range snapshot {
-			replacementReady := replacementReadyReplicas(role)
 			minimumUsableReady := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
-			activeUsableReadyToPreserve[i] = max(0, minimumUsableReady-replacementReady)
+			activeUsableReadyToPreserve[i] = max(0, minimumUsableReady-role.ReplacementUsableReadyReplicas)
 			activeMustRemainUsable = activeMustRemainUsable || activeUsableReadyToPreserve[i] > 0
 		}
 
 		for i, role := range snapshot {
-			replacementReady := replacementReadyReplicas(role)
 			if activeMustRemainUsable && requiredRoles[i] && current[i] > 0 {
 				activeUsableReadyToPreserve[i] = max(1, activeUsableReadyToPreserve[i])
 			}
@@ -337,7 +378,7 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 				role.ObservedPerRoleReadyReplicas,
 				availabilityFloor(role),
 			)
-			activeRoleReadyToPreserve := max(0, minimumRoleReady-replacementReady)
+			activeRoleReadyToPreserve := max(0, minimumRoleReady-role.ReplacementPerRoleReadyReplicas)
 			minimumRoleSpec := minimumSpecToPreserveReady(
 				current[i], role.ActiveOldCommittedReadyReplicas, activeRoleReadyToPreserve,
 			)
@@ -346,7 +387,13 @@ func furthestOldTargets(snapshot rolloutSnapshot, requiredRoles []bool) RoleRepl
 	}
 	targets = boundDrainingRoleTargetsToWindow(current, initial, targets)
 	targets = boundOldTargetsByRevisionCompleteness(current, targets, requiredRoles)
-	return boundDrainingRoleTargetsToWindow(current, initial, targets)
+	targets = boundDrainingRoleTargetsToWindow(current, initial, targets)
+	// The shared floor may cover a role that this candidate never contained.
+	// In that case the candidate cannot make an unrelated partial drain safe.
+	if !availabilityPreserved(snapshot, targets, requiredRoles) {
+		return current
+	}
+	return targets
 }
 
 // minimumSpecToPreserveReady returns the lowest Spec that cannot remove more
@@ -357,13 +404,6 @@ func minimumSpecToPreserveReady(currentSpec, committedReady, readyToPreserve int
 		return 0
 	}
 	return max(0, currentSpec-max(0, committedReady-readyToPreserve))
-}
-
-// replacementReadyReplicas returns committed Ready capacity supplied by
-// complete parked and target revisions.
-func replacementReadyReplicas(role roleRolloutSnapshot) int {
-	parkedReady := role.OldUsableReadyReplicas - role.ActiveOldUsableReadyReplicas
-	return parkedReady + role.NewUsableReadyReplicas
 }
 
 // boundOldTargetsByRevisionCompleteness makes the surviving required roles a
@@ -405,35 +445,104 @@ func slicesClone(values RoleReplicaState) RoleReplicaState {
 //	surgeCeiling     = roleReplicaCount + MaxSurge
 //	pendingAllowance = projected(roleReplicaCount, MaxSurge + MaxUnavailable)
 //
-// While old Spec remains, newSpec cannot exceed either
-// surgeCeiling-oldSpec or newReady+pendingAllowance. Once the role has no old
-// Spec left, waiting for target readiness cannot preserve old availability, so
-// only the surge ceiling and desired target remain. Fractional coordination is
-// applied separately.
+// While same-role old Spec remains, or disjoint roles are being replaced,
+// newSpec cannot exceed either surgeCeiling-oldSpec or readinessCredit+pendingAllowance.
+// Readiness credit is the role's own committed Ready count for same-role
+// replacement, or its share of the least-ready target fraction for disjoint
+// replacement. Existing issued Spec is never reduced. Fractional coordination
+// is applied separately.
 func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	hardLimits := make(RoleReplicaState, len(snapshot))
+	releasedLimits := disjointGrowthLimits(snapshot)
+	readyProgress := fractionalCoordinationWindow{}
+	disjointReplacement := false
 	budgetSteps := 0
 	for _, role := range snapshot {
+		readyProgress.includeProgress(role.NewTargetReplicas, role.NewCommittedReadyReplicas)
 		budgetSteps = max(budgetSteps, role.InitialOldReplicas, role.NewTargetReplicas)
+		disjointReplacement = disjointReplacement || role.UnreplacedReplicas > 0
 	}
+	hasTarget := readyProgress.leastAdvancedTarget > 0
 	for i, role := range snapshot {
 		roleReplicaCount := max(role.InitialOldReplicas, role.NewTargetReplicas)
 		surgeCeiling := roleReplicaCount + role.Config.MaxSurge
 		newSpecAllowedBySurge := surgeCeiling - role.OldSpecReplicas
 
 		limit := newSpecAllowedBySurge
-		if role.OldSpecReplicas > 0 {
+		if role.OldSpecReplicas > 0 || disjointReplacement {
 			pendingAllowance := projectBudget(
 				roleReplicaCount,
 				role.Config.MaxSurge+role.Config.MaxUnavailable,
 				budgetSteps,
 			)
-			pendingReadinessCeiling := role.NewCommittedReadyReplicas + pendingAllowance
+			readinessCredit := role.NewCommittedReadyReplicas
+			if disjointReplacement && hasTarget {
+				// Old removal waits for the slowest target role. Use the same
+				// progress so faster readiness alone cannot open another batch.
+				numerator := min(readyProgress.leastAdvancedReplicas, readyProgress.leastAdvancedTarget)
+				readinessCredit = int(int64(role.NewTargetReplicas) * int64(numerator) / int64(readyProgress.leastAdvancedTarget))
+			}
+			pendingReadinessCeiling := readinessCredit + pendingAllowance
 			limit = min(limit, pendingReadinessCeiling)
+		}
+		if releasedLimits != nil {
+			limit = min(limit, releasedLimits[i])
+			if hasTarget && readyProgress.leastAdvancedReplicas == 0 {
+				// Start every required role before issuing a second group.
+				// A later readiness dip must not retract already issued work.
+				limit = min(limit, 1)
+			}
 		}
 		hardLimits[i] = max(role.NewSpecReplicas, min(role.NewTargetReplicas, limit))
 	}
 	return hardLimits
+}
+
+// Disjoint growth follows observed old drain, not hypothetical deletions in the
+// next plan. Fractions coordinate roles; they do not estimate GPU capacity.
+func disjointGrowthLimits(snapshot rolloutSnapshot) RoleReplicaState {
+	progress := fractionalCoordinationWindow{}
+	hasOld := false
+	for _, role := range snapshot {
+		if role.NewTargetReplicas == 0 && role.UnreplacedReplicas > 0 {
+			baseline := role.AvailabilityBaselineReplicas
+			progress.includeProgress(baseline, max(0, baseline-role.OldSpecReplicas))
+			hasOld = hasOld || role.OldSpecReplicas > 0
+		}
+	}
+	if !hasOld || progress.leastAdvancedTarget == 0 {
+		return nil
+	}
+	limits := make(RoleReplicaState, len(snapshot))
+	for i, role := range snapshot {
+		numerator := int64(role.NewTargetReplicas) * int64(progress.leastAdvancedReplicas)
+		denominator := int64(progress.leastAdvancedTarget)
+		limits[i] = int((numerator+denominator-1)/denominator) + role.Config.MaxSurge
+	}
+	return limits
+}
+
+// Repair surplus issued before this gate existed. Only an incomplete target
+// with no shared old roles can shrink: none of its readiness serves an old floor.
+// Preserve its last Ready group even if native deletion chooses Ready first.
+func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateStep {
+	limits := disjointGrowthLimits(snapshot)
+	if limits == nil || allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
+		return nil
+	}
+	next := slicesClone(state.Target.SpecReplicas)
+	for i, role := range snapshot {
+		if role.NewTargetReplicas > 0 && role.AvailabilityBaselineReplicas > 0 {
+			return nil
+		}
+		keepReady := minimumSpecToPreserveReady(role.NewSpecReplicas, role.NewCommittedReadyReplicas, min(1, role.NewCommittedReadyReplicas))
+		keep := max(min(1, role.NewSpecReplicas), keepReady)
+		next[i] = min(next[i], max(limits[i], keep))
+	}
+	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
+		return nil
+	}
+	return &UpdateStep{Past: slicesClone(state.ActiveOld.SpecReplicas), New: next, UsesTargetRebalance: true}
 }
 
 // snapshotWithBootstrapSurge grants enough temporary surge for the first
@@ -446,6 +555,10 @@ func snapshotWithBootstrapSurge(
 	snapshot rolloutSnapshot,
 	phaseTargets RoleReplicaState,
 ) (rolloutSnapshot, bool) {
+	// Removed-role budgets, not emergency surge, fund disjoint replacements.
+	if disjointGrowthLimits(snapshot) != nil {
+		return nil, false
+	}
 	normalLimits := hardNewReplicaLimits(snapshot)
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false
@@ -482,7 +595,7 @@ func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 func availabilityFloor(role roleRolloutSnapshot) int {
 	return max(
 		0,
-		min(role.InitialOldReplicas, role.NewTargetReplicas)-role.Config.MaxUnavailable,
+		max(min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas), role.UnreplacedReplicas)-role.Config.MaxUnavailable,
 	)
 }
 
@@ -509,14 +622,7 @@ func availabilityPreserved(
 	}
 
 	activeReadyAfter := make(RoleReplicaState, len(snapshot))
-	activeRemainsUsable := false
-	for i, required := range requiredRoles {
-		if required && oldTargets[i] > 0 {
-			activeRemainsUsable = true
-			break
-		}
-	}
-	if activeRemainsUsable {
+	if allRequiredRolesPresent(requiredRoles, oldTargets) {
 		for i, role := range snapshot {
 			drain := role.ActiveOldSpecReplicas - oldTargets[i]
 			activeReadyAfter[i] = max(0, role.ActiveOldUsableReadyReplicas-drain)
@@ -529,12 +635,11 @@ func availabilityPreserved(
 
 	for i, role := range snapshot {
 		drain := role.ActiveOldSpecReplicas - oldTargets[i]
-		replacementReady := replacementReadyReplicas(role)
 		minimumUsableAfter := min(role.ObservedUsableReadyReplicas, availabilityFloor(role))
 		// Do not reject an unrelated drain for a readiness gap that was already
 		// reserved by an in-flight deletion on this unchanged role.
 		if !(drain == 0 && activeReadyAfter[i] > 0) &&
-			replacementReady+activeReadyAfter[i] < minimumUsableAfter {
+			role.ReplacementUsableReadyReplicas+activeReadyAfter[i] < minimumUsableAfter {
 			return false
 		}
 
@@ -544,7 +649,7 @@ func availabilityPreserved(
 			availabilityFloor(role),
 		)
 		// Only draining this role can reduce its own Ready replica count.
-		if drain > 0 && replacementReady+activeRoleReadyAfter < minimumRoleReadyAfter {
+		if drain > 0 && role.ReplacementPerRoleReadyReplicas+activeRoleReadyAfter < minimumRoleReadyAfter {
 			return false
 		}
 	}
@@ -621,21 +726,23 @@ func coordinationWindowForProgress(
 ) (fractionalCoordinationWindow, bool) {
 	window := fractionalCoordinationWindow{}
 	for i, roleReplicaCount := range roleReplicaCounts {
-		if roleReplicaCount <= 0 {
-			continue
-		}
-		if window.largestReplicaFractionDenominator == 0 ||
-			roleReplicaCount < window.largestReplicaFractionDenominator {
-			window.largestReplicaFractionDenominator = roleReplicaCount
-		}
-		if window.leastAdvancedTarget == 0 ||
-			int64(proposedProgress[i])*int64(window.leastAdvancedTarget) <
-				int64(window.leastAdvancedReplicas)*int64(roleReplicaCount) {
-			window.leastAdvancedReplicas = proposedProgress[i]
-			window.leastAdvancedTarget = roleReplicaCount
-		}
+		window.includeProgress(roleReplicaCount, proposedProgress[i])
 	}
 	return window, window.leastAdvancedTarget > 0
+}
+
+func (window *fractionalCoordinationWindow) includeProgress(total, progress int) {
+	if total <= 0 {
+		return
+	}
+	if window.largestReplicaFractionDenominator == 0 || total < window.largestReplicaFractionDenominator {
+		window.largestReplicaFractionDenominator = total
+	}
+	if window.leastAdvancedTarget == 0 ||
+		int64(progress)*int64(window.leastAdvancedTarget) < int64(window.leastAdvancedReplicas)*int64(total) {
+		window.leastAdvancedReplicas = progress
+		window.leastAdvancedTarget = total
+	}
 }
 
 // maxProgressReplicasWithinWindow returns the largest whole-replica progress
@@ -682,9 +789,11 @@ func projectBudget(roleReplicaCount, budget, stepCount int) int {
 func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdateConfig) []UpdateStep {
 	requiredOld := make([]bool, len(initialOld))
 	requiredTarget := make([]bool, len(target))
+	overlapsTarget := false
 	for i := range initialOld {
 		requiredOld[i] = initialOld[i] > 0
 		requiredTarget[i] = target[i] > 0
+		overlapsTarget = overlapsTarget || requiredOld[i] && requiredTarget[i]
 	}
 	state := RolloutState{
 		ActiveOld: ActiveRevisionState{
@@ -702,7 +811,14 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 			DesiredReplicas:    slicesClone(target),
 			UnschedulableRoles: make([]bool, len(target)),
 		},
-		Config: config,
+		AvailabilityBaseline: slicesClone(initialOld),
+		Config:               config,
+	}
+	// Match the executor's baseline contract for ordinary role removal.
+	for i := range state.AvailabilityBaseline {
+		if overlapsTarget && target[i] == 0 {
+			state.AvailabilityBaseline[i] = 0
+		}
 	}
 	steps := []UpdateStep{{Past: append(RoleReplicaState(nil), initialOld...), New: make(RoleReplicaState, len(initialOld))}}
 
@@ -715,6 +831,9 @@ func ComputeAllSteps(initialOld, target RoleReplicaState, config []RollingUpdate
 		state.ActiveOld.SpecReplicas = slicesClone(next.Past)
 		state.ActiveOld.RawReadyReplicas = slicesClone(next.Past)
 		state.ActiveOld.ReadyReplicas = slicesClone(next.Past)
+		if replicaSum(next.Past) == 0 {
+			clear(state.AvailabilityBaseline)
+		}
 		state.Target.SpecReplicas = slicesClone(next.New)
 		state.Target.RawReadyReplicas = slicesClone(next.New)
 		state.Target.ReadyReplicas = slicesClone(next.New)

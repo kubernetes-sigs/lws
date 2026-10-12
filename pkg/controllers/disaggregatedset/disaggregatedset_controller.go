@@ -17,7 +17,9 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -29,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +59,7 @@ type DisaggregatedSetReconciler struct {
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -141,7 +145,10 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if len(unresolvedRoles) > 0 {
 		log.Info("Waiting for replica targets before reconciling slices", "roles", unresolvedRoles)
 		result.RequeueAfter = time.Second
-	} else {
+	} else if !cachedWorkloadsMatchDesired(disaggregatedSet, allLWS, revision, desiredReplicasByRole) {
+		if err := r.syncMaxUnavailable(ctx, disaggregatedSet, desiredReplicasByRole); err != nil {
+			return ctrl.Result{}, err
+		}
 		for slice := range sliceCount {
 			sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, desiredReplicasByRole)
 			if err != nil {
@@ -167,6 +174,92 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return result, reconcileErr
+}
+
+// cachedWorkloadsMatchDesired only authorizes doing nothing to workloads and
+// budget history. A stale informer snapshot may delay work, but cannot permit a
+// scale or discard history. All mismatches take the existing live-read path.
+// workloads is the ownership-filtered cache snapshot; targets are resolved first.
+func cachedWorkloadsMatchDesired(ds *disaggregatedsetv1.DisaggregatedSet, workloads []*leaderworkersetv1.LeaderWorkerSet, revision string, desiredReplicasByRole map[string]int) bool {
+	sliceCount := int(disaggregatedsetutils.GetSlices(ds))
+	roleConfigs := disaggregatedsetutils.GetRoleConfigs(ds)
+	if len(workloads) != sliceCount*len(roleConfigs) {
+		return false
+	}
+	seen := sets.New[string]()
+	for _, lws := range workloads {
+		if lws == nil || !lws.DeletionTimestamp.IsZero() {
+			return false
+		}
+		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		config := roleConfigs[role]
+		sliceLabel := lws.Labels[disaggregatedsetv1.SliceLabelKey]
+		slice, err := strconv.Atoi(sliceLabel)
+		if config == nil || err != nil || slice < 0 || slice >= sliceCount || sliceLabel != strconv.Itoa(slice) ||
+			lws.Labels[disaggregatedsetv1.RevisionLabelKey] != revision || seen.Has(lws.Name) ||
+			lws.Name != disaggregatedsetutils.GenerateName(ds.Name, slice, revision, role) {
+			return false
+		}
+		seen.Insert(lws.Name)
+		desired, known := desiredReplicasByRole[role]
+		initial, valid := disaggregatedsetutils.GetInitialReplicas(lws)
+		if !known || !valid || int(getLWSReplicas(lws)) != desired || int(initial) != desired {
+			return false
+		}
+		if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash &&
+			cmp.Or(lws.Spec.GroupReplacementPolicy, leaderworkersetv1.GroupReplacementPostTermination) !=
+				cmp.Or(config.Spec.GroupReplacementPolicy, leaderworkersetv1.GroupReplacementPostTermination) {
+			return false
+		}
+	}
+	encoded, err := maxUnavailableAnnotation(ds, disaggregatedsetutils.GetRoleNames(ds), desiredReplicasByRole)
+	return err == nil && ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] == encoded
+}
+
+// syncMaxUnavailable remembers live budgets, including policy-only updates.
+// Persisting resolved counts freezes percentages for removed roles and gives
+// every old-revision candidate the same allowance.
+func (r *DisaggregatedSetReconciler) syncMaxUnavailable(
+	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
+	desiredReplicasByRole map[string]int,
+) error {
+	// Only a live, ownership-filtered list can safely prune history. Retain even
+	// zero-Spec LWS until deletion, and never erase history due to informer lag.
+	workloads, err := r.LWSManager.listWithReader(ctx, r.LWSManager.apiReader, ds, "")
+	if err != nil {
+		return err
+	}
+	roles := sets.New(disaggregatedsetutils.GetRoleNames(ds)...)
+	for _, lws := range workloads {
+		roles.Insert(lws.Labels[disaggregatedsetv1.RoleLabelKey])
+	}
+	encoded, err := maxUnavailableAnnotation(ds, sets.List(roles), desiredReplicasByRole)
+	if err != nil {
+		return err
+	}
+	if ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] == encoded {
+		return nil
+	}
+	patch := client.MergeFromWithOptions(ds.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if ds.Annotations == nil {
+		ds.Annotations = make(map[string]string)
+	}
+	ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = encoded
+	if err := r.Patch(ctx, ds, patch); err != nil {
+		return fmt.Errorf("persisting rollout maxUnavailable budgets: %w", err)
+	}
+	return nil
+}
+
+func maxUnavailableAnnotation(ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, desiredReplicasByRole map[string]int) (string, error) {
+	config := extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole)
+	budgets := make(map[string]int, len(roleNames))
+	for i, role := range roleNames {
+		budgets[role] = config[i].MaxUnavailable
+	}
+	encoded, err := json.Marshal(budgets)
+	return string(encoded), err
 }
 
 // resolveRevision selects the revision hash generation for a DisaggregatedSet.
@@ -442,7 +535,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 		return ctrl.Result{}, err
 	}
 
-	oldRevisions, _, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
+	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -454,7 +547,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	var result ctrl.Result
 	if len(oldRevisions) > 0 {
 		var complete bool
-		result, complete, err = executor.ReconcileRevisionTransition(ctx, disaggregatedSet, slice, revision, desiredReplicasByRole)
+		result, complete, err = executor.ReconcileRevisionTransition(ctx, disaggregatedSet, slice, revision, oldRevisions, newRevision, desiredReplicasByRole)
 		if err != nil {
 			return result, err
 		}
@@ -462,7 +555,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 			return result, err
 		}
 	} else {
-		result, err = r.reconcileCurrentRevision(ctx, disaggregatedSet, slice, revision, desiredReplicasByRole)
+		result, err = r.reconcileCurrentRevision(ctx, disaggregatedSet, slice, revision, newRevision, desiredReplicasByRole)
 		if err != nil {
 			return result, err
 		}
@@ -508,11 +601,17 @@ func (r *DisaggregatedSetReconciler) createRollingUpdateExecutor() *RollingUpdat
 }
 
 //nolint:unparam // Result is always empty but signature matches controller-runtime pattern
-func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
+func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, current *disaggregatedsetutils.RevisionRoles, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 
 	for role, config := range roleConfigs {
-		if err := r.reconcileCurrentRevisionRole(ctx, disaggregatedSet, slice, role, config, revision, desiredReplicasByRole); err != nil {
+		// The live slice list was read after policy sync. Reuse it so our own
+		// policy write cannot leave Scale comparing against an older cached generation.
+		var existing *leaderworkersetv1.LeaderWorkerSet
+		if current != nil {
+			existing = current.Roles[role]
+		}
+		if err := r.reconcileCurrentRevisionRole(ctx, disaggregatedSet, slice, existing, config, revision, desiredReplicasByRole); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
 	}
@@ -520,14 +619,10 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Contex
 	return ctrl.Result{}, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, role string, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) error {
+func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, existing *leaderworkersetv1.LeaderWorkerSet, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) error {
 	log := logf.FromContext(ctx)
 
-	existing, err := r.LWSManager.GetForRole(ctx, disaggregatedSet, slice, revision, role)
-	if err != nil {
-		return fmt.Errorf("failed to get LWS for role %s revision %s: %w", role, revision, err)
-	}
-
+	role := config.Name
 	desiredReplicas := int32(desiredReplicasByRole[role])
 
 	// With no old revision to replace, create a missing LWS directly at its
@@ -553,7 +648,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	}
 	if existingReplicas != desiredReplicas {
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
-		if err := r.LWSManager.Scale(ctx, disaggregatedSet, existing.Name, int(desiredReplicas)); err != nil {
+		if err := r.LWSManager.Scale(ctx, disaggregatedSet, existing, int(desiredReplicas)); err != nil {
 			return fmt.Errorf("failed to scale LWS %s: %w", existing.Name, err)
 		}
 	}
@@ -657,6 +752,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.LWSManager == nil {
 		r.LWSManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}
+	r.LWSManager.apiReader = mgr.GetAPIReader()
 
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)

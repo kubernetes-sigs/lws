@@ -114,6 +114,12 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - list
+- apiGroups:
   - disaggregatedset.x-k8s.io
   resources:
   - disaggregatedsetrolescalers
