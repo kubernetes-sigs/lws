@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -3421,4 +3422,98 @@ func TestSubRoleRecoveryPreservesReadyDonor(t *testing.T) {
 	child, coherent := groupSubRole(f.observe().Groups[1])
 	require.True(t, coherent)
 	require.Equal(t, "b", child)
+}
+
+func TestSubRoleRolloutAppliesEveryParent(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		initial, old, target []int
+		surge                []int
+		bootstrap            bool
+	}{
+		{"growth and old drain", []int{2, 2}, []int{2, 2}, []int{0, 0}, []int{1, 1}, false},
+		{"bootstrap", []int{1, 5}, []int{1, 4}, []int{0, 1}, []int{0, 0}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old, target, executor := subRoleRolloutParents(t, tc.initial, tc.old, tc.target)
+			state := rolloutState(tc.initial, tc.old, tc.old, nil, nil, tc.target, tc.target, tc.initial, configs(tc.surge, []int{1, 1}))
+			step := ComputeNextStep(state)
+			require.NotNil(t, step)
+			require.Equal(t, tc.bootstrap, step.UsesBootstrapSurge)
+			err := executor.applyRolloutStep(t.Context(), old[0].ds, subRoleParentRevision(target), rolloutInputs{allRoleNames: []string{"prefill/pool", "decode/pool"}}, subRoleParentRevision(old), state, step)
+			require.NoError(t, err)
+			for i := range target {
+				require.EqualValues(t, step.New[i], getLWSReplicas(target[i].observe().LWS), "accept both parents before waiting")
+				if step.Past[i] < tc.old[i] {
+					counts, err := subRoleCounts(old[i].observe().LWS, subRolePlanAnnotation)
+					require.NoError(t, err)
+					require.Equal(t, step.Past[i], counts["pool"], "accept the old drain in the same step")
+				}
+			}
+			recorder := executor.Record.(*events.FakeRecorder)
+			var emitted string
+			for len(recorder.Events) > 0 {
+				emitted += <-recorder.Events
+			}
+			require.Contains(t, emitted, EventReasonScalingUp)
+			for i, parent := range testRoleNames() {
+				if step.New[i] > tc.target[i] {
+					require.Contains(t, emitted, parent)
+				}
+			}
+			require.Equal(t, tc.bootstrap, strings.Contains(emitted, EventReasonBootstrapSurge), "accepted bootstrap growth must be observable")
+		})
+	}
+}
+
+func TestSubRoleRolloutStopsOnFailedSiblingWrite(t *testing.T) {
+	old, target, executor := subRoleRolloutParents(t, []int{2, 2}, []int{2, 2}, []int{0, 0})
+	executor.LWSManager.client = interceptor.NewClient(executor.LWSManager.client.(client.WithWatch), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			if object.GetName() == target[1].lws.Name {
+				return fmt.Errorf("injected sibling write failure")
+			}
+			return c.Patch(ctx, object, patch, options...)
+		},
+	})
+	state := rolloutState([]int{2, 2}, []int{2, 2}, []int{2, 2}, nil, nil, []int{0, 0}, []int{0, 0}, []int{2, 2}, configs([]int{1, 1}, []int{1, 1}))
+	err := executor.applyRolloutStep(t.Context(), old[0].ds, subRoleParentRevision(target), rolloutInputs{allRoleNames: []string{"prefill/pool", "decode/pool"}}, subRoleParentRevision(old), state, ComputeNextStep(state))
+	require.ErrorContains(t, err, "injected sibling write failure")
+	require.EqualValues(t, 1, getLWSReplicas(target[0].observe().LWS))
+	require.Zero(t, getLWSReplicas(target[1].observe().LWS))
+	for _, fixture := range old {
+		require.Empty(t, fixture.observe().LWS.Annotations[subRolePlanAnnotation], "failed growth must not publish an old drain")
+		require.EqualValues(t, 2, getLWSReplicas(fixture.lws))
+	}
+	recorder := executor.Record.(*events.FakeRecorder)
+	require.NotEmpty(t, recorder.Events)
+	require.Contains(t, <-recorder.Events, EventReasonScalingUp, "retain the event for the successful first parent")
+}
+
+func subRoleRolloutParents(t *testing.T, initial, oldCounts, targetCounts []int) (old, target []*subRoleFixture, executor *RollingUpdateExecutor) {
+	root := newSubRoleFixture(t, 0)
+	root.ds.Spec.Roles = nil
+	for i, name := range []string{"prefill", "decode"} {
+		root.ds.Spec.Roles = append(root.ds.Spec.Roles, disaggregatedsetv1.DisaggregatedRoleSpec{Name: name, SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "pool", Replicas: ptr.To(int32(initial[i]))}}})
+		for j, counts := range [][]int{oldCounts, targetCounts} {
+			fixture := root.withRevision(fmt.Sprintf("%s-%d", name, j), slices.Repeat([]string{"pool"}, counts[i])...)
+			fixture.lws.Labels[disaggregatedsetv1.RoleLabelKey] = name
+			setSubRoleJSON(fixture.lws, subRoleReplicasAnnotation, map[string]int{"pool": counts[i]})
+			setSubRoleJSON(fixture.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{"pool": initial[i]})
+			setInitialReplicasAnnotation(fixture.lws, initial[i])
+			require.NoError(t, root.manager.client.Update(t.Context(), fixture.lws))
+			if j == 0 {
+				old = append(old, fixture)
+			} else {
+				target = append(target, fixture)
+			}
+		}
+	}
+	return old, target, &RollingUpdateExecutor{LWSManager: root.manager, Record: events.NewFakeRecorder(20)}
+}
+
+func subRoleParentRevision(parents []*subRoleFixture) disaggregatedsetutils.RevisionRoles {
+	return disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
+		"prefill": parents[0].observe().LWS, "decode": parents[1].observe().LWS,
+	}}
 }
