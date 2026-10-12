@@ -73,8 +73,9 @@ retain the single-slice restriction. This initial implementation requires Ordina
 
 Route using the controller-owned `disaggregatedset.x-k8s.io/subrole` Pod label alongside
 set/role/slice labels. Each child inherits independent rollout budgets; there is no parent cap.
-`status.roleStatuses` lists the parent aggregate then `parent/child` entries for current children:
-use totals or breakdown, not both. `SubRolesAssigned` reports coherent group assignment.
+`status.roleStatuses` lists parent aggregates, with current children nested in
+`subRoleStatuses` using local names such as `interactive`. Use the parent total or the
+child breakdown, not their sum. `SubRolesAssigned` reports coherent group assignment.
 Labels can briefly duplicate during transfers. Retained groups must be healthy before relabeling
 or shrinking; pending operations block further planning and desired changes until they complete.
 See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)

@@ -351,10 +351,9 @@ created, so changing it takes effect on the next rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>
 <td>
-   <p>RoleStatuses lists each current role followed by its sub-roles in spec order.
-Parent entries include historical layouts, so may exceed the visible child sum.
-Do not sum parent and child entries together.
-Removed roles and sub-roles are omitted even while their groups drain.</p>
+   <p>RoleStatuses lists current parent roles in spec order, with nested sub-role statuses.
+Parent counts include historical layouts and may exceed the visible child sum.
+Removed roles are omitted even while their groups drain.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
@@ -515,7 +514,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 - [DisaggregatedSetStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus)
 
 
-<p>RoleStatus defines the observed state of a single role.</p>
+<p>RoleStatus defines the observed state of a single parent role.</p>
 
 
 <table class="table">
@@ -527,7 +526,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 <code>string</code>
 </td>
 <td>
-   <p>Name is the role name or &quot;parent/subrole&quot; for a sub-role.</p>
+   <p>Name is the parent role name.</p>
 </td>
 </tr>
 <tr><td><code>replicas</code><br/>
@@ -552,6 +551,15 @@ Sub-role readiness requires a coherent assignment across the whole group.</p>
    <p>UpdatedReplicas is the number of replicas updated to the latest revision.</p>
 </td>
 </tr>
+<tr><td><code>subRoleStatuses</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-SubRoleStatus"><code>[]SubRoleStatus</code></a>
+</td>
+<td>
+   <p>SubRoleStatuses lists the current sub-roles in spec order.
+Removed sub-roles are omitted, but their groups remain in the parent counts
+while draining. Do not add child counts to their parent aggregate.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -570,4 +578,51 @@ old-revision retirement within the rollout's availability and surge bounds.</p>
 
 
 
+
+## `SubRoleStatus`     {#disaggregatedset-x-k8s-io-v1-SubRoleStatus}
+    
+
+**Appears in:**
+
+- [RoleStatus](#disaggregatedset-x-k8s-io-v1-RoleStatus)
+
+
+<p>SubRoleStatus defines the observed state of a sub-role within its parent.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>name</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Name is the sub-role name, without the parent prefix.</p>
+</td>
+</tr>
+<tr><td><code>replicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas is the number of replica groups assigned to this sub-role.</p>
+</td>
+</tr>
+<tr><td><code>readyReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>ReadyReplicas counts Ready groups with a coherent whole-group assignment.</p>
+</td>
+</tr>
+<tr><td><code>updatedReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>UpdatedReplicas counts groups belonging to the latest revision.</p>
+</td>
+</tr>
+</tbody>
+</table>
   

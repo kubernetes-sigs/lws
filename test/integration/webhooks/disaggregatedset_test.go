@@ -323,9 +323,10 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(gomega.Succeed())
 			gomega.Expect(ds.Spec.Roles[0].SubRoles).To(gomega.Equal(original.Spec.Roles[0].SubRoles))
 			statuses := []disaggregatedset.RoleStatus{
-				{Name: role.Name, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
-				{Name: role.Name + "/hot", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
-				{Name: role.Name + "/cold"},
+				{Name: role.Name, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedset.SubRoleStatus{
+					{Name: "hot", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
+					{Name: "cold"},
+				}},
 			}
 			ds.Status.RoleStatuses = statuses
 			gomega.Expect(k8sClient.Status().Update(ctx, ds)).To(gomega.Succeed())

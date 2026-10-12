@@ -95,8 +95,9 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 			desired := map[string]int{"model": 1, "model/a": 1}
 			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
 			require.Equal(t, []disaggregatedsetv1.RoleStatus{
-				{Name: "model", Replicas: tc.parent, ReadyReplicas: tc.parent, UpdatedReplicas: 1},
-				{Name: "model/a", Replicas: tc.childCount, ReadyReplicas: tc.childCount, UpdatedReplicas: 1},
+				{Name: "model", Replicas: tc.parent, ReadyReplicas: tc.parent, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
+					{Name: "a", Replicas: tc.childCount, ReadyReplicas: tc.childCount, UpdatedReplicas: 1},
+				}},
 			}, f.ds.Status.RoleStatuses)
 			require.Equal(t, tc.assigned, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)))
 			require.False(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "a Ready target cannot hide surviving historical capacity or invalid assignments")
@@ -266,7 +267,7 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			c := f.manager.client
 			f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "b"}, {Name: "a", Scaling: externalRole("").Scaling}, {Name: "empty", Replicas: ptr.To[int32](0)}}}}
 			require.NoError(t, c.Update(t.Context(), f.ds))
-			previous := []disaggregatedsetv1.RoleStatus{{Name: "model", Replicas: 9}, {Name: "model/removed", Replicas: 1}}
+			previous := []disaggregatedsetv1.RoleStatus{{Name: "model", Replicas: 9, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{{Name: "removed", Replicas: 1}}}}
 			f.ds.Status.RoleStatuses = previous
 			require.NoError(t, c.Status().Update(t.Context(), f.ds))
 			old := f.withRevision("old", "a")
@@ -305,9 +306,10 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			err = r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 3, "model/a": 2, "model/b": 1, "model/empty": 0}, scalers)
 			require.Equal(t, failure != "", err != nil)
 			want := []disaggregatedsetv1.RoleStatus{
-				{Name: "model", Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 2},
-				{Name: "model/b", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
-				{Name: "model/a", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1}, {Name: "model/empty"},
+				{Name: "model", Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 2, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
+					{Name: "b", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
+					{Name: "a", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1}, {Name: "empty"},
+				}},
 			}
 			wantScaler := int32(2)
 			if failure == "observe" {

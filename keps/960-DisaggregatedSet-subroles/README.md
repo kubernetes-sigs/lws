@@ -399,10 +399,27 @@ sub-role label.
 
 ### Status, Slices, and Compatibility
 
-`status.roleStatuses` lists the parent aggregate `model`, then current-spec children
-`model/a`, `model/b`, using existing `RoleStatus` fields. Parent counts include valid
-historical groups, so may exceed the visible child sum during a transition; do not count
-both levels. Removed children drain internally. `SubRolesAssigned` checks old groups
+`status.roleStatuses` lists parent aggregates, with current-spec children nested in
+`subRoleStatuses`. Child names are local to the parent (`a`, not `model/a`). For example:
+
+```yaml
+status:
+  roleStatuses:
+  - name: model
+    replicas: 3
+    readyReplicas: 3
+    subRoleStatuses:
+    - name: a
+      replicas: 2
+      readyReplicas: 2
+    - name: b
+      replicas: 1
+      readyReplicas: 1
+```
+
+Both levels follow spec order. Parent counts include valid historical groups, so may
+exceed the visible child sum during a transition; do not add the two levels together.
+Removed children drain internally. `SubRolesAssigned` checks old groups
 against their revision's recorded layout and target groups against current membership;
 only coherent whole groups contribute Ready.
 

@@ -19688,16 +19688,15 @@ spec:
                 type: integer
               roleStatuses:
                 description: |-
-                  RoleStatuses lists each current role followed by its sub-roles in spec order.
-                  Parent entries include historical layouts, so may exceed the visible child sum.
-                  Do not sum parent and child entries together.
-                  Removed roles and sub-roles are omitted even while their groups drain.
+                  RoleStatuses lists current parent roles in spec order, with nested sub-role statuses.
+                  Parent counts include historical layouts and may exceed the visible child sum.
+                  Removed roles are omitted even while their groups drain.
                 items:
-                  description: RoleStatus defines the observed state of a single role.
+                  description: RoleStatus defines the observed state of a single parent
+                    role.
                   properties:
                     name:
-                      description: Name is the role name or "parent/subrole" for a
-                        sub-role.
+                      description: Name is the parent role name.
                       type: string
                     readyReplicas:
                       description: |-
@@ -19710,6 +19709,41 @@ spec:
                         role.
                       format: int32
                       type: integer
+                    subRoleStatuses:
+                      description: |-
+                        SubRoleStatuses lists the current sub-roles in spec order.
+                        Removed sub-roles are omitted, but their groups remain in the parent counts
+                        while draining. Do not add child counts to their parent aggregate.
+                      items:
+                        description: SubRoleStatus defines the observed state of a
+                          sub-role within its parent.
+                        properties:
+                          name:
+                            description: Name is the sub-role name, without the parent
+                              prefix.
+                            type: string
+                          readyReplicas:
+                            description: ReadyReplicas counts Ready groups with a
+                              coherent whole-group assignment.
+                            format: int32
+                            type: integer
+                          replicas:
+                            description: Replicas is the number of replica groups
+                              assigned to this sub-role.
+                            format: int32
+                            type: integer
+                          updatedReplicas:
+                            description: UpdatedReplicas counts groups belonging to
+                              the latest revision.
+                            format: int32
+                            type: integer
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     updatedReplicas:
                       description: UpdatedReplicas is the number of replicas updated
                         to the latest revision.

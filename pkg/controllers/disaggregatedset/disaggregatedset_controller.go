@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -368,7 +367,7 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 // slices and revisions), and persists the result if anything changed. roleNames is
 // always the current spec.roles: a role removed from spec has no RoleStatuses entry
 // even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
-// Each parent aggregate is followed by its current children in spec order.
+// Each parent aggregate contains its current children in spec order.
 func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
 	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
 	observedReplicas := make(map[string]int32, len(scalers))
@@ -402,7 +401,14 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 				}
 			}
 		}
-		roleStatuses = append(roleStatuses, statuses...)
+		parentStatus := statuses[0]
+		for _, status := range statuses[1:] {
+			_, child := roleParts(status.Name)
+			parentStatus.SubRoleStatuses = append(parentStatus.SubRoleStatuses, disaggregatedsetv1.SubRoleStatus{
+				Name: child, Replicas: status.Replicas, ReadyReplicas: status.ReadyReplicas, UpdatedReplicas: status.UpdatedReplicas,
+			})
+		}
+		roleStatuses = append(roleStatuses, parentStatus)
 		for _, status := range statuses {
 			observedReplicas[status.Name] = status.Replicas
 			// Unknown targets must not be mistaken for a requested zero.
@@ -450,6 +456,8 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggreg
 
 // subRoleStatus counts coherent groups in the parent, including historical
 // layouts. Current child entries are the matching subset of that aggregate.
+// Internal names retain parent/child keys for scaler and target lookups;
+// updateStatus nests the published children under their parent.
 func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disaggregatedsetv1.DisaggregatedRoleSpec, workloads []*leaderworkersetv1.LeaderWorkerSet, revision string) ([]disaggregatedsetv1.RoleStatus, bool, error) {
 	statuses := make([]disaggregatedsetv1.RoleStatus, len(role.SubRoles)+1)
 	statuses[0].Name = role.Name
@@ -505,7 +513,7 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 }
 
 func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) bool {
-	if slices.Equal(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
+	if equality.Semantic.DeepEqual(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
 		return false
 	}
 	disaggregatedSet.Status.RoleStatuses = roleStatuses

@@ -263,9 +263,28 @@ type PlacementPolicy struct {
 	Topology string `json:"topology,omitempty"`
 }
 
-// RoleStatus defines the observed state of a single role.
+// SubRoleStatus defines the observed state of a sub-role within its parent.
+type SubRoleStatus struct {
+	// Name is the sub-role name, without the parent prefix.
+	// +required
+	Name string `json:"name"`
+
+	// Replicas is the number of replica groups assigned to this sub-role.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ReadyReplicas counts Ready groups with a coherent whole-group assignment.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// UpdatedReplicas counts groups belonging to the latest revision.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+}
+
+// RoleStatus defines the observed state of a single parent role.
 type RoleStatus struct {
-	// Name is the role name or "parent/subrole" for a sub-role.
+	// Name is the parent role name.
 	// +required
 	Name string `json:"name"`
 
@@ -281,6 +300,14 @@ type RoleStatus struct {
 	// UpdatedReplicas is the number of replicas updated to the latest revision.
 	// +optional
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// SubRoleStatuses lists the current sub-roles in spec order.
+	// Removed sub-roles are omitted, but their groups remain in the parent counts
+	// while draining. Do not add child counts to their parent aggregate.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	SubRoleStatuses []SubRoleStatus `json:"subRoleStatuses,omitempty"`
 }
 
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.
@@ -292,10 +319,9 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// RoleStatuses lists each current role followed by its sub-roles in spec order.
-	// Parent entries include historical layouts, so may exceed the visible child sum.
-	// Do not sum parent and child entries together.
-	// Removed roles and sub-roles are omitted even while their groups drain.
+	// RoleStatuses lists current parent roles in spec order, with nested sub-role statuses.
+	// Parent counts include historical layouts and may exceed the visible child sum.
+	// Removed roles are omitted even while their groups drain.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
