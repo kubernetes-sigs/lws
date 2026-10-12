@@ -1036,13 +1036,19 @@ func TestKubernetesProviderDelegatedWorkloadToleratesParentMinCountChange(t *tes
 	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "1")))
 	assert.Equal(t, int32(4), minCountOf("1"), "a new delegated PodGroup takes the parent template minimum")
 
-	// Any other change to the parent template is still drift.
+	// Any other change to the parent template is still drift for a leader
+	// that is waiting for admission. An admitted leader's PodGroups no longer
+	// gate anything, so they are not checked again.
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(workload), workload))
 	workload.Spec.PodGroupTemplates[0].SchedulingPolicy = schedulingv1beta1.PodGroupSchedulingPolicy{
 		Basic: &schedulingv1beta1.BasicSchedulingPolicy{},
 	}
 	require.NoError(t, fakeClient.Update(ctx, workload))
-	err := provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0"))
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0")),
+		"an admitted leader is not failed by drift that no longer affects its group")
+	gatedLeader := ordinalLeaderPod(lws, "0")
+	gatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+	err := provider.CreatePodGroupIfNotExists(ctx, lws, gatedLeader)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "immutable scheduling configuration drift")
 }
