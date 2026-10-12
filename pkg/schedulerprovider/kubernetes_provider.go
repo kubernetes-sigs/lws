@@ -614,6 +614,19 @@ func controllerReferencesEqual(current, desired *metav1.OwnerReference) bool {
 		current.Name == desired.Name && current.UID == desired.UID
 }
 
+// sameControllerOwner reports whether two controller references identify the
+// same object. The version of the API group is ignored, so a parent whose
+// ownerRefs move to another version of its API keeps resolving.
+func sameControllerOwner(a, b *metav1.OwnerReference) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	aGV, aErr := schema.ParseGroupVersion(a.APIVersion)
+	bGV, bErr := schema.ParseGroupVersion(b.APIVersion)
+	return aErr == nil && bErr == nil && aGV.Group == bGV.Group &&
+		a.Kind == b.Kind && a.Name == b.Name && a.UID == b.UID
+}
+
 // findDelegatedWorkload walks the LWS controller-owner chain until it finds the
 // parent-owned Workload that contains the annotated group template. Stop at the
 // first matching hop so we do not GET third-party parents after the Workload
@@ -642,7 +655,7 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 		for i := range workloads.Items {
 			candidate := &workloads.Items[i]
 			ref := candidate.Spec.ControllerRef
-			if controllerReferencesEqual(metav1.GetControllerOf(candidate), owner) && ref != nil &&
+			if sameControllerOwner(metav1.GetControllerOf(candidate), owner) && ref != nil &&
 				ref.APIGroup == gv.Group && ref.Kind == owner.Kind && ref.Name == owner.Name {
 				if selected != nil {
 					return nil, fmt.Errorf("multiple parent Workloads match the LWS controller-owner chain: %s/%s and %s/%s", selected.Namespace, selected.Name, candidate.Namespace, candidate.Name)

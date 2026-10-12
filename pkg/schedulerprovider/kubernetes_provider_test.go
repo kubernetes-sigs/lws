@@ -1018,6 +1018,42 @@ func TestKubernetesProviderDelegatedWorkloadRejectsAmbiguousParent(t *testing.T)
 	assert.Contains(t, err.Error(), "multiple parent Workloads")
 }
 
+// The webhook keeps the controller owner UID of a delegated LWS fixed but lets
+// its apiVersion change. The parent Workload must still resolve while the
+// ownerRefs of the LWS and the Workload carry different versions.
+func TestKubernetesProviderDelegatedWorkloadToleratesOwnerAPIVersionChange(t *testing.T) {
+	ctx := context.Background()
+	controller := true
+	workloadOwner := metav1.OwnerReference{
+		APIVersion: "example.test/v1beta1",
+		Kind:       "ParentJob",
+		Name:       "parent",
+		UID:        types.UID("parent-uid"),
+		Controller: &controller,
+	}
+	lwsOwner := workloadOwner
+	lwsOwner.APIVersion = "example.test/v1"
+	lws := testScheduledLWS()
+	lws.OwnerReferences = []metav1.OwnerReference{lwsOwner}
+	lws.Annotations = map[string]string{GroupTemplateNameAnnotation: "child-template"}
+	workload := &schedulingv1beta1.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "parent-workload", Namespace: lws.Namespace, OwnerReferences: []metav1.OwnerReference{workloadOwner}},
+		Spec: schedulingv1beta1.WorkloadSpec{ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{
+			APIGroup: "example.test", Kind: workloadOwner.Kind, Name: workloadOwner.Name,
+		}},
+	}
+	otherGroupOwner := workloadOwner
+	otherGroupOwner.APIVersion = "other.test/v1"
+	otherGroupWorkload := workload.DeepCopy()
+	otherGroupWorkload.Name = "other-group-workload"
+	otherGroupWorkload.OwnerReferences = []metav1.OwnerReference{otherGroupOwner}
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(workload, otherGroupWorkload).Build()
+
+	got, err := NewKubernetesProvider(fakeClient).findDelegatedWorkload(ctx, lws)
+	require.NoError(t, err)
+	assert.Equal(t, "parent-workload", got.Name, "a Workload owned through another API group must not match")
+}
+
 // A size change creates a new revision and moves the Workload templates to the
 // new size. A group still on the old revision keeps PodGroups with the gang
 // minimum of its old size: an existing one is not reported as drift, and a

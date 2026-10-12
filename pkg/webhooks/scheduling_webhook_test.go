@@ -406,6 +406,11 @@ func TestValidateSchedulingUpdate(t *testing.T) {
 				mutate: func(l *leaderworkerset.LeaderWorkerSet) { l.Spec.Replicas = ptr.To[int32](3) },
 			},
 			{
+				name:   "changing only the apiVersion of the controller owner succeeds",
+				oldLWS: delegatedLWS,
+				mutate: func(l *leaderworkerset.LeaderWorkerSet) { l.OwnerReferences[0].APIVersion = "example.test/v2" },
+			},
+			{
 				name:   "adding a non-controller owner reference succeeds",
 				oldLWS: delegatedLWS,
 				mutate: func(l *leaderworkerset.LeaderWorkerSet) {
