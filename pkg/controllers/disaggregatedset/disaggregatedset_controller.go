@@ -22,12 +22,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,14 +38,18 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 // DisaggregatedSetReconciler reconciles a DisaggregatedSet object
@@ -149,7 +155,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if len(unresolvedRoles) > 0 {
 		log.Info("Waiting for replica targets before reconciling slices", "roles", unresolvedRoles)
 		result.RequeueAfter = time.Second
-	} else if !cachedWorkloadsMatchDesired(disaggregatedSet, allLWS, revision, desiredReplicasByRole) {
+	} else if !cachedWorkloadsMatchDesired(ctx, r.Client, disaggregatedSet, allLWS, revision, desiredReplicasByRole) {
 		if err := r.syncMaxUnavailable(ctx, disaggregatedSet, desiredReplicasByRole); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -177,7 +183,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // budget history. A stale informer snapshot may delay work, but cannot permit a
 // scale or discard history. All mismatches take the existing live-read path.
 // workloads is the ownership-filtered cache snapshot; targets are resolved first.
-func cachedWorkloadsMatchDesired(ds *disaggregatedsetv1.DisaggregatedSet, workloads []*leaderworkersetv1.LeaderWorkerSet, revision string, desiredReplicasByRole map[string]int) bool {
+func cachedWorkloadsMatchDesired(ctx context.Context, reader client.Reader, ds *disaggregatedsetv1.DisaggregatedSet, workloads []*leaderworkersetv1.LeaderWorkerSet, revision string, desiredReplicasByRole map[string]int) bool {
 	sliceCount := int(disaggregatedsetutils.GetSlices(ds))
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(ds)
 	if len(workloads) != sliceCount*len(roleConfigs) {
@@ -198,8 +204,11 @@ func cachedWorkloadsMatchDesired(ds *disaggregatedsetv1.DisaggregatedSet, worklo
 			return false
 		}
 		seen.Insert(lws.Name)
-		// Physical counts cannot prove that child assignments are settled.
-		if len(config.SubRoles) > 0 || lws.Annotations[subRoleReplicasAnnotation] != "" ||
+		if len(config.SubRoles) > 0 {
+			if !cachedSubRolesMatchDesired(ctx, reader, lws, desiredSubRoles(config, desiredReplicasByRole)) {
+				return false
+			}
+		} else if lws.Annotations[subRoleReplicasAnnotation] != "" ||
 			lws.Annotations[subRolePlanAnnotation] != "" || lws.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] != "" {
 			return false
 		}
@@ -214,8 +223,50 @@ func cachedWorkloadsMatchDesired(ds *disaggregatedsetv1.DisaggregatedSet, worklo
 			return false
 		}
 	}
-	encoded, err := maxUnavailableAnnotation(ds, disaggregatedsetutils.GetRoleNames(ds), desiredReplicasByRole)
+	encoded, err := maxUnavailableAnnotation(ds, rolloutRoleNames(ds), desiredReplicasByRole)
 	return err == nil && ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] == encoded
+}
+
+// Only cached objects authorize this no-op; actual assignment and scale writes
+// still require live observations. A saved Assigned condition is not proof:
+// Pods can be replaced or relabeled without changing the DS generation.
+func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *leaderworkersetv1.LeaderWorkerSet, desired map[string]int) bool {
+	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash || lws.Annotations[subRolePlanAnnotation] != "" {
+		return false
+	}
+	for _, key := range []string{subRoleReplicasAnnotation, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey} {
+		counts, err := subRoleCounts(lws, key)
+		if err != nil || !maps.Equal(counts, desired) {
+			return false
+		}
+	}
+	s, err := replicagroups.Observe(ctx, reader, lws)
+	if err != nil || s == nil || s.LWS.ResourceVersion != lws.ResourceVersion || !subRoleNativeSettled(s) {
+		return false
+	}
+	count := countSubRoles(desired)
+	if _, complete := subRolePrefix(s, count); !complete || len(s.Groups) != count {
+		return false
+	}
+	remaining := maps.Clone(desired)
+	for _, group := range s.Groups {
+		name, coherent := groupSubRole(group)
+		size, _ := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
+		if !coherent || remaining[name] == 0 || group.Terminating || len(group.Pods) != size ||
+			group.Leader.Status.Phase == corev1.PodFailed || group.Leader.Status.Phase == corev1.PodSucceeded {
+			return false
+		}
+		if workers := group.WorkerStatefulSet; size > 1 && (workers == nil || workers.Status.ObservedGeneration < workers.Generation || ptr.Deref(workers.Spec.Replicas, 0) != int32(size-1)) {
+			return false
+		}
+		for i, pod := range group.Pods[1:] {
+			if pod.Name != fmt.Sprintf("%s-%d", group.WorkerStatefulSet.Name, i+1) || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+				return false
+			}
+		}
+		remaining[name]--
+	}
+	return true
 }
 
 // syncMaxUnavailable remembers live budgets, including policy-only updates.
@@ -409,7 +460,9 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 	}
 	assigned := true
 	for _, lws := range workloads {
-		s, err := replicagroups.Observe(ctx, m.apiReader, lws)
+		// Status is eventually consistent; it must not duplicate the live reads
+		// reserved for assignment and scale decisions.
+		s, err := replicagroups.Observe(ctx, m.client, lws)
 		if err != nil {
 			return nil, false, err
 		}
@@ -866,7 +919,36 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return nil
 			}
 			return []ctrl.Request{{NamespacedName: client.ObjectKey{Namespace: pod.GetNamespace(), Name: name}}}
-		})).
+		}), builder.WithPredicates(subRolePodPredicate())).
 		Named("disaggregatedset").
 		Complete(r)
+}
+
+// Keep events that affect membership, readiness or scheduling. In particular,
+// Pod generation alone misses both label repairs and readiness transitions.
+func subRolePodPredicate() predicate.Predicate {
+	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+		before, oldOK := e.ObjectOld.(*corev1.Pod)
+		after, newOK := e.ObjectNew.(*corev1.Pod)
+		if !oldOK || !newOK || before == nil || after == nil {
+			return true
+		}
+		return before.UID != after.UID || !maps.Equal(before.Labels, after.Labels) ||
+			!maps.Equal(before.Annotations, after.Annotations) ||
+			!equality.Semantic.DeepEqual(before.OwnerReferences, after.OwnerReferences) ||
+			!equality.Semantic.DeepEqual(before.DeletionTimestamp, after.DeletionTimestamp) ||
+			before.Spec.NodeName != after.Spec.NodeName || before.Status.Phase != after.Status.Phase ||
+			podSchedulingChanged(before, after) ||
+			podutils.PodRunningAndReady(*before) != podutils.PodRunningAndReady(*after)
+	}}
+}
+
+func podSchedulingChanged(before, after *corev1.Pod) bool {
+	_, oldCondition := podutils.GetPodCondition(&before.Status, corev1.PodScheduled)
+	_, newCondition := podutils.GetPodCondition(&after.Status, corev1.PodScheduled)
+	if oldCondition == nil || newCondition == nil {
+		return oldCondition != newCondition
+	}
+	return oldCondition.Status != newCondition.Status || oldCondition.Reason != newCondition.Reason ||
+		!oldCondition.LastTransitionTime.Equal(&newCondition.LastTransitionTime)
 }

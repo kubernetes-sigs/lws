@@ -271,7 +271,7 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			require.NoError(t, c.Status().Update(t.Context(), f.ds))
 			old := f.withRevision("old", "a")
 			podLists := 0
-			f.manager.apiReader = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+			f.manager.client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
 				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 					if _, pods := list.(*corev1.PodList); pods {
 						podLists++
