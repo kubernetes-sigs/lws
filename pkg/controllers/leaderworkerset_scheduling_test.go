@@ -759,26 +759,44 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			},
 		}
 	}
-	// concurrentUpdateInterceptor applies mutate to the stored LWS before the
-	// first status update, so that update conflicts as if another writer won.
-	concurrentUpdateInterceptor := func(mutate func(*leaderworkerset.LeaderWorkerSet)) interceptor.Funcs {
-		mutated := false
+	// concurrentWritesInterceptor applies the i-th write to the stored LWS before
+	// the i-th status update, so that update conflicts as if another writer won.
+	concurrentWritesInterceptor := func(writes ...func(context.Context, client.Client, *leaderworkerset.LeaderWorkerSet) error) interceptor.Funcs {
+		calls := 0
 		return interceptor.Funcs{
 			SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-				if !mutated {
-					mutated = true
+				if calls < len(writes) {
 					latest := &leaderworkerset.LeaderWorkerSet{}
 					if err := c.Get(ctx, client.ObjectKeyFromObject(obj), latest); err != nil {
 						return err
 					}
-					mutate(latest)
-					if err := c.Update(ctx, latest); err != nil {
+					if err := writes[calls](ctx, c, latest); err != nil {
 						return err
 					}
 				}
+				calls++
 				return c.SubResource(subResource).Update(ctx, obj, opts...)
 			},
 		}
+	}
+	// concurrentUpdateInterceptor applies the i-th mutate to the stored LWS before
+	// the i-th status update.
+	concurrentUpdateInterceptor := func(mutates ...func(*leaderworkerset.LeaderWorkerSet)) interceptor.Funcs {
+		writes := make([]func(context.Context, client.Client, *leaderworkerset.LeaderWorkerSet) error, 0, len(mutates))
+		for _, mutate := range mutates {
+			writes = append(writes, func(ctx context.Context, c client.Client, latest *leaderworkerset.LeaderWorkerSet) error {
+				mutate(latest)
+				return c.Update(ctx, latest)
+			})
+		}
+		return concurrentWritesInterceptor(writes...)
+	}
+	annotate := func(latest *leaderworkerset.LeaderWorkerSet) {
+		metav1.SetMetaDataAnnotation(&latest.ObjectMeta, "example.com/other-writer", "true")
+	}
+	scaleToZero := func(latest *leaderworkerset.LeaderWorkerSet) {
+		latest.Spec.Replicas = ptr.To[int32](0)
+		latest.Generation++
 	}
 
 	for _, hashMode := range []bool{false, true} {
@@ -792,9 +810,7 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			if hashMode {
 				lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 			}
-			r, k8sClient, _ := lwsSchedNewReconciler(t, concurrentUpdateInterceptor(func(latest *leaderworkerset.LeaderWorkerSet) {
-				metav1.SetMetaDataAnnotation(&latest.ObjectMeta, "example.com/other-writer", "true")
-			}), lws)
+			r, k8sClient, _ := lwsSchedNewReconciler(t, concurrentUpdateInterceptor(annotate), lws)
 			r.SchedulerProvider = &lwsSchedFakeProvider{}
 
 			if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
@@ -813,14 +829,22 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 		})
 
 		for name, funcs := range map[string]interceptor.Funcs{
-			"a spec change": concurrentUpdateInterceptor(func(latest *leaderworkerset.LeaderWorkerSet) {
-				latest.Spec.Replicas = ptr.To[int32](0)
-				latest.Generation++
+			"a spec change":                               concurrentUpdateInterceptor(scaleToZero),
+			"a change the cache has not observed":         conflictInterceptor(lwsSchedScheduledLWS().Name),
+			"a non-spec change followed by a spec change": concurrentUpdateInterceptor(annotate, scaleToZero),
+			"a recreation at the same generation": concurrentWritesInterceptor(func(ctx context.Context, c client.Client, latest *leaderworkerset.LeaderWorkerSet) error {
+				if err := c.Delete(ctx, latest); err != nil {
+					return err
+				}
+				recreated := latest.DeepCopy()
+				recreated.UID, recreated.ResourceVersion = "recreated-uid", ""
+				recreated.Spec.Replicas = ptr.To[int32](1)
+				return c.Create(ctx, recreated)
 			}),
-			"a change the cache has not observed": conflictInterceptor(lwsSchedScheduledLWS().Name),
 		} {
 			t.Run("a condition conflict from "+name+" stops the reconcile before the leader workload in "+mode, func(t *testing.T) {
 				lws := lwsSchedScheduledLWS()
+				lws.UID = "original-uid"
 				if hashMode {
 					lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 				}

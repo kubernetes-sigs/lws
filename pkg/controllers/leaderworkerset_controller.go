@@ -336,12 +336,12 @@ func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Cont
 	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
 		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
 	}
-	generation, resourceVersion := lws.Generation, lws.ResourceVersion
+	uid, generation, resourceVersion := lws.UID, lws.Generation, lws.ResourceVersion
 	if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
 		if !apierrors.IsConflict(err) {
 			return err
 		}
-		return r.refreshAfterSchedulingConditionConflict(ctx, lws, generation, resourceVersion, err)
+		return r.refreshAfterSchedulingConditionConflict(ctx, lws, uid, generation, resourceVersion, err)
 	}
 	return nil
 }
@@ -354,20 +354,22 @@ var errLeaderWorkerSetChanged = errors.New("LeaderWorkerSet changed during recon
 
 // refreshAfterSchedulingConditionConflict handles a conflict on the
 // WorkloadSchedulingCreated=True write, which means the LWS changed since it
-// was read at generation and resourceVersion, possibly its spec. The LWS is
-// read again: when the read observes the change and the generation is
-// unchanged, lws is replaced by the latest object, which the rest of the
-// reconcile uses, and the condition write is retried once. Otherwise
-// errLeaderWorkerSetChanged is returned.
-func (r *LeaderWorkerSetReconciler) refreshAfterSchedulingConditionConflict(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, generation int64, resourceVersion string, conflictErr error) error {
+// was read as uid at generation and resourceVersion, possibly its spec. The LWS
+// is read again: when the read observes the change and it is the same object
+// at the same generation, lws is replaced by the latest object, which the rest
+// of the reconcile uses, and the condition write is retried once. Otherwise,
+// including when the retry conflicts again, errLeaderWorkerSetChanged is
+// returned.
+func (r *LeaderWorkerSetReconciler) refreshAfterSchedulingConditionConflict(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, uid types.UID, generation int64, resourceVersion string, conflictErr error) error {
 	log := ctrl.LoggerFrom(ctx)
 	latest := &leaderworkerset.LeaderWorkerSet{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(lws), latest); err != nil {
 		return errors.Join(conflictErr, err)
 	}
 	// An unchanged resource version means the cache has not observed the
-	// change yet, so the spec cannot be verified.
-	if latest.Generation != generation || latest.ResourceVersion == resourceVersion {
+	// change yet, so the spec cannot be verified. A different UID means the
+	// LWS was recreated, so the prerequisites belong to the old object.
+	if latest.UID != uid || latest.Generation != generation || latest.ResourceVersion == resourceVersion {
 		log.V(2).Info("Stopping the reconcile after a WorkloadSchedulingCreated condition conflict", "error", conflictErr)
 		return errLeaderWorkerSetChanged
 	}
@@ -377,9 +379,9 @@ func (r *LeaderWorkerSetReconciler) refreshAfterSchedulingConditionConflict(ctx 
 		if !apierrors.IsConflict(err) {
 			return err
 		}
-		// The watch event of the latest change triggers another reconcile,
-		// which writes the condition.
-		log.V(2).Info("Deferring the WorkloadSchedulingCreated condition after a conflict", "error", err)
+		// The LWS changed again, possibly its spec, since it was read.
+		log.V(2).Info("Stopping the reconcile after a repeated WorkloadSchedulingCreated condition conflict", "error", err)
+		return errLeaderWorkerSetChanged
 	}
 	return nil
 }
