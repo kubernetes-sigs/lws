@@ -502,7 +502,7 @@ func TestUpdateConditions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reconciler, _ := lwsStatusNewReconciler(t, tc.objs...)
 
-			gotUpdate, gotUpdateDone, err := reconciler.updateConditions(context.Background(), tc.lws, currentRevision)
+			gotUpdate, gotUpdateDone, err := reconciler.updateConditions(context.Background(), tc.lws, currentRevision, int(*tc.lws.Spec.Replicas))
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("updateConditions() error = %v, wantErr %t", err, tc.wantErr)
 			}
@@ -536,7 +536,7 @@ func TestUpdateConditionsListError(t *testing.T) {
 		},
 	})
 
-	if _, _, err := reconciler.updateConditions(context.Background(), lws, "rev"); err == nil {
+	if _, _, err := reconciler.updateConditions(context.Background(), lws, "rev", int(*lws.Spec.Replicas)); err == nil {
 		t.Fatal("updateConditions() error = nil, want an error")
 	}
 }

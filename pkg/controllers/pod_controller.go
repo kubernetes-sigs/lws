@@ -527,28 +527,9 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 
 	isRecreatePending := leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
 
-	if !isRecreatePending {
-		// the leader pod will be deleted if the worker pod is deleted or any container was restarted
-		if !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
-			return false, ctrl.Result{}, nil
-		}
-
-		// Old groups keep their original size during a rollout that changes it.
-		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-			groupSize = size
-		}
-		pendingPods, err := r.pendingPodsInGroup(ctx, pod, groupSize)
-		if err != nil {
-			return false, ctrl.Result{}, err
-		}
-
-		_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
-
-		if pendingPods && (policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation) {
-			log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-			return false, ctrl.Result{}, nil
-		}
+	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
+	if !isRecreatePending && !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
+		return false, ctrl.Result{}, nil
 	}
 
 	if !podutils.LeaderPod(pod) {
@@ -589,6 +570,37 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		deleted, err := r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
 		return deleted, ctrl.Result{}, err
+	}
+
+	// RecreateGroupAfterStart only defers a new recreation, so it runs after the
+	// checks above: a terminating or exhausted group must not be held by it. A
+	// recreation that is already pending backoff passed this guard when it was
+	// decided, so it is not checked again.
+	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
+	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
+	if recreateAfterStart && !isRecreatePending {
+		// Old groups keep their original size during a rollout that changes it.
+		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
+		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
+			groupSize = size
+		}
+		startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
+		switch startState {
+		case groupStarting:
+			log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+			return false, ctrl.Result{}, nil
+		case groupUnschedulable:
+			// Keep waiting rather than recreate a group that cannot be placed, but say
+			// why so that a group waiting on the scheduler does not look idle. This
+			// runs after the ownership checks so that pods of a replaced group do not
+			// report on the group that replaced them.
+			r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, GroupUnschedulable, Update,
+				fmt.Sprintf("Skipped recreating group %s because pod %s cannot be scheduled", pod.Labels[leaderworkerset.GroupIndexLabelKey], unschedulablePod))
+			return false, ctrl.Result{}, nil
+		}
 	}
 	// If a restart budget or backoff is configured, enforce it: any recreate-triggering
 	// failure contributes to the same counter.
@@ -1348,9 +1360,27 @@ func (r *PodReconciler) topologyValueFromPod(ctx context.Context, pod *corev1.Po
 	return topology, nil
 }
 
-func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, groupSize int) (bool, error) {
-	groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
-	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
+// groupStartState is how far a group got towards having every member started,
+// which is when RecreateGroupAfterStart allows the group to be recreated.
+type groupStartState int
+
+const (
+	// groupStarted means every member exists and has left phase Pending.
+	groupStarted groupStartState = iota
+	// groupStarting means members are still being created, are held by a
+	// scheduling gate, or were placed and are starting up.
+	groupStarting
+	// groupUnschedulable means the scheduler tried and failed to place a
+	// member, for example while a gang waits for capacity.
+	groupUnschedulable
+)
+
+// groupStartState returns the start state of the leader's group and, for
+// groupUnschedulable, the name of a member the scheduler could not place. pod
+// is the member being reconciled.
+func (r *PodReconciler) groupStartState(ctx context.Context, leader, pod corev1.Pod, groupSize int) (groupStartState, string, error) {
+	groupIndex := leader.Labels[leaderworkerset.GroupIndexLabelKey]
+	lwsName := leader.Labels[leaderworkerset.SetNameLabelKey]
 
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:    lwsName,
@@ -1358,20 +1388,61 @@ func (r *PodReconciler) pendingPodsInGroup(ctx context.Context, pod corev1.Pod, 
 	})
 
 	var podList corev1.PodList
-	if err := r.List(ctx, &podList, podSelector, client.InNamespace(pod.Namespace)); err != nil {
-		return false, err
+	if err := r.List(ctx, &podList, podSelector, client.InNamespace(leader.Namespace)); err != nil {
+		return groupStarted, "", err
 	}
 
-	if groupSize != len(podList.Items) {
-		return true, nil
-	}
-
+	// Every incarnation of a replica carries the same labels, so pods of a
+	// previous leader or revision can still be listed while they terminate.
+	// Only members of this leader's group say anything about its start.
+	members := make([]corev1.Pod, 0, len(podList.Items))
 	for _, groupPod := range podList.Items {
-		if groupPod.Status.Phase == corev1.PodPending {
-			return true, nil
+		if groupPod.UID == leader.UID {
+			members = append(members, groupPod)
+			continue
+		}
+		if podutils.LeaderPod(groupPod) || revisionutils.GetRevisionKey(&groupPod) != revisionutils.GetRevisionKey(&leader) {
+			continue
+		}
+		belongs, err := r.workerPodBelongsToLeader(ctx, groupPod, leader)
+		if err != nil {
+			return groupStarted, "", err
+		}
+		if belongs {
+			members = append(members, groupPod)
 		}
 	}
-	return false, nil
+	// A deleted pod with no running containers is removed right away, so the
+	// pod being reconciled may no longer be listed. The caller has checked that
+	// it belongs to this group, so it still counts, unless a replacement with
+	// the same name has already taken its place.
+	listed := false
+	for _, member := range members {
+		if member.UID == pod.UID || member.Name == pod.Name {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		members = append(members, pod)
+	}
+
+	state := groupStarted
+	// Missing members mean the group is still being created. That includes a
+	// gated leader, whose worker StatefulSet does not exist until admission, so
+	// keep inspecting the members that do exist instead of returning early.
+	if groupSize != len(members) {
+		state = groupStarting
+	}
+	for _, member := range members {
+		if podutils.PodUnschedulable(member) {
+			return groupUnschedulable, member.Name, nil
+		}
+		if member.Status.Phase == corev1.PodPending {
+			state = groupStarting
+		}
+	}
+	return state, "", nil
 }
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet

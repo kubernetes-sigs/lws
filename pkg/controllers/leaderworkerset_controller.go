@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -88,6 +89,9 @@ const (
 	// gated hash-identity leader is held back or admitted for scheduling.
 	GroupReplacementDeferred = "GroupReplacementDeferred"
 	GroupReplacementAdmitted = "GroupReplacementAdmitted"
+	// GroupUnschedulable reports a group with a member the scheduler could not
+	// place, for example a gang waiting for capacity.
+	GroupUnschedulable = "GroupUnschedulable"
 
 	// GroupRestartBackoff indicates that group recreation is delayed by restart backoff.
 	GroupRestartBackoff = "GroupRestartBackoff"
@@ -433,6 +437,14 @@ func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 			if e.ObjectOld == nil {
 				return false
 			}
+			// Only leader pods get this far. The Progressing reason reports
+			// unschedulable leaders, and a scheduling result changes no StatefulSet
+			// status that would otherwise requeue the LWS.
+			oldPod, oldOK := e.ObjectOld.(*corev1.Pod)
+			newPod, newOK := e.ObjectNew.(*corev1.Pod)
+			if oldOK && newOK && podutils.PodUnschedulable(*oldPod) != podutils.PodUnschedulable(*newPod) {
+				return true
+			}
 			return e.ObjectOld.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] !=
 				e.ObjectNew.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]
 		},
@@ -619,7 +631,9 @@ func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyCo
 }
 
 // updates the condition of the leaderworkerset to either Progressing or Available.
-func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (bool, bool, error) {
+// leaderReplicas is the replica count of the leader StatefulSet, which exceeds
+// spec.replicas while a rolling update surges.
+func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string, leaderReplicas int) (bool, bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	podSelector := client.MatchingLabels(map[string]string{
 		leaderworkerset.SetNameLabelKey:     lws.Name,
@@ -634,6 +648,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	updateStatus := false
 	readyCount, updatedCount := 0, 0
 	readyNonDegradedCount, degradedGroupCount, desiredDegradedGroupCount := 0, 0, 0
+	unschedulableGroupCount := 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
 	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
@@ -643,6 +658,10 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		index, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
 		if err != nil {
 			return false, false, err
+		}
+		// Surge leaders count too: one that cannot be scheduled stalls the rollout.
+		if index < leaderReplicas && pod.DeletionTimestamp == nil && podutils.PodUnschedulable(pod) {
+			unschedulableGroupCount++
 		}
 		degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
 		if degraded {
@@ -740,18 +759,16 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	} else {
 		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetDegraded, lws, "AsExpected", "No replica has exhausted its restart budget"))
 	}
+	explainUnschedulableGroups(conditions, unschedulableGroupCount)
 
 	// updateDone is true when all replicas are updated and ready
 	updateDone := (lwsPartition == 0) && partitionedUpdatedAndReadyCount == int(*lws.Spec.Replicas)
 
+	previousConditions := slices.Clone(lws.Status.Conditions)
 	updateCondition := setConditions(lws, conditions)
 	// if condition changed, record events
 	if updateCondition {
-		eventCondition := conditions[0]
-		if degraded {
-			eventCondition = conditions[len(conditions)-1]
-		}
-		r.Record.Eventf(lws, nil, corev1.EventTypeNormal, eventCondition.Reason, Update, eventCondition.Message+fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
+		r.recordConditionEvents(lws, previousConditions, conditions, degraded, fmt.Sprintf(", with %d groups ready of total %d groups", readyCount, int(*lws.Spec.Replicas)))
 	}
 	return updateStatus || updateCondition, updateDone, nil
 }
@@ -788,7 +805,7 @@ func (r *LeaderWorkerSetReconciler) updateStatus(ctx context.Context, lws *leade
 	updateStatus = updateStatus || selectorUpdated
 
 	// check if an update is needed
-	updateConditions, updateDone, err := r.updateConditions(ctx, lws, revisionKey)
+	updateConditions, updateDone, err := r.updateConditions(ctx, lws, revisionKey, int(ptr.Deref(sts.Spec.Replicas, 1)))
 	if err != nil {
 		return false, err
 	}
@@ -1186,6 +1203,68 @@ func makeCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, l
 	return condition
 }
 
+// explainUnschedulableGroups gives a Progressing=True condition the reason
+// GroupUnschedulable when the scheduler could not place some desired groups,
+// so that a group waiting for capacity does not look like a normal startup.
+func explainUnschedulableGroups(conditions []metav1.Condition, unschedulableGroups int) {
+	if unschedulableGroups == 0 {
+		return
+	}
+	for i := range conditions {
+		if conditions[i].Type == string(leaderworkerset.LeaderWorkerSetProgressing) && conditions[i].Status == metav1.ConditionTrue {
+			conditions[i].Reason = GroupUnschedulable
+			conditions[i].Message = fmt.Sprintf("%d replica(s) cannot be scheduled", unschedulableGroups)
+		}
+	}
+}
+
+// conditionEvent is an event to record for a condition.
+type conditionEvent struct {
+	condition metav1.Condition
+	eventType string
+}
+
+// conditionEvents returns the events to record after conditions changed from
+// previous. The primary condition is reported as before, as a warning when it
+// says that groups cannot be scheduled. During a rolling update the primary
+// condition is UpdateInProgress, so a Progressing condition that starts
+// reporting unschedulable groups, or a different number of them, gets a warning
+// of its own, and the primary condition is repeated only if it changed too.
+func conditionEvents(previous, conditions []metav1.Condition, degraded bool) []conditionEvent {
+	primary := conditions[0]
+	if degraded {
+		primary = conditions[len(conditions)-1]
+	}
+	if primary.Reason == GroupUnschedulable {
+		return []conditionEvent{{condition: primary, eventType: corev1.EventTypeWarning}}
+	}
+	var warnings []conditionEvent
+	for _, condition := range conditions {
+		if condition.Reason == GroupUnschedulable && conditionChanged(previous, condition) {
+			warnings = append(warnings, conditionEvent{condition: condition, eventType: corev1.EventTypeWarning})
+		}
+	}
+	if len(warnings) > 0 && !conditionChanged(previous, primary) {
+		return warnings
+	}
+	return append([]conditionEvent{{condition: primary, eventType: corev1.EventTypeNormal}}, warnings...)
+}
+
+// conditionChanged reports whether the condition differs from the one of its
+// type in previous by more than its observed generation.
+func conditionChanged(previous []metav1.Condition, condition metav1.Condition) bool {
+	old := apimeta.FindStatusCondition(previous, condition.Type)
+	return old == nil || old.Status != condition.Status || old.Reason != condition.Reason || old.Message != condition.Message
+}
+
+// recordConditionEvents records the events for a change in conditions, each
+// with suffix appended to the condition's message.
+func (r *LeaderWorkerSetReconciler) recordConditionEvents(lws *leaderworkerset.LeaderWorkerSet, previous, conditions []metav1.Condition, degraded bool, suffix string) {
+	for _, e := range conditionEvents(previous, conditions, degraded) {
+		r.Record.Eventf(lws, nil, e.eventType, e.condition.Reason, Update, e.condition.Message+suffix)
+	}
+}
+
 func makeFalseCondition(conditionType leaderworkerset.LeaderWorkerSetConditionType, lws *leaderworkerset.LeaderWorkerSet, reason, message string) metav1.Condition {
 	condition := makeCondition(conditionType, lws)
 	condition.Status = metav1.ConditionFalse
@@ -1246,6 +1325,13 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 				lws.Status.Conditions[i].Status = metav1.ConditionFalse
 				lws.Status.Conditions[i].LastTransitionTime = now
 				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
+				if lws.Status.Conditions[i].Reason == GroupUnschedulable {
+					// The unschedulable count only describes a Progressing LWS; do not
+					// leave it on the condition once the LWS is Available.
+					defaults := makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+					lws.Status.Conditions[i].Reason = defaults.Reason
+					lws.Status.Conditions[i].Message = defaults.Message
+				}
 				shouldUpdate = true
 			}
 		}

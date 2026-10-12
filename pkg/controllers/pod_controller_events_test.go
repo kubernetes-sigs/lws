@@ -964,18 +964,41 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 		}
 	}
 
+	podScheduled := func(status corev1.ConditionStatus, reason string) func(*corev1.Pod) {
+		return func(p *corev1.Pod) {
+			p.Status.Phase = corev1.PodPending
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: status, Reason: reason}}
+		}
+	}
+	started := func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodRunning
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}
+	}
+
+	// startedWorker is a running worker owned by the current leader.
+	startedWorker := func(mutate func(*corev1.Pod)) *corev1.Pod {
+		return workerPod(func(p *corev1.Pod) {
+			ownedByLeader(leaderPod(nil))(p)
+			started(p)
+			if mutate != nil {
+				mutate(p)
+			}
+		})
+	}
+
 	recreateOnRestart := lwsWith(leaderworkerset.RecreateGroupOnPodRestart, nil)
+	recreateAfterStart := lwsWith(leaderworkerset.RecreateGroupAfterStart, nil)
 
 	tests := []struct {
-		name            string
-		lws             *leaderworkerset.LeaderWorkerSet
-		pod             *corev1.Pod
-		objects         []client.Object
-		listErr         error
-		wantDeleted     bool
-		wantErrContains string
-		wantLeaderGone  bool
-		wantEvent       bool
+		name              string
+		lws               *leaderworkerset.LeaderWorkerSet
+		pod               *corev1.Pod
+		objects           []client.Object
+		listErr           error
+		wantDeleted       bool
+		wantErrContains   string
+		wantLeaderGone    bool
+		wantEventContains string
 	}{
 		{
 			name:    "a policy that never recreates the group does nothing",
@@ -996,15 +1019,15 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 				p.Status.Phase = corev1.PodRunning
 				p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
 			}),
-			objects:        []client.Object{leaderPod(nil), workerPod(nil)},
-			wantDeleted:    true,
-			wantLeaderGone: true,
-			wantEvent:      true,
+			objects:           []client.Object{leaderPod(nil), workerPod(nil)},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
 		},
 		{
 			name: "a pending group member defers recreation under RecreateGroupAfterStart",
 			lws:  lwsWith(leaderworkerset.RecreateGroupAfterStart, nil),
-			pod:  deleting(workerPod(nil)),
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects: []client.Object{
 				leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending }),
 				workerPod(nil),
@@ -1015,11 +1038,94 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			lws: lwsWith(leaderworkerset.RecreateGroupOnPodRestart, func(l *leaderworkerset.LeaderWorkerSet) {
 				l.Annotations = map[string]string{leaderworkerset.RecreateGroupAfterStartAnnotationKey: "true"}
 			}),
-			pod: deleting(workerPod(nil)),
+			pod: deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects: []client.Object{
 				leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending }),
 				workerPod(nil),
 			},
+		},
+		{
+			name: "a placed member that is still starting defers recreation under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				leaderPod(podScheduled(corev1.ConditionTrue, "")),
+				workerPod(nil),
+			},
+		},
+		{
+			name: "an exhausted group is terminated even while a member is pending under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				leaderPod(func(p *corev1.Pod) {
+					p.Annotations = map[string]string{leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true"}
+					p.Status.Phase = corev1.PodPending
+				}),
+				workerPod(nil),
+			},
+			wantDeleted:       true,
+			wantEventContains: "ReplicaRestartBudgetExceeded",
+		},
+		{
+			name: "a terminating leader is not held by RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				deleting(leaderPod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })),
+				workerPod(nil),
+			},
+			wantDeleted: true,
+		},
+		{
+			name:    "a missing member defers recreation under RecreateGroupAfterStart even when the others started",
+			lws:     recreateAfterStart,
+			pod:     deleting(leaderPod(started)),
+			objects: []client.Object{leaderPod(started)},
+		},
+		{
+			name:    "a gated leader without workers defers recreation silently",
+			lws:     recreateAfterStart,
+			pod:     deleting(leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonSchedulingGated))),
+			objects: []client.Object{leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonSchedulingGated))},
+		},
+		{
+			name: "an unschedulable member defers recreation and reports it under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)),
+				workerPod(nil),
+			},
+			wantEventContains: GroupUnschedulable,
+		},
+		{
+			name:              "an unschedulable leader is reported even before its workers exist",
+			lws:               recreateAfterStart,
+			pod:               deleting(leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable))),
+			objects:           []client.Object{leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable))},
+			wantEventContains: GroupUnschedulable,
+		},
+		{
+			name: "a worker of a replaced group does not report the unschedulable replacement",
+			lws:  recreateAfterStart,
+			pod:  deleting(workerPod(nil)),
+			objects: []client.Object{
+				leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)),
+				workerPod(nil),
+			},
+		},
+		{
+			name: "an unschedulable member does not defer RecreateGroupOnPodRestart",
+			lws:  recreateOnRestart,
+			pod:  deleting(workerPod(ownedByLeader(leaderPod(nil)))),
+			objects: []client.Object{
+				leaderPod(podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)),
+				workerPod(nil),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
 		},
 		{
 			name:            "a worker name that is not ordinal derived is an error",
@@ -1050,10 +1156,10 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 				p.Annotations = map[string]string{leaderworkerset.LeaderPodNameAnnotationKey: "test-sample-0"}
 				ownedByLeader(leaderPod(nil))(p)
 			})),
-			objects:        []client.Object{leaderPod(nil), workerPod(nil)},
-			wantDeleted:    true,
-			wantLeaderGone: true,
-			wantEvent:      true,
+			objects:           []client.Object{leaderPod(nil), workerPod(nil)},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
 		},
 		{
 			name:        "a leader that is already terminating is not deleted again",
@@ -1063,9 +1169,81 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			wantDeleted: true,
 		},
 		{
+			name: "a started group is recreated under RecreateGroupAfterStart",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(nil)),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a lingering pod of a previous incarnation does not defer or report on the current group",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(nil)),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+				deleting(workerPod(func(p *corev1.Pod) {
+					p.Name = "test-sample-0-2"
+					p.UID = "worker-previous"
+					podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)(p)
+				})),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a worker of a previous revision does not count towards the current group",
+			lws:  recreateAfterStart,
+			pod: deleting(leaderPod(func(p *corev1.Pod) {
+				started(p)
+				p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+			})),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(func(p *corev1.Pod) { p.Labels[leaderworkerset.RevisionKey] = "revision-0" }),
+			},
+		},
+		{
+			name: "an unschedulable worker that is already gone is still reported",
+			lws:  recreateAfterStart,
+			pod: deleting(workerPod(func(p *corev1.Pod) {
+				ownedByLeader(leaderPod(nil))(p)
+				podScheduled(corev1.ConditionFalse, corev1.PodReasonUnschedulable)(p)
+			})),
+			objects:           []client.Object{leaderPod(podScheduled(corev1.ConditionTrue, ""))},
+			wantEventContains: GroupUnschedulable,
+		},
+		{
+			name:              "a started worker that is already gone recreates the group",
+			lws:               recreateAfterStart,
+			pod:               deleting(startedWorker(nil)),
+			objects:           []client.Object{leaderPod(started)},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
+			name: "a deleted worker is not counted next to its replacement",
+			lws:  recreateAfterStart,
+			pod:  deleting(startedWorker(func(p *corev1.Pod) { p.UID = "worker-previous" })),
+			objects: []client.Object{
+				leaderPod(started),
+				startedWorker(nil),
+			},
+			wantDeleted:       true,
+			wantLeaderGone:    true,
+			wantEventContains: "RecreateGroup",
+		},
+		{
 			name:            "a failed pod list is propagated",
-			lws:             recreateOnRestart,
-			pod:             deleting(workerPod(nil)),
+			lws:             recreateAfterStart,
+			pod:             deleting(workerPod(ownedByLeader(leaderPod(nil)))),
 			objects:         []client.Object{leaderPod(nil), workerPod(nil)},
 			listErr:         errors.New("list failed"),
 			wantErrContains: "list failed",
@@ -1106,9 +1284,9 @@ func TestPodCtrlHandleRestartPolicy(t *testing.T) {
 			}
 
 			gotEvents := podCtrlDrainEvents(recorder)
-			if tc.wantEvent {
-				if len(gotEvents) != 1 || !strings.Contains(gotEvents[0], "RecreateGroup") {
-					t.Errorf("handleRestartPolicy() events = %v, want exactly one RecreateGroup event", gotEvents)
+			if tc.wantEventContains != "" {
+				if len(gotEvents) != 1 || !strings.Contains(gotEvents[0], tc.wantEventContains) {
+					t.Errorf("handleRestartPolicy() events = %v, want exactly one containing %q", gotEvents, tc.wantEventContains)
 				}
 				return
 			}
