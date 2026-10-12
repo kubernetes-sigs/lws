@@ -302,7 +302,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 		}
 		// Keep looking for an ordinary old drain before reducing the target.
 		// A safe target reduction still beats an emergency bootstrap step.
-		if inputs.scaleDownDuringRollout && targetRevisionScalesDown(state, step) {
+		if targetRevisionScalesDown(state, step) {
 			if selectedStep == nil || selectedStep.UsesBootstrapSurge {
 				selectedRevision, selectedState, selectedStep = candidate, state, step
 			}

@@ -1199,9 +1199,9 @@ func TestScalingDuringRolloutPrefersAnyOldDrainOverTargetShrink(t *testing.T) {
 	assertRevisionReplicas(t, c, "hashC", [2]int32{3, 3})
 }
 
-func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
-	// B cannot drain, and unknown target startup work cannot be reclaimed.
-	// A can drain one Decode group under either policy.
+func TestRolloutPrefersOldDrainOverTargetRebalance(t *testing.T) {
+	// B can cancel unscheduled target surplus but cannot drain itself.
+	// Both policies should prefer A's safe old Decode drain instead.
 	now := time.Now()
 	objects := revisionLWSObjects("hashA", [2]int32{4, 4}, [2]int32{4, 4}, [2]int32{6, 4}, now)
 	objects = append(objects, revisionLWSObjects("hashB", [2]int32{1, 1}, [2]int32{1, 0}, [2]int32{1, 1}, now.Add(time.Hour))...)
@@ -1215,25 +1215,28 @@ func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
 	require.NotNil(t, target)
 	readiness, err := executor.LWSManager.collectRolloutObservations(context.Background(), ds, old, *target, resolveDesiredReplicasByRole(ds, nil))
 	require.NoError(t, err)
+	name := target.Roles["new-prefill"].Name
+	observed := readiness[name]
+	observed.allUnscheduled = true
+	readiness[name] = observed
 	inputs := rolloutInputs{
 		allRoleNames: append(testRoleNames(), "new-prefill", "new-decode"), targetReplicas: []int{0, 0, 4, 4},
 		config: configs([]int{0, 0, 1, 1}, []int{1, 1, 1, 1}), readiness: readiness,
 	}
 	candidates := orderedRevisionCandidates(old, readiness)
-	for _, tc := range []struct {
-		advance  bool
-		revision string
-		step     UpdateStep
-	}{
-		{false, "hashA", UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}},
-		{true, "hashA", UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}},
-	} {
-		t.Run(fmt.Sprintf("advance=%v", tc.advance), func(t *testing.T) {
-			inputs.scaleDownDuringRollout = tc.advance
+	for _, immediate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediate=%v", immediate), func(t *testing.T) {
+			inputs.scaleDownDuringRollout = immediate
+			require.Equal(t, "hashB", candidates[0].Revision)
+			first := rolloutStateForRevision(inputs.allRoleNames, old, candidates[0], *target, inputs.targetReplicas, inputs.config, readiness)
+			first.ScaleDownDuringRollout = immediate
+			repair := ComputeNextStep(first)
+			require.Equal(t, &UpdateStep{Past: []int{1, 1, 0, 0}, New: []int{0, 0, 1, 1}, UsesTargetRebalance: true}, repair)
+			require.NoError(t, validateUpdateStep(first, repair), "the competing target reduction must remain a safe option")
 			selected, state, step, err := executor.selectNextRolloutStep(context.Background(), candidates, old, *target, inputs)
 			require.NoError(t, err)
-			require.Equal(t, tc.revision, selected.Revision)
-			require.Equal(t, &tc.step, step)
+			require.Equal(t, "hashA", selected.Revision)
+			require.Equal(t, &UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}, step)
 			require.NoError(t, validateUpdateStep(state, step))
 		})
 	}

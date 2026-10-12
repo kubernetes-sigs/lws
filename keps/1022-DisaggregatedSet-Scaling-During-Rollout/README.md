@@ -214,7 +214,7 @@ For an interrupted A-to-B-to-C rollout, the executor considers whole old revisio
 
 The planner decides the exact surviving old counts. A partial reduction keeps at least one group of every surviving required role. A planned transition to zero retires those roles together. Separate Kubernetes writes are not atomic; if an earlier partial write has already left a role at zero, a later reconcile must recover from that observed state without recreating old replicas.
 
-The executor looks for safe ordinary old-revision progress before accepting a target-revision reduction. It does not independently remove extra old replicas beyond the planner's decision.
+Under both policies, the executor looks for safe ordinary old-revision progress before accepting a permitted target-revision reduction, including renamed-role surplus recovery. It does not independently remove extra old replicas beyond the planner's decision.
 
 ### Preserve availability when reducing the target revision
 
@@ -386,3 +386,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 - 2026-10-12: Extend fully-Ready coordination bootstrap to `Deferred` when effective demand exceeds an old availability baseline, preserving all existing bounds. Clarify that percentage budgets still use the latest requested count rather than the External-role clamp.
 - 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.
 - 2026-10-13: Apply target availability and scheduled-startup protection to renamed-role surplus recovery under both policies. Retain safe cancellation of wholly unscheduled surplus and genuine excess above desired; document that protected startup work can delay capacity recovery.
+- 2026-10-13: Prefer safe old-revision progress over permitted target reductions under both policies, including renamed-role surplus recovery.
