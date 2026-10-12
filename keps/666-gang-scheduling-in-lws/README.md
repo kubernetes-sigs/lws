@@ -899,7 +899,8 @@ group management:
    parent annotation is present; LWS then owns all internal descendant links.
 
 The annotations are controller-to-controller linkage and are immutable once
-`spec.scheduling` is set. Reject a missing template, invalid owner chain, or
+`spec.scheduling` is set. A delegated LWS's controller owner cannot be swapped
+for a different one. Reject a missing template, invalid owner chain, or
 missing parent CPG. Block pods until the delegated Workload and required parent
 instance exist.
 
