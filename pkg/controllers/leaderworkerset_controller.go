@@ -336,14 +336,50 @@ func (r *LeaderWorkerSetReconciler) reconcileWorkloadScheduling(ctx context.Cont
 	if err := r.SchedulerProvider.ReconcileScheduling(ctx, lws, replicas, revisionKey); err != nil {
 		return r.failWorkloadScheduling(ctx, lws, schedulerprovider.ReconcileErrorReason(err), err)
 	}
+	generation, resourceVersion := lws.Generation, lws.ResourceVersion
 	if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
 		if !apierrors.IsConflict(err) {
 			return err
 		}
-		// The LWS changed since it was read, and the watch event of that change
-		// triggers another reconcile, which writes the condition. The
-		// prerequisites exist, so do not hold back the rest of this reconcile.
-		ctrl.LoggerFrom(ctx).V(2).Info("Deferring the WorkloadSchedulingCreated condition after a conflict", "error", err)
+		return r.refreshAfterSchedulingConditionConflict(ctx, lws, generation, resourceVersion, err)
+	}
+	return nil
+}
+
+// errLeaderWorkerSetChanged is returned by reconcileWorkloadScheduling when the
+// LeaderWorkerSet changed after the reconcile read it and the spec cannot be
+// verified as unchanged. The rest of the reconcile must not act on the stale
+// object, since it could, for example, create pods at an old replica count.
+var errLeaderWorkerSetChanged = errors.New("LeaderWorkerSet changed during reconcile")
+
+// refreshAfterSchedulingConditionConflict handles a conflict on the
+// WorkloadSchedulingCreated=True write, which means the LWS changed since it
+// was read at generation and resourceVersion, possibly its spec. The LWS is
+// read again: when the read observes the change and the generation is
+// unchanged, lws is replaced by the latest object, which the rest of the
+// reconcile uses, and the condition write is retried once. Otherwise
+// errLeaderWorkerSetChanged is returned.
+func (r *LeaderWorkerSetReconciler) refreshAfterSchedulingConditionConflict(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, generation int64, resourceVersion string, conflictErr error) error {
+	log := ctrl.LoggerFrom(ctx)
+	latest := &leaderworkerset.LeaderWorkerSet{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(lws), latest); err != nil {
+		return errors.Join(conflictErr, err)
+	}
+	// An unchanged resource version means the cache has not observed the
+	// change yet, so the spec cannot be verified.
+	if latest.Generation != generation || latest.ResourceVersion == resourceVersion {
+		log.V(2).Info("Stopping the reconcile after a WorkloadSchedulingCreated condition conflict", "error", conflictErr)
+		return errLeaderWorkerSetChanged
+	}
+	// The scheduling prerequisites were created for this generation.
+	*lws = *latest
+	if err := r.updateWorkloadSchedulingCondition(ctx, lws, metav1.ConditionTrue, "SchedulingPrerequisitesCreated", "scheduling prerequisites created"); err != nil {
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+		// The watch event of the latest change triggers another reconcile,
+		// which writes the condition.
+		log.V(2).Info("Deferring the WorkloadSchedulingCreated condition after a conflict", "error", err)
 	}
 	return nil
 }
@@ -378,13 +414,18 @@ func (r *LeaderWorkerSetReconciler) updateWorkloadSchedulingCondition(ctx contex
 // prerequisites, whether the error is retryable or not. Scale-down and status
 // updates need none of them, so they still run: scaleDown and updateStatus are
 // nil when the leader workload does not exist yet. The error is returned so
-// the reconcile is retried.
+// the reconcile is retried. errLeaderWorkerSetChanged instead stops the
+// reconcile without acting on the stale object, and requeues it.
 func (r *LeaderWorkerSetReconciler) handleWorkloadSchedulingError(
 	ctx context.Context,
 	err error,
 	scaleDown func() error,
 	updateStatus func() (bool, error),
 ) (ctrl.Result, error) {
+	if errors.Is(err, errLeaderWorkerSetChanged) {
+		// The watch event of the spec change triggers another reconcile.
+		return ctrl.Result{Requeue: true}, nil
+	}
 	ctrl.LoggerFrom(ctx).Error(err, "Reconciling workload-aware scheduling prerequisites")
 	if scaleDown != nil {
 		if scaleErr := scaleDown(); scaleErr != nil {

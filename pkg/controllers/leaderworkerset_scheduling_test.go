@@ -759,6 +759,27 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			},
 		}
 	}
+	// concurrentUpdateInterceptor applies mutate to the stored LWS before the
+	// first status update, so that update conflicts as if another writer won.
+	concurrentUpdateInterceptor := func(mutate func(*leaderworkerset.LeaderWorkerSet)) interceptor.Funcs {
+		mutated := false
+		return interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if !mutated {
+					mutated = true
+					latest := &leaderworkerset.LeaderWorkerSet{}
+					if err := c.Get(ctx, client.ObjectKeyFromObject(obj), latest); err != nil {
+						return err
+					}
+					mutate(latest)
+					if err := c.Update(ctx, latest); err != nil {
+						return err
+					}
+				}
+				return c.SubResource(subResource).Update(ctx, obj, opts...)
+			},
+		}
+	}
 
 	for _, hashMode := range []bool{false, true} {
 		mode := "ordinal mode"
@@ -766,23 +787,63 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 			mode = "hash mode"
 		}
 
-		t.Run("a condition conflict after the prerequisites succeed does not block the leader workload in "+mode, func(t *testing.T) {
+		t.Run("a condition conflict from a non-spec change does not block the leader workload in "+mode, func(t *testing.T) {
 			lws := lwsSchedScheduledLWS()
 			if hashMode {
 				lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 			}
-			r, k8sClient, _ := lwsSchedNewReconciler(t, conflictInterceptor(lws.Name), lws)
+			r, k8sClient, _ := lwsSchedNewReconciler(t, concurrentUpdateInterceptor(func(latest *leaderworkerset.LeaderWorkerSet) {
+				metav1.SetMetaDataAnnotation(&latest.ObjectMeta, "example.com/other-writer", "true")
+			}), lws)
 			r.SchedulerProvider = &lwsSchedFakeProvider{}
 
-			// The status update at the end of the reconcile conflicts too and
-			// requeues, as it does without workload-aware scheduling.
 			if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
 				t.Fatalf("Reconcile() = %v, want nil", err)
 			}
 			if got := lwsSchedLeaderReplicas(t, k8sClient, lws, hashMode); got != *lws.Spec.Replicas {
 				t.Errorf("leader replicas = %d, want %d", got, *lws.Spec.Replicas)
 			}
+			latest := &leaderworkerset.LeaderWorkerSet{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), latest); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(latest.Status.Conditions, string(leaderworkerset.LeaderWorkerSetWorkloadSchedulingCreated)) {
+				t.Errorf("WorkloadSchedulingCreated condition = %v, want True on the latest LWS", latest.Status.Conditions)
+			}
 		})
+
+		for name, funcs := range map[string]interceptor.Funcs{
+			"a spec change": concurrentUpdateInterceptor(func(latest *leaderworkerset.LeaderWorkerSet) {
+				latest.Spec.Replicas = ptr.To[int32](0)
+				latest.Generation++
+			}),
+			"a change the cache has not observed": conflictInterceptor(lwsSchedScheduledLWS().Name),
+		} {
+			t.Run("a condition conflict from "+name+" stops the reconcile before the leader workload in "+mode, func(t *testing.T) {
+				lws := lwsSchedScheduledLWS()
+				if hashMode {
+					lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+				}
+				r, k8sClient, _ := lwsSchedNewReconciler(t, funcs, lws)
+				r.SchedulerProvider = &lwsSchedFakeProvider{}
+
+				result, err := r.Reconcile(ctx, lwsSchedRequest(lws))
+				if err != nil {
+					t.Fatalf("Reconcile() = %v, want nil", err)
+				}
+				if !result.Requeue { //nolint:staticcheck // the controller requeues status conflicts this way
+					t.Errorf("Reconcile() result = %+v, want a requeue", result)
+				}
+				if hashMode {
+					err = k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &appsv1.Deployment{})
+				} else {
+					err = k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &appsv1.StatefulSet{})
+				}
+				if !apierrors.IsNotFound(err) {
+					t.Errorf("getting the leader workload = %v, want NotFound: it must not be applied from the stale LWS", err)
+				}
+			})
+		}
 
 		t.Run("a provider error is returned even when the condition write conflicts in "+mode, func(t *testing.T) {
 			lws := lwsSchedScheduledLWS()
