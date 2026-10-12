@@ -120,7 +120,8 @@ const (
 	// RolloutScaleDownDeferred preserves the existing rollout behavior. Scale-up
 	// proceeds within rollout bounds; demand-driven target reductions wait until
 	// old revisions finish draining. Old replicas may still drain during the
-	// rollout, and existing renamed-role surplus recovery is unchanged.
+	// rollout. Renamed-role surplus recovery uses the same target availability
+	// and scheduled-startup protection as other target reductions.
 	// The surge ceiling is max(initial old replicas, effective desired) + maxSurge.
 	// External roles retain their target Spec clamp while old replicas overlap.
 	RolloutScaleDownDeferred RolloutScaleDownPolicy = "Deferred"

@@ -245,7 +245,7 @@ For example, per role, old Spec and Ready are 4, target Spec is 5 with no Ready 
 
 In a mixed target, this deliberately keeps some unscheduled groups too. It avoids separate Ordinal and Hash victim-selection rules. The protection applies to reductions below the final target: genuinely excess replicas above that target can still be removed, including scheduled ones. Observing an unscheduled Pod does not reserve it; the scheduler may assign it after the observation and before native deletion. This rule avoids knowingly discarding needed startup work, not all possible scheduling races.
 
-This changes ordinary opt-in target-size corrections only. It does not add reductions when target Spec is already at or below desired, change the default policy, or alter #1105's separate correction of surplus during fully renamed-role rollouts.
+Ordinary demand-driven corrections remain opt-in and do not add reductions when target Spec is already at or below desired. The same availability and startup protection also applies to the separate surplus recovery for fully renamed roles under both policies.
 
 ### Keep bounded recovery
 
@@ -255,7 +255,7 @@ This policy retains the existing bounded recovery rules rather than promising th
 - The existing same-role scheduler fallback remains a last resort after ordinary and bootstrap progress are unavailable. It requires a persistent scheduler `Unschedulable` condition, an over-ceiling target group, and an old group of that role that can release capacity. It adds at most one to the unavailable allowance without taking a positive availability floor to zero. Slow startup alone does not qualify.
 - Fully renamed roles start missing required target roles before repeated growth, use the old-side progress and retained-Ready bounds above, and retain correction of already-issued target surplus. Renaming does not add a new rule that deletes another old replica just because a new Pod is unschedulable.
 
-Growth credited to retained Ready capacity is not a permanent reservation. If a required target role later loses all retained Ready groups, the existing disjoint-surplus repair can reclaim extra target groups, including Ready ones, where that repair is permitted. It preserves the last retained Ready group of each role that still has one and the protected old availability floor. This recovery is separate from demand-driven target-size correction and can therefore retract work protected from an ordinary demand decrease. The controller recomputes the bounds from current observations; it does not persist a ledger of earlier readiness credit.
+If a required target role loses readiness, surplus recovery must still preserve the other roles' needed Ready capacity and scheduled startup work. It uses the same reduction bounds as ordinary target corrections: keep at least `min(current Spec, desired)` unless every group in that role is confirmed unscheduled, and preserve availability and removed-role replacement credit. Safe excess above desired can still be removed. The controller recomputes these bounds from observations without storing earlier readiness credit. This can leave a rollout waiting for capacity instead of evicting already-loading groups to make room; more capacity or an operator-adjusted budget may be needed.
 
 These exceptions remain explicit planner decisions validated by the executor. They do not turn `maxSurge` into a guarantee that every possible cluster-capacity deadlock will be resolved automatically.
 
@@ -354,7 +354,7 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 
 **Autoscaler feedback:** status includes old and target capacity, including surge. Rapidly changing targets can cause churn. This policy does not replace autoscaler stabilization windows.
 
-**Wasted startup work:** prefer safe old-revision progress and avoid ordinary target corrections below the final desired count once any target group has started scheduling. Genuine final excess can still be removed, and a Pod may become scheduled after observation but before deletion.
+**Wasted startup work:** prefer safe old-revision progress and avoid target corrections below the final desired count once any target group has started scheduling, including renamed-role surplus recovery. Genuine final excess can still be removed, and a Pod may become scheduled after observation but before deletion.
 
 **Temporary excess capacity:** preserving startup work can leave old plus target Spec above the latest surge ceiling, potentially for a long time if startup stalls. Mixed or incompletely observed targets also retain unscheduled groups. New growth remains bounded; the excess is resolved as readiness permits old-revision retirement.
 
@@ -385,3 +385,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 - 2026-10-12: Use the desired-based availability floor for both old and target reductions of current roles, replacing the historical cap. Preserve observed Ready capacity during scale-up, keep the floor across interrupted rollout phases, and retain removed-role history and replacement protection.
 - 2026-10-12: Extend fully-Ready coordination bootstrap to `Deferred` when effective demand exceeds an old availability baseline, preserving all existing bounds. Clarify that percentage budgets still use the latest requested count rather than the External-role clamp.
 - 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.
+- 2026-10-13: Apply target availability and scheduled-startup protection to renamed-role surplus recovery under both policies. Retain safe cancellation of wholly unscheduled surplus and genuine excess above desired; document that protected startup work can delay capacity recovery.

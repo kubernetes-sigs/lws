@@ -54,12 +54,14 @@ func TestMovingTargetKeepsDisjointStartupBounds(t *testing.T) {
 		{"start missing role first", []int{3, 3, 0, 0}, []int{0, 0, 1, 0}, []int{0, 0, 1, 0}, []int{3, 3, 0, 0}, []int{0, 0, 1, 1}, false},
 		{"unready pair cannot spend another old group", []int{3, 3, 0, 0}, []int{0, 0, 1, 1}, []int{0, 0, 1, 0}, nil, nil, false},
 		{"repair earlier unready surplus", []int{3, 3, 0, 0}, []int{0, 0, 3, 1}, []int{0, 0, 0, 0}, []int{3, 3, 0, 0}, []int{0, 0, 1, 1}, true},
+		{"keep scheduled or unknown startup work", []int{3, 3, 0, 0}, []int{0, 0, 3, 1}, []int{0, 0, 0, 0}, nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := rolloutState([]int{4, 4, 0, 0}, tc.old, tc.old, nil, nil, tc.issued, tc.ready,
 				[]int{0, 0, 4, 4}, configs([]int{0, 0, 0, 0}, []int{1, 1, 1, 1}))
 			state.ScaleDownDuringRollout = true
 			state.Target.UnschedulableRoles = []bool{false, false, true, true}
+			state.Target.AllUnscheduled = []bool{false, false, tc.rebalance, tc.rebalance}
 			step := ComputeNextStep(state)
 			if tc.wantNew == nil {
 				require.Nil(t, step)
@@ -867,8 +869,8 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 	assertMovingWindow(t, state.Target.SpecReplicas, phaseTargets, growing, nil)
 	assertMovingWindow(t, oldProgress, oldReference, oldNext, scaleCorrection)
 	for i, config := range state.Config {
-		if !step.UsesTargetRebalance && (i >= len(state.Target.AllUnscheduled) || !state.Target.AllUnscheduled[i] ||
-			state.Target.RawReadyReplicas[i] > 0 || state.Target.ReadyReplicas[i] > 0) {
+		if i >= len(state.Target.AllUnscheduled) || !state.Target.AllUnscheduled[i] ||
+			state.Target.RawReadyReplicas[i] > 0 || state.Target.ReadyReplicas[i] > 0 {
 			require.GreaterOrEqual(t, step.New[i], min(state.Target.SpecReplicas[i], state.Target.DesiredReplicas[i]), "preserve scheduled or unknown work")
 		}
 		floor := max(0, state.Target.DesiredReplicas[i]-config.MaxUnavailable)
@@ -1198,8 +1200,8 @@ func TestScalingDuringRolloutPrefersAnyOldDrainOverTargetShrink(t *testing.T) {
 }
 
 func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
-	// B cannot drain, but can correct an earlier target surplus. A can drain
-	// one Decode group. Only opt-in scaling should prefer A over B's repair.
+	// B cannot drain, and unknown target startup work cannot be reclaimed.
+	// A can drain one Decode group under either policy.
 	now := time.Now()
 	objects := revisionLWSObjects("hashA", [2]int32{4, 4}, [2]int32{4, 4}, [2]int32{6, 4}, now)
 	objects = append(objects, revisionLWSObjects("hashB", [2]int32{1, 1}, [2]int32{1, 0}, [2]int32{1, 1}, now.Add(time.Hour))...)
@@ -1223,7 +1225,7 @@ func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
 		revision string
 		step     UpdateStep
 	}{
-		{false, "hashB", UpdateStep{Past: []int{1, 1, 0, 0}, New: []int{0, 0, 1, 1}, UsesTargetRebalance: true}},
+		{false, "hashA", UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}},
 		{true, "hashA", UpdateStep{Past: []int{4, 3, 0, 0}, New: []int{0, 0, 3, 1}}},
 	} {
 		t.Run(fmt.Sprintf("advance=%v", tc.advance), func(t *testing.T) {

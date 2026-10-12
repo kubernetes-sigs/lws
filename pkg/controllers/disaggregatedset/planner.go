@@ -739,15 +739,16 @@ func disjointGrowthLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	return limits
 }
 
-// Reclaim incomplete target surplus beyond the old-progress budget. This also
-// covers Ready-funded growth after a later readiness loss. Only a target with
-// no shared old roles can shrink; retain its last Ready group per role even if
-// native deletion chooses Ready first.
+// Reclaim incomplete target surplus beyond the old-progress budget, using the
+// same availability and startup protection as ordinary target reductions.
+// Only a target with no shared old roles can shrink; retain its last Ready
+// group per role even if native deletion chooses Ready first.
 func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateStep {
 	limits := disjointGrowthLimits(snapshot)
 	if limits == nil || allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
 		return nil
 	}
+	drainSnapshot, minimum := targetScaleDownBounds(state, snapshot)
 	next := slicesClone(state.Target.SpecReplicas)
 	for i, role := range snapshot {
 		if role.NewTargetReplicas > 0 && state.AvailabilityBaseline[i] > 0 {
@@ -755,9 +756,10 @@ func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateSt
 		}
 		keepReady := minimumSpecToPreserveReady(role.NewSpecReplicas, role.NewCommittedReadyReplicas, min(1, role.NewCommittedReadyReplicas))
 		keep := max(min(1, role.NewSpecReplicas), keepReady)
-		next[i] = min(next[i], max(limits[i], keep))
+		next[i] = min(next[i], max(limits[i], keep, minimum[i]))
 	}
-	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
+	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) ||
+		!availabilityPreserved(drainSnapshot, next, state.Target.RequiredRoles) {
 		return nil
 	}
 	return &UpdateStep{Past: slicesClone(state.ActiveOld.SpecReplicas), New: next, UsesTargetRebalance: true}

@@ -477,11 +477,11 @@ func TestValidateDisjointReplacementStep(t *testing.T) {
 }
 
 func TestValidateDisjointSurplusStep(t *testing.T) {
-	// Target P has two Ready groups while D has none. Only P's surplus may
-	// shrink; W3 remains protected by the old baseline four and budget one.
+	// P has three Ready groups for desired two, while D has none. Only P's
+	// true excess may shrink; W3 keeps its historical floor of four minus one.
 	state := rolloutState([]int{0, 0, 4}, []int{0, 0, 3}, []int{0, 0, 3}, nil, nil,
-		[]int{2, 1, 0}, []int{2, 0, 0}, []int{2, 2, 0}, configs([]int{0, 0, 0}, []int{1, 1, 1}))
-	valid := &UpdateStep{Past: []int{0, 0, 3}, New: []int{1, 1, 0}, UsesTargetRebalance: true}
+		[]int{3, 1, 0}, []int{3, 0, 0}, []int{2, 2, 0}, configs([]int{0, 0, 0}, []int{1, 1, 1}))
+	valid := &UpdateStep{Past: []int{0, 0, 3}, New: []int{2, 1, 0}, UsesTargetRebalance: true}
 	require.Equal(t, valid, ComputeNextStep(state))
 	require.NoError(t, validateUpdateStep(state, valid))
 	for _, tc := range []struct {
@@ -490,6 +490,7 @@ func TestValidateDisjointSurplusStep(t *testing.T) {
 	}{
 		{"old drain", func(step *UpdateStep) { step.Past[2]-- }},
 		{"last Ready group", func(step *UpdateStep) { step.New[0] = 0 }},
+		{"below desired", func(step *UpdateStep) { step.New[0] = 1 }},
 		{"target growth", func(step *UpdateStep) { step.New[1]++ }},
 		{"unmarked shrink", func(step *UpdateStep) { step.UsesTargetRebalance = false }},
 		{"bootstrap flag", func(step *UpdateStep) { step.UsesBootstrapSurge = true }},
@@ -515,7 +516,7 @@ func TestDisjointSurplusReconcileUsesGuardedTargetOnlyWrites(t *testing.T) {
 			ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"worker":1}`}
 			createdAt := time.Unix(1000, 0)
 			old := revisionLWS("old", "worker", 3, 3, createdAt, 4)
-			prefill := revisionLWS("new", testRolePrefill, 2, 2, createdAt, 2)
+			prefill := revisionLWS("new", testRolePrefill, 3, 3, createdAt, 2)
 			decode := revisionLWS("new", testRoleDecode, 1, 0, createdAt, 2)
 			base := newTestClient(ds, old, prefill, decode)
 			patches, race := 0, concurrentWrite
@@ -547,12 +548,12 @@ func TestDisjointSurplusReconcileUsesGuardedTargetOnlyWrites(t *testing.T) {
 					map[string]int{testRolePrefill: 2, testRoleDecode: 2})
 				if concurrentWrite && attempt == 0 {
 					require.True(t, apierrors.IsConflict(err), "the raced scale must fail without changing replicas")
-					assert.EqualValues(t, 2, getTestLWSReplicas(c, testNamespace, prefill.Name))
+					assert.EqualValues(t, 3, getTestLWSReplicas(c, testNamespace, prefill.Name))
 					continue
 				}
 				require.NoError(t, err)
 				assert.False(t, complete)
-				assert.EqualValues(t, 1, getTestLWSReplicas(c, testNamespace, prefill.Name))
+				assert.EqualValues(t, 2, getTestLWSReplicas(c, testNamespace, prefill.Name))
 				assert.EqualValues(t, 1, getTestLWSReplicas(c, testNamespace, decode.Name))
 				assert.EqualValues(t, 3, getTestLWSReplicas(c, testNamespace, old.Name))
 			}

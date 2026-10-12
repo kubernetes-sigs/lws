@@ -835,6 +835,9 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 			!slices.Equal(step.Past, expected.Past) || !slices.Equal(step.New, expected.New) {
 			return fmt.Errorf("target rebalance does not match the disjoint surplus limit")
 		}
+		if !targetScaleDownPreservesAvailability(state, step.New) {
+			return fmt.Errorf("target rebalance exceeds its retained-readiness or scheduling budget")
+		}
 		return nil
 	}
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
