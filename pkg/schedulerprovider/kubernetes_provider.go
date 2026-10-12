@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 const (
@@ -63,7 +64,8 @@ const (
 	// PodGroupRoleLabelKey is set on role-mode PodGroups by the kubernetes provider.
 	PodGroupRoleLabelKey = "leaderworkerset.sigs.k8s.io/role"
 
-	workloadControllerUIDIndex = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
+	workloadControllerUIDIndex  = "leaderworkerset.sigs.k8s.io/workload-controller-uid"
+	podSchedulingGroupNameIndex = "leaderworkerset.sigs.k8s.io/pod-scheduling-group-name"
 	// groupIncarnationSeparator separates the group incarnation from the
 	// workload name. Workload names never contain it, LeaderWorkerSet names
 	// are DNS labels.
@@ -74,7 +76,10 @@ const (
 
 // SetupKubernetesIndexes registers cache indexes used by the Kubernetes provider.
 func SetupKubernetesIndexes(indexer client.FieldIndexer) error {
-	return indexer.IndexField(context.Background(), &schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues)
+	if err := indexer.IndexField(context.Background(), &schedulingv1beta1.Workload{}, workloadControllerUIDIndex, workloadControllerUIDIndexValues); err != nil {
+		return err
+	}
+	return indexer.IndexField(context.Background(), &corev1.Pod{}, podSchedulingGroupNameIndex, podSchedulingGroupNameIndexValues)
 }
 
 func workloadControllerUIDIndexValues(raw client.Object) []string {
@@ -83,6 +88,14 @@ func workloadControllerUIDIndexValues(raw client.Object) []string {
 		return nil
 	}
 	return []string{string(owner.UID)}
+}
+
+func podSchedulingGroupNameIndexValues(raw client.Object) []string {
+	pod, ok := raw.(*corev1.Pod)
+	if !ok || pod.Spec.SchedulingGroup == nil || pod.Spec.SchedulingGroup.PodGroupName == nil {
+		return nil
+	}
+	return []string{*pod.Spec.SchedulingGroup.PodGroupName}
 }
 
 // KubernetesWorkloadName returns the UID-qualified Workload name.
@@ -799,12 +812,18 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	}); err != nil {
 		return fmt.Errorf("list PodGroups: %w", err)
 	}
-	pods := &corev1.PodList{}
-	if err := p.client.List(ctx, pods, client.InNamespace(lws.Namespace), client.MatchingLabels{
-		leaderworkerset.SetNameLabelKey: lws.Name,
-	}); err != nil {
-		return fmt.Errorf("list Pods before PodGroup cleanup: %w", err)
+	desiredOwner := metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
+	ownedGroups := make([]*schedulingv1beta1.PodGroup, 0, len(groups.Items))
+	for i := range groups.Items {
+		group := &groups.Items[i]
+		if controllerReferencesEqual(metav1.GetControllerOf(group), desiredOwner) {
+			ownedGroups = append(ownedGroups, group)
+		}
 	}
+	if len(ownedGroups) == 0 {
+		return nil
+	}
+
 	desiredGroups := make(map[string]struct{}, len(desired))
 	for k, v := range desired {
 		desiredGroups[k] = v
@@ -819,9 +838,16 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 	// them.
 	mode, err := SchedulingModeFor(lws)
 	if err == nil && (mode == SchedulingModeReplica || mode == SchedulingModeRole) {
-		for i := range pods.Items {
-			pod := &pods.Items[i]
-			if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" || !pod.DeletionTimestamp.IsZero() {
+		leaders := &corev1.PodList{}
+		if err := p.client.List(ctx, leaders, client.InNamespace(lws.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		}); err != nil {
+			return fmt.Errorf("list leader Pods before PodGroup cleanup: %w", err)
+		}
+		for i := range leaders.Items {
+			pod := &leaders.Items[i]
+			if !pod.DeletionTimestamp.IsZero() {
 				continue
 			}
 			groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
@@ -834,23 +860,17 @@ func (p *KubernetesProvider) cleanupUnusedPodGroups(ctx context.Context, lws *le
 			}
 		}
 	}
-	inUseGroups := make(map[string]struct{}, len(pods.Items))
-	for i := range pods.Items {
-		ref := pods.Items[i].Spec.SchedulingGroup
-		if ref != nil && ref.PodGroupName != nil {
-			inUseGroups[*ref.PodGroupName] = struct{}{}
-		}
-	}
-	desiredOwner := metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))
-	for i := range groups.Items {
-		group := &groups.Items[i]
-		if !controllerReferencesEqual(metav1.GetControllerOf(group), desiredOwner) {
-			continue
-		}
+	for _, group := range ownedGroups {
 		if _, keep := desiredGroups[group.Name]; keep {
 			continue
 		}
-		if _, inUse := inUseGroups[group.Name]; !inUse {
+		referencingPods := &corev1.PodList{}
+		if err := p.client.List(ctx, referencingPods, client.InNamespace(lws.Namespace), client.MatchingFields{
+			podSchedulingGroupNameIndex: group.Name,
+		}, client.Limit(1)); err != nil {
+			return fmt.Errorf("list Pods referencing PodGroup %s/%s: %w", group.Namespace, group.Name, err)
+		}
+		if len(referencingPods.Items) == 0 {
 			if err := p.client.Delete(ctx, group); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("delete unused PodGroup %s/%s: %w", group.Namespace, group.Name, err)
 			}
@@ -883,11 +903,53 @@ func (p *KubernetesProvider) CreatePodGroupIfNotExists(ctx context.Context, lws 
 	if len(groups) == 0 {
 		return nil
 	}
+	if p.podGroupsReadyForAdmittedLeader(ctx, lws, leaderPod, groups) {
+		return nil
+	}
 	persisted, err := p.findWorkload(ctx, lws)
 	if err != nil {
 		return err
 	}
 	return p.ensurePodGroups(ctx, lws, persisted, groups)
+}
+
+// podGroupsReadyForAdmittedLeader reports whether the PodGroups of an admitted
+// leader pod need no work, so CreatePodGroupIfNotExists can skip the Workload
+// lookup and the PodGroup materialization on every reconcile of a running
+// leader. The PodGroups only gate admission, which is over once the group
+// replacement gate is lifted. A PodGroup that is missing, terminating, has a
+// gang minimum of another size, or lacks the labels or the Workload owner
+// reference that ensurePodGroups maintains takes the full path, which
+// recreates or repairs it. Changes to the immutable scheduling fields of the
+// PodGroup of an admitted leader are not reported: they no longer affect the
+// group, and reporting them used to fail every reconcile of the leader.
+func (p *KubernetesProvider) podGroupsReadyForAdmittedLeader(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod, groups []desiredPodGroup) bool {
+	if podutils.HasSchedulingGate(leaderPod, leaderworkerset.GroupReplacementSchedulingGate) {
+		return false
+	}
+	delegated := lws.Annotations[GroupTemplateNameAnnotation] != ""
+	for _, group := range groups {
+		existing := &schedulingv1beta1.PodGroup{}
+		// PodGroups live in the namespace of the LWS and its Workload, as
+		// materialized by ensurePodGroups.
+		key := types.NamespacedName{Namespace: lws.Namespace, Name: group.name}
+		if err := p.client.Get(ctx, key, existing); err != nil || !existing.DeletionTimestamp.IsZero() {
+			return false
+		}
+		if group.gangMinCount != nil && existing.Spec.SchedulingPolicy.Gang != nil && !delegated &&
+			existing.Spec.SchedulingPolicy.Gang.MinCount != *group.gangMinCount {
+			return false
+		}
+		for k, v := range group.labels {
+			if existing.Labels[k] != v {
+				return false
+			}
+		}
+		if !delegated && workloadOwnerReference(existing) == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // leaderPodGroups returns the PodGroups that back the group of leaderPod, or
