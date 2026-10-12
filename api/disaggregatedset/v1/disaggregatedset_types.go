@@ -98,6 +98,32 @@ type RoleScaling struct {
 	Mode RoleScalingMode `json:"mode,omitempty"`
 }
 
+// ScalingDuringRolloutPolicy controls how replica target changes interact with
+// an active revision transition.
+// +kubebuilder:validation:Enum=RolloutCoupled;AdvanceRollout
+type ScalingDuringRolloutPolicy string
+
+const (
+	// ScalingDuringRolloutPolicyRolloutCoupled preserves the default rollout
+	// behavior. Target decreases are completed after old revisions are drained.
+	ScalingDuringRolloutPolicyRolloutCoupled ScalingDuringRolloutPolicy = "RolloutCoupled"
+
+	// ScalingDuringRolloutPolicyAdvanceRollout applies the latest replica target
+	// while the revision transition is still active.
+	ScalingDuringRolloutPolicyAdvanceRollout ScalingDuringRolloutPolicy = "AdvanceRollout"
+)
+
+// DisaggregatedSetScalingPolicy configures how replica target changes interact
+// with DisaggregatedSet reconciliation.
+type DisaggregatedSetScalingPolicy struct {
+	// DuringRollout controls whether the current rolling update may apply a new
+	// replica target. RolloutCoupled preserves the default behavior;
+	// AdvanceRollout opts into scaling during the rollout.
+	// +optional
+	// +kubebuilder:default=RolloutCoupled
+	DuringRollout ScalingDuringRolloutPolicy `json:"duringRollout,omitempty"`
+}
+
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
@@ -148,6 +174,11 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
+
+	// ScalingPolicy controls how replica target changes interact with an active
+	// rolling update. Omit it to preserve the default RolloutCoupled behavior.
+	// +optional
+	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
 	// PlacementPolicy controls how a slice's roles are co-located and how the
 	// DisaggregatedSet's slices are spread across topology domains. When set, the

@@ -41,13 +41,17 @@ type Role struct {
 
 	// StartupDelaySeconds adds a readiness delay for rollout tests.
 	StartupDelaySeconds int
+	// HoldReadiness keeps Pods unready until the test touches /tmp/ready.
+	HoldReadiness bool
+	GroupIdentity string
 }
 
 // Config holds configuration for generating DisaggregatedSet YAML.
 type Config struct {
-	Name      string
-	Namespace string
-	Roles     []Role
+	Name                       string
+	Namespace                  string
+	Roles                      []Role
+	ScalingDuringRolloutPolicy string
 	// PlacementType, when non-empty, adds a spec.placementPolicy block
 	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
 	// topologyKey and is required for a non-None type.
@@ -79,6 +83,9 @@ spec:
 		}
 	}
 
+	if c.ScalingDuringRolloutPolicy != "" {
+		sb.WriteString(fmt.Sprintf("  scalingPolicy:\n    duringRollout: %s\n", c.ScalingDuringRolloutPolicy))
+	}
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {
 		sb.WriteString(fmt.Sprintf("  - name: %s\n", p.Name))
@@ -108,6 +115,9 @@ spec:
 		// spec: wraps LeaderWorkerSetSpec fields
 		sb.WriteString("    spec:\n")
 		sb.WriteString(fmt.Sprintf("      replicas: %d\n", p.Replicas))
+		if p.GroupIdentity != "" {
+			sb.WriteString(fmt.Sprintf("      groupIdentity: %s\n", p.GroupIdentity))
+		}
 
 		if p.HasRollout || p.Partition != nil {
 			sb.WriteString("      rolloutStrategy:\n")
@@ -121,7 +131,7 @@ spec:
 			}
 		}
 
-		slow := p.StartupDelaySeconds > 0
+		slow := p.StartupDelaySeconds > 0 || p.HoldReadiness
 		image := p.Image
 		if image == "" {
 			// Default image depends on whether the caller wants slow-pod
@@ -162,7 +172,11 @@ spec:
 			sb.WriteString("              args: [\"exec sleep infinity\"]\n")
 			sb.WriteString("              readinessProbe:\n")
 			sb.WriteString("                exec:\n")
-			sb.WriteString("                  command: [\"true\"]\n")
+			if p.HoldReadiness {
+				sb.WriteString("                  command: [\"test\", \"-f\", \"/tmp/ready\"]\n")
+			} else {
+				sb.WriteString("                  command: [\"true\"]\n")
+			}
 			sb.WriteString(fmt.Sprintf("                initialDelaySeconds: %d\n", p.StartupDelaySeconds))
 			sb.WriteString("                periodSeconds: 1\n")
 		}

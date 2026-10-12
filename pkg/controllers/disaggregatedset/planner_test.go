@@ -744,12 +744,14 @@ func TestHardNewReplicaLimits(t *testing.T) {
 		{
 			InitialOldReplicas: 8, ActiveOldSpecReplicas: 6, OldSpecReplicas: 6,
 			NewSpecReplicas: 3, NewCommittedReadyReplicas: 0, NewTargetReplicas: 8,
-			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
+			SurgeBaselineReplicas: 8,
+			Config:                RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
 		},
 		{
 			InitialOldReplicas: 4, ActiveOldSpecReplicas: 3, OldSpecReplicas: 3,
 			NewSpecReplicas: 2, NewCommittedReadyReplicas: 0, NewTargetReplicas: 4,
-			Config: RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
+			SurgeBaselineReplicas: 4,
+			Config:                RollingUpdateConfig{MaxSurge: 2, MaxUnavailable: 2},
 		},
 	}
 	assert.Equal(t, RoleReplicaState{4, 2}, hardNewReplicaLimits(snapshot))

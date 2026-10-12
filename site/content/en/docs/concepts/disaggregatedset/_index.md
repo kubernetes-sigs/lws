@@ -53,3 +53,56 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 2. **Coordinated rollouts** — Rollouts across roles are coordinated by DisaggregatedSet to preserve capacity ratios (e.g., prefill-to-decode ratio) throughout the update process. Partition-based rollout is not supported.
 
 3. **Declarative** — The entire multi-role inference topology is expressed in a single YAML manifest, making it easy to version-control and apply via GitOps.
+
+## Scaling during a rollout
+
+To apply changing replica targets while old and target revisions still overlap,
+opt in on the DisaggregatedSet:
+
+```yaml
+spec:
+  scalingPolicy:
+    duringRollout: AdvanceRollout
+```
+
+This applies to both static `roles[].spec.replicas` and External
+[RoleScaler](role-scaler) targets. Replica or policy edits do not create another
+template revision. Omitting the policy, or choosing `RolloutCoupled`, preserves
+the existing rollout behavior and defers target-revision reductions.
+
+With `AdvanceRollout`, each reconciliation uses the latest target for the surge
+ceiling (`target + maxSurge`) and availability floor (`target - maxUnavailable`,
+clamped to zero). Raising a target does not make pending Pods Ready: the existing
+pending-work and fractional-coordination bounds still apply. If observed Ready
+capacity is already below the new floor, the planner does not deliberately
+reduce it further.
+
+Safe old-revision drains are preferred over target-revision reductions. If old
+capacity cannot safely drain, excess target replicas can be reduced using the
+same retained-readiness checks. Old and target revisions never spend the same
+Ready credit in one decision. Completion requires exact target Spec and Ready,
+including when the desired replica count is zero.
+
+When old and target role names are disjoint, target readiness also replaces a
+fraction of the old roles' availability baseline. A target reduction must retain
+that already-used replacement credit: the target's own `maxUnavailable` cannot
+spend an old role's budget. This uses the same retained-readiness checks, including
+pending deletions and the no-worsening rule when availability is already low.
+
+Scale changes can leave a role above its latest surge ceiling while historical
+old-role fractions block its reduction. Under `AdvanceRollout`, an old drain
+may bypass that fraction window only to release existing excess:
+`max(0, totalOldSpec + targetSpec - desired - maxSurge)`. The exception cannot
+drain below the ceiling, bypass availability or split required old roles.
+Only roles with a positive desired count use this correction; removed roles
+keep their old fraction window.
+Ordinary retirement keeps its historical fraction window; pending-work budgets
+keep their original size baseline. This is an opt-in scale correction, not an
+extra growth allowance.
+
+The existing bounded emergency behavior remains: an unavailable target role
+can need one bootstrap surge slot; with a moving target, a Ready role blocked
+by fractional coordination at its new ceiling can also need one slot. Slots
+cannot be stacked while that role is above its ceiling or awaiting readiness.
+The scheduler-unschedulable availability fallback remains a last resort after
+ordinary work and bootstrap progress are unavailable.

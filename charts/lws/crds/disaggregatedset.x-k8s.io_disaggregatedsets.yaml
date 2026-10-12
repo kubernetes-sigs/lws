@@ -17996,6 +17996,22 @@ spec:
                   x-kubernetes-list-map-keys:
                     - name
                   x-kubernetes-list-type: map
+                scalingPolicy:
+                  description: |-
+                    ScalingPolicy controls how replica target changes interact with an active
+                    rolling update. Omit it to preserve the default RolloutCoupled behavior.
+                  properties:
+                    duringRollout:
+                      default: RolloutCoupled
+                      description: |-
+                        DuringRollout controls whether the current rolling update may apply a new
+                        replica target. RolloutCoupled preserves the default behavior;
+                        AdvanceRollout opts into scaling during the rollout.
+                      enum:
+                        - RolloutCoupled
+                        - AdvanceRollout
+                      type: string
+                  type: object
                 slices:
                   default: 1
                   description: |-

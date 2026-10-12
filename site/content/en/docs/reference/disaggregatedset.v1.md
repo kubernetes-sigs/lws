@@ -227,6 +227,35 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec)
+
+
+<p>DisaggregatedSetScalingPolicy configures how replica target changes interact
+with DisaggregatedSet reconciliation.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>duringRollout</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-ScalingDuringRolloutPolicy"><code>ScalingDuringRolloutPolicy</code></a>
+</td>
+<td>
+   <p>DuringRollout controls whether the current rolling update may apply a new
+replica target. RolloutCoupled preserves the default behavior;
+AdvanceRollout opts into scaling during the rollout.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
     
 
@@ -262,6 +291,14 @@ Each role has a unique name and its own configuration.</p>
    <p>Slices is the number of independent copies of the whole role topology.
 Each slice is a complete set of all roles that rolls out independently.
 Changing Slices scales copies up or down and does not trigger a rollout.</p>
+</td>
+</tr>
+<tr><td><code>scalingPolicy</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
+</td>
+<td>
+   <p>ScalingPolicy controls how replica target changes interact with an active
+rolling update. Omit it to preserve the default RolloutCoupled behavior.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>
@@ -464,4 +501,19 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </tr>
 </tbody>
 </table>
+
+## `ScalingDuringRolloutPolicy`     {#disaggregatedset-x-k8s-io-v1-ScalingDuringRolloutPolicy}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [DisaggregatedSetScalingPolicy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy)
+
+
+<p>ScalingDuringRolloutPolicy controls how replica target changes interact with
+an active revision transition.</p>
+
+
+
   
