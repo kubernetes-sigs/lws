@@ -282,5 +282,52 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e gang scheduling tests", func() {
 			gomega.Expect(k8sClient.Delete(ctx, blocker)).To(gomega.Succeed())
 			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 2, 2)
 		})
+
+		ginkgo.It("Should recreate the group with a distinct per-incarnation PodGroup when a worker pod restarts", func() {
+			lws.Spec.Replicas = ptr.To[int32](1)
+			lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.RecreateGroupOnPodRestart
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 2, 2)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+			leaderKey := types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}
+			initialLeader := &corev1.Pod{}
+			gomega.Expect(k8sClient.Get(ctx, leaderKey, initialLeader)).To(gomega.Succeed())
+			gomega.Expect(initialLeader.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+			gomega.Expect(initialLeader.Spec.SchedulingGroup.PodGroupName).NotTo(gomega.BeNil())
+			initialLeaderUID := initialLeader.UID
+			initialPodGroupName := *initialLeader.Spec.SchedulingGroup.PodGroupName
+
+			workerPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: ns.Name,
+					Name:      lws.Name + "-0-1",
+				},
+			}
+			gomega.Expect(k8sClient.Delete(ctx, workerPod)).To(gomega.Succeed())
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				currentLeader := &corev1.Pod{}
+				g.Expect(k8sClient.Get(ctx, leaderKey, currentLeader)).To(gomega.Succeed())
+				g.Expect(currentLeader.UID).NotTo(gomega.Equal(initialLeaderUID))
+				g.Expect(currentLeader.Spec.SchedulingGroup).NotTo(gomega.BeNil())
+				g.Expect(currentLeader.Spec.SchedulingGroup.PodGroupName).NotTo(gomega.BeNil())
+				g.Expect(*currentLeader.Spec.SchedulingGroup.PodGroupName).NotTo(gomega.Equal(initialPodGroupName))
+			}, timeout, interval).Should(gomega.Succeed())
+
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 2, 2)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		})
+
+		ginkgo.It("Should complete a rolling update when LWS size is increased", func() {
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 4, 2, 2)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+			testing.UpdateSize(ctx, k8sClient, lws, 3)
+
+			testing.ExpectWASPodGroupsScheduled(ctx, k8sClient, lws, 6, 3, 3)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		})
 	})
 })
