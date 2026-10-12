@@ -465,7 +465,10 @@ func TestCachedWorkloadsMatchDesired(t *testing.T) {
 		{"old role still has remembered budget", func(s *state) {
 			s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = `{"decode":0,"prefill":1,"removed":2}`
 		}, false},
-		{"policy reset requires budget update", func(s *state) { s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil }, false},
+		{"policy reset requires budget update", func(s *state) {
+			s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = `{"decode":0,"prefill":2}`
+			s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
+		}, false},
 		{"percentage budget needs recomputing", func(s *state) {
 			s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("50%")
 		}, false},

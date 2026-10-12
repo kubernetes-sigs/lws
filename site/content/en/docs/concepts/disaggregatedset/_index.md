@@ -50,7 +50,7 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 1. **LWS-native** — DisaggregatedSet is built on top of LWS, not alongside it. This means LWS features (failure handling, subgroup topology, exclusive placement) are available per role. Note: rollout strategy is owned by the DisaggregatedSet controller, which replaces the per-LWS rollout to coordinate updates across roles.
 
-2. **Coordinated rollouts** — Rollouts across roles are coordinated by DisaggregatedSet to preserve capacity ratios (e.g., prefill-to-decode ratio) throughout the update process. Partition-based rollout is not supported.
+2. **Coordinated rollouts** — Rollouts across roles are coordinated by DisaggregatedSet to preserve capacity ratios (e.g., prefill-to-decode ratio) throughout the update process. Each role's `rolloutStrategy.rollingUpdateConfiguration` sets its `maxSurge` and `maxUnavailable`, defaulting to `maxSurge: 0, maxUnavailable: 1` like a LeaderWorkerSet, so a rollout needs no capacity beyond the role's replicas. Set `maxSurge: 1, maxUnavailable: 0` on a role to bring the new revision up before the old one drains. Partition-based rollout is not supported.
 
 3. **Declarative** — The entire multi-role inference topology is expressed in a single YAML manifest, making it easy to version-control and apply via GitOps.
 
