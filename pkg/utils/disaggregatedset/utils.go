@@ -161,6 +161,12 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 
 		// GroupReplacementPolicy is patched onto existing LWS objects in place.
 		role.Spec.GroupReplacementPolicy = ""
+
+		// SequentialPodTerminationPolicy is normalized to "" so CRD upgrading does not change
+		// revision hashes for existing DisaggregatedSet workloads.
+		if role.Spec.PodTerminationPolicy == leaderworkersetv1.SequentialPodTerminationPolicy {
+			role.Spec.PodTerminationPolicy = ""
+		}
 	}
 
 	// spec.roles is a map-style list keyed by name, so its order has no

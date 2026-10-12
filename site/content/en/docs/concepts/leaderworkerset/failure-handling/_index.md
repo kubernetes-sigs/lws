@@ -133,3 +133,7 @@ spec:
 - **Shared Restart Counter:** `restartBackoff` reads and increments the same per-group restart counter as `maxGroupRestarts`. Both features can be used together: `restartBackoff` spaces out recreations while `maxGroupRestarts` places an upper bound on total automatic recreation attempts.
 - **Worker Failure During Backoff:** When a recreation is triggered by a deleted worker and deferred by backoff, the leader pod remains until the backoff delay elapses before deleting the group. While deferred, LWS emits a `GroupRestartBackoff` event on the LeaderWorkerSet with the remaining delay and restart count.
 
+## Accelerate Group Rebuild and Teardown
+
+To reduce teardown and recreation latency when groups are deleted or rebuilt, you can configure `.spec.podTerminationPolicy: Parallel`. This enables concurrent termination of leader and worker pods instead of waiting for sequential cascading deletion. See [Pod Termination Policy](../pod-termination-policy/) for details.
+

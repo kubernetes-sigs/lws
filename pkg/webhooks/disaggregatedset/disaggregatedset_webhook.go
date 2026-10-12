@@ -78,6 +78,7 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		allErrs = append(allErrs, webhooks.ValidateMaxGroupRestarts(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidateRestartBackoff(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
+		allErrs = append(allErrs, webhooks.ValidatePodTerminationPolicy(rolePath.Child("spec"), &role.Spec)...)
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
 			continue

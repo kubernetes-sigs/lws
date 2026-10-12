@@ -153,6 +153,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			// The LWS may disappear before its terminating Pods. Release our
 			// finalizers so garbage collection can finish without the LWS.
 			if podutils.LeaderPod(pod) {
+				if r.isParallelPodTermination(&pod, nil) && pod.DeletionTimestamp != nil {
+					if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
 				return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 			}
 			return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
@@ -164,9 +169,19 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	// without clearing restart accounting or creating a replacement group.
 	if leaderWorkerSet.DeletionTimestamp != nil {
 		if podutils.LeaderPod(pod) {
+			if r.isParallelPodTermination(&pod, &leaderWorkerSet) && pod.DeletionTimestamp != nil {
+				if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
 			return ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &pod)
 		}
 		return ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
+	}
+	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil && r.isParallelPodTermination(&pod, &leaderWorkerSet) {
+		if err := r.deleteWorkerStatefulSetIfExists(ctx, &pod); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if podutils.LeaderPod(pod) && pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		teardown, err := r.groupLifecycleTeardownRequested(ctx, &leaderWorkerSet, &pod)
@@ -187,6 +202,9 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		_, err = r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &pod)
 		return ctrl.Result{}, err
+	}
+	if podutils.LeaderPod(pod) && pod.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
 	}
 	// Worker Pods need no reconciliation unless they triggered restart-policy
 	// handling or their group has a pending recreation. Avoid looking up a
@@ -385,6 +403,10 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	workerStsReady := false
 	var workerSts appsv1.StatefulSet
 	err = r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(&pod), Namespace: leaderWorkerSet.Namespace}, &workerSts)
+	if err == nil && workerSts.DeletionTimestamp != nil && !metav1.IsControlledBy(&workerSts, &pod) {
+		log.V(2).Info("waiting for old worker statefulset to be completely deleted before creating a new one", "workerSts", workerSts.Name)
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	if err == nil && hashIdentity && !metav1.IsControlledBy(&workerSts, &pod) {
 		// Two groups whose keys share an 8 character prefix get the same host name.
 		err = fmt.Errorf("worker statefulset %s/%s is not controlled by leader pod %s", workerSts.Namespace, workerSts.Name, pod.Name)
@@ -1485,6 +1507,38 @@ func (r *PodReconciler) groupStartState(ctx context.Context, leader, pod corev1.
 		}
 	}
 	return state, "", nil
+}
+
+// isParallelPodTermination checks if parallel pod termination is configured either
+// on the LeaderWorkerSet spec or via the leader pod's annotation.
+func (r *PodReconciler) isParallelPodTermination(leaderPod *corev1.Pod, lws *leaderworkerset.LeaderWorkerSet) bool {
+	if lws != nil && lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
+		return true
+	}
+	if leaderPod != nil && leaderPod.Annotations[leaderworkerset.PodTerminationPolicyAnnotationKey] == string(leaderworkerset.ParallelPodTerminationPolicy) {
+		return true
+	}
+	return false
+}
+
+// deleteWorkerStatefulSetIfExists deletes the worker StatefulSet corresponding to a leader pod
+// with foreground deletion propagation so that leader and worker pods terminate concurrently.
+func (r *PodReconciler) deleteWorkerStatefulSetIfExists(ctx context.Context, leaderPod *corev1.Pod) error {
+	var workerSts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: workerStatefulSetName(leaderPod), Namespace: leaderPod.Namespace}, &workerSts); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if workerSts.DeletionTimestamp != nil {
+		return nil
+	}
+	if !metav1.IsControlledBy(&workerSts, leaderPod) {
+		return nil
+	}
+	propagation := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, &workerSts, &client.DeleteOptions{PropagationPolicy: &propagation}); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	return nil
 }
 
 // setControllerReferenceWithStatefulSet set controller reference for the StatefulSet
