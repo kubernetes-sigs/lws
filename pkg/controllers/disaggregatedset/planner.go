@@ -108,6 +108,7 @@ type roleRolloutSnapshot struct {
 	ActiveOldCommittedReadyReplicas int                 // Active-old Ready replicas not reserved by a pending deletion.
 	ActiveOldUsableReadyReplicas    int                 // Ready replicas from the active revision, or zero when that revision is incomplete.
 	OldSpecReplicas                 int                 // Current Spec replicas summed across all old revisions.
+	DisjointOldSpecReplicas         int                 // Current Spec from old revisions whose historical roles do not overlap the target.
 	ParkedUsableReadyReplicas       int                 // Committed Ready from complete parked revisions.
 	ObservedUsableReadyReplicas     int                 // Raw Ready replicas from complete revisions before pending deletions are reserved.
 	ObservedPerRoleReadyReplicas    int                 // Raw Ready from all structurally complete revisions.
@@ -397,7 +398,21 @@ func snapshotForRolloutState(state RolloutState) rolloutSnapshot {
 			snapshot[i].UnreplacedReplicas = baseline - credit
 		}
 	}
+	// Match the removed-role baseline's revisions. A shared role reaching zero
+	// does not change its revision's historical layout.
+	addDisjointReplicas := func(requiredRoles []bool, replicas RoleReplicaState) {
+		for i, required := range requiredRoles {
+			if required && target.DesiredReplicas[i] > 0 {
+				return
+			}
+		}
+		for i, count := range replicas {
+			snapshot[i].DisjointOldSpecReplicas += count
+		}
+	}
+	addDisjointReplicas(old.RequiredRoles, old.SpecReplicas)
 	for _, revision := range state.ParkedOld {
+		addDisjointReplicas(revision.RequiredRoles, revision.SpecReplicas)
 		ready := summarizeReadiness(revision.RequiredRoles, revision.SpecReplicas, revision.RawReadyReplicas, revision.ReadyReplicas)
 		for i, capacity := range ready {
 			role := &snapshot[i]
@@ -659,8 +674,8 @@ func disjointGrowthLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	for _, role := range snapshot {
 		if role.NewTargetReplicas == 0 && role.UnreplacedReplicas > 0 {
 			baseline := role.AvailabilityBaselineReplicas
-			progress.includeProgress(baseline, max(0, baseline-role.OldSpecReplicas))
-			hasOld = hasOld || role.OldSpecReplicas > 0
+			progress.includeProgress(baseline, max(0, baseline-role.DisjointOldSpecReplicas))
+			hasOld = hasOld || role.DisjointOldSpecReplicas > 0
 		}
 	}
 	if !hasOld || progress.leastAdvancedTarget == 0 {

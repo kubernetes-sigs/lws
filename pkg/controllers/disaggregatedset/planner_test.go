@@ -254,6 +254,30 @@ func TestRemovedRoleBaselineDistinguishesRemovalFromReplacement(t *testing.T) {
 	}
 }
 
+func TestDisjointGrowthCountsHistoricalRevisionLayouts(t *testing.T) {
+	initial := []RoleReplicaState{{6, 6, 0, 0}, {4, 0, 2, 2}}
+	for _, sharedSpec := range []int{0, 2} {
+		old := []RoleReplicaState{{1, 1, 0, 0}, {2, 0, sharedSpec, sharedSpec}}
+		for active := range 2 {
+			for _, advance := range []bool{false, true} {
+				parked := 1 - active
+				state := rolloutState(initial[active], old[active], old[active], old[parked], old[parked],
+					[]int{0, 0, 4, 4}, []int{0, 0, 4, 4}, []int{0, 0, 6, 6}, configs([]int{0, 0, 1, 1}, []int{1, 1, 0, 0}))
+				// Preserve both revisions' history even after shared Specs reach zero.
+				state.ParkedOld[0].RequiredRoles = requiredRoles(initial[parked])
+				state.AvailabilityBaseline = []int{6, 6, 2, 2}
+				state.ScaleDuringRollout = advance
+				snapshot := snapshotForRolloutState(state)
+				for i, role := range snapshot {
+					assert.Equal(t, old[0][i]+old[1][i], role.OldSpecReplicas, "all old replicas still count against surge")
+					assert.Equal(t, old[0][i], role.DisjointOldSpecReplicas, "active=%d sharedSpec=%d role=%d", active, sharedSpec, i)
+				}
+				assert.Equal(t, RoleReplicaState{0, 0, 6, 6}, disjointGrowthLimits(snapshot), "only the disjoint revision counts against its baseline")
+			}
+		}
+	}
+}
+
 func TestDisjointRoleReplacementPreservesParkedCapacityAccounting(t *testing.T) {
 	for _, tc := range []struct {
 		name                                 string

@@ -88,6 +88,68 @@ func TestMovingTargetKeepsRemovedRoleCoordination(t *testing.T) {
 	}
 }
 
+func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, policy := range []disaggregatedsetv1.ScalingDuringRolloutPolicy{disaggregatedsetv1.ScalingDuringRolloutPolicyRolloutCoupled, disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout} {
+			t.Run(fmt.Sprintf("%s/%s", identity, policy), func(t *testing.T) {
+				ds := newTestDisaggregatedSet(
+					makeRoleSpec("b", 6, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)),
+					makeRoleSpec("d", 6, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
+				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{DuringRollout: policy}
+				// A is fully renamed; B still shares b/d with the target. B.a must
+				// not consume the drain allowance released by A's a/c groups.
+				workloads := []*leaderworkersetv1.LeaderWorkerSet{
+					revisionLWS("old-a", "a", 1, 1, time.Unix(0, 0), 6),
+					revisionLWS("old-a", "c", 1, 1, time.Unix(0, 0), 6),
+					revisionLWS("old-b", "a", 4, 4, time.Unix(1, 0), 4),
+					revisionLWS("old-b", "b", 2, 2, time.Unix(1, 0), 2),
+					revisionLWS("old-b", "d", 2, 2, time.Unix(1, 0), 2),
+					revisionLWS("target", "b", 0, 0, time.Unix(2, 0), 6),
+					revisionLWS("target", "d", 0, 0, time.Unix(2, 0), 6),
+				}
+				for tick := range 16 {
+					var objects []client.Object
+					var before, after []int32
+					for _, lws := range workloads {
+						count := getLWSReplicas(lws)
+						before = append(before, count)
+						lws.Spec.GroupIdentity, lws.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
+						lws.Status.ObservedGeneration = lws.Generation
+						objects = append(objects, replicaGroupObjects(lws, count, count)...)
+					}
+					c := newTestClient(objects...)
+					executor := newTestExecutor(c)
+					executor.LWSManager = NewLeaderWorkerSetManager(c) // Real shared observer, not status stubs.
+					_, complete, err := reconcileTestTransition(t.Context(), executor, ds, "target", map[string]int{"b": 6, "d": 6})
+					require.NoError(t, err)
+					for _, lws := range workloads {
+						require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
+						after = append(after, getLWSReplicas(lws))
+					}
+					t.Logf("tick=%d [A.a A.c B.a B.b B.d C.b C.d]: %v -> %v", tick, before, after)
+					for role := range 2 {
+						require.LessOrEqual(t, after[3+role]+after[5+role], int32(7), "b/d keep their 6+1 surge limit")
+						// Only previously Ready groups can fund a deletion this tick.
+						retained := min(before[5+role], after[5+role])
+						if after[2] > 0 && after[3] > 0 && after[4] > 0 {
+							retained += min(before[3+role], after[3+role])
+						}
+						if policy == disaggregatedsetv1.ScalingDuringRolloutPolicyAdvanceRollout {
+							require.GreaterOrEqual(t, retained, min(int32(6), before[3+role]+before[5+role]), "do not worsen the latest availability floor")
+						}
+					}
+					if complete {
+						require.Equal(t, []int32{0, 0, 0, 0, 0, 6, 6}, after)
+						return
+					}
+					require.NotEqual(t, before, after, "all groups are Ready but neither retirement nor growth makes progress")
+				}
+				t.Fatal("rollout did not complete")
+			})
+		}
+	}
+}
+
 func TestDisjointTargetCorrectionReadiness(t *testing.T) {
 	for _, tc := range []struct {
 		name                               string
