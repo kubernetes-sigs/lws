@@ -76,6 +76,8 @@ func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
 }
 
 // observeLiveReadiness adapts shared group observations to the planner's two counts.
+// sets must come from this reconciliation's live GetRevisionRolesList. Scale
+// independently checks live identity and Spec before writing a planned change.
 // Unknown observations must retry, not look like zero serving capacity: that
 // could lower the planner's no-worsening floor. Unacknowledged native decisions
 // still expose raw readiness, but withhold retained credit for another drain.
@@ -84,17 +86,15 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 	if len(sets) == 0 {
 		return result, nil
 	}
-	// Reobserve only this slice. A broken group in another slice must not block it.
-	snapshots, err := replicagroups.ObserveMany(ctx, manager.apiReader, sets, client.MatchingLabels{
-		disaggregatedsetv1.SetNameLabelKey: sets[0].Labels[disaggregatedsetv1.SetNameLabelKey],
-		disaggregatedsetv1.SliceLabelKey:   sets[0].Labels[disaggregatedsetv1.SliceLabelKey],
-	})
+	// Observe descendants of this slice's live LWS without listing the LWS again.
+	// A broken group in another slice must not block this one.
+	snapshots, err := replicagroups.ObserveLive(ctx, manager.apiReader, sets)
 	if err != nil {
 		return nil, err
 	}
 	for _, lws := range sets {
 		snapshot := snapshots[lws.UID]
-		if snapshot == nil || snapshot.LWS.Generation != lws.Generation || !snapshot.LWS.DeletionTimestamp.IsZero() {
+		if snapshot == nil || snapshot.LWS.UID != lws.UID || !snapshot.LWS.DeletionTimestamp.IsZero() {
 			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
 		}
 		availability := snapshot.Availability()

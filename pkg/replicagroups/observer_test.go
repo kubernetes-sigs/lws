@@ -526,6 +526,11 @@ func TestObserveReadsLiveLWSAndControllersBeforeOnePodList(t *testing.T) {
 					want = append(want, "list *v1.ReplicaSetList")
 				}
 				assert.Equal(t, append(want, "list *v1.PodList"), calls, "native leaders, including fallback GETs, precede their descendants")
+				calls = nil
+				live, err := ObserveLive(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{single.LWS})
+				require.NoError(t, err)
+				assert.Equal(t, batch, live)
+				assert.Equal(t, append(want[1:], "list *v1.PodList"), calls, "live inputs skip only the LWS list")
 			}
 		})
 	}
@@ -584,6 +589,11 @@ func TestObserveReadErrorsReturnNoPartialSnapshot(t *testing.T) {
 			batch, err := ObserveMany(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{f.lws})
 			assert.ErrorIs(t, err, failure)
 			assert.Nil(t, batch)
+			if operation != "lws" {
+				batch, err = ObserveLive(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{f.lws})
+				assert.ErrorIs(t, err, failure)
+				assert.Nil(t, batch)
+			}
 		})
 	}
 	t.Run("list NotFound is not an empty successful snapshot", func(t *testing.T) {
@@ -746,7 +756,7 @@ func TestAvailabilityExhaustiveVictimSets(t *testing.T) {
 }
 
 // Run the existing ownership, readiness, deletion-credit and absent-object cases
-// through both APIs, without maintaining a second copy of those fixtures.
+// through the batch APIs, without maintaining another copy of those fixtures.
 func observeWithBatchParity(t *testing.T, reader client.Reader, expected *leaderworkersetv1.LeaderWorkerSet) (*Snapshot, error) {
 	t.Helper()
 	single, err := Observe(t.Context(), reader, expected)
@@ -756,6 +766,13 @@ func observeWithBatchParity(t *testing.T, reader client.Reader, expected *leader
 		require.Nil(t, batch)
 	} else {
 		require.Equal(t, single, batch[expected.UID])
+		if single != nil {
+			before := single.LWS.DeepCopy()
+			live, liveErr := ObserveLive(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{single.LWS})
+			require.NoError(t, liveErr)
+			require.Equal(t, batch, live)
+			require.Equal(t, before, single.LWS, "live input must remain untouched")
+		}
 	}
 	return single, err
 }
@@ -835,9 +852,17 @@ func TestObserveManyScopedPaginatedSnapshot(t *testing.T) {
 	assert.Equal(t, int64(7), expected[0].Generation, "input is read-only")
 	assert.Equal(t, int64(8), batch[a.lws.UID].LWS.Generation)
 	assert.Equal(t, int32(2), *batch[a.lws.UID].LWS.Spec.Replicas)
+	freshReadCalls := calls
+	calls = nil
+	live, err := ObserveLive(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{batch[a.lws.UID].LWS, batch[b.lws.UID].LWS})
+	require.NoError(t, err)
+	assert.Equal(t, batch, live, "pagination and ownership filtering match the fresh-read API")
+	assert.NotContains(t, calls, "*v1.LeaderWorkerSetList")
 	phase := map[string]int{"*v1.LeaderWorkerSetList": 0, "*v1.StatefulSetList": 1, "*v1.DeploymentList": 1, "*v1.ReplicaSetList": 1, "*v1.PodList": 2}
-	for i := 1; i < len(calls); i++ {
-		assert.LessOrEqual(t, phase[calls[i-1]], phase[calls[i]], "LWS before workloads before Pods: %v", calls)
+	for _, trace := range [][]string{freshReadCalls, calls} {
+		for i := 1; i < len(trace); i++ {
+			assert.LessOrEqual(t, phase[trace[i-1]], phase[trace[i]], "LWS before workloads before Pods: %v", trace)
+		}
 	}
 }
 
@@ -855,11 +880,20 @@ func TestObserveManyValidatesExpectedIdentities(t *testing.T) {
 		batch, err := ObserveMany(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{lws, invalid})
 		assert.Error(t, err)
 		assert.Nil(t, batch)
+		batch, err = ObserveLive(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{lws, invalid})
+		assert.Error(t, err)
+		assert.Nil(t, batch)
 	}
 	batch, err := ObserveMany(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{nil})
 	assert.Error(t, err)
 	assert.Nil(t, batch)
+	batch, err = ObserveLive(t.Context(), nil, []*leaderworkersetv1.LeaderWorkerSet{nil})
+	assert.Error(t, err)
+	assert.Nil(t, batch)
 	batch, err = ObserveMany(t.Context(), nil, nil)
+	assert.NoError(t, err)
+	assert.Empty(t, batch)
+	batch, err = ObserveLive(t.Context(), nil, nil)
 	assert.NoError(t, err)
 	assert.Empty(t, batch)
 }
@@ -876,7 +910,7 @@ func TestObserveManyRequestCount(t *testing.T) {
 					objects = append(objects, f.objects()...)
 				}
 				base := newReader(t, objects...)
-				lists := 0
+				lists, lwsLists := 0, 0
 				reader := interceptor.NewClient(base, interceptor.Funcs{
 					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 						t.Fatal("normal batching must not read individual objects")
@@ -884,6 +918,9 @@ func TestObserveManyRequestCount(t *testing.T) {
 					},
 					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 						lists++
+						if _, ok := list.(*leaderworkersetv1.LeaderWorkerSetList); ok {
+							lwsLists++
+						}
 						return c.List(ctx, list, opts...)
 					},
 				})
@@ -901,6 +938,12 @@ func TestObserveManyRequestCount(t *testing.T) {
 					perChunk = 4
 				}
 				assert.Equal(t, 1+perChunk*((n+99)/100), lists)
+				lists, lwsLists = 0, 0
+				live, err := ObserveLive(t.Context(), reader, expected)
+				require.NoError(t, err)
+				assert.Equal(t, batch, live)
+				assert.Equal(t, perChunk*((n+99)/100), lists)
+				assert.Zero(t, lwsLists)
 				if n == 101 {
 					last := objects[len(objects)-1].(*corev1.Pod)
 					last.Annotations = nil // A malformed last group must discard the earlier 100 snapshots.
@@ -910,6 +953,12 @@ func TestObserveManyRequestCount(t *testing.T) {
 					assert.ErrorContains(t, err, "invalid group size")
 					assert.Nil(t, batch)
 					assert.Equal(t, 1+2*perChunk, lists, "the first chunk completed before the second failed")
+					lists, lwsLists = 0, 0
+					live, err = ObserveLive(t.Context(), reader, expected)
+					assert.ErrorContains(t, err, "invalid group size")
+					assert.Nil(t, live)
+					assert.Equal(t, 2*perChunk, lists)
+					assert.Zero(t, lwsLists)
 				}
 			})
 		}

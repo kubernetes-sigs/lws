@@ -132,7 +132,7 @@ func Observe(ctx context.Context, reader client.Reader, expected *leaderworkerse
 		client.MatchingLabels{leaderworkersetv1.SetNameLabelKey: lws.Name}); err != nil {
 		return nil, fmt.Errorf("listing group Pods: %w", err)
 	}
-	return buildSnapshot(lws, workload, replicaSets.Items, workerSets.Items, pods.Items)
+	return buildSnapshot(lws, workload, itemPointers(replicaSets.Items), itemPointers(workerSets.Items), itemPointers(pods.Items))
 }
 
 // Bound selector length independently of the number of roles or revisions.
@@ -151,27 +151,15 @@ const maxLWSPerBatch = 100
 // pages are read; any read or metadata error returns no partial result. Callers
 // needing independent failure domains should use separate batches for them.
 func ObserveMany(ctx context.Context, reader client.Reader, expected []*leaderworkersetv1.LeaderWorkerSet, options ...client.ListOption) (map[types.UID]*Snapshot, error) {
-	result := make(map[types.UID]*Snapshot, len(expected))
-	if len(expected) == 0 {
-		return result, nil
+	wanted, err := lwsUIDs(expected)
+	if err != nil {
+		return nil, err
 	}
-	namespace := ""
-	wanted := make(map[string]types.UID, len(expected))
-	for _, lws := range expected {
-		if lws == nil || lws.UID == "" || lws.Name == "" || lws.Namespace == "" {
-			return nil, fmt.Errorf("observing replica groups requires an LWS namespace, name and UID")
-		}
-		if namespace != "" && namespace != lws.Namespace {
-			return nil, fmt.Errorf("batched LWS observations require one namespace")
-		}
-		if uid, found := wanted[lws.Name]; found && uid != lws.UID {
-			return nil, fmt.Errorf("conflicting expected UIDs for LeaderWorkerSet %s", lws.Name)
-		}
-		namespace = lws.Namespace
-		wanted[lws.Name] = lws.UID
+	if len(expected) == 0 {
+		return map[types.UID]*Snapshot{}, nil
 	}
 	var live leaderworkersetv1.LeaderWorkerSetList
-	if err := listAll(ctx, reader, &live, append(slices.Clone(options), client.InNamespace(namespace))...); err != nil {
+	if err := listAll(ctx, reader, &live, append(slices.Clone(options), client.InNamespace(expected[0].Namespace))...); err != nil {
 		return nil, err
 	}
 	var matched []*leaderworkersetv1.LeaderWorkerSet
@@ -181,7 +169,25 @@ func ObserveMany(ctx context.Context, reader client.Reader, expected []*leaderwo
 			matched = append(matched, lws)
 		}
 	}
-	for batch := range slices.Chunk(matched, maxLWSPerBatch) {
+	return ObserveLive(ctx, reader, matched)
+}
+
+// ObserveLive observes descendants of LWS already read through an uncached API
+// reader in this reconciliation, avoiding ObserveMany's additional LWS list.
+// Inputs must come from one namespace and must not be cached or reused across
+// reconciliations. This function does not refresh their identity or generation.
+//
+// Native workloads and then Pods are read in bounded batches; reader must also
+// be uncached for safety-sensitive decisions.
+// Like ObserveMany, observations are read-only, ordered rather than atomic, and
+// returned only if every batch succeeds. Callers must still guard their writes
+// against intervening LWS changes; the supplied objects are not a reservation.
+func ObserveLive(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet) (map[types.UID]*Snapshot, error) {
+	if _, err := lwsUIDs(live); err != nil {
+		return nil, err
+	}
+	result := make(map[types.UID]*Snapshot, len(live))
+	for batch := range slices.Chunk(live, maxLWSPerBatch) {
 		if err := observeBatch(ctx, reader, batch, result); err != nil {
 			return nil, err
 		}
@@ -189,12 +195,30 @@ func ObserveMany(ctx context.Context, reader client.Reader, expected []*leaderwo
 	return result, nil
 }
 
+// lwsUIDs validates batch identities and indexes them by name.
+func lwsUIDs(workloads []*leaderworkersetv1.LeaderWorkerSet) (map[string]types.UID, error) {
+	wanted := make(map[string]types.UID, len(workloads))
+	for _, lws := range workloads {
+		if lws == nil || lws.UID == "" || lws.Name == "" || lws.Namespace == "" {
+			return nil, fmt.Errorf("observing replica groups requires an LWS namespace, name and UID")
+		}
+		if lws.Namespace != workloads[0].Namespace {
+			return nil, fmt.Errorf("batched LWS observations require one namespace")
+		}
+		if uid, found := wanted[lws.Name]; found && uid != lws.UID {
+			return nil, fmt.Errorf("conflicting expected UIDs for LeaderWorkerSet %s", lws.Name)
+		}
+		wanted[lws.Name] = lws.UID
+	}
+	return wanted, nil
+}
+
 type batchResources struct {
 	lws         *leaderworkersetv1.LeaderWorkerSet
 	leader      client.Object
-	replicaSets []appsv1.ReplicaSet
-	workerSets  []appsv1.StatefulSet
-	pods        []corev1.Pod
+	replicaSets []*appsv1.ReplicaSet
+	workerSets  []*appsv1.StatefulSet
+	pods        []*corev1.Pod
 }
 
 func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet, result map[types.UID]*Snapshot) error {
@@ -220,7 +244,7 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 	for i := range statefulSets.Items {
 		sts := &statefulSets.Items[i]
 		if resources := byName[sts.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
-			resources.workerSets = append(resources.workerSets, *sts)
+			resources.workerSets = append(resources.workerSets, sts)
 		}
 		if resources := byName[sts.Name]; resources != nil && resources.lws.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
 			resources.leader = sts
@@ -261,7 +285,8 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 		if err := listAll(ctx, reader, &replicaSets, options...); err != nil {
 			return err
 		}
-		for _, rs := range replicaSets.Items {
+		for i := range replicaSets.Items {
+			rs := &replicaSets.Items[i]
 			if resources := byName[rs.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
 				resources.replicaSets = append(resources.replicaSets, rs)
 			}
@@ -271,7 +296,8 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 	if err := listAll(ctx, reader, &pods, options...); err != nil {
 		return err
 	}
-	for _, pod := range pods.Items {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
 		if resources := byName[pod.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
 			resources.pods = append(resources.pods, pod)
 		}
@@ -316,10 +342,19 @@ func listAll(ctx context.Context, reader client.Reader, list client.ObjectList, 
 	return meta.SetList(list, items)
 }
 
+// itemPointers shares the list's read-only objects without copying their structs.
+func itemPointers[T any](items []T) []*T {
+	pointers := make([]*T, len(items))
+	for i := range items {
+		pointers[i] = &items[i]
+	}
+	return pointers
+}
+
 // buildSnapshot is shared by single and batched observations. Descendant lists
 // are scoped to one LWS by label; owner UIDs, not labels, establish membership.
 func buildSnapshot(lws *leaderworkersetv1.LeaderWorkerSet, workload client.Object,
-	replicaSets []appsv1.ReplicaSet, workerSets []appsv1.StatefulSet, pods []corev1.Pod,
+	replicaSets []*appsv1.ReplicaSet, workerSets []*appsv1.StatefulSet, pods []*corev1.Pod,
 ) (*Snapshot, error) {
 	snapshot := &Snapshot{LWS: lws}
 	if workload == nil || !metav1.IsControlledBy(workload, lws) {
@@ -333,8 +368,7 @@ func buildSnapshot(lws *leaderworkersetv1.LeaderWorkerSet, workload client.Objec
 		leaderOwners[workload.UID] = true
 	case *appsv1.Deployment:
 		snapshot.LeaderDeployment = workload
-		for i := range replicaSets {
-			rs := &replicaSets[i]
+		for _, rs := range replicaSets {
 			if metav1.IsControlledBy(rs, workload) {
 				snapshot.ReplicaSets = append(snapshot.ReplicaSets, rs)
 				leaderOwners[rs.UID] = true
@@ -343,18 +377,16 @@ func buildSnapshot(lws *leaderworkersetv1.LeaderWorkerSet, workload client.Objec
 		slices.SortFunc(snapshot.ReplicaSets, func(a, b *appsv1.ReplicaSet) int { return cmp.Compare(a.Name, b.Name) })
 	}
 	workersByName := make(map[string]*appsv1.StatefulSet, len(workerSets))
-	for i := range workerSets {
-		workersByName[workerSets[i].Name] = &workerSets[i]
+	for _, workers := range workerSets {
+		workersByName[workers.Name] = workers
 	}
 	podsByOwner := make(map[types.UID][]*corev1.Pod)
-	for i := range pods {
-		pod := &pods[i]
+	for _, pod := range pods {
 		if owner := metav1.GetControllerOf(pod); owner != nil {
 			podsByOwner[owner.UID] = append(podsByOwner[owner.UID], pod)
 		}
 	}
-	for i := range pods {
-		leader := &pods[i]
+	for _, leader := range pods {
 		owner := metav1.GetControllerOf(leader)
 		if owner == nil || !leaderOwners[owner.UID] || !podutils.LeaderPod(*leader) {
 			continue

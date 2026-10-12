@@ -48,6 +48,7 @@ const (
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	unschedulablePodGracePeriod       = time.Minute
+	rolloutIdleRequeueAfter           = 10 * time.Second
 )
 
 type RollingUpdateExecutor struct {
@@ -160,8 +161,9 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 //  3. Ask the planner about old revisions in preference order.
 //  4. Apply the first executable plan without changing its meaning.
 //
-// Object updates and a one-second timer trigger the next step. The rollout is
-// complete only after the old Specs reach zero and the target revision is Ready.
+// LWS updates trigger prompt progress; blocked rollouts use a slower fallback
+// for elapsed grace periods or changes not reflected in LWS status. The rollout
+// is complete only after old Specs reach zero and the target revision is Ready.
 // The returned complete flag reports that terminal state to the caller.
 func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	ctx context.Context,
@@ -188,7 +190,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	if specComplete {
 		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
-			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+			return ctrl.Result{RequeueAfter: rolloutIdleRequeueAfter}, false, nil
 		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
@@ -210,15 +212,15 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		reason := "no feasible replica change is currently available within the rollout constraints"
 		log.Info("Rolling update is temporarily blocked; waiting for state to change", "reason", reason)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked, "Wait", "Waiting to retire an old revision: %s", reason)
-		return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		return ctrl.Result{RequeueAfter: rolloutIdleRequeueAfter}, false, nil
 	}
 
 	if err := executor.applyRolloutStep(ctx, disaggregatedSet, targetRevision, inputs, selectedRevision, selectedState, selectedStep); err != nil {
 		return ctrl.Result{}, false, err
 	}
 
-	// Object updates normally trigger the next reconcile immediately. The
-	// timer also lets the planner retry when pending replicas become Ready.
+	// Object updates normally trigger the next reconcile immediately. Keep a
+	// short fallback after writes while native controllers observe the new Spec.
 	return ctrl.Result{RequeueAfter: time.Second}, false, nil
 }
 
