@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -97,16 +96,14 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// pod; the pod controller materializes them while the leader is still
 	// scheduling gated.
 	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, revisionutils.GetRevisionKey(revision)); err != nil {
-		log.Error(err, "Reconciling workload-aware scheduling prerequisites")
-		if isNonTransientSchedulingError(err) && deploy != nil {
-			if scaleErr := r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas); scaleErr != nil {
-				return ctrl.Result{}, errors.Join(err, scaleErr)
-			}
-			if _, statusErr := r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)); statusErr != nil && !apierrors.IsConflict(statusErr) {
-				return ctrl.Result{}, errors.Join(err, statusErr)
-			}
+		var scaleDown func() error
+		var updateStatus func() (bool, error)
+		if deploy != nil {
+			// The Deployment controller adds the surge pods of a rollout itself.
+			scaleDown = func() error { return r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas) }
+			updateStatus = func() (bool, error) { return r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)) }
 		}
-		return ctrl.Result{}, err
+		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
 
 	if err := r.SSAWithDeployment(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
