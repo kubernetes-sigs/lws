@@ -429,6 +429,14 @@ func TestCachedWorkloadsMatchDesired(t *testing.T) {
 			s.ds.Spec.Roles[1].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
 		}, true},
 		{"unresolved target", func(s *state) { delete(s.desired, testRolePrefill) }, false},
+		{"child assignment needs observation", func(s *state) {
+			s.ds.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](4)}}
+		}, false},
+		{"previous child layout needs observation", func(s *state) { s.workloads[0].Annotations[subRoleReplicasAnnotation] = `{"a":4}` }, false},
+		{"pending child assignment", func(s *state) { s.workloads[0].Annotations[subRolePlanAnnotation] = `{"a":4}` }, false},
+		{"child history recovery", func(s *state) {
+			s.workloads[0].Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"a":4}`
+		}, false},
 		{"changed target", func(s *state) { s.desired[testRolePrefill]++ }, false},
 		{"missing workload", func(s *state) { s.workloads = s.workloads[:3] }, false},
 		{"nil workload", func(s *state) { s.workloads[0] = nil }, false},
@@ -482,14 +490,15 @@ func TestCachedWorkloadsMatchDesired(t *testing.T) {
 	}
 }
 
-func TestScaleRejectsConcurrentReplicaChange(t *testing.T) {
+func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
 	lws := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 4)
 	base := newTestClient(lws)
+	concurrentChange := func(current *leaderworkersetv1.LeaderWorkerSet) { current.Spec.Replicas = ptr.To[int32](3) }
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			current := &leaderworkersetv1.LeaderWorkerSet{}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), current))
-			current.Spec.Replicas = ptr.To[int32](3)
+			concurrentChange(current)
 			require.NoError(t, c.Update(ctx, current))
 			return c.Patch(ctx, obj, patch, opts...)
 		},
@@ -498,10 +507,23 @@ func TestScaleRejectsConcurrentReplicaChange(t *testing.T) {
 	err := NewLeaderWorkerSetManager(c).Scale(t.Context(), ds, lws, 2)
 	require.True(t, apierrors.IsConflict(err), "stale scale write must conflict: %v", err)
 	assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, lws.Name))
+
+	// Enabling subroles between the baseline read and patch must also conflict.
+	concurrentChange = func(current *leaderworkersetv1.LeaderWorkerSet) {
+		current.Annotations[subRoleReplicasAnnotation] = `{"pool":3}`
+		current.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"pool":4}`
+	}
+	err = NewLeaderWorkerSetManager(c).UpdateInitialReplicas(t.Context(), ds, lws, 5)
+	require.True(t, apierrors.IsConflict(err), "ordinary baseline must conflict with live enablement: %v", err)
+	live := &leaderworkersetv1.LeaderWorkerSet{}
+	require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), live))
+	assert.Equal(t, "4", live.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+	assert.Equal(t, "4", lws.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+	assert.Equal(t, `{"pool":4}`, live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey])
 }
 
 func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
-	for _, change := range []string{"smaller Spec", "larger Spec", "generation", "replacement", "deleting", "status only"} {
+	for _, change := range []string{"smaller Spec", "larger Spec", "generation", "replacement", "deleting", "sub-roles enabled", "status only"} {
 		t.Run(change, func(t *testing.T) {
 			observed := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 4)
 			live := observed.DeepCopy()
@@ -516,6 +538,9 @@ func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
 				live.UID = "replacement"
 			case "deleting":
 				live.DeletionTimestamp, live.Finalizers = ptr.To(metav1.Now()), []string{"test/hold"}
+			case "sub-roles enabled":
+				live.Annotations[subRoleReplicasAnnotation] = `{"pool":4}`
+				live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"pool":4}`
 			case "status only":
 				live.Status.ReadyReplicas = 3
 			}
@@ -528,6 +553,13 @@ func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
 			} else {
 				require.True(t, apierrors.IsConflict(err), "changed scale input must retry: %v", err)
 				assert.Equal(t, getLWSReplicas(live), getTestLWSReplicas(c, testNamespace, live.Name))
+			}
+			if change == "sub-roles enabled" {
+				require.ErrorIs(t, NewLeaderWorkerSetManager(c).UpdateInitialReplicas(t.Context(), ds, observed, 5), errReplicaGroupsPending)
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(live), live))
+				assert.Equal(t, "4", live.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+				assert.Equal(t, "4", observed.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+				assert.Equal(t, `{"pool":4}`, live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey])
 			}
 		})
 	}

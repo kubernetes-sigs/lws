@@ -19,6 +19,8 @@ package disaggregatedset
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,7 +42,7 @@ const (
 	EventReasonScalerConflict = "ScalerConflict"
 )
 
-// ScalerManager auto-creates one DisaggregatedSetRoleScaler per External role
+// ScalerManager auto-creates one DisaggregatedSetRoleScaler per External role or child
 // and garbage-collects scalers whose role has been removed or switched back to
 // Static. It also writes back status.replicas / status.selector / conditions so
 // HPA sees a valid /scale target.
@@ -53,31 +55,78 @@ func NewScalerManager(c client.Client, r events.EventRecorder) *ScalerManager {
 	return &ScalerManager{client: c, record: r}
 }
 
-// ScalerName is the deterministic name for a role's auto-created scaler.
-func ScalerName(dsName, role string) string { return dsName + "-" + role }
+// Keys use a slash, forbidden in role names, to distinguish a child from a
+// hyphenated parent. Admission rejects collisions in the generated DNS names.
+func childRoleKey(parent, child string) string {
+	if child == "" {
+		return parent
+	}
+	return parent + "/" + child
+}
+
+func roleParts(key string) (parent, child string) {
+	parent, child, _ = strings.Cut(key, "/")
+	return
+}
+
+// roleLeaves uses the same scaling fields for an ordinary role and its children.
+// An ordinary role is the single unnamed leaf; no Kubernetes object is copied.
+func roleLeaves(role *disaggregatedsetv1.DisaggregatedRoleSpec) []disaggregatedsetv1.DisaggregatedSubRoleSpec {
+	if len(role.SubRoles) > 0 {
+		return role.SubRoles
+	}
+	return []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Replicas: role.Spec.Replicas, Scaling: role.Scaling}}
+}
+
+func rolloutRoleNames(ds *disaggregatedsetv1.DisaggregatedSet) []string {
+	var names []string
+	for _, role := range ds.Spec.Roles {
+		for _, child := range roleLeaves(&role) {
+			names = append(names, childRoleKey(role.Name, child.Name))
+		}
+	}
+	return names
+}
+
+// ScalerName is the deterministic name for a parent or child role's scaler.
+func ScalerName(dsName, role string) string { return dsName + "-" + strings.ReplaceAll(role, "/", "-") }
 
 // resolveDesiredReplicasByRole resolves one replica target for every role whose
 // target is known. Static roles use the LWS template; External roles use their
 // scaler. An External role with no owned scaler is omitted so the controller
-// can pause workload reconciliation instead of guessing a target.
+// can pause workload reconciliation instead of guessing a target. Partitioned
+// roles additionally expose a parent sum only after every child is resolved.
 func resolveDesiredReplicasByRole(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler,
 ) map[string]int {
 	desiredReplicasByRole := make(map[string]int, len(ds.Spec.Roles))
-	for _, role := range ds.Spec.Roles {
-		if role.Scaling != nil && role.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
-			if scaler := scalers[role.Name]; scaler != nil {
-				desiredReplicasByRole[role.Name] = int(scaler.Spec.Replicas)
+	for i := range ds.Spec.Roles {
+		role := &ds.Spec.Roles[i]
+		var total int64
+		complete := true
+		for _, leaf := range roleLeaves(role) {
+			key := childRoleKey(role.Name, leaf.Name)
+			count := ptr.Deref(leaf.Replicas, 1)
+			if leaf.Scaling != nil && leaf.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+				scaler := scalers[key]
+				if scaler == nil {
+					complete = false
+					continue
+				}
+				count = scaler.Spec.Replicas
 			}
-			continue
+			if count < 0 {
+				complete = false
+				continue
+			}
+			desiredReplicasByRole[key] = int(count)
+			total += int64(count)
 		}
-
-		replicas := 1
-		if role.Spec.Replicas != nil {
-			replicas = int(*role.Spec.Replicas)
+		// Missing children and overflowing sums must not become smaller targets.
+		if complete && total <= math.MaxInt32 {
+			desiredReplicasByRole[role.Name] = int(total)
 		}
-		desiredReplicasByRole[role.Name] = replicas
 	}
 	return desiredReplicasByRole
 }
@@ -111,9 +160,12 @@ func (m *ScalerManager) Reconcile(
 	log := logf.FromContext(ctx)
 
 	externalRoles := make(map[string]bool)
-	for _, r := range ds.Spec.Roles {
-		if r.Scaling != nil && r.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
-			externalRoles[r.Name] = true
+	for i := range ds.Spec.Roles {
+		role := &ds.Spec.Roles[i]
+		for _, leaf := range roleLeaves(role) {
+			if leaf.Scaling != nil && leaf.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+				externalRoles[childRoleKey(role.Name, leaf.Name)] = true
+			}
 		}
 	}
 
@@ -129,7 +181,7 @@ func (m *ScalerManager) Reconcile(
 		if !isControlledBy(s, ds.UID) {
 			continue
 		}
-		role := s.Labels[disaggregatedsetv1.RoleLabelKey]
+		role := childRoleKey(s.Labels[disaggregatedsetv1.RoleLabelKey], s.Labels[disaggregatedsetv1.SubRoleLabelKey])
 		if !externalRoles[role] {
 			log.Info("Deleting scaler for role no longer External", "scaler", s.Name, "role", role)
 			if err := m.client.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
@@ -139,7 +191,9 @@ func (m *ScalerManager) Reconcile(
 				"Deleted scaler %s (role %s is no longer External)", s.Name, role)
 			continue
 		}
-		existing[role] = s
+		if s.DeletionTimestamp.IsZero() {
+			existing[role] = s
+		}
 	}
 
 	for role := range externalRoles {
@@ -163,13 +217,14 @@ func (m *ScalerManager) Reconcile(
 
 func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, role string, seed int32) (*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
 	name := ScalerName(ds.Name, role)
+	parent, child := roleParts(role)
 	scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ds.Namespace,
 			Labels: map[string]string{
 				disaggregatedsetv1.SetNameLabelKey: ds.Name,
-				disaggregatedsetv1.RoleLabelKey:    role,
+				disaggregatedsetv1.RoleLabelKey:    parent,
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         disaggregatedsetv1.GroupVersion.String(),
@@ -181,6 +236,9 @@ func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.Disag
 			}},
 		},
 		Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: seed},
+	}
+	if child != "" {
+		scaler.Labels[disaggregatedsetv1.SubRoleLabelKey] = child
 	}
 	if err := m.client.Create(ctx, scaler); err == nil {
 		logf.FromContext(ctx).Info("Created scaler", "scaler", name, "role", role)
@@ -196,9 +254,10 @@ func (m *ScalerManager) create(ctx context.Context, ds *disaggregatedsetv1.Disag
 	if err := m.client.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: name}, cur); err != nil {
 		return nil, fmt.Errorf("get existing scaler %s: %w", name, err)
 	}
-	if !isControlledBy(cur, ds.UID) {
+	if !isControlledBy(cur, ds.UID) || !cur.DeletionTimestamp.IsZero() ||
+		cur.Labels[disaggregatedsetv1.RoleLabelKey] != parent || cur.Labels[disaggregatedsetv1.SubRoleLabelKey] != child {
 		m.record.Eventf(ds, nil, corev1.EventTypeWarning, EventReasonScalerConflict,
-			"Conflict", "Scaler %s exists but is not controlled by this DisaggregatedSet; not adopting", name)
+			"Conflict", "Scaler %s does not match a live controlled role; not adopting", name)
 		return nil, nil
 	}
 	return cur, nil
@@ -214,6 +273,7 @@ func (m *ScalerManager) WriteStatus(
 	observedReplicas map[string]int32,
 ) error {
 	for role, s := range scalers {
+		parent, child := roleParts(role)
 		desired := s.DeepCopy()
 		desired.Status.Replicas = observedReplicas[role]
 		// Selector filters to leader pods only (worker-index=0), one per LWS
@@ -225,8 +285,11 @@ func (m *ScalerManager) WriteStatus(
 		// handles ingress; workers are downstream compute).
 		desired.Status.Selector = fmt.Sprintf("%s=%s,%s=%s,%s=0",
 			disaggregatedsetv1.SetNameLabelKey, ds.Name,
-			disaggregatedsetv1.RoleLabelKey, role,
+			disaggregatedsetv1.RoleLabelKey, parent,
 			leaderworkersetv1.WorkerIndexLabelKey)
+		if child != "" {
+			desired.Status.Selector += fmt.Sprintf(",%s=%s", disaggregatedsetv1.SubRoleLabelKey, child)
+		}
 		desired.Status.ObservedGeneration = s.Generation
 		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
 			Type: disaggregatedsetv1.DisaggregatedSetRoleScalerReady, Status: metav1.ConditionTrue,

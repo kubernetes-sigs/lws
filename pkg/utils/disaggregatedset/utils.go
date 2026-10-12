@@ -33,7 +33,7 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
 
-const NumRequiredRoles = 2
+const NumRequiredRoles = 1
 
 // GetInitialReplicas returns a valid non-negative initial-replicas annotation.
 // Missing, empty, malformed, negative, or out-of-range values are treated as
@@ -145,6 +145,8 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 
 		// Scaling only selects where the desired replica count comes from.
 		role.Scaling = nil
+		// Routing partitions and their replica targets do not change the template.
+		role.SubRoles = nil
 
 		// The LWS manager propagates only labels and annotations from template
 		// metadata. Fields such as name, namespace, and finalizers are ignored.

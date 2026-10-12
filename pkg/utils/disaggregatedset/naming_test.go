@@ -188,7 +188,7 @@ func TestGetRoleConfigs(t *testing.T) {
 	}
 
 	configs := GetRoleConfigs(disaggregatedSet)
-	assert.Len(t, configs, NumRequiredRoles)
+	assert.Len(t, configs, len(disaggregatedSet.Spec.Roles))
 	assert.Same(t, &disaggregatedSet.Spec.Roles[0], configs[testUtilsRolePrefill])
 	assert.Same(t, &disaggregatedSet.Spec.Roles[1], configs[testUtilsRoleDecode])
 

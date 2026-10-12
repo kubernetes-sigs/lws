@@ -62,3 +62,20 @@ Because each role maps to an independent child LeaderWorkerSet, each role inheri
    Prefill and decode roles can be scaled dynamically based on distinct metric signals (e.g., time-to-first-token vs. inter-token-latency) using `DisaggregatedSetRoleScaler`.
 4. **Dedicated Storage:**
    Each role can configure its own `volumeClaimTemplates` for local model caching or intermediate tensor offloading.
+
+## Virtual roles
+
+`subRoles: [{name: interactive, replicas: 3}, {name: batch, replicas: 1}]` partitions
+one parent's shared-template LWS into routing pools, totaling four groups per slice.
+Parent `spec.replicas` is ignored and parent `scaling` must be omitted. Children may
+use `scaling.mode: External` without `replicas`; their `<ds>-<parent>-<child>` RoleScalers
+retain the single-slice restriction. This initial implementation requires Ordinal identity.
+
+Route using the controller-owned `disaggregatedset.x-k8s.io/subrole` Pod label alongside
+set/role/slice labels. Each child inherits independent rollout budgets; there is no parent cap.
+`status.roleStatuses` lists the parent aggregate then `parent/child` entries for current children:
+use totals or breakdown, not both. `SubRolesAssigned` reports coherent group assignment.
+Labels can briefly duplicate during transfers. Retained groups must be healthy before relabeling
+or shrinking; pending operations block further planning and desired changes until they complete.
+See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)
+for assignment ordering, recovery, rollout churn, and removing subroles.

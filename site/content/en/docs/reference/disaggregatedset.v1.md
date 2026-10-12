@@ -76,6 +76,14 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
    <p>Name is the unique identifier for this role.</p>
 </td>
 </tr>
+<tr><td><code>subRoles</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec"><code>[]DisaggregatedSubRoleSpec</code></a>
+</td>
+<td>
+   <p>SubRoles partitions one Ordinal LWS into pools sharing its templates.
+Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.</p>
+</td>
+</tr>
 <tr><td><code>scaling</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleScaling"><code>RoleScaling</code></a>
 </td>
@@ -267,9 +275,9 @@ Both policies allow scale-up and old-revision drains within rollout bounds.</p>
 
 <p>DisaggregatedSetSpec defines the desired state of DisaggregatedSet.</p>
 <p>The all-or-nothing replicas rule (either every role has replicas &gt; 0, or
-every role has replicas == 0) applies only to non-External roles. External
-roles are exempt because their effective replicas live outside the DS spec —
-they are driven via DisaggregatedSetRoleScaler.spec.replicas.</p>
+every role has replicas == 0) applies only to non-External, unpartitioned
+roles. External targets come from scalers; sub-roles may independently scale
+to zero without pausing sibling routing pools.</p>
 
 
 <table class="table">
@@ -281,7 +289,7 @@ they are driven via DisaggregatedSetRoleScaler.spec.replicas.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec"><code>[]DisaggregatedRoleSpec</code></a>
 </td>
 <td>
-   <p>Roles defines the list of roles (at least 2 required).
+   <p>Roles defines the list of roles (at least 1 required).
 Each role has a unique name and its own configuration.</p>
 </td>
 </tr>
@@ -343,9 +351,10 @@ created, so changing it takes effect on the next rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleStatus"><code>[]RoleStatus</code></a>
 </td>
 <td>
-   <p>RoleStatuses contains the status for each role currently in spec.roles.
-The order matches spec.roles. A role removed from spec.roles has no entry
-here, even if LeaderWorkerSets for that role still exist while draining.</p>
+   <p>RoleStatuses lists each current role followed by its sub-roles in spec order.
+Parent entries include historical layouts, so may exceed the visible child sum.
+Do not sum parent and child entries together.
+Removed roles and sub-roles are omitted even while their groups drain.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
@@ -360,6 +369,46 @@ Each condition has a unique type and reflects the status of a specific aspect of
 <li>&quot;Progressing&quot;: the resource is being created or updated</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSubRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec}
+    
+
+**Appears in:**
+
+- [DisaggregatedRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec)
+
+
+<p>DisaggregatedSubRoleSpec defines a scaling and routing pool sharing its parent's templates.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>name</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>Name is unique within the parent role.</p>
+</td>
+</tr>
+<tr><td><code>replicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Replicas counts groups (Static default: 1); omit it for External scaling.</p>
+</td>
+</tr>
+<tr><td><code>scaling</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RoleScaling"><code>RoleScaling</code></a>
+</td>
+<td>
+   <p>Scaling selects this pool's replica source.</p>
 </td>
 </tr>
 </tbody>
@@ -420,6 +469,8 @@ topologyKey. Required when Type is not None.</p>
 
 - [DisaggregatedRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec)
 
+- [DisaggregatedSubRoleSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec)
+
 
 <p>RoleScaling configures how replicas are determined for a role. Sub-struct
 (not a bare enum) so future per-role scaling policies can be added without
@@ -476,7 +527,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 <code>string</code>
 </td>
 <td>
-   <p>Name is the name of the role (matches spec.roles[].name).</p>
+   <p>Name is the role name or &quot;parent/subrole&quot; for a sub-role.</p>
 </td>
 </tr>
 <tr><td><code>replicas</code><br/>
@@ -490,7 +541,8 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 <code>int32</code>
 </td>
 <td>
-   <p>ReadyReplicas is the number of ready replicas for this role.</p>
+   <p>ReadyReplicas is the number of ready replicas for this role.
+Sub-role readiness requires a coherent assignment across the whole group.</p>
 </td>
 </tr>
 <tr><td><code>updatedReplicas</code><br/>

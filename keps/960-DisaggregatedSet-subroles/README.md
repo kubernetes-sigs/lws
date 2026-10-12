@@ -110,7 +110,7 @@ does today. When sub-roles are present:
 - replica ownership moves from the parent to its sub-roles;
 - each sub-role resolves a Static or External desired count;
 - the parent LWS target is the sum of those counts; and
-- every physical LWS group receives one sub-role label.
+- every target-revision physical LWS group receives one sub-role label.
 
 The controller deliberately does not create one LWS per sub-role. Sub-roles are lighter
 weight routing partitions inside one homogeneous physical role.
@@ -173,9 +173,8 @@ are present and parent `spec.replicas` is ignored. The webhook warns when an exp
 parent replica value greater than one is observed; the inherited LWS default prevents a
 strict absence check.
 
-**Per-child rollout budgets could exceed the parent envelope.** `maxSurge` and
-`maxUnavailable` remain parent settings and are enforced after child counts are
-aggregated.
+**Independent allowances accumulate physically.** Children inherit the parent's raw
+`maxSurge` and `maxUnavailable` settings; there is no additional parent-wide clamp.
 
 **Routers observe label changes eventually.** Different router replicas may briefly
 disagree on membership, but both destinations have identical runtime configuration.
@@ -240,8 +239,8 @@ else:
 parentDesired(role) = sum(desired(subRole) for subRole in role.subRoles)
 ```
 
-Percentage rollout budgets are calculated against `parentDesired`, not the ignored or
-defaulted parent `spec.replicas`. A zero sub-role does not force its siblings to zero.
+Percentage rollout budgets resolve per child (surge up, unavailability down), retaining
+ordinary defaults and zero/zero fallback. A zero sub-role does not force siblings to zero.
 
 #### Validation
 
@@ -275,10 +274,8 @@ disaggregatedset.x-k8s.io/revision: abc12345
 leaderworkerset.sigs.k8s.io/group-index: "4"
 ```
 
-The assignment identity is `(LWS UID, group-index)` because old and new revisions can
-both contain group index zero. In the initial implementation, `group-index` is an
-ordinal. The leader's assignment is authoritative and is mirrored to the other Pods in
-its group.
+The assignment identity is `(LWS UID, leader Pod UID)`; the observer verifies ownership
+and whole-group readiness. The leader's authoritative assignment is mirrored to workers.
 
 External sub-role scalers are named `<ds>-<role>-<subrole>` and carry both role labels.
 Admission rejects names exceeding the Kubernetes limit and collisions between generated
@@ -289,16 +286,7 @@ role and sub-role scaler names. When sub-roles exist, no parent scaler is create
 The reconciler watches Pods through a mapping from the existing
 `disaggregatedset.x-k8s.io/name` label to the parent DisaggregatedSet. It receives Pod
 `get`, `list`, `watch`, and `patch` permissions and patches only the sub-role label.
-Converged assignments produce no writes.
-
-Internally, planning roles use a structured identity:
-
-```go
-type RoleKey struct {
-    Role    string
-    SubRole string // empty for an unpartitioned role
-}
-```
+Converged assignments produce no writes; native controllers retain health recovery.
 
 Reconciliation follows this flow:
 
@@ -306,7 +294,7 @@ Reconciliation follows this flow:
 Static/scaler child targets
           |
           v
-Expanded planner roles: decode/short, decode/long
+Ordinary planner roles: decode/short, decode/long
           |
           v
 Physical aggregation: decode = short + long
@@ -317,24 +305,32 @@ LWS scale and group-label assignment
 
 For each `(slice, revision, parent role)`, the assignment algorithm:
 
-1. Preserves valid assignments up to each desired count.
-2. Treats excess assignments as surplus and missing labels as unassigned.
-3. Assigns available groups to the largest positive `desired - assigned` deficit.
-4. Breaks ties by sub-role spec order, then group index.
-5. Patches only changed labels.
+1. Saves pending reductions/transfers without changing issued counts; pure growth publishes directly.
+2. Repairs partial/newborn labels, then waits for the whole retained Ordinal prefix to be Ready.
+3. Keeps valid assignments and fills deficits one group at a time, reobserving workers-first,
+   UID/resource-version guarded writes; donors retain `min(issued, pending)` coherent Ready groups.
+4. Observes survivors, clears outgoing labels, then atomically publishes issued counts and
+   `LWS.spec.replicas = sum(counts)`, clearing pending work. The observer tracks native deletions.
 
-New scale-up groups receive no sub-role traffic until assigned. Before scale-down, label
-swaps prepare the high ordinals that LWS will remove; the LWS replica write occurs on a
-later reconcile after the assignment is observed.
+Temporary duplicate labels do not grant planner capacity: `[A,A,B]` may become `[A,B,B]`
+before shrinking to `[A,B]`. Growing `[A,A]` to `A=1,B=2` still requires physical replicas 3.
+Pending targets survive retries/restarts and cannot be superseded. Missing/unhealthy retained
+groups stall that slice's subsequent planning, even if budgets allow progress; recovery may
+require user intervention. Newborn/partial labels repair before health checks to avoid deadlock.
 
 No separate assignment CRD is needed. Live labels provide stickiness, and the desired
 counts reconstruct missing labels after a Pod restart.
 
 ### Rolling Updates
 
-The planner operates on expanded roles so availability is visible per sub-role. The
-executor aggregates the resulting counts before writing the single parent LWS scale
-field and enforces the parent surge and unavailability envelope.
+The unchanged planner treats children as ordinary roles with independent budgets,
+coordination, completeness and scale-during-rollout policies. The executor sums issued
+child counts into one physical LWS; the parent adds no planner dimension or budget.
+
+Old revisions retain their recorded layout: ordinary roles stay ordinary and
+partitioned roles keep their own children. Desired membership applies only to the
+target revision, including in-place membership edits. Accepted pending assignments
+still finish and old replicas drain through the normal planner; their counts are not frozen.
 
 At rollout start, the old LWS snapshots both its aggregate initial replicas and its
 sub-role distribution, for example:
@@ -344,10 +340,11 @@ disaggregatedset.x-k8s.io/initial-subrole-replicas: >-
   {"short-context":5,"long-context":2}
 ```
 
-New groups are assigned according to the planned new-revision vector. Before old groups
-are removed, their high-ordinal labels are prepared for the planned drain. A
-target-positive sub-role remains represented; target-zero sub-roles do not block
-readiness or completion.
+New groups are assigned according to the planned new-revision vector. Initially positive
+old children remain required; added/zero/removed children follow ordinary retirement rules,
+retaining issued state until drained. Already-budgeted growth precedes Ordinal drain preparation
+so an unhealthy retained prefix cannot prevent replacements starting. Directional execution
+can create/delete groups even for a net-zero transfer; there is no additional surge exception.
 
 Sub-role target or membership changes do not change the revision hash because the
 parent LWS template is unchanged. Parent template changes continue to trigger the
@@ -402,9 +399,12 @@ sub-role label.
 
 ### Status, Slices, and Compatibility
 
-`RoleStatus` remains the parent aggregate and gains `subRoleStatuses` with replicas,
-ready replicas, and updated replicas per child. Parent values are their sums. A
-`SubRolesAssigned` condition reports whether every extant group has a valid assignment.
+`status.roleStatuses` lists the parent aggregate `model`, then current-spec children
+`model/a`, `model/b`, using existing `RoleStatus` fields. Parent counts include valid
+historical groups, so may exceed the visible child sum during a transition; do not count
+both levels. Removed children drain internally. `SubRolesAssigned` checks old groups
+against their revision's recorded layout and target groups against current membership;
+only coherent whole groups contribute Ready.
 
 Static sub-role replicas retain the existing per-slice meaning. Alpha rejects
 `spec.slices > 1` when any sub-role is External, following KEP-849. Assignment identity
@@ -412,8 +412,9 @@ already includes the slice, allowing a later KEP to add aggregate or per-slice s
 
 Omitting `subRoles` preserves existing names, labels, scaling, and status. Adding
 sub-roles does not create any Services.
-Enabling it labels existing groups in place and does not change the revision hash.
-Disabling it removes the dynamic labels and returns replica ownership to the parent.
+Enabling it labels target-revision groups in place and does not change the revision hash.
+Disabling it removes the target's dynamic labels and returns its replica ownership to
+the parent; old revisions retain their layout until drained.
 Changing the minimum parent-role count from two to one is a backward-compatible schema
 relaxation.
 
@@ -426,8 +427,8 @@ existing tests to make this code solid enough prior to implementation.
 
 - API validation, replica resolution, and generated scaler names.
 - Rejection of `groupIdentity: Hash` when a role defines sub-roles.
-- Stable assignment, deficit filling, Pod recreation, and high-ordinal scale-down.
-- Expanded planner state, parent budget aggregation, and initial snapshot parsing.
+- Stable assignment, UID-safe partial writes, native recovery, and conservative ordinal drains.
+- Ordinary child planner state, independent budgets, retirement history, and initial snapshots.
 - Scaler creation, seeding, status, selector, and cleanup.
 - Parent status aggregation and revision-hash stability.
 
@@ -436,7 +437,7 @@ existing tests to make this code solid enough prior to implementation.
 - One parent with one or more sub-roles creates one physical LWS with summed replicas.
 - Static and External target changes converge labels with minimal reassignment.
 - Pod recreation restores assignment; scale-down preserves the requested distribution.
-- Template rollout preserves sub-role availability and parent capacity limits.
+- Template rollout preserves ordinary child availability and independent budgets.
 - llm-d observes label changes and filters subsequent endpoint candidates.
 - Static multi-slice behavior works; External multi-slice objects are rejected in alpha.
 
