@@ -519,7 +519,10 @@ func (r *PodReconciler) syncGroupReadyCondition(ctx context.Context, pod *corev1
 	} else {
 		newPod.Status.Conditions = append(newPod.Status.Conditions, condition)
 	}
-	return r.Status().Patch(ctx, newPod, client.MergeFrom(pod))
+	// A strategic merge patch merges conditions by type. A JSON merge patch
+	// would replace the whole list with this copy's, and remove conditions the
+	// kubelet wrote since the copy was read, such as Ready.
+	return r.Status().Patch(ctx, newPod, client.StrategicMergeFrom(pod))
 }
 
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, ctrl.Result, error) {
