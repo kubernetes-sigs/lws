@@ -55,6 +55,8 @@ var errReplicaGroupsPending = errors.New("replica-group observation no longer ma
 type replicaReadiness struct {
 	raw       int // Ready groups, including groups committed to removal.
 	committed int // Ready groups that can authorize another drain.
+	// Positive evidence only: missing or incomplete observations stay false.
+	allUnscheduled bool
 }
 
 // rolloutReadiness is local to one slice and one reconciliation. It never
@@ -75,7 +77,7 @@ func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
 	return manager.observeReadiness(ctx, sets)
 }
 
-// observeLiveReadiness adapts shared group observations to the planner's two counts.
+// observeLiveReadiness adapts shared group observations to readiness and scheduling facts.
 // sets must come from this reconciliation's live GetRevisionRolesList. Scale
 // independently checks live identity and Spec before writing a planned change.
 // Unknown observations must retry, not look like zero serving capacity: that
@@ -99,11 +101,36 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 		}
 		availability := snapshot.Availability()
 		result[lws.Name] = replicaReadiness{
-			raw:       int(availability.ReadyReplicas),
-			committed: int(availability.RetainedReadyReplicas),
+			raw:            int(availability.ReadyReplicas),
+			committed:      int(availability.RetainedReadyReplicas),
+			allUnscheduled: allGroupsUnscheduled(snapshot),
 		}
 	}
 	return result, nil
+}
+
+// allGroupsUnscheduled permits cancelling below the final target only when no
+// group has begun using a node. Missing groups or workers are unknown, not
+// unscheduled; an assigned worker protects the role even if its leader is unbound.
+// These are facts from the existing observation, not a scheduling reservation.
+func allGroupsUnscheduled(snapshot *replicagroups.Snapshot) bool {
+	replicas := int(getLWSReplicas(snapshot.LWS))
+	if replicas == 0 || len(snapshot.Groups) != replicas {
+		return false
+	}
+	for _, group := range snapshot.Groups {
+		// The observer already validates group ownership and the size annotation.
+		size, _ := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
+		if group.Terminating || len(group.Pods) != size {
+			return false
+		}
+		for _, pod := range group.Pods {
+			if pod.Spec.NodeName != "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func mergeLabels(userLabels, autoLabels map[string]string) map[string]string {

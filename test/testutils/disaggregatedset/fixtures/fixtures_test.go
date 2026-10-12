@@ -59,6 +59,17 @@ func TestYAMLWithoutRollout(t *testing.T) {
 	require.NotContains(t, yaml, "rollingUpdateConfiguration:")
 }
 
+func TestYAMLWithScalingPolicyAndHeldHashReadiness(t *testing.T) {
+	config := PrefillDecode("moving-target", Role{Replicas: 8, HoldReadiness: true, GroupIdentity: "Hash"}, Role{Replicas: 8})
+	config.RolloutScaleDownPolicy = "Immediate"
+	yaml := config.YAML()
+	require.Contains(t, yaml, "  scalingPolicy:\n    scaleDownDuringRollout: Immediate")
+	require.Contains(t, yaml, "      groupIdentity: Hash")
+	require.Contains(t, yaml, `command: ["test", "-f", "/tmp/ready"]`)
+	config.RolloutScaleDownPolicy = ""
+	require.NotContains(t, config.YAML(), "scalingPolicy:")
+}
+
 func TestYAMLWithRoleAndWorkerTemplateMetadata(t *testing.T) {
 	config := Config{
 		Name:      "test",

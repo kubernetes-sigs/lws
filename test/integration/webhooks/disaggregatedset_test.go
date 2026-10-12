@@ -21,6 +21,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -31,7 +32,7 @@ import (
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
-var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
+var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 
 	// Each test runs in a separate namespace.
 	var ns *corev1.Namespace
@@ -56,6 +57,33 @@ var _ = ginkgo.Describe("disaggregatedset placement policy validation", func() {
 		}
 		return disagg
 	}
+
+	ginkgo.DescribeTable("rollout scale-down policy defaulting and validation",
+		func(policy *disaggregatedset.DisaggregatedSetScalingPolicy, want disaggregatedset.RolloutScaleDownPolicy, valid bool) {
+			disagg := buildDisaggregatedSet().Obj()
+			disagg.Spec.ScalingPolicy = policy
+			err := k8sClient.Create(ctx, disagg)
+			if !valid {
+				gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+				gomega.Expect(err.Error()).To(gomega.ContainSubstring("scaleDownDuringRollout"))
+				return
+			}
+			gomega.Expect(err).To(gomega.Succeed())
+			var fetched disaggregatedset.DisaggregatedSet
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: ns.Name}, &fetched)).To(gomega.Succeed())
+			if policy == nil {
+				gomega.Expect(fetched.Spec.ScalingPolicy).To(gomega.BeNil())
+				return
+			}
+			gomega.Expect(fetched.Spec.ScalingPolicy).NotTo(gomega.BeNil())
+			gomega.Expect(fetched.Spec.ScalingPolicy.ScaleDownDuringRollout).To(gomega.Equal(want))
+		},
+		ginkgo.Entry("omitted policy", nil, disaggregatedset.RolloutScaleDownPolicy(""), true),
+		ginkgo.Entry("empty policy defaults to Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{}, disaggregatedset.RolloutScaleDownDeferred, true),
+		ginkgo.Entry("explicit Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownDeferred}, disaggregatedset.RolloutScaleDownDeferred, true),
+		ginkgo.Entry("explicit Immediate", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownImmediate}, disaggregatedset.RolloutScaleDownImmediate, true),
+		ginkgo.Entry("invalid policy", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: "invalid"}, disaggregatedset.RolloutScaleDownPolicy(""), false),
+	)
 
 	type testValidationCase struct {
 		makeDisaggregatedSet func() *disaggregatedset.DisaggregatedSet

@@ -18009,6 +18009,23 @@ spec:
                   x-kubernetes-list-map-keys:
                     - name
                   x-kubernetes-list-type: map
+                scalingPolicy:
+                  description: |-
+                    ScalingPolicy controls scale-down during rolling updates. Omit it to
+                    preserve the default Deferred behavior.
+                  properties:
+                    scaleDownDuringRollout:
+                      default: Deferred
+                      description: |-
+                        ScaleDownDuringRollout controls demand-driven target replica reductions.
+                        Deferred waits until old revisions finish draining. Immediate considers
+                        reductions during the rollout, preferring safe old-revision drains.
+                        Both policies allow scale-up and old-revision drains within rollout bounds.
+                      enum:
+                        - Deferred
+                        - Immediate
+                      type: string
+                  type: object
                 slices:
                   default: 1
                   description: |-

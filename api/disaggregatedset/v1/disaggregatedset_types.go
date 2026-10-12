@@ -98,6 +98,43 @@ type RoleScaling struct {
 	Mode RoleScalingMode `json:"mode,omitempty"`
 }
 
+// RolloutScaleDownPolicy controls when demand-driven target replica reductions are
+// considered during an active rolling update. Both policies allow scale-up and
+// old-revision retirement within the rollout's availability and surge bounds.
+// +kubebuilder:validation:Enum=Deferred;Immediate
+type RolloutScaleDownPolicy string
+
+const (
+	// RolloutScaleDownDeferred preserves the existing rollout behavior. Scale-up
+	// proceeds within rollout bounds; demand-driven target reductions wait until
+	// old revisions finish draining. Old replicas may still drain during the
+	// rollout, and existing renamed-role surplus recovery is unchanged.
+	// The surge ceiling is max(initial old replicas, effective desired) + maxSurge.
+	// External roles retain their target Spec clamp while old replicas overlap.
+	RolloutScaleDownDeferred RolloutScaleDownPolicy = "Deferred"
+
+	// RolloutScaleDownImmediate considers scale-down during the rollout with a
+	// surge ceiling of desired + maxSurge. For roles still present in the target,
+	// old-revision reductions use the floor
+	// max(0, min(historical old baseline, desired) - maxUnavailable), so scale-up
+	// does not raise that floor. Safe old-revision drains are preferred; target
+	// replicas may shrink when old revisions must remain. Availability and
+	// startup protection can delay reductions: Immediate does not mean instant.
+	RolloutScaleDownImmediate RolloutScaleDownPolicy = "Immediate"
+)
+
+// DisaggregatedSetScalingPolicy configures how replica target changes interact
+// with DisaggregatedSet reconciliation.
+type DisaggregatedSetScalingPolicy struct {
+	// ScaleDownDuringRollout controls demand-driven target replica reductions.
+	// Deferred waits until old revisions finish draining. Immediate considers
+	// reductions during the rollout, preferring safe old-revision drains.
+	// Both policies allow scale-up and old-revision drains within rollout bounds.
+	// +optional
+	// +kubebuilder:default=Deferred
+	ScaleDownDuringRollout RolloutScaleDownPolicy `json:"scaleDownDuringRollout,omitempty"`
+}
+
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
 // to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
@@ -148,6 +185,11 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
+
+	// ScalingPolicy controls scale-down during rolling updates. Omit it to
+	// preserve the default Deferred behavior.
+	// +optional
+	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
 	// PlacementPolicy controls how a slice's roles are co-located and how the
 	// DisaggregatedSet's slices are spread across topology domains. When set, the

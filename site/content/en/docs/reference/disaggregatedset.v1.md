@@ -227,6 +227,36 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec)
+
+
+<p>DisaggregatedSetScalingPolicy configures how replica target changes interact
+with DisaggregatedSet reconciliation.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>scaleDownDuringRollout</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy"><code>RolloutScaleDownPolicy</code></a>
+</td>
+<td>
+   <p>ScaleDownDuringRollout controls demand-driven target replica reductions.
+Deferred waits until old revisions finish draining. Immediate considers
+reductions during the rollout, preferring safe old-revision drains.
+Both policies allow scale-up and old-revision drains within rollout bounds.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
     
 
@@ -262,6 +292,14 @@ Each role has a unique name and its own configuration.</p>
    <p>Slices is the number of independent copies of the whole role topology.
 Each slice is a complete set of all roles that rolls out independently.
 Changing Slices scales copies up or down and does not trigger a rollout.</p>
+</td>
+</tr>
+<tr><td><code>scalingPolicy</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
+</td>
+<td>
+   <p>ScalingPolicy controls scale-down during rolling updates. Omit it to
+preserve the default Deferred behavior.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>
@@ -464,4 +502,20 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </tr>
 </tbody>
 </table>
+
+## `RolloutScaleDownPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [DisaggregatedSetScalingPolicy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy)
+
+
+<p>RolloutScaleDownPolicy controls when demand-driven target replica reductions are
+considered during an active rolling update. Both policies allow scale-up and
+old-revision retirement within the rollout's availability and surge bounds.</p>
+
+
+
   
