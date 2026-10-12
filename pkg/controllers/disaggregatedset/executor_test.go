@@ -2684,7 +2684,7 @@ func TestSubRoleMixedHistoricalLayouts(t *testing.T) {
 			require.NoError(t, executor.syncTargetInitialReplicas(t.Context(), f.ds, []string{tc.absent}, f.revision("old"), RoleReplicaState{99}))
 			require.Equal(t, before, f.observe().LWS, "an absent logical role must not write this physical LWS")
 			writes = 0
-			require.ErrorIs(t, executor.scaleRevision(t.Context(), f.ds, f.revision("old"), inputs.allRoleNames, RoleReplicaState{3, 2, 3}, scaleUp), tc.writeError)
+			require.NoError(t, executor.scaleRevision(t.Context(), f.ds, f.revision("old"), inputs.allRoleNames, RoleReplicaState{3, 2, 3}, scaleUp))
 			require.Equal(t, 1, writes, "one physical write for the whole role vector")
 			require.ErrorIs(t, executor.syncTargetInitialReplicas(t.Context(), f.ds, inputs.allRoleNames, f.revision("old"), RoleReplicaState{7, 9, 4}), tc.writeError)
 			s := f.observe()
@@ -2836,15 +2836,43 @@ func TestSubRoleScalingKeepsRevisionMembership(t *testing.T) {
 	target := old.withRevision("target", "c", "d")
 	executor := &RollingUpdateExecutor{LWSManager: old.manager}
 	names := []string{"model/c", "model/d", "model/a", "model/b"}
-	require.ErrorIs(t, executor.scaleRevision(t.Context(), old.ds, old.revision("old"), names, RoleReplicaState{0, 0, 0, 0}, scaleDown), errReplicaGroupsPending)
+	require.NoError(t, executor.scaleRevision(t.Context(), old.ds, old.revision("old"), names, RoleReplicaState{0, 0, 0, 0}, scaleDown))
 	old.sync()
 	old.native()
 	old.sync()
 	s := old.observe()
 	require.JSONEq(t, `{"a":0,"b":0}`, s.LWS.Annotations[subRoleReplicasAnnotation], "draining old counts must not enroll target-only child names")
 	require.JSONEq(t, `{"a":1,"b":1}`, s.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey])
-	require.ErrorIs(t, executor.scaleRevision(t.Context(), old.ds, target.revision("current"), names, RoleReplicaState{2, 1, 0, 0}, scaleUp), errReplicaGroupsPending)
+	require.NoError(t, executor.scaleRevision(t.Context(), old.ds, target.revision("current"), names, RoleReplicaState{2, 1, 0, 0}, scaleUp))
 	require.JSONEq(t, `{"c":2,"d":1}`, target.observe().LWS.Annotations[subRoleReplicasAnnotation], "growing the target must not enroll old-only child names")
+}
+
+func TestSubRoleScalingWaitsUntilRequestedTargetsAreAccepted(t *testing.T) {
+	for _, repair := range []string{"baseline", "labels", "stale parent"} {
+		t.Run(repair, func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a", "b")
+			s := f.observe()
+			switch repair {
+			case "baseline":
+				delete(f.lws.Annotations, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+			case "labels":
+				worker := s.Groups[0].Pods[1]
+				delete(worker.Labels, disaggregatedsetv1.SubRoleLabelKey)
+				require.NoError(t, f.manager.client.Update(t.Context(), worker))
+			case "stale parent":
+				live := f.lws.DeepCopy()
+				live.Annotations["concurrent-edit"] = "true"
+				require.NoError(t, f.manager.client.Update(t.Context(), live))
+			}
+			executor := newTestExecutor(f.manager.client)
+			revision := disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{"model": f.lws}}
+			err := executor.scaleRevision(t.Context(), f.ds, revision, []string{"model/a", "model/b"}, RoleReplicaState{2, 1}, scaleUp)
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS), "repairing metadata or labels is not an accepted scale-up")
+			require.Empty(t, executor.Record.(*events.FakeRecorder).Events)
+		})
+	}
 }
 
 func TestSubRoleBaselineRepairAndLiveMembership(t *testing.T) {

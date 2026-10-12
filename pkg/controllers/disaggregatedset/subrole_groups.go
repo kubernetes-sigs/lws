@@ -217,6 +217,7 @@ type subRoleState struct {
 	lws                      *leaderv1.LeaderWorkerSet
 	snapshot                 *replicagroups.Snapshot
 	issued, initial, pending map[string]int
+	written                  bool // A conditional LWS write succeeded in this call.
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
@@ -325,6 +326,7 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 	if err := m.client.Patch(ctx, live, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
+	state.lws, state.written = live, true
 	return errReplicaGroupsPending
 }
 

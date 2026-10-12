@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -774,6 +775,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 				if err != nil {
 					return err
 				}
+				before := maps.Clone(current)
 				// Membership is enrolled by observation, not by scaling another revision.
 				for child, count := range current {
 					if direction == scaleUp {
@@ -782,8 +784,26 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 						current[child] = min(counts[child], count)
 					}
 				}
-				if _, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current}); err != nil {
-					return err
+				if maps.Equal(before, current) {
+					continue
+				}
+				state, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current})
+				if err != nil {
+					// Accepted targets can proceed independently. Missing observations,
+					// label repairs and unrelated metadata writes still require a retry.
+					accepted := state.issued
+					if state.pending != nil {
+						accepted = state.pending
+					}
+					if !errors.Is(err, errReplicaGroupsPending) || !state.written || !maps.Equal(accepted, current) {
+						return err
+					}
+				}
+				revision.Roles[parent] = state.lws
+				log.Info(action, "lws", lws.Name, "subrole_targets", current)
+				if executor.Record != nil {
+					executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, eventReason,
+						"Update", "Accepted scaling %s for subroles of LWS %s: %v; physical scale-down waits for group assignment", direction, lws.Name, current)
 				}
 			}
 			continue
