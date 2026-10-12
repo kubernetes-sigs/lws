@@ -288,6 +288,80 @@ func TestScaleUpCoordinationBootstrapPreservesDesiredFloor(t *testing.T) {
 	}
 }
 
+func TestScaleUpRetiresBootstrapExcessBeforeContinuing(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		state := rolloutState([]int{2, 7}, []int{2, 7}, []int{2, 7}, nil, nil,
+			[]int{0, 0}, []int{0, 0}, []int{8, 7}, configs([]int{1, 1}, []int{0, 1}))
+		state.ScaleDownDuringRollout = immediate
+		bootstraps := 0
+		for range 20 {
+			step := ComputeNextStep(state)
+			if step == nil {
+				break
+			}
+			require.NoError(t, validateUpdateStep(state, step))
+			assertScalingSafety(t, state, step)
+			state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+			state.Target.SpecReplicas = step.New
+			if step.UsesBootstrapSurge {
+				bootstraps++
+				// Leave this growth unready for another observation. A safe old
+				// correction may proceed, but another surge slot cannot stack.
+				if pending := ComputeNextStep(state); pending != nil {
+					require.False(t, pending.UsesBootstrapSurge)
+					require.Equal(t, step.New, pending.New)
+					require.NoError(t, validateUpdateStep(state, pending))
+					assertScalingSafety(t, state, pending)
+				}
+			}
+			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = step.New, step.New
+		}
+		// Previously Deferred stopped at old [2,4], new [6,5], all Ready.
+		require.Positive(t, bootstraps)
+		require.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas, "immediate=%v", immediate)
+		require.Equal(t, state.Target.DesiredReplicas, state.Target.SpecReplicas)
+	}
+}
+
+func TestScaleUpExcessDrainStaysWithinCapacityAndAvailability(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		for _, tc := range []struct {
+			name                               string
+			targetSpec, targetRaw, targetReady int
+			oldRaw, wantOld                    int
+		}{
+			{"one excess group", 5, 5, 5, 4, 3},
+			{"already at the ceiling", 4, 4, 4, 4, 4},
+			{"already at the availability floor", 5, 2, 2, 4, 4},
+			{"pending target deletion", 5, 3, 2, 4, 4},
+			{"pending old deletion", 5, 2, 2, 5, 4},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				state := rolloutState([]int{2, 7}, []int{2, 4}, []int{2, 4}, nil, nil,
+					[]int{6, tc.targetSpec}, []int{6, tc.targetReady}, []int{8, 7}, configs([]int{1, 1}, []int{0, 1}))
+				state.ScaleDownDuringRollout = immediate
+				state.ActiveOld.RawReadyReplicas[1] = tc.oldRaw
+				state.Target.RawReadyReplicas[1] = tc.targetRaw
+				past := state.ActiveOld.SpecReplicas
+				if step := ComputeNextStep(state); step != nil {
+					require.NoError(t, validateUpdateStep(state, step))
+					assertScalingSafety(t, state, step)
+					past = step.Past
+				}
+				require.Equal(t, []int{2, tc.wantOld}, past)
+			})
+		}
+	}
+	// The exception does not change Deferred retirement pacing without
+	// increased demand, or for a removed role even when another role grows.
+	for _, desired := range [][]int{{2, 7}, {1, 7}, {8, 0}} {
+		state := rolloutState([]int{2, 7}, []int{2, 4}, []int{2, 4}, nil, nil,
+			[]int{6, 5}, []int{6, 5}, desired, configs([]int{1, 1}, []int{0, 1}))
+		bounded := boundDrainingSnapshotTargets(snapshotForRolloutState(state), state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, []int{2, 0})
+		require.Equal(t, []int{2, 4}, bounded, "desired=%v", desired)
+	}
+}
+
 func TestDisjointGrowthCountsHistoricalRevisionLayouts(t *testing.T) {
 	initial := []RoleReplicaState{{6, 6, 0, 0}, {4, 0, 2, 2}}
 	for _, sharedSpec := range []int{0, 2} {
@@ -1113,12 +1187,36 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 func hasFeasibleMutation(state RolloutState) bool {
 	snapshot := snapshotForRolloutState(state)
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	allowExcess := state.ScaleDownDuringRollout
+	for i, desired := range state.Target.DesiredReplicas {
+		allowExcess = allowExcess || desired > state.AvailabilityBaseline[i]
+	}
+	excessOldMinimum := slices.Clone(state.ActiveOld.SpecReplicas)
+	for i, desired := range state.Target.DesiredReplicas {
+		if !allowExcess || desired == 0 {
+			continue
+		}
+		physical := state.ActiveOld.SpecReplicas[i] + state.Target.SpecReplicas[i]
+		for _, parked := range state.ParkedOld {
+			physical += parked.SpecReplicas[i]
+		}
+		baseline := max(state.ActiveOld.InitialReplicas[i], desired)
+		if state.ScaleDownDuringRollout {
+			baseline = desired
+		}
+		excessOldMinimum[i] -= max(0, physical-baseline-state.Config[i].MaxSurge)
+	}
 	for old0 := 0; old0 <= state.ActiveOld.SpecReplicas[0]; old0++ {
 		for old1 := 0; old1 <= state.ActiveOld.SpecReplicas[1]; old1++ {
 			old := RoleReplicaState{old0, old1}
+			window := boundDrainingRoleTargetsToWindow(state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, old)
+			withinWindow := true
+			for i := range old {
+				withinWindow = withinWindow && old[i] >= min(window[i], excessOldMinimum[i])
+			}
 			if !slices.Equal(boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, old, state.ActiveOld.RequiredRoles), old) ||
 				!availabilityPreserved(snapshot, old, state.ActiveOld.RequiredRoles) ||
-				!slices.Equal(boundDrainingRoleTargetsToWindow(state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, old), old) {
+				!withinWindow {
 				continue
 			}
 			if !slices.Equal(old, state.ActiveOld.SpecReplicas) {

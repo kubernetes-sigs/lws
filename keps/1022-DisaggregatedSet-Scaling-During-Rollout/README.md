@@ -200,13 +200,13 @@ replacement-growth limit = max(limit from old-side progress, floor(desired * f) 
 
 This bound applies during ordinary planning, not only after a stall: the controller can request the next group before observing another decrease in old Spec. Each role's actual surge limit, projected pending-work allowance, desired count, and fractional coordination still apply. Before every required role has retained Ready capacity, the missing-role-first rule and old-side progress bound above remain in force. Replica fractions do not reserve physical capacity or guarantee that the requested group can be scheduled.
 
-Separately, with `Immediate` only, an old-side reduction for a role with a positive desired count may go beyond the historical fraction window by at most the existing excess:
+Separately, with `Immediate`, or when any role's effective desired count exceeds its historical availability baseline, an old-side reduction for a role with a positive desired count may go beyond the historical fraction window by at most the existing excess:
 
 ```text
-excess = max(0, total old Spec + target Spec - desired - maxSurge)
+excess = max(0, total old Spec + target Spec - policy surge ceiling)
 ```
 
-This exception only corrects physical excess. It cannot authorize extra growth, reduce below the latest ceiling by bypassing coordination, bypass availability, or leave only some required roles in an old revision. Once excess is gone, ordinary fractional coordination applies again. Removed roles have no new replica target to correct: they keep their old fraction window, even when their saved unavailable budgets differ.
+The policy ceiling is `desired + maxSurge` for `Immediate` and `max(initial old replicas, effective desired) + maxSurge` for `Deferred`. This exception only corrects physical excess. It cannot authorize extra growth, reduce below that ceiling by bypassing coordination, bypass availability, or leave only some required roles in an old revision. Once excess is gone, ordinary fractional coordination applies again. Removed roles have no new replica target to correct: they keep their old fraction window, even when their saved unavailable budgets differ. This does not enable demand-driven target reductions under `Deferred`.
 
 ### Prefer old-revision reductions
 
@@ -251,7 +251,7 @@ This changes ordinary opt-in target-size corrections only. It does not add reduc
 
 This policy retains the existing bounded recovery rules rather than promising that every cluster configuration can progress:
 
-- Only after ordinary progress is blocked, the planner may issue the existing bootstrap surge for a missing required target role. Each eligible, already-started role may also receive one extra group when `Immediate` is enabled or any role's effective desired count exceeds its historical availability baseline. This includes `Deferred` scale-up and addresses coordination stalls exposed by the stronger floor, even when all existing groups are Ready. The eligible role's existing target groups must all be retained Ready, and its total Spec must exactly equal its policy's surge ceiling. Other disjoint history does not disable this exception for a role that still has same-role old replicas; a fully renamed target role with no same-role old replicas cannot use it while disjoint old replicas remain. The allowance cannot be stacked while that role is already over its ceiling or waiting for readiness, and does not enable demand-driven target reductions under `Deferred`.
+- Only after ordinary progress is blocked, the planner may issue the existing bootstrap surge for a missing required target role. Each eligible, already-started role may also receive one extra group when `Immediate` is enabled or any role's effective desired count exceeds its historical availability baseline. This includes `Deferred` scale-up and addresses coordination stalls exposed by the stronger floor, even when all existing groups are Ready. The eligible role's existing target groups must all be retained Ready, and its total Spec must exactly equal its policy's surge ceiling. Other disjoint history does not disable this exception for a role that still has same-role old replicas; a fully renamed target role with no same-role old replicas cannot use it while disjoint old replicas remain. The allowance cannot be stacked while that role is already over its ceiling or waiting for readiness. The matching old-side excess correction above lets safe retirement clear the borrowed slot instead of getting stuck behind historical pacing; neither rule enables demand-driven target reductions under `Deferred`.
 - The existing same-role scheduler fallback remains a last resort after ordinary and bootstrap progress are unavailable. It requires a persistent scheduler `Unschedulable` condition, an over-ceiling target group, and an old group of that role that can release capacity. It adds at most one to the unavailable allowance without taking a positive availability floor to zero. Slow startup alone does not qualify.
 - Fully renamed roles start missing required target roles before repeated growth, use the old-side progress and retained-Ready bounds above, and retain correction of already-issued target surplus. Renaming does not add a new rule that deletes another old replica just because a new Pod is unschedulable.
 
@@ -322,7 +322,7 @@ Use planner transitions, with target or readiness changes between reconciles, an
 - Target correction preserves already-used replacement capacity after all old roles are renamed.
 - Moving targets can release physical excess without bypassing availability or splitting old revisions.
 - Disjoint replacement uses full target sizes in mixed histories and makes bounded progress before another old Spec reduction; shared-role bootstrap remains available, and later target readiness loss preserves the surplus-repair availability safeguards.
-- Scale-up under `Deferred` can use fully-Ready coordination bootstrap when a role's effective desired count exceeds its historical baseline, without stacking extra groups or permitting target reductions.
+- Scale-up under `Deferred` can use fully-Ready coordination bootstrap and release safe old capacity above its policy's ceiling when a role's effective desired count exceeds its historical baseline, without stacking extra groups or permitting target reductions.
 - Opposite role changes, unequal role sizes, interrupted rollouts, and repeated edits converge when valid targets stabilize and groups become Ready.
 - Bootstrap and scheduler fallback remain bounded; defaults and renamed-role safeguards do not regress.
 - Replica and policy edits do not change the application revision hash.
@@ -384,3 +384,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 - 2026-10-12: Use the same old revisions for removed-role baselines and readiness accounting, including the replacement credit retained during target scale-down.
 - 2026-10-12: Use the desired-based availability floor for both old and target reductions of current roles, replacing the historical cap. Preserve observed Ready capacity during scale-up, keep the floor across interrupted rollout phases, and retain removed-role history and replacement protection.
 - 2026-10-12: Extend fully-Ready coordination bootstrap to `Deferred` when effective demand exceeds an old availability baseline, preserving all existing bounds. Clarify that percentage budgets still use the latest requested count rather than the External-role clamp.
+- 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.

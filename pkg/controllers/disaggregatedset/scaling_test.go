@@ -828,9 +828,15 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 	}
 	phaseTargets, growing, oldReference, oldProgress, oldNext := make([]int, n), make([]int, n), make([]int, n), make([]int, n), make([]int, n)
 	scaleCorrection := make([]bool, n)
+	surgeBaselines := slices.Clone(state.Target.DesiredReplicas)
+	scaleUp := false
 	steps := 0
 	hasTarget, targetComplete, hasRemovedBaseline := false, true, false
 	for i, desired := range state.Target.DesiredReplicas {
+		scaleUp = scaleUp || desired > state.AvailabilityBaseline[i]
+		if !state.ScaleDownDuringRollout {
+			surgeBaselines[i] = max(surgeBaselines[i], state.ActiveOld.InitialReplicas[i])
+		}
 		if desired > 0 {
 			hasTarget = true
 			targetComplete = targetComplete && state.Target.ReadyReplicas[i] >= desired
@@ -849,9 +855,9 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		phaseTargets[i] = max(state.Target.SpecReplicas[i], phaseTargets[i])
 		growing[i] = max(state.Target.SpecReplicas[i], step.New[i])
 		oldReference[i] = state.ActiveOld.InitialReplicas[i]
-		if state.ScaleDownDuringRollout && state.Target.DesiredReplicas[i] > 0 {
+		if (state.ScaleDownDuringRollout || scaleUp) && state.Target.DesiredReplicas[i] > 0 {
 			physical := oldSpec[i] + state.Target.SpecReplicas[i]
-			excess := max(0, physical-state.Target.DesiredReplicas[i]-state.Config[i].MaxSurge)
+			excess := max(0, physical-surgeBaselines[i]-state.Config[i].MaxSurge)
 			scaleCorrection[i] = state.ActiveOld.SpecReplicas[i]-step.Past[i] <= excess
 		}
 		oldProgress[i] = oldReference[i] - state.ActiveOld.SpecReplicas[i]
@@ -877,11 +883,11 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		}
 		old := oldSpec[i]
 		if step.New[i] > state.Target.SpecReplicas[i] {
-			ceiling := state.Target.DesiredReplicas[i] + config.MaxSurge
+			ceiling := surgeBaselines[i] + config.MaxSurge
 			budget := config.MaxSurge + config.MaxUnavailable
 			if step.UsesBootstrapSurge {
 				ceiling = max(ceiling+1, old+1)
-				budget = max(config.MaxSurge+1, old-state.Target.DesiredReplicas[i]+1) + config.MaxUnavailable
+				budget = max(config.MaxSurge+1, old-surgeBaselines[i]+1) + config.MaxUnavailable
 			}
 			require.LessOrEqual(t, old+step.New[i], ceiling)
 			if old > 0 {

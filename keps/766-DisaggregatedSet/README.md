@@ -235,7 +235,8 @@ For each role the ordinary planner enforces the following bounds. `target` is th
 ```
 roleReplicaCount     = max(initialOld, target)
 availabilityBaseline = max(initial-replicas across relevant non-drained old revisions)
-surgeCeiling         = roleReplicaCount + MaxSurge
+surgeBaseline        = target (Immediate), roleReplicaCount (Deferred)
+surgeCeiling         = surgeBaseline + MaxSurge
 availabilityFloor    = max(0, max(target, unreplaced) - MaxUnavailable)
 
 oldSpec + newSpec <= surgeCeiling
@@ -320,7 +321,7 @@ When the ordinary constraint intersection is empty, the planner may create the f
 
 Already-started target roles can also need one extra group per eligible role to unblock coordinated growth. This is allowed with `Immediate`, or under either policy when any role's effective desired count exceeds its historical availability baseline. The eligible role's existing target groups must all be retained Ready, its total old and target Spec must exactly equal its surge ceiling, and ordinary growth must be blocked even though its phase target requires more replicas. A fully renamed target role with no same-role old replicas cannot use this exception while disjoint old replicas remain. The extra group cannot stack while that role is over its ceiling or waiting for readiness; a later eligible step may borrow again after the earlier excess clears. This does not enable demand-driven target reductions under `Deferred`.
 
-The executor prefers an ordinary step from any old-revision candidate over a bootstrap step. It uses bootstrap surge only when no candidate can make ordinary progress. As enough target capacity becomes Ready, the normal planner can drain old capacity, reuse the released slots, and return within the configured surge ceiling. If the bootstrap Pod is scheduled but does not become Ready and no ordinary step becomes safe, the rollout waits. Slow startup does not permit another exception.
+The executor prefers an ordinary step from any old-revision candidate over a bootstrap step. It uses bootstrap surge only when no candidate can make ordinary progress. As enough target capacity becomes Ready, the normal planner can drain old capacity, reuse the released slots, and return within the configured surge ceiling. With `Immediate`, or when any role's effective desired count exceeds its historical availability baseline, old-side fractional pacing may be bypassed only to release existing excess above that policy's surge ceiling. This prevents a bootstrap step from leaving the rollout stuck above its ceiling. The desired-based availability floor and whole-revision completeness still apply; removed roles keep their historical pacing. If the bootstrap Pod is scheduled but does not become Ready and no ordinary step becomes safe, the rollout waits. Slow startup does not permit another exception.
 
 #### Automatic unschedulable target recovery
 
@@ -449,6 +450,7 @@ to implement this enhancement.
 - 2026-10-11: Gave removed roles a minimum one-group unavailable allowance, bounded disjoint growth by observed old drain, prioritized the first group of every target role, and added a stateless correction for already-issued surplus. Limited removed-role baselines to disjoint old revisions. Documented singleton availability and insufficient transition-capacity limitations.
 - 2026-10-12: Base availability for roles still required by the target on desired replicas minus `maxUnavailable`, without capping it at an old revision's size. Retain no-worsening checks and removed-role historical protection; require replacement readiness before retiring the last needed old capacity across interrupted rollout phases.
 - 2026-10-12: Allow the existing fully-Ready coordination bootstrap under either scaling policy when effective demand exceeds an old availability baseline. Keep its one-extra-group, readiness, surge-ceiling, and non-stacking limits without enabling demand-driven target reductions under `Deferred`.
+- 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.
 
 ## Drawbacks
 

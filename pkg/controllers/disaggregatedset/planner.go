@@ -763,6 +763,14 @@ func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateSt
 	return &UpdateStep{Past: slicesClone(state.ActiveOld.SpecReplicas), New: next, UsesTargetRebalance: true}
 }
 
+// Recovery is shared across roles: a role whose demand did not change may
+// need to release excess capacity so another role can grow.
+func demandExceedsOldBaseline(snapshot rolloutSnapshot) bool {
+	return slices.ContainsFunc(snapshot, func(role roleRolloutSnapshot) bool {
+		return role.NewTargetReplicas > role.AvailabilityBaselineReplicas
+	})
+}
+
 // snapshotWithBootstrapSurge grants enough temporary surge for the first
 // replica of each missing required target role. This includes interrupted
 // rollouts where parked old revisions already consume a positive MaxSurge.
@@ -776,9 +784,7 @@ func snapshotWithBootstrapSurge(
 	phaseTargets RoleReplicaState,
 ) (rolloutSnapshot, bool) {
 	disjointReplacement := disjointGrowthLimits(snapshot) != nil
-	scaleUp := slices.ContainsFunc(snapshot, func(role roleRolloutSnapshot) bool {
-		return role.NewTargetReplicas > role.AvailabilityBaselineReplicas
-	})
+	scaleUp := demandExceedsOldBaseline(snapshot)
 	normalLimits := hardNewReplicaLimits(snapshot)
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false
@@ -921,13 +927,14 @@ func boundGrowingRoleTargetsToWindow(
 }
 
 // boundDrainingSnapshotTargets preserves historical rollout coordination,
-// except that opt-in scaling may release existing physical excess of current
-// roles. Removed roles have no new size to correct and keep their old pacing.
+// except that opt-in scaling or demand above old capacity may release existing
+// physical excess. Removed roles have no new size to correct and keep their pacing.
 // The correction still passes availability and whole-revision completeness.
 func boundDrainingSnapshotTargets(snapshot rolloutSnapshot, current, reference, proposed RoleReplicaState) RoleReplicaState {
+	scaleUp := demandExceedsOldBaseline(snapshot)
 	bounded := boundDrainingRoleTargetsToWindow(current, reference, proposed)
 	for i, role := range snapshot {
-		if role.ScaleDownDuringRollout && role.NewTargetReplicas > 0 {
+		if (role.ScaleDownDuringRollout || scaleUp) && role.NewTargetReplicas > 0 {
 			excess := max(0, role.OldSpecReplicas+role.NewSpecReplicas-role.SurgeBaselineReplicas-role.Config.MaxSurge)
 			bounded[i] = min(bounded[i], max(proposed[i], current[i]-excess))
 		}
