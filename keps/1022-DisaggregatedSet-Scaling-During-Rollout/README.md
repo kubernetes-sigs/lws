@@ -175,13 +175,13 @@ The planner keeps its existing fractional coordination. For example, Prefill wit
 
 The target side uses the current desired sizes. Old-side progress remains measured from the old revision's initial sizes. A reduction in desired size must not turn that historical fraction window into a permanent barrier to releasing excess capacity.
 
-Therefore, with `AdvanceRollout` only, an old-side reduction may go beyond the historical fraction window by at most the existing excess:
+Therefore, with `AdvanceRollout` only, an old-side reduction for a role with a positive desired count may go beyond the historical fraction window by at most the existing excess:
 
 ```text
 excess = max(0, total old Spec + target Spec - desired - maxSurge)
 ```
 
-This exception only corrects physical excess. It cannot authorize extra growth, reduce below the latest ceiling by bypassing coordination, bypass availability, or leave only some required roles in an old revision. Once excess is gone, ordinary fractional coordination applies again.
+This exception only corrects physical excess. It cannot authorize extra growth, reduce below the latest ceiling by bypassing coordination, bypass availability, or leave only some required roles in an old revision. Once excess is gone, ordinary fractional coordination applies again. Removed roles have no new replica target to correct: they keep their old fraction window, even when their saved unavailable budgets differ.
 
 ### Prefer old-revision reductions
 
