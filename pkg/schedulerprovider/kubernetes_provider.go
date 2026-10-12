@@ -122,12 +122,21 @@ func KubernetesLWSGroupName(lws *leaderworkerset.LeaderWorkerSet) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), "lws")
 }
 
-// KubernetesPodGroupName returns a UID-qualified replica PodGroup name.
+// KubernetesPodGroupName returns a UID-qualified replica PodGroup name derived
+// from the plain workload name, KubernetesWorkloadName. It is the PodGroup name
+// of a Hash group, and of an Ordinal group whose leader pod carries no group
+// incarnation, such as one admitted before group incarnations were
+// introduced. An Ordinal leader pod admitted by the pod webhook of this version
+// carries one, so derive the names of its PodGroups from
+// GroupWorkloadName(lws, leaderPod) instead.
 func KubernetesPodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, revision string) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, revision)
 }
 
-// KubernetesRolePodGroupName returns a UID-qualified role PodGroup name.
+// KubernetesRolePodGroupName returns a UID-qualified role PodGroup name derived
+// from the plain workload name. Like KubernetesPodGroupName, it does not match
+// the PodGroups of an Ordinal leader pod that carries a group incarnation, see
+// GroupWorkloadName.
 func KubernetesRolePodGroupName(lws *leaderworkerset.LeaderWorkerSet, groupIndex, role, revision string) string {
 	return kubernetesRuntimeName(KubernetesWorkloadName(lws), groupIndex, role, revision)
 }
@@ -373,6 +382,16 @@ func (p *KubernetesProvider) wholeLWSGangMinCount(ctx context.Context, lws *lead
 // with the smallest group size, or with size if that is smaller. The result is
 // at least 1 and at most replicas * size, the template minimum, and is lower
 // only while a group is smaller than size.
+//
+// A replica without a group may be recreated with either size: the current
+// one, or the previous one when a partition keeps it on the old revision.
+// Counting it with the larger size could leave the minimum out of reach for as
+// long as the partition holds, so it counts with the smaller one. When its
+// leader pod then shows up with the larger size, the minimum is too low until
+// the reconcile that the leader pod creation triggers raises it, and the
+// scheduler could admit that group with only part of its pods. The window is
+// short, since the leader is still held by the group replacement scheduling
+// gate and its workers are created afterwards, and the gang stays reachable.
 func wholeLWSMembership(replicas, size int32, groupSizes []int32) int32 {
 	slices.Sort(groupSizes)
 	pending := size
