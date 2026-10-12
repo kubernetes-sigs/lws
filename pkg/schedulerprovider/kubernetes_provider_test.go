@@ -403,7 +403,7 @@ func TestKubernetesProviderRecreatedOrdinalLeaderGetsFreshPodGroups(t *testing.T
 				require.NoError(t, provider.InjectPodGroupMetadata(leader))
 				require.NoError(t, fakeClient.Create(ctx, leader))
 				require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
-				groups, err := leaderPodGroups(lws, leader)
+				groups, err := leaderPodGroups(context.Background(), lws, leader)
 				require.NoError(t, err)
 				require.Len(t, groups, tc.wantGroups)
 				names := make([]string, 0, len(groups))
@@ -557,7 +557,7 @@ func TestKubernetesProviderGroupPodGroupNamesAgree(t *testing.T) {
 			workerGroup := admit(ordinalLeaderPod(lws, "0"), "1", groupWorkloadName)
 			assert.Equal(t, workloadName+"."+incarnation+tc.workerSuffix, workerGroup)
 
-			groups, err := leaderPodGroups(lws, leader)
+			groups, err := leaderPodGroups(context.Background(), lws, leader)
 			require.NoError(t, err)
 			names := make([]string, 0, len(groups))
 			for _, group := range groups {
@@ -788,7 +788,7 @@ func TestUpdateMutablePodGroupFieldsAcceptsAPIDefaults(t *testing.T) {
 	current.Spec.Priority = ptr.To[int32](0)
 	current.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
 
-	require.NoError(t, updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, false))
+	require.NoError(t, updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, minCountImmutable))
 }
 
 func TestUpdateMutablePodGroupFieldsAddsWorkloadOwnerRef(t *testing.T) {
@@ -823,7 +823,7 @@ func TestUpdateMutablePodGroupFieldsAddsWorkloadOwnerRef(t *testing.T) {
 	fakeClient := newKubernetesFakeClientBuilder().WithObjects(current.DeepCopy()).Build()
 	stored := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(current), stored))
-	require.NoError(t, updateMutablePodGroupFields(context.Background(), fakeClient, stored, desired, false))
+	require.NoError(t, updateMutablePodGroupFields(context.Background(), fakeClient, stored, desired, minCountImmutable))
 	require.NotNil(t, workloadOwnerReference(stored))
 	assert.Equal(t, workloadOwner.UID, workloadOwnerReference(stored).UID)
 
@@ -981,6 +981,118 @@ func TestKubernetesProviderDelegatedWorkload(t *testing.T) {
 	rootWorkload := &schedulingv1beta1.Workload{}
 	err := fakeClient.Get(ctx, client.ObjectKeyFromObject(lws), rootWorkload)
 	assert.True(t, apierrors.IsNotFound(err), "a delegated LWS must not create a second Workload")
+}
+
+func TestKubernetesProviderDelegatedWorkloadToleratesParentMinCountChange(t *testing.T) {
+	ctx := context.Background()
+	controller := true
+	lws := testScheduledLWS()
+	parentOwner := metav1.OwnerReference{
+		APIVersion: "example.test/v1",
+		Kind:       "ParentJob",
+		Name:       "parent",
+		UID:        types.UID("parent-uid"),
+		Controller: &controller,
+	}
+	lws.OwnerReferences = []metav1.OwnerReference{parentOwner}
+	lws.Annotations = map[string]string{GroupTemplateNameAnnotation: "child-template"}
+	workload := &schedulingv1beta1.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "parent-workload", Namespace: lws.Namespace, OwnerReferences: []metav1.OwnerReference{parentOwner}},
+		Spec: schedulingv1beta1.WorkloadSpec{
+			ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{APIGroup: "example.test", Kind: "ParentJob", Name: "parent"},
+			PodGroupTemplates: []schedulingv1beta1.PodGroupTemplate{{
+				Name: "child-template",
+				SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+					Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+				},
+			}},
+		},
+	}
+	fakeClient := newKubernetesFakeClientBuilder().WithObjects(workload).Build()
+	provider := NewKubernetesProvider(fakeClient)
+	minCountOf := func(groupIndex string) int32 {
+		t.Helper()
+		group := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, groupIndex, "revision-1")}, group))
+		require.NotNil(t, group.Spec.SchedulingPolicy.Gang)
+		return group.Spec.SchedulingPolicy.Gang.MinCount
+	}
+
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0")))
+	assert.Equal(t, int32(3), minCountOf("0"))
+
+	// A size change makes the parent move its template to the new minimum.
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(workload), workload))
+	workload.Spec.PodGroupTemplates[0].SchedulingPolicy.Gang.MinCount = 4
+	require.NoError(t, fakeClient.Update(ctx, workload))
+
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0")),
+		"an existing delegated PodGroup must not report drift when only the parent minimum changed")
+	assert.Equal(t, int32(3), minCountOf("0"), "an existing delegated PodGroup keeps the minimum it was created with")
+	require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "1")))
+	assert.Equal(t, int32(4), minCountOf("1"), "a new delegated PodGroup takes the parent template minimum")
+
+	// Any other change to the parent template is still drift.
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(workload), workload))
+	workload.Spec.PodGroupTemplates[0].SchedulingPolicy = schedulingv1beta1.PodGroupSchedulingPolicy{
+		Basic: &schedulingv1beta1.BasicSchedulingPolicy{},
+	}
+	require.NoError(t, fakeClient.Update(ctx, workload))
+	err := provider.CreatePodGroupIfNotExists(ctx, lws, ordinalLeaderPod(lws, "0"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "immutable scheduling configuration drift")
+}
+
+func TestUpdateMutablePodGroupFieldsMinCountPolicy(t *testing.T) {
+	ctx := context.Background()
+	lws := testScheduledLWS()
+	for _, tc := range []struct {
+		name         string
+		policy       minCountPolicy
+		wantErr      bool
+		wantMinCount int32
+	}{
+		{name: "immutable reports drift", policy: minCountImmutable, wantErr: true, wantMinCount: 3},
+		{name: "update writes the desired minimum", policy: minCountUpdate, wantMinCount: 4},
+		{name: "keep leaves the existing minimum", policy: minCountKeep, wantMinCount: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := &schedulingv1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "group",
+					Namespace:       lws.Namespace,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+				},
+				Spec: schedulingv1beta1.PodGroupSpec{
+					SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+						Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					},
+				},
+			}
+			fakeClient := newKubernetesFakeClientBuilder().WithObjects(stored).Build()
+			current := &schedulingv1beta1.PodGroup{}
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(stored), current))
+			desired := current.DeepCopy()
+			desired.Spec.SchedulingPolicy.Gang.MinCount = 4
+
+			err := updateMutablePodGroupFields(ctx, fakeClient, current, desired, tc.policy)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			got := &schedulingv1beta1.PodGroup{}
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(stored), got))
+			assert.Equal(t, tc.wantMinCount, got.Spec.SchedulingPolicy.Gang.MinCount)
+		})
+	}
+}
+
+func TestLeafMembership(t *testing.T) {
+	assert.Equal(t, int32(1), leafMembership(leaderWorkloadTemplateName, 4))
+	assert.Equal(t, int32(3), leafMembership(workerWorkloadTemplateName, 4))
+	assert.Equal(t, int32(4), leafMembership(replicaWorkloadTemplateName, 4))
+	assert.Equal(t, int32(0), leafMembership(lwsWorkloadTemplateName, 4), "the whole-LWS template is not a per-replica leaf")
 }
 
 func TestKubernetesProviderDelegatedWorkloadRejectsAmbiguousParent(t *testing.T) {

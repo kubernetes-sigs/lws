@@ -60,6 +60,13 @@ removes independent PodGroups, and changing `size` updates the derived gang
 membership as part of the LWS rollout. Replicas that the rollout has not
 replaced yet keep PodGroups with the `gang.minCount` of their previous size.
 
+When a parent controller owns the `Workload` (the
+`scheduling.k8s.io/group-template-name` annotation), the parent's template
+sets `gang.minCount` instead, and it can follow only one size. Existing
+PodGroups keep the minimum they were created with, and new ones take the
+template's current minimum, including the PodGroups of a replica of the
+previous size that is recreated before the rollout replaces it.
+
 LWS creates the `Workload` before creating member pods. Runtime `PodGroup`
 creation depends on the scheduling level:
 
