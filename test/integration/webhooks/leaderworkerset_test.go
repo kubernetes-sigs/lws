@@ -149,7 +149,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				return lwsWrapper
 			},
 			getExpectedLWS: func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.DefaultPodTerminationPolicy)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.SequentialPodTerminationPolicy)
 			},
 		}),
 		ginkgo.Entry("defaulting logic does not override podTerminationPolicy when Parallel", &testDefaultingCase{
@@ -768,7 +768,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 		}),
 		ginkgo.Entry("update podTerminationPolicy should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.DefaultPodTerminationPolicy)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.SequentialPodTerminationPolicy)
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
@@ -786,7 +786,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 		}),
 		ginkgo.Entry("update podTerminationPolicy to invalid value should fail", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
-				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.DefaultPodTerminationPolicy)
+				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.SequentialPodTerminationPolicy)
 			},
 			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.PodTerminationPolicy = "InvalidPolicy"

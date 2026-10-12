@@ -1946,8 +1946,8 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		}
 	})
 
-	t.Run("default and empty policies do not annotate the leader pod template", func(t *testing.T) {
-		for _, policy := range []leaderworkerset.PodTerminationPolicyType{"", leaderworkerset.DefaultPodTerminationPolicy} {
+	t.Run("sequential and empty policies do not annotate the leader pod template", func(t *testing.T) {
+		for _, policy := range []leaderworkerset.PodTerminationPolicyType{"", leaderworkerset.SequentialPodTerminationPolicy} {
 			lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
 				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 				Size(2).
@@ -2023,7 +2023,7 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		}
 	})
 
-	t.Run("lws deletion with Default policy does not delete worker statefulsets directly", func(t *testing.T) {
+	t.Run("lws deletion with Sequential policy does not delete worker statefulsets directly", func(t *testing.T) {
 		scheme := runtime.NewScheme()
 		_ = leaderworkerset.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
@@ -2036,7 +2036,7 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 			Obj()
 		lws.Finalizers = []string{"test-finalizer"}
 		lws.DeletionTimestamp = &now
-		lws.Spec.PodTerminationPolicy = leaderworkerset.DefaultPodTerminationPolicy
+		lws.Spec.PodTerminationPolicy = leaderworkerset.SequentialPodTerminationPolicy
 
 		workerSts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
@@ -2065,7 +2065,7 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 			t.Fatalf("List() error = %v", err)
 		}
 		if len(stsList.Items) != 1 {
-			t.Errorf("expected worker statefulset to be retained under Default policy, got %d", len(stsList.Items))
+			t.Errorf("expected worker statefulset to be retained under Sequential policy, got %d", len(stsList.Items))
 		}
 	})
 }

@@ -84,7 +84,7 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 	}
 
 	if lws.Spec.PodTerminationPolicy == "" {
-		lws.Spec.PodTerminationPolicy = v1.DefaultPodTerminationPolicy
+		lws.Spec.PodTerminationPolicy = v1.SequentialPodTerminationPolicy
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.RestartPolicy == v1.DeprecatedDefaultRestartPolicy {
@@ -382,13 +382,13 @@ func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSet
 		return allErrs
 	}
 	switch spec.PodTerminationPolicy {
-	case v1.DefaultPodTerminationPolicy, v1.ParallelPodTerminationPolicy:
+	case v1.SequentialPodTerminationPolicy, v1.ParallelPodTerminationPolicy:
 		return allErrs
 	default:
 		allErrs = append(allErrs, field.NotSupported(
 			specPath.Child("podTerminationPolicy"),
 			spec.PodTerminationPolicy,
-			[]string{string(v1.DefaultPodTerminationPolicy), string(v1.ParallelPodTerminationPolicy)},
+			[]string{string(v1.SequentialPodTerminationPolicy), string(v1.ParallelPodTerminationPolicy)},
 		))
 	}
 	return allErrs
@@ -487,7 +487,7 @@ func normalizeGroupIdentity(gi v1.GroupIdentityType) v1.GroupIdentityType {
 
 func normalizePodTerminationPolicy(policy v1.PodTerminationPolicyType) v1.PodTerminationPolicyType {
 	if policy == "" {
-		return v1.DefaultPodTerminationPolicy
+		return v1.SequentialPodTerminationPolicy
 	}
 	return policy
 }

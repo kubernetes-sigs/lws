@@ -3237,9 +3237,9 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 				PodTerminationPolicy: leaderworkerset.ParallelPodTerminationPolicy,
 			},
 		}
-		lwsDefault := &leaderworkerset.LeaderWorkerSet{
+		lwsSequential := &leaderworkerset.LeaderWorkerSet{
 			Spec: leaderworkerset.LeaderWorkerSetSpec{
-				PodTerminationPolicy: leaderworkerset.DefaultPodTerminationPolicy,
+				PodTerminationPolicy: leaderworkerset.SequentialPodTerminationPolicy,
 			},
 		}
 		podWithAnnotation := &corev1.Pod{
@@ -3254,8 +3254,8 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 		if !r.isParallelPodTermination(plainPod, lwsParallel) {
 			t.Errorf("expected isParallelPodTermination to return true for LWS with Parallel policy")
 		}
-		if r.isParallelPodTermination(plainPod, lwsDefault) {
-			t.Errorf("expected isParallelPodTermination to return false for LWS with Default policy")
+		if r.isParallelPodTermination(plainPod, lwsSequential) {
+			t.Errorf("expected isParallelPodTermination to return false for LWS with Sequential policy")
 		}
 		if !r.isParallelPodTermination(podWithAnnotation, nil) {
 			t.Errorf("expected isParallelPodTermination to return true for pod with Parallel annotation")
@@ -3323,12 +3323,12 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 		}
 	})
 
-	t.Run("leader pod deletion with Default policy retains worker statefulset", func(t *testing.T) {
+	t.Run("leader pod deletion with Sequential policy retains worker statefulset", func(t *testing.T) {
 		lws := wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
 			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
 			Size(2).
 			Obj()
-		lws.Spec.PodTerminationPolicy = leaderworkerset.DefaultPodTerminationPolicy
+		lws.Spec.PodTerminationPolicy = leaderworkerset.SequentialPodTerminationPolicy
 
 		leader := makeLeaderPod(lws, "leader-uid-1")
 		now := metav1.Now()

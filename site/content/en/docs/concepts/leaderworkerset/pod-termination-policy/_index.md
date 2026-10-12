@@ -24,14 +24,14 @@ With concurrent termination, group teardown and recreation time is halved.
 
 LeaderWorkerSet supports two pod termination policies:
 
-### 1. `Default` (Default)
+### 1. `Sequential` (Default)
 
-Under the `Default` policy, existing sequential deletion behavior is preserved.
+Under the `Sequential` policy, existing sequential deletion behavior is preserved.
 
 - **Behavior:** The leader pod terminates first. Once the leader pod has fully terminated and been removed, the Kubernetes garbage collector cascades deletion to the worker StatefulSet and its worker pods.
 - **Use case:** Workloads where worker pods depend on an active leader pod during their shutdown sequence, or where existing sequential behavior is desired.
 
-{{< include file="examples/leaderworkerset/pod-termination-policy/default.yaml" lang="yaml" >}}
+{{< include file="examples/leaderworkerset/pod-termination-policy/sequential.yaml" lang="yaml" >}}
 
 ### 2. `Parallel`
 

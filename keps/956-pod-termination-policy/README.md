@@ -31,9 +31,9 @@
 
 ## Summary
 
-This KEP introduces a `spec.podTerminationPolicy` field to the `LeaderWorkerSet` API with two values: `Default` and `Parallel`.
+This KEP introduces a `spec.podTerminationPolicy` field to the `LeaderWorkerSet` API with two values: `Sequential` and `Parallel`.
 
-Under `Default`, existing behavior is preserved: when a leader pod is deleted, the Kubernetes garbage collector sequentially deletes the worker StatefulSet and worker pods only after the leader pod has completely terminated and exited etcd.
+Under `Sequential`, existing behavior is preserved: when a leader pod is deleted, the Kubernetes garbage collector sequentially deletes the worker StatefulSet and worker pods only after the leader pod has completely terminated and exited etcd.
 
 Under `Parallel`, when a leader pod is deleting (`DeletionTimestamp != nil`) or when the `LeaderWorkerSet` is being deleted, the controller proactively issues foreground deletion for the worker StatefulSet, terminating both the leader pod and worker pods concurrently. This significantly reduces group teardown and recreation latency, especially for distributed AI/ML workloads with long `terminationGracePeriodSeconds`.
 
@@ -56,7 +56,7 @@ By allowing concurrent termination of leader and worker pods, group rebuild time
 ### Goals
 
 1. Provide an opt-in `spec.podTerminationPolicy` field in the `LeaderWorkerSet` specification.
-2. Support `Default` (sequential cascading deletion) and `Parallel` (concurrent foreground deletion).
+2. Support `Sequential` (sequential cascading deletion) and `Parallel` (concurrent foreground deletion).
 3. Ensure 100% backward compatibility for existing `LeaderWorkerSet` manifests and workloads.
 4. Accelerate leader pod deletion, scale-down, rolling updates, and LWS deletion.
 5. Prevent race conditions during group replacement by ensuring the old worker StatefulSet is completely deleted before a new replacement group's worker StatefulSet is created.
@@ -68,8 +68,8 @@ By allowing concurrent termination of leader and worker pods, group rebuild time
 
 ## Proposal
 
-We propose adding `spec.podTerminationPolicy` with enum values `Default` and `Parallel`.
-The field is defaulted to `Default` by both the CRD schema and the defaulting webhook.
+We propose adding `spec.podTerminationPolicy` with enum values `Sequential` and `Parallel`.
+The field is defaulted to `Sequential` by both the CRD schema and the defaulting webhook.
 
 When configured as `Parallel`:
 1. The `LeaderWorkerSet` controller injects the annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy: Parallel` into the leader pod template (stamped only when the policy is `Parallel`).
@@ -81,7 +81,7 @@ When configured as `Parallel`:
 
 #### Story 1: Fast group rebuild upon leader failure
 
-A distributed training job runs with 1 leader and 7 workers, each having `terminationGracePeriodSeconds: 120`. When the leader fails or is preempted, under `Default`, the group rebuild takes over 240 seconds because workers only start terminating after the leader is completely removed. With `podTerminationPolicy: Parallel`, leader and workers terminate concurrently in 120 seconds, halving downtime.
+A distributed training job runs with 1 leader and 7 workers, each having `terminationGracePeriodSeconds: 120`. When the leader fails or is preempted, under `Sequential`, the group rebuild takes over 240 seconds because workers only start terminating after the leader is completely removed. With `podTerminationPolicy: Parallel`, leader and workers terminate concurrently in 120 seconds, halving downtime.
 
 #### Story 2: Fast scale-down and rolling updates
 
@@ -94,7 +94,7 @@ An operator deletes a `LeaderWorkerSet`. With `podTerminationPolicy: Parallel`, 
 ### Notes/Constraints/Caveats
 
 - `spec.podTerminationPolicy` is immutable once the LeaderWorkerSet is created.
-- When using `Parallel`, workers will receive termination signals (`SIGTERM`) at the same time as the leader pod. Workloads relying on the leader remaining alive while workers finish should use `Default`.
+- When using `Parallel`, workers will receive termination signals (`SIGTERM`) at the same time as the leader pod. Workloads relying on the leader remaining alive while workers finish should use `Sequential`.
 - The leader pod annotation `leaderworkerset.sigs.k8s.io/pod-termination-policy` is stamped on the leader pod template only when the policy is `Parallel`, ensuring parallel termination functions correctly even if the parent `LeaderWorkerSet` resource has already been deleted in background cascading deletion.
 
 ### Risks and Mitigations
@@ -102,7 +102,7 @@ An operator deletes a `LeaderWorkerSet`. With `podTerminationPolicy: Parallel`, 
 - **Risk**: A replacement leader pod might attempt to adopt or create a worker StatefulSet while the previous one is still terminating.
   - **Mitigation**: The pod controller checks if the existing worker StatefulSet has `DeletionTimestamp != nil` and is not owned by the new leader. If so, it requeues reconciliation with a short delay (1s) until the old worker StatefulSet is deleted.
 - **Risk**: Backward compatibility impact.
-  - **Mitigation**: The default value is `Default`, preserving identical existing behavior unless explicitly opted into `Parallel`.
+  - **Mitigation**: The default value is `Sequential`, preserving identical existing behavior unless explicitly opted into `Parallel`.
 
 ## Design Details
 
@@ -114,8 +114,8 @@ In `api/leaderworkerset/v1/leaderworkerset_types.go`:
 type PodTerminationPolicyType string
 
 const (
-    DefaultPodTerminationPolicy  PodTerminationPolicyType = "Default"
-    ParallelPodTerminationPolicy PodTerminationPolicyType = "Parallel"
+    SequentialPodTerminationPolicy PodTerminationPolicyType = "Sequential"
+    ParallelPodTerminationPolicy   PodTerminationPolicyType = "Parallel"
 )
 
 const (
@@ -125,11 +125,11 @@ const (
 type LeaderWorkerSetSpec struct {
     // ...
     // PodTerminationPolicy indicates the policy for terminating pods in a group.
-    // Default: leader pod terminates first, followed sequentially by workers via garbage collection.
+    // Sequential: leader pod terminates first, followed sequentially by workers via garbage collection.
     // Parallel: leader and worker pods terminate concurrently.
-    // Defaults to Default.
-    // +kubebuilder:default=Default
-    // +kubebuilder:validation:Enum=Default;Parallel
+    // Defaults to Sequential.
+    // +kubebuilder:default=Sequential
+    // +kubebuilder:validation:Enum={Sequential,Parallel}
     // +optional
     PodTerminationPolicy PodTerminationPolicyType `json:"podTerminationPolicy,omitempty"`
 }
@@ -137,8 +137,8 @@ type LeaderWorkerSetSpec struct {
 
 ### Webhook Defaulting and Validation
 
-- **Defaulting**: If `spec.podTerminationPolicy` is empty, the mutating webhook defaults it to `DefaultPodTerminationPolicy`.
-- **Validation**: The validating webhook verifies that `spec.podTerminationPolicy` is either `Default` or `Parallel`. Invalid values are rejected. The field is immutable on update; attempting to change it on an existing `LeaderWorkerSet` is rejected.
+- **Defaulting**: If `spec.podTerminationPolicy` is empty, the mutating webhook defaults it to `SequentialPodTerminationPolicy`.
+- **Validation**: The validating webhook verifies that `spec.podTerminationPolicy` is either `Sequential` or `Parallel`. Invalid values are rejected. The field is immutable on update; attempting to change it on an existing `LeaderWorkerSet` is rejected.
 
 ### LeaderWorkerSet Controller Changes
 
@@ -154,7 +154,7 @@ type LeaderWorkerSetSpec struct {
 ### DisaggregatedSet Integration
 
 - `DisaggregatedRoleSpec.Spec` embeds `LeaderWorkerSetSpec`. `DisaggregatedSetWebhook` validates `podTerminationPolicy` on role specs during admission.
-- In `ComputeRevision`, `DefaultPodTerminationPolicy` is normalized to `""` so upgrading CRDs does not change SHA-256 revision hashes or trigger unwanted coordinated rollouts for existing `DisaggregatedSet` workloads.
+- In `ComputeRevision`, `SequentialPodTerminationPolicy` is normalized to `""` so upgrading CRDs does not change SHA-256 revision hashes or trigger unwanted coordinated rollouts for existing `DisaggregatedSet` workloads.
 
 ### Rebuild Coordination and Race Conditions
 
@@ -193,7 +193,7 @@ This check is placed before the `hashIdentity` controller check so a terminating
 
 ## Drawbacks
 
-- Workers receive termination signals simultaneously with the leader, which may not be suitable for workloads where workers depend on an active leader during shutdown. For those workloads, `Default` should be used.
+- Workers receive termination signals simultaneously with the leader, which may not be suitable for workloads where workers depend on an active leader during shutdown. For those workloads, `Sequential` should be used.
 
 ## Alternatives
 

@@ -241,13 +241,13 @@ type LeaderWorkerSetSpec struct {
 	GroupReplacementPolicy GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
 
 	// podTerminationPolicy determines the termination policy for pods in a group.
-	// Default (default) keeps the sequential termination behavior: worker pods wait for the
+	// Sequential (default) keeps the sequential termination behavior: worker pods wait for the
 	// leader pod to be fully deleted before terminating.
 	// Parallel terminates leader and worker pods concurrently when a group is deleted,
 	// recreated, or when the LeaderWorkerSet is deleted.
 	// This field is immutable.
-	// +kubebuilder:default=Default
-	// +kubebuilder:validation:Enum={Default,Parallel}
+	// +kubebuilder:default=Sequential
+	// +kubebuilder:validation:Enum={Sequential,Parallel}
 	// +optional
 	PodTerminationPolicy PodTerminationPolicyType `json:"podTerminationPolicy,omitempty"`
 }
@@ -367,14 +367,14 @@ const (
 type PodTerminationPolicyType string
 
 const (
-	// DefaultPodTerminationPolicy is the default sequential termination policy:
+	// SequentialPodTerminationPolicy is the default sequential termination policy:
 	// worker pods wait for the leader pod to be fully deleted before terminating.
-	DefaultPodTerminationPolicy PodTerminationPolicyType = "Default"
+	SequentialPodTerminationPolicy PodTerminationPolicyType = "Sequential"
 
 	// ParallelPodTerminationPolicy terminates leader and worker pods concurrently
 	// when a group is deleted, recreated, or when the LeaderWorkerSet is deleted.
 	// Note: worker pods receive termination signals concurrently with the leader pod;
-	// workloads that require the leader to remain running during worker shutdown should use Default.
+	// workloads that require the leader to remain running during worker shutdown should use Sequential.
 	ParallelPodTerminationPolicy PodTerminationPolicyType = "Parallel"
 )
 

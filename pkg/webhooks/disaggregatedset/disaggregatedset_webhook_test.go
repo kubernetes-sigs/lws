@@ -1068,8 +1068,8 @@ func TestValidateCreatePodTerminationPolicy(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Default policy is accepted",
-			policy:      leaderworkerset.DefaultPodTerminationPolicy,
+			name:        "Sequential policy is accepted",
+			policy:      leaderworkerset.SequentialPodTerminationPolicy,
 			expectError: false,
 		},
 		{

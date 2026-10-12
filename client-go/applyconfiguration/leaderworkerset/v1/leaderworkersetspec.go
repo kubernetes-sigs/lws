@@ -78,7 +78,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// supported with groupIdentity Hash.
 	GroupReplacementPolicy *leaderworkersetv1.GroupReplacementPolicyType `json:"groupReplacementPolicy,omitempty"`
 	// podTerminationPolicy determines the termination policy for pods in a group.
-	// Default (default) keeps the sequential termination behavior: worker pods wait for the
+	// Sequential (default) keeps the sequential termination behavior: worker pods wait for the
 	// leader pod to be fully deleted before terminating.
 	// Parallel terminates leader and worker pods concurrently when a group is deleted,
 	// recreated, or when the LeaderWorkerSet is deleted.

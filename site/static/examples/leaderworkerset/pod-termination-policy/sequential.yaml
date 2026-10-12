@@ -1,9 +1,9 @@
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: leaderworkerset-default-termination
+  name: leaderworkerset-sequential-termination
 spec:
-  podTerminationPolicy: Default
+  podTerminationPolicy: Sequential
   replicas: 2
   leaderWorkerTemplate:
     size: 4

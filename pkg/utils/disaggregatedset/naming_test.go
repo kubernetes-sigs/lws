@@ -137,13 +137,13 @@ func TestComputeRevision(t *testing.T) {
 		assert.NotEqual(t, revision, ComputeRevision(hashed))
 	})
 
-	t.Run("default pod termination policy remains identical to empty", func(t *testing.T) {
-		withDefault := []disaggregatedsetv1.DisaggregatedRoleSpec{
+	t.Run("sequential pod termination policy remains identical to empty", func(t *testing.T) {
+		withSequential := []disaggregatedsetv1.DisaggregatedRoleSpec{
 			roleSpec(testUtilsRolePrefill, "image:v1"),
 			roleSpec(testUtilsRoleDecode, "image:v1"),
 		}
-		withDefault[0].Spec.PodTerminationPolicy = leaderworkersetv1.DefaultPodTerminationPolicy
-		assert.Equal(t, revision, ComputeRevision(withDefault))
+		withSequential[0].Spec.PodTerminationPolicy = leaderworkersetv1.SequentialPodTerminationPolicy
+		assert.Equal(t, revision, ComputeRevision(withSequential))
 	})
 
 	t.Run("parallel pod termination policy produces a different revision", func(t *testing.T) {
