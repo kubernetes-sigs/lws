@@ -1,0 +1,360 @@
+suite: controller manager deployment
+templates:
+  - templates/manager/deployment.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: matches the default manifest
+    asserts:
+      - matchSnapshot: {}
+
+  # replicas
+
+  - it: sets the replica count
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  # podAnnotations
+
+  - it: renders pod annotations together with the default-container annotation
+    set:
+      podAnnotations:
+        example.com/team: inference
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            kubectl.kubernetes.io/default-container: manager
+            example.com/team: inference
+
+  # imagePullSecrets
+
+  - it: renders no imagePullSecrets by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+
+  - it: renders imagePullSecrets
+    set:
+      imagePullSecrets:
+        - name: registry-creds
+        - name: mirror-creds
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: registry-creds
+            - name: mirror-creds
+
+  # priorityClassName
+
+  - it: renders no priorityClassName by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.priorityClassName
+
+  - it: renders priorityClassName
+    set:
+      priorityClassName: system-cluster-critical
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-cluster-critical
+
+  # podSecurityContext
+
+  - it: runs the pod as non-root by default
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+
+  - it: replaces the pod securityContext
+    set:
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+
+  # securityContext (manager container)
+
+  - it: hardens the manager container by default
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  - it: replaces the manager container securityContext
+    set:
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+
+  # image
+
+  - it: uses the configured image repository, tag and pull policy
+    set:
+      image:
+        manager:
+          repository: example.com/lws/lws
+          tag: v0.9.0
+          pullPolicy: IfNotPresent
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example.com/lws/lws:v0.9.0
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+
+  - it: falls back to the chart appVersion when the image tag is empty
+    set:
+      image:
+        manager:
+          tag: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.k8s.io/lws/lws:v0.11.1
+
+  # ports
+
+  - it: exposes the webhook server on the configured service port
+    set:
+      service:
+        port: 10443
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook-server
+            containerPort: 10443
+            protocol: TCP
+
+  - it: does not expose the metrics port without Prometheus
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+          any: true
+
+  - it: exposes the metrics port with Prometheus
+    set:
+      enablePrometheus: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 8443
+            protocol: TCP
+
+  # resources
+
+  - it: requests one CPU and 1Gi of memory by default
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 1
+              memory: 1Gi
+
+  - it: replaces the default resources
+    set:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          memory: 1Gi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+
+  # volumes
+
+  - it: mounts the manager config and the webhook serving certificate
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: manager-config
+              subPath: controller_manager_config.yaml
+              mountPath: /controller_manager_config.yaml
+            - name: cert
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+
+  - it: backs the mounts with the chart ConfigMap and the webhook Secret
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: manager-config
+              configMap:
+                name: lws-manager-config
+            - name: cert
+              secret:
+                defaultMode: 420
+                secretName: lws-webhook-server-cert
+
+  - it: does not mount the metrics certificate without cert-manager
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: metrics-cert
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: metrics-cert
+          any: true
+
+  - it: mounts the metrics certificate with cert-manager
+    set:
+      enableCertManager: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: metrics-cert
+            mountPath: /tmp/k8s-metrics-server/serving-certs
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: metrics-cert
+            secret:
+              secretName: lws-metrics-server-cert
+              optional: false
+              items:
+                - key: ca.crt
+                  path: ca.crt
+                - key: tls.crt
+                  path: tls.crt
+                - key: tls.key
+                  path: tls.key
+
+  # nodeSelector
+
+  - it: renders no nodeSelector by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.nodeSelector
+
+  - it: renders nodeSelector
+    set:
+      nodeSelector:
+        kubernetes.io/os: linux
+        node-role.kubernetes.io/control-plane: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            kubernetes.io/os: linux
+            node-role.kubernetes.io/control-plane: ""
+
+  # affinity
+
+  - it: renders no affinity by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.affinity
+
+  - it: renders affinity
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values:
+                      - amd64
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity
+          value:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values:
+                          - amd64
+
+  # tolerations
+
+  - it: renders no tolerations by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.tolerations
+
+  - it: renders tolerations
+    set:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: dedicated
+          operator: Equal
+          value: lws
+          effect: NoExecute
+    asserts:
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+            - key: dedicated
+              operator: Equal
+              value: lws
+              effect: NoExecute

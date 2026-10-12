@@ -1,0 +1,82 @@
+matches the default manifest:
+  1: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      labels:
+        app.kubernetes.io/instance: lws
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: lws
+        app.kubernetes.io/version: v0.11.1
+        control-plane: controller-manager
+        helm.sh/chart: lws-0.1.0
+      name: lws-controller-manager
+      namespace: lws-system
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/instance: lws
+          app.kubernetes.io/name: lws
+          control-plane: controller-manager
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/instance: lws
+            app.kubernetes.io/name: lws
+            control-plane: controller-manager
+        spec:
+          containers:
+            - args:
+                - --config=/controller_manager_config.yaml
+                - --zap-log-level=2
+              command:
+                - /manager
+              image: registry.k8s.io/lws/lws:main
+              imagePullPolicy: Always
+              livenessProbe:
+                httpGet:
+                  path: /healthz
+                  port: 8081
+                initialDelaySeconds: 15
+                periodSeconds: 20
+              name: manager
+              ports:
+                - containerPort: 9443
+                  name: webhook-server
+                  protocol: TCP
+              readinessProbe:
+                httpGet:
+                  path: /readyz
+                  port: 8081
+                initialDelaySeconds: 5
+                periodSeconds: 10
+              resources:
+                requests:
+                  cpu: 1
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - mountPath: /controller_manager_config.yaml
+                  name: manager-config
+                  subPath: controller_manager_config.yaml
+                - mountPath: /tmp/k8s-webhook-server/serving-certs
+                  name: cert
+                  readOnly: true
+          securityContext:
+            runAsNonRoot: true
+          serviceAccountName: lws-controller-manager
+          terminationGracePeriodSeconds: 10
+          volumes:
+            - configMap:
+                name: lws-manager-config
+              name: manager-config
+            - name: cert
+              secret:
+                defaultMode: 420
+                secretName: lws-webhook-server-cert

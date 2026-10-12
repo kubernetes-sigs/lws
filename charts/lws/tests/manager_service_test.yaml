@@ -1,0 +1,38 @@
+suite: Prometheus metrics Service (enablePrometheus)
+templates:
+  - templates/manager/service.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: renders nothing when disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: exposes the metrics port when enabled
+    set:
+      enablePrometheus: true
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: metadata.name
+          value: lws-controller-manager-metrics-service
+      - equal:
+          path: spec.ports
+          value:
+            - name: https
+              port: 8443
+              protocol: TCP
+              targetPort: 8443
+
+  - it: uses the configured service type
+    set:
+      enablePrometheus: true
+      service:
+        type: NodePort
+    asserts:
+      - equal:
+          path: spec.type
+          value: NodePort

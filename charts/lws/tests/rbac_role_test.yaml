@@ -1,0 +1,33 @@
+suite: controller manager ClusterRole
+templates:
+  - templates/rbac/role.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: grants no Volcano permissions by default
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.volcano.sh
+          any: true
+
+  - it: grants access to Volcano PodGroups with Volcano gang scheduling
+    set:
+      gangSchedulingManagement:
+        schedulerProvider: volcano
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.volcano.sh
+            resources:
+              - podgroups
+            verbs:
+              - create
+              - get
+              - list
+              - watch

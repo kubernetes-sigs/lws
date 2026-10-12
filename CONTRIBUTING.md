@@ -24,7 +24,7 @@ The manager RBAC templates under `charts/lws/templates/rbac` that contain a `Cod
 make update-helm
 ```
 
-Run `make helm-verify` to lint and render the chart with both the default and Volcano gang scheduling configurations. `make verify` runs both checks and fails when generated Helm manifests are out of date.
+Run `make helm-verify` to lint and render the chart, and to run the Helm chart unit tests under `charts/lws/tests`, which also cover the Volcano gang scheduling configuration and a non-default webhook port. `make verify` runs both checks and fails when generated Helm manifests are out of date.
 
 ## Mentorship
 
