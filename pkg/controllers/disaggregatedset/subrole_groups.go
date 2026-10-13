@@ -35,6 +35,7 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -224,7 +225,7 @@ func stickySubRoleAssignments(groups []replicagroups.Group, target map[string]in
 // still require live observations. A saved Assigned condition is not proof:
 // Pods can be replaced or relabeled without changing the DS generation.
 func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *leaderv1.LeaderWorkerSet, desired map[string]int) bool {
-	if hasPendingSubRolePlan(lws) || lws.Annotations[leaderv1.GroupScalePlanAnnotationKey] != "" {
+	if hasPendingSubRolePlan(lws) || lws.Annotations[groupdeletion.PlanAnnotation] != "" {
 		return false
 	}
 	for _, key := range []string{subRoleReplicasAnnotation, disaggv1.InitialSubRoleReplicasAnnotationKey} {
@@ -253,7 +254,7 @@ func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *
 		if !coherent || remaining[name] == 0 || !subRoleGroupComplete(group) {
 			return false
 		}
-		if hash && (!subRoleProtected(lws, group) || group.Leader.Annotations[leaderv1.GroupScaleVictimAnnotationKey] != "" || group.Leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] != "") {
+		if hash && (!subRoleProtected(lws, group) || group.Leader.Annotations[groupdeletion.VictimAnnotation] != "" || group.Leader.Annotations[groupdeletion.ReplacementAnnotation] != "") {
 			return false
 		}
 		remaining[name]--
@@ -323,11 +324,11 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 				desired.Annotations = map[string]string{}
 			}
 			if name != "" && lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
-				desired.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/" + string(pod.UID)
+				desired.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/" + string(pod.UID)
 			} else {
-				delete(desired.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+				delete(desired.Annotations, groupdeletion.ProtectionAnnotation)
 			}
-			delete(desired.Annotations, leaderv1.GroupScaleVictimAnnotationKey)
+			delete(desired.Annotations, groupdeletion.VictimAnnotation)
 		}
 		if !maps.Equal(desired.Labels, pod.Labels) || !maps.Equal(desired.Annotations, pod.Annotations) {
 			changed = append(changed, desired)
@@ -483,9 +484,9 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 		setSubRoleJSON(live, subRolePlanAnnotation, state.plan)
 	}
 	if live.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
-		delete(live.Annotations, leaderv1.GroupScalePlanAnnotationKey)
+		delete(live.Annotations, groupdeletion.PlanAnnotation)
 		if state.plan != nil && state.plan.Armed {
-			live.Annotations[leaderv1.GroupScalePlanAnnotationKey] = state.plan.ID
+			live.Annotations[groupdeletion.PlanAnnotation] = state.plan.ID
 		}
 	}
 	if state.issued != nil {
@@ -670,17 +671,16 @@ func retainedSubRoleEligible(group replicagroups.Group) bool {
 	leader := group.Leader
 	return group.Ready && !group.Terminating &&
 		leader.Annotations[leaderv1.GroupRestartBudgetExhaustedAnnotationKey] != "true" &&
-		leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] != string(leader.UID) &&
+		leader.Annotations[groupdeletion.ReplacementAnnotation] != string(leader.UID) &&
 		(group.WorkerStatefulSet == nil || group.WorkerStatefulSet.Status.ObservedGeneration >= group.WorkerStatefulSet.Generation)
 }
 
 func subRoleVictim(group replicagroups.Group, plan *subRolePlan) bool {
-	return plan.ID != "" && group.Leader.UID != "" &&
-		group.Leader.Annotations[leaderv1.GroupScaleVictimAnnotationKey] == plan.ID+"/"+string(group.Leader.UID)
+	return groupdeletion.IsVictim(group.Leader, plan.ID)
 }
 
 func subRoleProtected(lws *leaderv1.LeaderWorkerSet, group replicagroups.Group) bool {
-	return group.Leader.UID != "" && group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] == string(lws.UID)+"/"+string(group.Leader.UID)
+	return lws.UID != "" && groupdeletion.ProtectionOwner(group.Leader) == lws.UID
 }
 
 // Native counters acknowledge physical intent; they never supply Ready credit.
@@ -735,8 +735,8 @@ func (m *LeaderWorkerSetManager) markSubRoleVictim(ctx context.Context, lws *lea
 	}
 	pod := group.Leader
 	annotations := mergeLabels(pod.Annotations, map[string]string{
-		leaderv1.GroupScaleProtectionAnnotationKey: string(lws.UID) + "/" + string(pod.UID),
-		leaderv1.GroupScaleVictimAnnotationKey:     plan.ID + "/" + string(pod.UID),
+		groupdeletion.ProtectionAnnotation: string(lws.UID) + "/" + string(pod.UID),
+		groupdeletion.VictimAnnotation:     plan.ID + "/" + string(pod.UID),
 	})
 	patch, _ := json.Marshal([]map[string]any{
 		{"op": "test", "path": "/metadata/uid", "value": pod.UID},
@@ -771,7 +771,7 @@ func (m *LeaderWorkerSetManager) deleteSubRoleExtras(ctx context.Context, s *rep
 
 func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context, state *subRoleState) error {
 	s, plan := state.snapshot, state.plan
-	active := s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey]
+	active := s.LWS.Annotations[groupdeletion.PlanAnnotation]
 	if plan == nil && active != "" || plan != nil && (plan.Armed && active != plan.ID || !plan.Armed && active != "") {
 		return fmt.Errorf("LWS %s has inconsistent sub-role delete authorization", s.LWS.Name)
 	}
@@ -851,9 +851,9 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 		name, coherent := groupSubRole(group)
 		protectionMatches := subRoleProtected(s.LWS, group)
 		if removing {
-			protectionMatches = group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] == ""
+			protectionMatches = group.Leader.Annotations[groupdeletion.ProtectionAnnotation] == ""
 		}
-		if name == assignment && coherent && protectionMatches && group.Leader.Annotations[leaderv1.GroupScaleVictimAnnotationKey] == "" {
+		if name == assignment && coherent && protectionMatches && group.Leader.Annotations[groupdeletion.VictimAnnotation] == "" {
 			continue
 		}
 		if state.plan == nil && name != assignment && !healthy {

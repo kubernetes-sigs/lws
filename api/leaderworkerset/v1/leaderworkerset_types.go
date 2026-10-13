@@ -125,21 +125,6 @@ const (
 	// group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"
 
-	// GroupScaleProtectionAnnotationKey protects a virtual-role Hash leader from
-	// stale ReplicaSet victim choices. Its value is "<LWS UID>/<Pod UID>".
-	// Protection persists between scale transactions; removing it is the explicit
-	// administrative override for deleting a protected healthy group.
-	GroupScaleProtectionAnnotationKey = "leaderworkerset.sigs.k8s.io/scale-protection"
-	// GroupScalePlanAnnotationKey is the active armed transaction ID on the LWS,
-	// committed atomically with Spec replicas. It grants no permission by itself.
-	GroupScalePlanAnnotationKey = "leaderworkerset.sigs.k8s.io/scale-plan"
-	// GroupScaleVictimAnnotationKey marks a selected leader as "<plan ID>/<Pod UID>".
-	// It permits deletion only while the parent arms that plan and the UID matches.
-	GroupScaleVictimAnnotationKey = "leaderworkerset.sigs.k8s.io/scale-victim"
-	// GroupReplacementDeleteAnnotationKey authorizes native health replacement of
-	// this exact leader UID. Such groups no longer contribute retained readiness.
-	GroupReplacementDeleteAnnotationKey = "leaderworkerset.sigs.k8s.io/replacement-delete"
-
 	// GroupRestartBudgetRecoverAnnotationKey is set on an exhausted leader Pod to
 	// explicitly resume that group after its terminating Pod objects are inspected.
 	GroupRestartBudgetRecoverAnnotationKey string = "leaderworkerset.sigs.k8s.io/recover"

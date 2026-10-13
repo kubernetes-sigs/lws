@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
@@ -3110,7 +3111,7 @@ func (f *subRoleFixture) createGroup(owner client.Object, ordinal int, child str
 	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, kind), Status: ready}
 	leader.Annotations = map[string]string{leaderworkersetv1.SizeAnnotationKey: "3", "user": "keep"}
 	if f.identity == leaderworkersetv1.GroupIdentityHash && child != "" {
-		leader.Annotations[leaderworkersetv1.GroupScaleProtectionAnnotationKey] = string(f.lws.UID) + "/" + string(leader.UID)
+		leader.Annotations[groupdeletion.ProtectionAnnotation] = string(f.lws.UID) + "/" + string(leader.UID)
 	}
 	workers := &appsv1.StatefulSet{ObjectMeta: f.metadata(leader.Name, leader, corev1.SchemeGroupVersion.WithKind("Pod")), Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2), Ordinals: &appsv1.StatefulSetOrdinals{Start: 1}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, AvailableReplicas: 2, CurrentRevision: "a", UpdateRevision: "a"}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), workers))

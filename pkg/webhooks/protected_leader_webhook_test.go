@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 )
 
 func TestProtectedLeaderDeletion(t *testing.T) {
@@ -37,32 +38,32 @@ func TestProtectedLeaderDeletion(t *testing.T) {
 	}{
 		{name: "stale ReplicaSet picks protected survivor", denied: true},
 		{name: "selected victim", mutate: func(l *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			l.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "plan"
-			p.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/pod"
+			l.Annotations[groupdeletion.PlanAnnotation] = "plan"
+			p.Annotations[groupdeletion.VictimAnnotation] = "plan/pod"
 		}},
 		{name: "administrative override", mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) { clear(p.Annotations) }},
 		{name: "prepared but not armed", denied: true, mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			p.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/pod"
+			p.Annotations[groupdeletion.VictimAnnotation] = "plan/pod"
 		}},
 		{name: "empty plan cannot authorize a victim", denied: true, mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			p.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "/pod"
+			p.Annotations[groupdeletion.VictimAnnotation] = "/pod"
 		}},
 		{name: "new transaction does not authorize old victim intent", denied: true, mutate: func(l *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			l.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "next"
-			p.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "previous/pod"
+			l.Annotations[groupdeletion.PlanAnnotation] = "next"
+			p.Annotations[groupdeletion.VictimAnnotation] = "previous/pod"
 		}},
 		{name: "armed plan does not authorize an unmarked survivor", denied: true, mutate: func(l *leaderv1.LeaderWorkerSet, _ *corev1.Pod) {
-			l.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "plan"
+			l.Annotations[groupdeletion.PlanAnnotation] = "plan"
 		}},
 		{name: "copied victim intent stays invalid after protection repair", denied: true, mutate: func(l *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			l.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "plan"
-			p.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/previous-pod"
+			l.Annotations[groupdeletion.PlanAnnotation] = "plan"
+			p.Annotations[groupdeletion.VictimAnnotation] = "plan/previous-pod"
 		}},
 		{name: "native health replacement", mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			p.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = string(p.UID)
+			p.Annotations[groupdeletion.ReplacementAnnotation] = string(p.UID)
 		}},
 		{name: "stale native replacement authorization", denied: true, mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) {
-			p.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = "previous-uid"
+			p.Annotations[groupdeletion.ReplacementAnnotation] = "previous-uid"
 		}},
 		{name: "replacement LWS", mutate: func(l *leaderv1.LeaderWorkerSet, _ *corev1.Pod) { l.UID = "replacement" }},
 		{name: "replacement Pod with copied annotations", mutate: func(_ *leaderv1.LeaderWorkerSet, p *corev1.Pod) { p.UID = "replacement" }},
@@ -79,7 +80,7 @@ func TestProtectedLeaderDeletion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lws := &leaderv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default", UID: "parent", Annotations: map[string]string{}}}
-			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "leader", Namespace: "default", UID: "pod", Labels: map[string]string{leaderv1.SetNameLabelKey: "pool", leaderv1.WorkerIndexLabelKey: "0"}, Annotations: map[string]string{leaderv1.GroupScaleProtectionAnnotationKey: "parent/pod"}}}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "leader", Namespace: "default", UID: "pod", Labels: map[string]string{leaderv1.SetNameLabelKey: "pool", leaderv1.WorkerIndexLabelKey: "0"}, Annotations: map[string]string{groupdeletion.ProtectionAnnotation: "parent/pod"}}}
 			if tc.mutate != nil {
 				tc.mutate(lws, pod)
 			}

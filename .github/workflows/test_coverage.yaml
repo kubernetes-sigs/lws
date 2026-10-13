@@ -19,7 +19,7 @@ jobs:
 
 
     - name: Build Test
-      run: go test -race -covermode=atomic -coverprofile=profile.cov ./pkg/... ./cmd/...
+      run: go test -race -covermode=atomic -coverprofile=profile.cov ./internal/... ./pkg/... ./cmd/...
 
     - name: Install goveralls
       run: go install github.com/mattn/goveralls@latest

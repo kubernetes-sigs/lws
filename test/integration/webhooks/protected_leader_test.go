@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -81,29 +82,29 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
 		pod = wrappers.MakePodWithLabels(lws.Name, "0", "0", ns.Name, 1)
 		gomega.Expect(k8sClient.Create(ctx, pod)).To(gomega.Succeed())
-		pod.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/" + string(pod.UID)
+		pod.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/" + string(pod.UID)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		gomega.Eventually(func() error { return k8sClient.Delete(ctx, pod, client.DryRunAll) }).Should(gomega.MatchError(gomega.ContainSubstring("is retained")))
 	})
 
 	ginkgo.It("authorizes exact victims and native replacements without disarming survivors", func() {
-		pod.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/" + string(pod.UID)
+		pod.Annotations[groupdeletion.VictimAnnotation] = "plan/" + string(pod.UID)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod, client.DryRunAll)).To(gomega.MatchError(gomega.ContainSubstring("is retained")))
-		lws.Annotations = map[string]string{leaderv1.GroupScalePlanAnnotationKey: "different-plan"}
+		lws.Annotations = map[string]string{groupdeletion.PlanAnnotation: "different-plan"}
 		gomega.Expect(k8sClient.Update(ctx, lws)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod, client.DryRunAll)).To(gomega.MatchError(gomega.ContainSubstring("is retained")))
-		lws.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "plan"
+		lws.Annotations[groupdeletion.PlanAnnotation] = "plan"
 		gomega.Expect(k8sClient.Update(ctx, lws)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod, client.DryRunAll)).To(gomega.Succeed())
-		delete(lws.Annotations, leaderv1.GroupScalePlanAnnotationKey)
+		delete(lws.Annotations, groupdeletion.PlanAnnotation)
 		gomega.Expect(k8sClient.Update(ctx, lws)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod, client.DryRunAll)).To(gomega.MatchError(gomega.ContainSubstring("is retained")))
 
-		pod.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = "previous-pod-uid"
+		pod.Annotations[groupdeletion.ReplacementAnnotation] = "previous-pod-uid"
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod, client.DryRunAll)).To(gomega.MatchError(gomega.ContainSubstring("is retained")))
-		pod.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = string(pod.UID)
+		pod.Annotations[groupdeletion.ReplacementAnnotation] = string(pod.UID)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod)).To(gomega.Succeed())
 	})
@@ -119,18 +120,18 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		gomega.Expect(k8sClient.Create(ctx, ordinary)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, ordinary)).To(gomega.Succeed())
 		worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", pod.Namespace, 1)
-		worker.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/irrelevant-worker-marker"
+		worker.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/irrelevant-worker-marker"
 		gomega.Expect(k8sClient.Create(ctx, worker)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, worker)).To(gomega.Succeed())
 		terminal := wrappers.MakePodWithLabels(lws.Name, "1", "0", pod.Namespace, 1)
 		gomega.Expect(k8sClient.Create(ctx, terminal)).To(gomega.Succeed())
-		terminal.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/" + string(terminal.UID)
+		terminal.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/" + string(terminal.UID)
 		gomega.Expect(k8sClient.Update(ctx, terminal)).To(gomega.Succeed())
 		terminal.Status.Phase = corev1.PodFailed
 		gomega.Expect(k8sClient.Status().Update(ctx, terminal)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, terminal)).To(gomega.Succeed())
 
-		delete(pod.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+		delete(pod.Annotations, groupdeletion.ProtectionAnnotation)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, pod)).To(gomega.Succeed())
 	})
@@ -148,13 +149,13 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		pod.Annotations["concurrent-annotation"] = "preserved"
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		data, err := json.Marshal(map[string]any{"metadata": map[string]any{
-			"uid": stale.UID, "annotations": map[string]string{leaderv1.GroupReplacementDeleteAnnotationKey: string(stale.UID)},
+			"uid": stale.UID, "annotations": map[string]string{groupdeletion.ReplacementAnnotation: string(stale.UID)},
 		}})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(k8sClient.Patch(ctx, stale, client.RawPatch(types.MergePatchType, data))).To(gomega.Succeed())
 		gomega.Expect(stale.Labels["concurrent-label"]).To(gomega.Equal("preserved"))
 		gomega.Expect(stale.Annotations["concurrent-annotation"]).To(gomega.Equal("preserved"))
-		gomega.Expect(stale.Annotations[leaderv1.GroupScaleProtectionAnnotationKey]).To(gomega.Equal(string(lws.UID) + "/" + string(stale.UID)))
+		gomega.Expect(stale.Annotations[groupdeletion.ProtectionAnnotation]).To(gomega.Equal(string(lws.UID) + "/" + string(stale.UID)))
 		gomega.Expect(k8sClient.Delete(ctx, stale, client.GracePeriodSeconds(0))).To(gomega.Succeed())
 		replacement := wrappers.MakePodWithLabels(lws.Name, "0", "0", pod.Namespace, 1)
 		gomega.Expect(k8sClient.Create(ctx, replacement)).To(gomega.Succeed())
@@ -165,13 +166,13 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		err = k8sClient.Delete(ctx, stale, client.Preconditions{UID: &stale.UID})
 		gomega.Expect(apierrors.IsConflict(err)).To(gomega.BeTrue(), "%v", err)
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(replacement), replacement)).To(gomega.Succeed())
-		gomega.Expect(replacement.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey]).To(gomega.BeEmpty())
+		gomega.Expect(replacement.Annotations[groupdeletion.ReplacementAnnotation]).To(gomega.BeEmpty())
 		// Repairing persistent protection on the replacement cannot revive a
 		// copied victim token: the token itself must identify this exact Pod UID.
-		lws.Annotations = map[string]string{leaderv1.GroupScalePlanAnnotationKey: "plan"}
+		lws.Annotations = map[string]string{groupdeletion.PlanAnnotation: "plan"}
 		gomega.Expect(k8sClient.Update(ctx, lws)).To(gomega.Succeed())
-		replacement.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/" + string(replacement.UID)
-		replacement.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/" + string(stale.UID)
+		replacement.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/" + string(replacement.UID)
+		replacement.Annotations[groupdeletion.VictimAnnotation] = "plan/" + string(stale.UID)
 		gomega.Expect(k8sClient.Update(ctx, replacement)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, replacement, client.DryRunAll)).To(gomega.MatchError(gomega.ContainSubstring("is retained")))
 	})
@@ -180,7 +181,7 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		// A test-only second endpoint delays the first real DELETE. The
 		// production matchCondition correctly skips this initially unprotected
 		// Pod; after its metadata changes, storage must rerun admission.
-		delete(pod.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+		delete(pod.Annotations, groupdeletion.ProtectionAnnotation)
 		pod.Labels["test.lws.io/protection-race"] = string(pod.UID)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		started, release := make(chan struct{}), make(chan struct{})
@@ -225,7 +226,7 @@ var _ = ginkgo.Describe("protected leader DELETE admission", func() {
 		deletePod := pod.DeepCopy()
 		go func() { result <- k8sClient.Delete(ctx, deletePod, client.GracePeriodSeconds(0)) }()
 		gomega.Eventually(started).Should(gomega.BeClosed())
-		pod.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(lws.UID) + "/" + string(pod.UID)
+		pod.Annotations[groupdeletion.ProtectionAnnotation] = string(lws.UID) + "/" + string(pod.UID)
 		gomega.Expect(k8sClient.Update(ctx, pod)).To(gomega.Succeed())
 		once.Do(func() { close(release) })
 		var err error

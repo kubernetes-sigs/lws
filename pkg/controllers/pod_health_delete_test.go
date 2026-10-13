@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -58,10 +59,10 @@ func TestNativeHealthDeleteAuthorization(t *testing.T) {
 			require.NoError(t, corev1.AddToScheme(scheme))
 			leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "leader", Namespace: "test", UID: "leader-uid", Annotations: map[string]string{}}}
 			if tc.protected {
-				leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = "lws-uid/leader-uid"
+				leader.Annotations[groupdeletion.ProtectionAnnotation] = "lws-uid/leader-uid"
 			}
 			if tc.authorized != "" {
-				leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = tc.authorized
+				leader.Annotations[groupdeletion.ReplacementAnnotation] = tc.authorized
 			}
 			base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(leader).Build()
 			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(leader), leader))
@@ -88,7 +89,7 @@ func TestNativeHealthDeleteAuthorization(t *testing.T) {
 					actual := &corev1.Pod{}
 					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), actual))
 					if tc.protected {
-						require.Equal(t, string(actual.UID), actual.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey])
+						require.Equal(t, string(actual.UID), actual.Annotations[groupdeletion.ReplacementAnnotation])
 					}
 					if tc.metadataChange {
 						require.Equal(t, "updated", actual.Labels["unrelated"])
@@ -102,20 +103,19 @@ func TestNativeHealthDeleteAuthorization(t *testing.T) {
 					return c.Delete(ctx, obj, opts...)
 				},
 			})
-			r := &PodReconciler{Client: c}
-			err := r.deleteGroupLeader(t.Context(), leader)
+			err := groupdeletion.DeleteForReplacement(t.Context(), c, leader)
 			if tc.failPatch {
 				require.ErrorIs(t, err, failure)
 				require.Zero(t, deletes)
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(leader), leader))
-				require.Empty(t, leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey])
+				require.Empty(t, leader.Annotations[groupdeletion.ReplacementAnnotation])
 				return
 			}
 			if tc.failDelete {
 				require.ErrorIs(t, err, failure)
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(leader), leader))
-				require.Equal(t, string(leader.UID), leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey])
-				err = r.deleteGroupLeader(t.Context(), leader)
+				require.Equal(t, string(leader.UID), leader.Annotations[groupdeletion.ReplacementAnnotation])
+				err = groupdeletion.DeleteForReplacement(t.Context(), c, leader)
 				require.Equal(t, 2, deletes)
 			}
 			require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestNativeHealthAuthorizationDoesNotRecountMetadataConflict(t *testing.T) {
 	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
 	leader.UID = "leader-uid"
 	leader.Labels[leaderv1.RevisionKey] = "revision"
-	leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = "lws/leader-uid"
+	leader.Annotations[groupdeletion.ProtectionAnnotation] = "lws/leader-uid"
 	leader.Status.Phase = corev1.PodRunning
 	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
 	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).Build()
@@ -168,10 +168,10 @@ func TestNativeHealthDeleteRequiresProtectedUID(t *testing.T) {
 	// The table above checks the helper's UID precondition. Real API tests
 	// prove enforcement against a same-name replacement; the fake cannot.
 	leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "leader", Annotations: map[string]string{
-		leaderv1.GroupScaleProtectionAnnotationKey: "lws-uid/old-uid",
+		groupdeletion.ProtectionAnnotation: "lws-uid/old-uid",
 	}}}
-	r := &PodReconciler{} // No client call is permitted without an identity.
-	require.ErrorContains(t, r.deleteGroupLeader(t.Context(), leader), "without its UID")
+	// No client call is permitted without an identity.
+	require.ErrorContains(t, groupdeletion.DeleteForReplacement(t.Context(), nil, leader), "without its UID")
 }
 
 func TestProtectedGroupSplitByUpgradeAuthorization(t *testing.T) {
@@ -196,7 +196,7 @@ func TestProtectedGroupSplitByUpgradeAuthorization(t *testing.T) {
 			leader := podCtrlLeaderPod(lws, "leader")
 			leader.Annotations = map[string]string{
 				schedulerprovider.WorkloadNameAnnotationKey: workloadName + ".x7k2p",
-				leaderv1.GroupScaleProtectionAnnotationKey:  string(lws.UID) + "/" + string(leader.UID),
+				groupdeletion.ProtectionAnnotation:          string(lws.UID) + "/" + string(leader.UID),
 			}
 			workerSts := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
@@ -214,7 +214,7 @@ func TestProtectedGroupSplitByUpgradeAuthorization(t *testing.T) {
 						deletes++
 						actual := &corev1.Pod{}
 						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), actual))
-						require.Equal(t, string(leader.UID), actual.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey])
+						require.Equal(t, string(leader.UID), actual.Annotations[groupdeletion.ReplacementAnnotation])
 						options := (&client.DeleteOptions{}).ApplyOptions(opts)
 						require.Equal(t, leader.UID, *options.Preconditions.UID)
 						require.Equal(t, metav1.DeletePropagationForeground, *options.PropagationPolicy)

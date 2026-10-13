@@ -23,6 +23,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 )
 
 // Availability separates observed whole-group readiness from retained credit.
@@ -107,7 +108,7 @@ func (s *Snapshot) Availability() Availability {
 		result.ReadyReplicas++
 		if !acknowledged || group.Terminating ||
 			leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] == "true" ||
-			leader.UID != "" && leader.Annotations[leaderworkersetv1.GroupReplacementDeleteAnnotationKey] == string(leader.UID) {
+			groupdeletion.ReplacementPending(leader) {
 			continue
 		}
 		if workers := group.WorkerStatefulSet; workers != nil && workers.Status.ObservedGeneration < workers.Generation {

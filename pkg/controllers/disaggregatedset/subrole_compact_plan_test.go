@@ -35,6 +35,7 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -66,15 +67,15 @@ func TestCachedHashSubRolesRequireSettledProtection(t *testing.T) {
 				pod.Status.Conditions = nil
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
 			case "unprotected":
-				delete(pod.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+				delete(pod.Annotations, groupdeletion.ProtectionAnnotation)
 			case "wrong UID":
-				pod.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(s.LWS.UID) + "/previous-pod"
+				pod.Annotations[groupdeletion.ProtectionAnnotation] = string(s.LWS.UID) + "/previous-pod"
 			case "victim":
-				pod.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "stale-plan/" + string(pod.UID)
+				pod.Annotations[groupdeletion.VictimAnnotation] = "stale-plan/" + string(pod.UID)
 			case "health deletion":
-				pod.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = string(pod.UID)
+				pod.Annotations[groupdeletion.ReplacementAnnotation] = string(pod.UID)
 			case "pending", "legacy pending", "armed":
-				key := map[string]string{"pending": subRolePlanAnnotation, "legacy pending": legacySubRolePlanAnnotation, "armed": leaderv1.GroupScalePlanAnnotationKey}[change]
+				key := map[string]string{"pending": subRolePlanAnnotation, "legacy pending": legacySubRolePlanAnnotation, "armed": groupdeletion.PlanAnnotation}[change]
 				s.LWS.Annotations[key] = "pending"
 				object = s.LWS
 			case "native pending":
@@ -107,7 +108,7 @@ func TestHashSubRoleMetadataBatchesBeforePlanning(t *testing.T) {
 						delete(pod.Labels, disaggv1.SubRoleLabelKey)
 					}
 					if change != "partial" {
-						delete(pod.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+						delete(pod.Annotations, groupdeletion.ProtectionAnnotation)
 					}
 					require.NoError(t, f.manager.client.Update(t.Context(), pod))
 				}
@@ -181,7 +182,7 @@ func TestSubRoleIDLessOrdinalPlanUpgrade(t *testing.T) {
 			require.EqualValues(t, 2, getLWSReplicas(after.LWS))
 			require.JSONEq(t, `{"a":1,"b":1}`, after.LWS.Annotations[subRoleReplicasAnnotation])
 			require.NotContains(t, after.LWS.Annotations[subRolePlanAnnotation], `"id"`)
-			require.Empty(t, after.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+			require.Empty(t, after.LWS.Annotations[groupdeletion.PlanAnnotation])
 			require.Equal(t, before.Groups[:2], after.Groups[:2], "upgrade does not rewrite retained labels, fences, UIDs or resource versions")
 			require.Equal(t, before.Groups[2].Leader.UID, after.Groups[2].Leader.UID)
 			child, coherent := groupSubRole(after.Groups[2])
@@ -254,12 +255,12 @@ func TestSubRoleLegacyHashPlanUpgradeKeepsAcceptedVictim(t *testing.T) {
 	f := newSubRoleFixtureForIdentity(t, leaderv1.GroupIdentityHash, 0, "a", "a", "b")
 	s := f.observe()
 	s.LWS.Annotations["disaggregatedset.x-k8s.io/subrole-scale-plan"] = `{"id":"legacy","armed":true,"counts":{"a":1,"b":1},"readyFloor":{"a":1,"b":1}}`
-	s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey] = "legacy"
+	s.LWS.Annotations[groupdeletion.PlanAnnotation] = "legacy"
 	s.LWS.Spec.Replicas = ptr.To[int32](2)
 	setSubRoleJSON(s.LWS, subRoleReplicasAnnotation, map[string]int{"a": 1, "b": 1})
 	require.NoError(t, f.manager.client.Update(t.Context(), s.LWS))
 	victim := s.Groups[1].Leader
-	victim.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "legacy/" + string(victim.UID)
+	victim.Annotations[groupdeletion.VictimAnnotation] = "legacy/" + string(victim.UID)
 	require.NoError(t, f.manager.client.Update(t.Context(), victim))
 	s.Groups[0].Leader.Status.Conditions = nil
 	require.NoError(t, f.manager.client.Status().Update(t.Context(), s.Groups[0].Leader))
@@ -272,7 +273,7 @@ func TestSubRoleLegacyHashPlanUpgradeKeepsAcceptedVictim(t *testing.T) {
 	after := f.observe()
 	require.Empty(t, after.LWS.Annotations[subRolePlanAnnotation])
 	require.Empty(t, after.LWS.Annotations["disaggregatedset.x-k8s.io/subrole-scale-plan"])
-	require.Empty(t, after.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+	require.Empty(t, after.LWS.Annotations[groupdeletion.PlanAnnotation])
 	require.Equal(t, []replicagroups.Group{before.Groups[0], before.Groups[2]}, after.Groups,
 		"legacy Hash plans keep their exact survivors without rechecking the accepted Ready floor")
 	require.True(t, apierrors.IsNotFound(f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(victim), &corev1.Pod{})))
@@ -294,7 +295,7 @@ func TestSubRolePlanAnnotationsDoNotGrowWithGroupCount(t *testing.T) {
 		t.Run(fmt.Sprint(target), func(t *testing.T) {
 			plan := &subRolePlan{ID: "plan", Armed: true, Counts: map[string]int{child: target}}
 			setSubRolePlanForTest(t, s.LWS, plan)
-			s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey] = plan.ID
+			s.LWS.Annotations[groupdeletion.PlanAnnotation] = plan.ID
 			bytes := 0
 			for key, value := range s.LWS.Annotations {
 				bytes += len(key) + len(value)
@@ -353,7 +354,7 @@ func TestSubRoleArmedVictimRetryDoesNotWaitForHealthReplacement(t *testing.T) {
 	require.ErrorIs(t, err, failure, "armed deletion must run even with fewer than target survivors")
 	remaining := &corev1.Pod{}
 	require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(victims[1].Leader), remaining))
-	require.Equal(t, plan.ID+"/"+string(remaining.UID), remaining.Annotations[leaderv1.GroupScaleVictimAnnotationKey])
+	require.Equal(t, plan.ID+"/"+string(remaining.UID), remaining.Annotations[groupdeletion.VictimAnnotation])
 	// A new larger request must retry the accepted victim, never promote it.
 	require.ErrorIs(t, f.scale(map[string]int{"a": 4, "b": 1}), errReplicaGroupsPending)
 	require.True(t, apierrors.IsNotFound(base.Get(ctx, client.ObjectKeyFromObject(remaining), remaining)))
@@ -372,7 +373,7 @@ func TestSubRoleArmedVictimRetryDoesNotWaitForHealthReplacement(t *testing.T) {
 	}
 	require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
 	require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(lost), lost))
-	require.Equal(t, string(f.lws.UID)+"/"+string(lost.UID), lost.Annotations[leaderv1.GroupScaleProtectionAnnotationKey])
+	require.Equal(t, string(f.lws.UID)+"/"+string(lost.UID), lost.Annotations[groupdeletion.ProtectionAnnotation])
 }
 
 func TestSubRoleArmedAdoptionOnlyFillsVacancies(t *testing.T) {
@@ -395,9 +396,9 @@ func TestSubRoleArmedAdoptionOnlyFillsVacancies(t *testing.T) {
 			fresh.Leader.UID = "fresh"
 			fresh.Leader.Annotations = map[string]string{}
 			if tc.victim {
-				fresh.Leader.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/fresh"
+				fresh.Leader.Annotations[groupdeletion.VictimAnnotation] = "plan/fresh"
 			} else if tc.copied {
-				fresh.Leader.Annotations[leaderv1.GroupScaleVictimAnnotationKey] = "plan/previous-uid"
+				fresh.Leader.Annotations[groupdeletion.VictimAnnotation] = "plan/previous-uid"
 			}
 			if tc.vacancy {
 				s.Groups = s.Groups[1:]
@@ -421,7 +422,7 @@ func TestSubRoleOrdinarySyncDeletesOnlyUnassignedNativeExcess(t *testing.T) {
 	fresh := s.Groups[0].Leader.DeepCopy()
 	fresh.Name, fresh.UID, fresh.ResourceVersion = "first-extra", "extra-uid", ""
 	delete(fresh.Labels, disaggv1.SubRoleLabelKey)
-	delete(fresh.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+	delete(fresh.Annotations, groupdeletion.ProtectionAnnotation)
 	require.NoError(t, f.manager.client.Create(t.Context(), fresh))
 	require.Equal(t, fresh.UID, f.observe().Groups[0].Leader.UID)
 	f.sync()
@@ -443,7 +444,7 @@ func TestSubRoleSurplusDeletePreservesNativeAndUIDGuards(t *testing.T) {
 			extra := s.Groups[0].Leader.DeepCopy()
 			extra.Name, extra.UID, extra.ResourceVersion = "extra", "extra-uid", ""
 			delete(extra.Labels, disaggv1.SubRoleLabelKey)
-			delete(extra.Annotations, leaderv1.GroupScaleProtectionAnnotationKey)
+			delete(extra.Annotations, groupdeletion.ProtectionAnnotation)
 			require.NoError(t, f.manager.client.Create(t.Context(), extra))
 			s = f.observe()
 			assignments := map[types.UID]string{}
@@ -464,7 +465,7 @@ func TestSubRoleSurplusDeletePreservesNativeAndUIDGuards(t *testing.T) {
 				for _, group := range s.Groups {
 					if group.Leader.UID == extra.UID {
 						if gate == "protected" {
-							group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey] = string(s.LWS.UID) + "/" + string(extra.UID)
+							group.Leader.Annotations[groupdeletion.ProtectionAnnotation] = string(s.LWS.UID) + "/" + string(extra.UID)
 						} else {
 							group.Leader.Labels[disaggv1.SubRoleLabelKey] = "another-child"
 						}
@@ -513,7 +514,7 @@ func TestHashSubRoleUnarmedHealthLossReselectsVictim(t *testing.T) {
 	plan, err = readSubRolePlan(s.LWS)
 	require.NoError(t, err)
 	require.False(t, plan.Armed)
-	require.Empty(t, s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+	require.Empty(t, s.LWS.Annotations[groupdeletion.PlanAnnotation])
 	require.True(t, subRoleVictim(s.Groups[0], plan), "the unready replacement becomes the new proposal")
 	for range 8 {
 		f.sync()
@@ -533,7 +534,7 @@ func TestHashSubRoleGroupPatchResumesAtLeaderCommit(t *testing.T) {
 		t.Run(fmt.Sprint(failedIndex), func(t *testing.T) {
 			f := newSubRoleFixtureForIdentity(t, leaderv1.GroupIdentityHash, 0, "a")
 			group := f.observe().Groups[0]
-			protection := group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey]
+			protection := group.Leader.Annotations[groupdeletion.ProtectionAnnotation]
 			base := f.manager.client
 			failure := errors.New("interrupted Pod patch")
 			f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
@@ -547,7 +548,7 @@ func TestHashSubRoleGroupPatchResumesAtLeaderCommit(t *testing.T) {
 			require.ErrorIs(t, f.manager.labelSubRoleGroup(t.Context(), f.lws, group, "b"), failure)
 			group = f.observe().Groups[0]
 			require.Equal(t, "a", group.Leader.Labels[disaggv1.SubRoleLabelKey], "the leader is the assignment commit point")
-			require.Equal(t, protection, group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey])
+			require.Equal(t, protection, group.Leader.Annotations[groupdeletion.ProtectionAnnotation])
 			_, coherent := groupSubRole(group)
 			require.Equal(t, failedIndex == 1, coherent)
 			f.manager = NewLeaderWorkerSetManager(base) // Retry after a process restart.
@@ -556,14 +557,14 @@ func TestHashSubRoleGroupPatchResumesAtLeaderCommit(t *testing.T) {
 			for _, pod := range group.Pods {
 				require.Equal(t, "b", pod.Labels[disaggv1.SubRoleLabelKey])
 			}
-			require.Equal(t, protection, group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey], "relabeling never rotates the UID fence")
+			require.Equal(t, protection, group.Leader.Annotations[groupdeletion.ProtectionAnnotation], "relabeling never rotates the UID fence")
 			require.Equal(t, "keep", group.Leader.Annotations["user"])
 			require.NoError(t, f.manager.labelSubRoleGroup(t.Context(), f.lws, group, ""))
 			group = f.observe().Groups[0]
 			for _, pod := range group.Pods {
 				require.Empty(t, pod.Labels[disaggv1.SubRoleLabelKey])
 			}
-			require.Empty(t, group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey])
+			require.Empty(t, group.Leader.Annotations[groupdeletion.ProtectionAnnotation])
 		})
 	}
 }
@@ -624,12 +625,12 @@ func TestHashSubRoleAdapterMembershipAndRemoval(t *testing.T) {
 	s = f.observe()
 	require.EqualValues(t, 3, getLWSReplicas(s.LWS), "unpartitioning keeps physical capacity")
 	require.Empty(t, s.LWS.Annotations[subRoleReplicasAnnotation])
-	require.Empty(t, s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+	require.Empty(t, s.LWS.Annotations[groupdeletion.PlanAnnotation])
 	for _, group := range s.Groups {
 		child, coherent := groupSubRole(group)
 		require.True(t, coherent)
 		require.Empty(t, child)
-		require.Empty(t, group.Leader.Annotations[leaderv1.GroupScaleProtectionAnnotationKey])
+		require.Empty(t, group.Leader.Annotations[groupdeletion.ProtectionAnnotation])
 	}
 }
 
@@ -766,7 +767,7 @@ func TestHashSubRoleTransactionsPreserveMatchingSurvivors(t *testing.T) {
 			}
 			s := f.observe()
 			require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
-			require.Empty(t, s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+			require.Empty(t, s.LWS.Annotations[groupdeletion.PlanAnnotation])
 			actual, keptB := map[string]int{}, false
 			for _, group := range s.Groups {
 				child, coherent := groupSubRole(group)
@@ -805,7 +806,7 @@ func TestHashSubRolePlanSurvivesLabelAndSpecWriteFailures(t *testing.T) {
 		if errors.Is(err, specFailure) {
 			s := f.observe()
 			require.EqualValues(t, 3, getLWSReplicas(s.LWS))
-			require.Empty(t, s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey], "failed Spec writes cannot publish delete authority")
+			require.Empty(t, s.LWS.Annotations[groupdeletion.PlanAnnotation], "failed Spec writes cannot publish delete authority")
 			plan, err := readSubRolePlan(s.LWS)
 			require.NoError(t, err)
 			require.False(t, plan.Armed)
@@ -817,5 +818,5 @@ func TestHashSubRolePlanSurvivesLabelAndSpecWriteFailures(t *testing.T) {
 	s := f.observe()
 	require.EqualValues(t, 2, getLWSReplicas(s.LWS))
 	require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
-	require.Empty(t, s.LWS.Annotations[leaderv1.GroupScalePlanAnnotationKey])
+	require.Empty(t, s.LWS.Annotations[groupdeletion.PlanAnnotation])
 }

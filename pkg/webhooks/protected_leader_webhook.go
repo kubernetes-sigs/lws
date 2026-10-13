@@ -19,7 +19,6 @@ package webhooks
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 )
 
 // This separate DELETE-only webhook is restricted by a CEL matchCondition to
@@ -51,12 +51,11 @@ func (w *protectedLeaderWebhook) ValidateDelete(ctx context.Context, pod *corev1
 	if !pod.DeletionTimestamp.IsZero() || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 		return nil, nil
 	}
-	marker := strings.Split(pod.Annotations[leaderv1.GroupScaleProtectionAnnotationKey], "/")
-	if len(marker) != 2 || marker[0] == "" || marker[1] != string(pod.UID) || pod.Labels[leaderv1.WorkerIndexLabelKey] != "0" {
+	uid := groupdeletion.ProtectionOwner(pod)
+	if uid == "" || pod.Labels[leaderv1.WorkerIndexLabelKey] != "0" {
 		return nil, nil
 	}
-	uid := marker[0]
-	if pod.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] == string(pod.UID) {
+	if groupdeletion.ReplacementPending(pod) {
 		return nil, nil
 	}
 	lws := &leaderv1.LeaderWorkerSet{}
@@ -67,12 +66,11 @@ func (w *protectedLeaderWebhook) ValidateDelete(ctx context.Context, pod *corev1
 	if err != nil {
 		return nil, err
 	}
-	if string(lws.UID) != uid || !lws.DeletionTimestamp.IsZero() {
+	if lws.UID != uid || !lws.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	if id := lws.Annotations[leaderv1.GroupScalePlanAnnotationKey]; id != "" &&
-		pod.Annotations[leaderv1.GroupScaleVictimAnnotationKey] == id+"/"+string(pod.UID) {
+	if groupdeletion.IsVictim(pod, lws.Annotations[groupdeletion.PlanAnnotation]) {
 		return nil, nil
 	}
-	return nil, fmt.Errorf("leader %s is retained by LeaderWorkerSet %s; only an accepted scale victim or native health replacement may delete it (remove %s for an administrative override)", pod.Name, lws.Name, leaderv1.GroupScaleProtectionAnnotationKey)
+	return nil, fmt.Errorf("leader %s is retained by LeaderWorkerSet %s; only an accepted scale victim or native health replacement may delete it (remove %s for an administrative override)", pod.Name, lws.Name, groupdeletion.ProtectionAnnotation)
 }

@@ -51,6 +51,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -477,7 +478,7 @@ func (r *PodReconciler) recreateGroupSplitByUpgrade(ctx context.Context, lws *le
 			return false, nil
 		}
 	}
-	if err := r.deleteGroupLeader(ctx, leader); err != nil {
+	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, leader); err != nil {
 		// The leader is gone or has been replaced already.
 		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return true, nil
@@ -677,7 +678,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			return false, ctrl.Result{}, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 		}
 	}
-	if err := r.deleteGroupLeader(ctx, &leader); err != nil {
+	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, &leader); err != nil {
 		return false, ctrl.Result{}, err
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
@@ -707,37 +708,6 @@ func computeBackoffDelay(backoff *leaderworkerset.RestartBackoff, count int32) t
 		return time.Duration(capSeconds) * time.Second
 	}
 	return time.Duration(delaySeconds) * time.Second
-}
-
-// deleteGroupLeader makes native group replacement visible before requesting
-// deletion. Protected virtual groups must not remain retained readiness credit
-// while their DELETE is in flight or waiting to be retried.
-func (r *PodReconciler) deleteGroupLeader(ctx context.Context, leader *corev1.Pod) error {
-	if leader.Annotations[leaderworkerset.GroupScaleProtectionAnnotationKey] != "" {
-		if leader.UID == "" {
-			return fmt.Errorf("cannot authorize replacement of protected leader %s without its UID", leader.Name)
-		}
-		if leader.Annotations[leaderworkerset.GroupReplacementDeleteAnnotationKey] != string(leader.UID) {
-			desired := leader.DeepCopy()
-			// This independent intent must not conflict with virtual-role label
-			// or status updates after the restart budget was persisted. The UID
-			// condition rejects a same-name replacement without an RV lock, and
-			// the merge patch changes only this annotation.
-			data, _ := json.Marshal(map[string]any{"metadata": map[string]any{
-				"uid": leader.UID, "annotations": map[string]string{leaderworkerset.GroupReplacementDeleteAnnotationKey: string(leader.UID)},
-			}})
-			if err := r.Patch(ctx, desired, client.RawPatch(types.MergePatchType, data)); err != nil {
-				return err
-			}
-			*leader = *desired
-		}
-	}
-	deletionOpt := metav1.DeletePropagationForeground
-	opts := &client.DeleteOptions{PropagationPolicy: &deletionOpt}
-	if leader.UID != "" {
-		opts.Preconditions = &metav1.Preconditions{UID: &leader.UID}
-	}
-	return r.Delete(ctx, leader, opts)
 }
 
 func parseGroupRestartCounts(raw string) (map[string]int32, error) {
@@ -821,7 +791,7 @@ func (r *PodReconciler) terminateExhaustedGroup(ctx context.Context, lws *leader
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
-	if err := r.deleteGroupLeader(ctx, leader); err != nil {
+	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, leader); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	r.Record.Eventf(lws, leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded", Delete,

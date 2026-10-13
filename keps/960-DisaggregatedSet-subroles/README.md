@@ -369,6 +369,8 @@ targets propagate, delete those victims before waiting for replacement vacancies
 An armed victim cannot become a survivor; replacement UIDs fill only real vacancies.
 Parent metadata grows with child count, not physical replica count.
 
+The deletion tags and UID checks belong to the internal `groupdeletion` package, not the public LWS API. DisaggregatedSet chooses scale victims; native recovery uses the same internal contract after its existing restart checks. These controller-owned annotations retain their stored names so pending work remains readable across restarts and upgrades.
+
 Previously saved object plans resume with their accepted Ready floors and transaction
 identity. Legacy Ordinal plans may use only their actual retained prefix; new Ordinal
 count-map plans retain the full-prefix health policy described above.

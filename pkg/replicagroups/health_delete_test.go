@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/internal/groupdeletion"
 )
 
 func TestHealthDeleteIntentIsNotRetainedReadiness(t *testing.T) {
@@ -33,9 +34,9 @@ func TestHealthDeleteIntentIsNotRetainedReadiness(t *testing.T) {
 				if leader.Annotations == nil {
 					leader.Annotations = map[string]string{}
 				}
-				leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = "old-uid"
+				leader.Annotations[groupdeletion.ReplacementAnnotation] = "old-uid"
 				if exactUID {
-					leader.Annotations[leaderv1.GroupReplacementDeleteAnnotationKey] = string(leader.UID)
+					leader.Annotations[groupdeletion.ReplacementAnnotation] = string(leader.UID)
 				}
 				snapshot, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
 				require.NoError(t, err)
