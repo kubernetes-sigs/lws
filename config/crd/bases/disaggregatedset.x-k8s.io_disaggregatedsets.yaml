@@ -19519,7 +19519,7 @@ spec:
                       type: object
                     subRoles:
                       description: |-
-                        SubRoles partitions one LWS into pools sharing its templates; both group identities are supported.
+                        SubRoles partitions one LWS into pools sharing its templates.
                         Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.
                       items:
                         description: DisaggregatedSubRoleSpec defines a scaling and

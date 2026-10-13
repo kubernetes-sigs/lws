@@ -38,7 +38,7 @@ const (
 	// Applied to LWS and Service objects in the same namespace as the DisaggregatedSet.
 	RoleLabelKey string = "disaggregatedset.x-k8s.io/role"
 	// SubRoleLabelKey is controller-owned and applied to every Pod in an
-	// assigned replica group, for both Ordinal and Hash identities.
+	// assigned replica group.
 	SubRoleLabelKey string = "disaggregatedset.x-k8s.io/subrole"
 
 	// SliceLabelKey records which slice the resource belongs to.
@@ -189,7 +189,7 @@ type DisaggregatedRoleSpec struct {
 	// +required
 	Name string `json:"name"`
 
-	// SubRoles partitions one LWS into pools sharing its templates; both group identities are supported.
+	// SubRoles partitions one LWS into pools sharing its templates.
 	// Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.
 	// +optional
 	// +listType=map
