@@ -26,6 +26,7 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -256,6 +257,7 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 // freezes history. An explicitly empty membership removes child routing.
 type subRoleUpdate struct {
 	membership, target, initial map[string]int
+	rolloutStrategy             *leaderv1.RolloutStrategy
 }
 
 type subRoleState struct {
@@ -264,13 +266,14 @@ type subRoleState struct {
 	issued, initial, pending map[string]int
 	written                  bool // A conditional LWS write succeeded in this call.
 	plan                     *subRolePlan
+	rolloutStrategy          *leaderv1.RolloutStrategy
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
 	if len(update.membership)+len(update.target)+len(update.initial) == 0 && lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey] == "" && lws.Annotations[subRolePlanAnnotation] == "" {
 		return nil, nil
 	}
-	state := &subRoleState{lws: lws}
+	state := &subRoleState{lws: lws, rolloutStrategy: update.rolloutStrategy}
 	if !metav1.IsControlledBy(lws, ds) {
 		return state, fmt.Errorf("LeaderWorkerSet %s is not owned by DisaggregatedSet %s", lws.Name, ds.Name)
 	}
@@ -382,13 +385,14 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 	if state.issued != nil {
 		live.Spec.Replicas = ptr.To(int32(countSubRoles(state.issued)))
 	}
+	setRolloutStrategy(live, state.rolloutStrategy)
 	if state.initial != nil {
 		setSubRoleJSON(live, disaggv1.InitialSubRoleReplicasAnnotationKey, state.initial)
 		live.Annotations[disaggv1.InitialReplicasAnnotationKey] = strconv.Itoa(countSubRoles(state.initial))
 	} else if state.issued == nil && state.pending == nil {
 		delete(live.Annotations, disaggv1.InitialSubRoleReplicasAnnotationKey)
 	}
-	if maps.Equal(live.Annotations, state.lws.Annotations) && getLWSReplicas(live) == getLWSReplicas(state.lws) {
+	if maps.Equal(live.Annotations, state.lws.Annotations) && equality.Semantic.DeepEqual(live.Spec, state.lws.Spec) {
 		return nil
 	}
 	if live.UID == "" || !live.DeletionTimestamp.IsZero() || metav1.GetControllerOf(live) == nil {

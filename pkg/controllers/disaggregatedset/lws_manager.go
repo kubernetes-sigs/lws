@@ -29,9 +29,11 @@ import (
 	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -365,6 +367,16 @@ func (manager *LeaderWorkerSetManager) Create(
 // obsolete write at the API server, including a status-only conflict. Retrying
 // from a later observation is preferable to refreshing through a live GET.
 func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int) error {
+	return manager.scale(ctx, ds, observed, replicas, nil)
+}
+
+func (manager *LeaderWorkerSetManager) scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int, strategy *leaderworkersetv1.RolloutStrategy) error {
+	if strategy != nil && int(getLWSReplicas(observed)) == replicas {
+		candidate := observed.DeepCopy()
+		if !setRolloutStrategy(candidate, strategy) {
+			return nil // A steady-state no-op needs no further reads or writes.
+		}
+	}
 	name := observed.Name
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := manager.reader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
@@ -380,13 +392,13 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 			errors.New("LeaderWorkerSet changed since scale observation"))
 	}
 
-	currentReplicas := int(getLWSReplicas(leaderWorkerSet))
-	if currentReplicas == replicas {
+	before := leaderWorkerSet.DeepCopy()
+	leaderWorkerSet.Spec.Replicas = ptr.To(int32(replicas))
+	setRolloutStrategy(leaderWorkerSet, strategy)
+	if equality.Semantic.DeepEqual(before.Spec, leaderWorkerSet.Spec) {
 		return nil
 	}
-	replicas32 := int32(replicas)
-	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	leaderWorkerSet.Spec.Replicas = &replicas32
+	patch := client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})
 	if err := manager.mutate(ctx, leaderWorkerSet, false, func(ctx context.Context) error {
 		return manager.client.Patch(ctx, leaderWorkerSet, patch)
 	}); err != nil {
@@ -394,6 +406,44 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 	}
 
 	return nil
+}
+
+// The current revision's budgets are live settings, like replicas. Publish them
+// together: a zero/zero budget is valid at zero replicas, but prevents resuming.
+// Subrole scaling can take several writes; defer a budget that is only valid at
+// the final count (for example, maxUnavailable=10% when growing from 1 to 10).
+func setRolloutStrategy(lws *leaderworkersetv1.LeaderWorkerSet, desired *leaderworkersetv1.RolloutStrategy) bool {
+	if desired == nil {
+		return false // Preserve old revisions' recorded native settings.
+	}
+	strategy := defaultedRolloutStrategy(desired)
+	if equality.Semantic.DeepEqual(defaultedRolloutStrategy(&lws.Spec.RolloutStrategy), strategy) {
+		return false
+	}
+	config := strategy.RollingUpdateConfiguration
+	surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, int(getLWSReplicas(lws)), true)
+	unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, int(getLWSReplicas(lws)), false)
+	if surgeErr != nil || unavailableErr != nil || getLWSReplicas(lws) != 0 && surge == 0 && unavailable == 0 {
+		return false
+	}
+	lws.Spec.RolloutStrategy = *strategy
+	return true
+}
+
+func defaultedRolloutStrategy(desired *leaderworkersetv1.RolloutStrategy) *leaderworkersetv1.RolloutStrategy {
+	strategy := desired.DeepCopy()
+	if strategy.Type == "" {
+		strategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+	}
+	if strategy.RollingUpdateConfiguration == nil {
+		strategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}
+	}
+	// Match the API default so omitted partition does not cause repeated patches.
+	config := strategy.RollingUpdateConfiguration
+	if config.Partition == nil {
+		config.Partition = ptr.To[int32](0)
+	}
+	return strategy
 }
 
 // SyncGroupReplacementPolicy patches leaderWorkerSet so its

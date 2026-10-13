@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
@@ -735,12 +736,19 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 	action := "Scaling " + string(direction)
 
 	children := subRoleTargets(roleNames, targets)
+	roleConfigs := disaggregatedsetutils.GetRoleConfigs(ds)
 	log := logf.FromContext(ctx)
 	for i, name := range roleNames {
 		parent, child := roleParts(name)
 		lws := revision.Roles[parent]
 		if lws == nil || (child != "") != (lws.Annotations[subRoleReplicasAnnotation] != "") {
 			continue
+		}
+		var strategy *leaderworkersetv1.RolloutStrategy
+		if config := roleConfigs[parent]; direction == scaleUp && config != nil {
+			// Only the target grows. Refresh its live budgets so a role created
+			// at zero with zero/zero budgets can resume; leave old revisions alone.
+			strategy = &config.Spec.RolloutStrategy
 		}
 		if child != "" {
 			if counts, found := children[parent]; found {
@@ -761,7 +769,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 				if maps.Equal(before, current) {
 					continue
 				}
-				state, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current})
+				state, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current, rolloutStrategy: strategy})
 				if err != nil {
 					// Accepted targets can proceed independently. Missing observations,
 					// label repairs and unrelated metadata writes still require a retry.
@@ -792,7 +800,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 		}
 
 		log.Info(action, "lws", lws.Name, "from_spec", currentSpec, "to", desiredSpec)
-		if err := executor.LWSManager.Scale(ctx, ds, lws, desiredSpec); err != nil {
+		if err := executor.LWSManager.scale(ctx, ds, lws, desiredSpec, strategy); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lws.Name, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, eventReason,
