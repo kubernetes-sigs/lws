@@ -242,10 +242,22 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 						}
 						beforeNumerator, beforeDenominator := replacementFraction(false)
 						afterNumerator, afterDenominator := replacementFraction(true)
+						outageAllowed := false
+						for i, count := range before {
+							revision := workloadRevision[i]
+							if revision >= len(tc.initial) || after[i] >= count {
+								continue
+							}
+							for role, initial := range tc.initial[revision] {
+								outageAllowed = outageAllowed || (initial > 0 && tc.desired[role] > 0 &&
+									tc.unavailable[role] >= int(tc.desired[role]))
+							}
+						}
 						// Independent safety: incomplete revisions provide no usable
 						// capacity. Removed roles count only their disjoint histories.
 						for role, desired := range tc.desired {
 							var baseline, beforeTotal, afterTotal, beforeReady, retained int32
+							var beforeIndividual, retainedIndividual int32
 							for revision := range len(tc.initial) + 1 {
 								if desired == 0 && revision < len(tc.initial) {
 									overlaps := false
@@ -276,6 +288,8 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 								if beforeComplete {
 									beforeReady += roleBefore
 								}
+								beforeIndividual += roleBefore
+								retainedIndividual += roleRetained
 								if afterComplete {
 									retained += roleRetained
 								}
@@ -287,10 +301,13 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 								floor = baseline
 							}
 							floor = max(0, floor-int32(tc.unavailable[role]))
-							require.GreaterOrEqual(t, retained, min(beforeReady, floor), "role %d preserves previously Ready capacity", role)
+							if !outageAllowed || desired == 0 {
+								require.GreaterOrEqual(t, retained, min(beforeReady, floor), "role %d preserves serving capacity", role)
+							}
 							if desired == 0 {
 								continue
 							}
+							require.GreaterOrEqual(t, retainedIndividual, min(beforeIndividual, floor), "role %d preserves individual Ready groups", role)
 							ceiling := desired + int32(tc.surge[role])
 							if policy == disaggregatedsetv1.RolloutScaleDownDeferred {
 								ceiling = max(baseline, desired) + int32(tc.surge[role])
@@ -799,24 +816,18 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 			continue
 		}
 		afterReady := make([]int, n)
-		beforePresent, afterPresent, beforeUsable, afterUsable := true, true, true, true
+		beforeUsable, afterUsable := true, true
 		for i := range rev.spec {
 			// Treat every deletion as Ready capacity lost; new growth grants none.
 			afterReady[i] = max(0, rev.ready[i]-max(0, rev.spec[i]-rev.next[i]))
 			if rev.required[i] {
-				beforePresent = beforePresent && rev.spec[i] > 0
-				afterPresent = afterPresent && min(rev.spec[i], rev.next[i]) > 0
 				beforeUsable = beforeUsable && rev.ready[i] > 0
 				afterUsable = afterUsable && afterReady[i] > 0
 			}
 		}
 		for i := range rev.spec {
-			if beforePresent {
-				beforeRole[i] += rev.ready[i]
-			}
-			if afterPresent {
-				afterRole[i] += afterReady[i]
-			}
+			beforeRole[i] += rev.ready[i]
+			afterRole[i] += afterReady[i]
 			if beforeUsable {
 				beforeServing[i] += rev.ready[i]
 				if revisionIndex >= 2 {
@@ -868,6 +879,13 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 	}
 	assertMovingWindow(t, state.Target.SpecReplicas, phaseTargets, growing, nil)
 	assertMovingWindow(t, oldProgress, oldReference, oldNext, scaleCorrection)
+	outageAllowed := false
+	if !slices.Equal(step.Past, state.ActiveOld.SpecReplicas) {
+		for i, required := range state.ActiveOld.RequiredRoles {
+			outageAllowed = outageAllowed || (required && state.Target.DesiredReplicas[i] > 0 &&
+				state.Config[i].MaxUnavailable >= state.Target.DesiredReplicas[i])
+		}
+	}
 	for i, config := range state.Config {
 		if i >= len(state.Target.AllUnscheduled) || !state.Target.AllUnscheduled[i] ||
 			state.Target.RawReadyReplicas[i] > 0 || state.Target.ReadyReplicas[i] > 0 {
@@ -877,7 +895,7 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		if step.Kind == UnavailableFallbackStep && floor > 1 {
 			floor--
 		}
-		if afterServing[i] < min(beforeServing[i], floor) {
+		if !outageAllowed && afterServing[i] < min(beforeServing[i], floor) {
 			t.Fatalf("serving role %d: got %d, need %d: state=%+v step=%+v", i, afterServing[i], min(beforeServing[i], floor), state, step)
 		}
 		// Draining another role cannot remove this role's physical replicas;

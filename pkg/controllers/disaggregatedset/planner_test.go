@@ -17,6 +17,7 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"fmt"
 	"math/rand"
 	"slices"
 	"testing"
@@ -90,6 +91,85 @@ func testAvailabilityBaseline(initial, activeSpec, parkedSpec, target RoleReplic
 	return availabilityBaseline
 }
 
+func TestZeroFloorRolloutCompletesWithoutSpareCapacity(t *testing.T) {
+	for _, desired := range [][]int{{1, 2}, {2, 1}, {1, 5}, {1, 2, 4}} {
+		t.Run(fmt.Sprint(desired), func(t *testing.T) {
+			zero, unavailable := make([]int, len(desired)), make([]int, len(desired))
+			for i := range unavailable {
+				unavailable[i] = 1
+			}
+			state := rolloutState(desired, desired, desired, nil, nil, zero, zero, desired, configs(zero, unavailable))
+			capacity, complete := replicaSum(desired), false
+			for range 4 * capacity {
+				step := ComputeNextStep(state)
+				require.NotNil(t, step, "the rollout must progress without extra capacity")
+				require.Equal(t, OrdinaryStep, step.Kind)
+				require.NoError(t, validateUpdateStep(state, step))
+				state.ActiveOld.observeFullyReady(step.Past)
+				state.Target.SpecReplicas = slices.Clone(step.New)
+				for i := range desired {
+					// Check the budget before any new group becomes Ready.
+					require.GreaterOrEqual(t, step.Past[i]+state.Target.ReadyReplicas[i], desired[i]-1)
+				}
+				free := capacity - replicaSum(step.Past) - replicaSum(state.Target.ReadyReplicas)
+				require.GreaterOrEqual(t, free, 0)
+				for i, spec := range step.New {
+					added := min(free, spec-state.Target.ReadyReplicas[i])
+					require.GreaterOrEqual(t, added, 0)
+					state.Target.ReadyReplicas[i] += added
+					free -= added
+				}
+				state.Target.RawReadyReplicas = slices.Clone(state.Target.ReadyReplicas)
+				if replicaSum(step.Past) == 0 && slices.Equal(state.Target.ReadyReplicas, desired) {
+					complete = true
+					break
+				}
+			}
+			require.True(t, complete)
+		})
+	}
+}
+
+func TestPartialRevisionKeepsPeerReadyBudget(t *testing.T) {
+	for _, tightened := range []bool{false, true} {
+		t.Run(fmt.Sprint("policy tightened=", tightened), func(t *testing.T) {
+			state := rolloutState([]int{1, 2}, []int{0, 1}, []int{0, 1}, nil, nil,
+				[]int{1, 1}, []int{0, 0}, []int{1, 2}, configs([]int{0, 0}, []int{1, 1}))
+			if tightened {
+				state.Config[0] = RollingUpdateConfig{MaxSurge: 1}
+			}
+			require.Nil(t, ComputeNextStep(state), "old Decode must remain until a replacement is Ready")
+			require.Error(t, validateUpdateStep(state, &UpdateStep{Past: []int{0, 0}, New: []int{1, 1}}))
+			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = []int{0, 1}, []int{0, 1}
+			step := ComputeNextStep(state)
+			require.NotNil(t, step)
+			require.Equal(t, []int{0, 0}, step.Past)
+			require.NoError(t, validateUpdateStep(state, step))
+		})
+	}
+}
+
+func TestRevisionOutageRequiresLiveRoleBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		desired     []int
+		unavailable []int
+		allowed     bool
+	}{
+		{"live zero floor", []int{1, 2}, []int{1, 1}, true},
+		{"positive floors despite readiness loss", []int{1, 2}, []int{0, 1}, false},
+		{"removed role is not permission", []int{0, 2}, []int{1, 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := rolloutState([]int{1, 2}, []int{1, 2}, []int{0, 2}, nil, nil,
+				[]int{0, 0}, []int{0, 0}, tc.desired, configs([]int{1, 1}, tc.unavailable))
+			require.Equal(t, tc.allowed, state.allowsRevisionOutage(state.ActiveOld.RevisionState))
+			require.False(t, snapshotForRolloutState(state).oldDrain().preserves([]int{0, 0}),
+				"an unready peer must not erase Decode's individual Ready budget")
+		})
+	}
+}
+
 func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -116,14 +196,14 @@ func TestComputeNextStepIntersectsConstraints(t *testing.T) {
 		{"zero budgets are genuinely blocked", rolloutState(
 			[]int{1, 1}, []int{1, 1}, []int{1, 1}, nil, nil, []int{0, 0}, []int{0, 0}, []int{1, 1},
 			configs([]int{0, 0}, []int{0, 0})), nil, nil, true, false},
-		{"asymmetric zero-surge wedge bootstraps its missing role", rolloutState(
-			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{1, 5},
-			configs([]int{0, 0}, []int{1, 1})), RoleReplicaState{1, 4}, RoleReplicaState{1, 1}, false, true},
+		{"positive floors bootstrap when old unready groups occupy capacity", rolloutState(
+			[]int{2, 5}, []int{2, 4}, []int{1, 4}, nil, nil, []int{0, 1}, []int{0, 1}, []int{2, 5},
+			configs([]int{0, 0}, []int{1, 1})), RoleReplicaState{2, 4}, RoleReplicaState{1, 1}, false, true},
 		{"interrupted rollout bootstraps a surge slot occupied by old revisions", rolloutState(
 			[]int{1, 4}, []int{1, 1}, []int{1, 1}, []int{1, 3}, []int{1, 3}, []int{0, 1}, []int{0, 1}, []int{1, 4},
 			configs([]int{1, 1}, []int{0, 0})), RoleReplicaState{1, 1}, RoleReplicaState{1, 1}, false, true},
 		{"does not add replicas while the bootstrap replica is unready", rolloutState(
-			[]int{1, 5}, []int{1, 4}, []int{1, 4}, nil, nil, []int{1, 1}, []int{0, 1}, []int{1, 5},
+			[]int{2, 5}, []int{2, 4}, []int{1, 4}, nil, nil, []int{1, 1}, []int{0, 1}, []int{2, 5},
 			configs([]int{0, 0}, []int{1, 1})), nil, nil, true, false},
 	}
 	for _, tc := range tests {
@@ -757,9 +837,9 @@ func TestReadinessSummaryDistinguishesUsableAndPerRoleCapacity(t *testing.T) {
 			[]roleReadiness{{usable: 1, rawUsable: 1, perRole: 1, rawPerRole: 1}, {}}},
 		{"pending deletion", []bool{true, true}, []int{1, 2}, []int{1, 2}, []int{0, 1},
 			[]roleReadiness{{rawUsable: 1, rawPerRole: 1}, {rawUsable: 2, perRole: 1, rawPerRole: 2}}},
-		{"structurally incomplete", []bool{true, true}, []int{0, 2}, []int{0, 2}, []int{0, 2}, []roleReadiness{{}, {}}},
+		{"structurally incomplete retains individual Ready groups", []bool{true, true}, []int{0, 2}, []int{0, 2}, []int{0, 2}, []roleReadiness{{}, {perRole: 2, rawPerRole: 2}}},
 		{"raw ready after zero spec", []bool{true, true}, []int{0, 2}, []int{1, 2}, []int{0, 2},
-			[]roleReadiness{{rawUsable: 1}, {rawUsable: 2}}},
+			[]roleReadiness{{rawUsable: 1, rawPerRole: 1}, {rawUsable: 2, perRole: 2, rawPerRole: 2}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, summarizeReadiness(tc.required, tc.spec, tc.raw, tc.committed))
@@ -1228,7 +1308,8 @@ func hasFeasibleMutation(state RolloutState) bool {
 			for i := range old {
 				withinWindow = withinWindow && old[i] >= min(window[i], excessOldMinimum[i])
 			}
-			if !slices.Equal(boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, old, state.ActiveOld.RequiredRoles), old) ||
+			if (!state.allowsRevisionOutage(state.ActiveOld.RevisionState) &&
+				!slices.Equal(boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, old, state.ActiveOld.RequiredRoles), old)) ||
 				!snapshot.oldDrain().preserves(old) ||
 				!withinWindow {
 				continue

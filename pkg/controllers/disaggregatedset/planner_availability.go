@@ -20,7 +20,8 @@ package disaggregatedset
 // that must survive it. It never changes the meaning of the growth input.
 type drainBudget struct {
 	RevisionState
-	roles []roleDrainBudget
+	roles       []roleDrainBudget
+	allowOutage bool
 }
 
 type readyCapacity struct{ serving, individual int }
@@ -41,7 +42,10 @@ func (snapshot rolloutSnapshot) drainBudget(target bool) drainBudget {
 	if target {
 		revision, ready = snapshot.Target.RevisionState, snapshot.targetReady
 	}
-	budget := drainBudget{RevisionState: revision, roles: make([]roleDrainBudget, len(snapshot.Config))}
+	budget := drainBudget{
+		RevisionState: revision, roles: make([]roleDrainBudget, len(snapshot.Config)),
+		allowOutage: !target && snapshot.allowsRevisionOutage(revision),
+	}
 	for i := range budget.roles {
 		old := snapshot.oldReady(i)
 		observed := old.plus(snapshot.targetReady[i])
@@ -62,8 +66,9 @@ func (snapshot rolloutSnapshot) drainBudget(target bool) drainBudget {
 	return budget
 }
 
-// Preserve serving capacity and each role's own readiness independently:
-// one unhealthy peer must not authorize deleting another role's healthy Pods.
+// Preserve each role's own readiness and, unless its policy permits a revision
+// outage, serving capacity. An unhealthy peer is not permission to delete
+// another role's healthy Pods.
 func (budget drainBudget) minimumTargets() RoleReplicaState {
 	targets := make(RoleReplicaState, len(budget.roles))
 	if budget.preserves(targets) {
@@ -71,7 +76,7 @@ func (budget drainBudget) minimumTargets() RoleReplicaState {
 	}
 	serving := make(RoleReplicaState, len(targets))
 	for i, role := range budget.roles {
-		if !role.excluded {
+		if !role.excluded && !budget.allowOutage {
 			serving[i] = max(0, min(role.observed.serving, role.floor)-role.replacement.serving)
 		}
 	}
@@ -105,7 +110,7 @@ func (budget drainBudget) preserves(remaining RoleReplicaState) bool {
 		}
 		removed := budget.SpecReplicas[i] - remaining[i]
 		// An unchanged serving role may already have a pending readiness loss.
-		if !(removed == 0 && serving[i] > 0) && role.replacement.serving+serving[i] < min(role.observed.serving, role.floor) {
+		if !budget.allowOutage && !(removed == 0 && serving[i] > 0) && role.replacement.serving+serving[i] < min(role.observed.serving, role.floor) {
 			return false
 		}
 		individual := max(0, budget.ReadyReplicas[i]-removed)
@@ -143,7 +148,9 @@ func furthestOldTargets(snapshot rolloutSnapshot) RoleReplicaState {
 	budget := snapshot.oldDrain()
 	targets := budget.minimumTargets()
 	targets = boundDrainingSnapshotTargets(snapshot, targets)
-	targets = boundOldTargetsByRevisionCompleteness(old.SpecReplicas, targets, old.RequiredRoles)
+	if !snapshot.allowsRevisionOutage(old.RevisionState) {
+		targets = boundOldTargetsByRevisionCompleteness(old.SpecReplicas, targets, old.RequiredRoles)
+	}
 	targets = boundDrainingSnapshotTargets(snapshot, targets)
 	if !budget.preserves(targets) {
 		return slicesClone(old.SpecReplicas)
