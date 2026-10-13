@@ -659,7 +659,8 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 	_, removing := target[""]
 	assignments := stickySubRoleAssignments(groups, target)
 	floorMet := true
-	if preparing && !removing {
+	// Restore saved floors after native deletion too, whenever survivors allow it.
+	if state.pending != nil && !removing {
 		if ready := readySubRoleAssignments(groups, target, state.plan.ReadyFloor); ready != nil {
 			assignments = ready
 		} else {

@@ -3646,6 +3646,65 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 	}
 }
 
+func TestHashSubRoleSurvivorRepairPreservesFeasibleReadyFloors(t *testing.T) {
+	for _, readyAfterDelete := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("ready-survivors=%d", readyAfterDelete), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "b")
+			s := f.observe()
+			worker := s.Groups[2].Pods[1]
+			worker.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			oldB := s.Groups[3].Leader.UID
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2, "b": 1}), errReplicaGroupsPending)
+			plan, err := readSubRolePlan(f.observe().LWS)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "b": 1}, plan.ReadyFloor)
+			for range 6 {
+				f.sync()
+			}
+			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS))
+			f.native(oldB) // ReplicaSet can ignore our preference and remove b.
+			s = f.observe()
+			for _, group := range s.Groups[readyAfterDelete:2] {
+				worker := group.Pods[1]
+				worker.Status.Conditions = nil
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			}
+			if readyAfterDelete == 2 {
+				// Resume a partially relabeled Ready donor after a restart.
+				base, podPatches := f.manager.client, 0
+				f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if _, pod := obj.(*corev1.Pod); pod {
+						podPatches++
+						if podPatches == 2 {
+							return errors.New("interrupted labels")
+						}
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				}})
+				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+				require.ErrorContains(t, err, "interrupted labels")
+				f.manager = NewLeaderWorkerSetManager(base)
+			}
+			for range 8 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 2, "b": 1})
+			ready := map[string]int{}
+			for _, group := range f.observe().Groups {
+				if retainedSubRoleEligible(group) {
+					ready[group.Leader.Labels[disaggregatedsetv1.SubRoleLabelKey]]++
+				}
+			}
+			require.Equal(t, readyAfterDelete, ready["a"]+ready["b"])
+			if readyAfterDelete == 2 {
+				require.Equal(t, 1, ready["a"])
+				require.Equal(t, 1, ready["b"], "use a Ready donor whenever the saved floors are feasible")
+			}
+		})
+	}
+}
+
 func TestHashSubRoleNativeRolloutStartup(t *testing.T) {
 	for _, phase := range []string{"steady", "preparing", "published"} {
 		t.Run(phase, func(t *testing.T) {
