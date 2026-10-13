@@ -85,9 +85,6 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidatePodTerminationPolicy(rolePath.Child("spec"), &role.Spec)...)
 		if len(role.SubRoles) > 0 {
-			if role.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
-				allErrs = append(allErrs, field.Forbidden(rolePath.Child("spec", "groupIdentity"), "subRoles requires Ordinal group identity; Hash support is deferred"))
-			}
 			if role.Scaling != nil {
 				allErrs = append(allErrs, field.Forbidden(rolePath.Child("scaling"), "parent scaling must be omitted when subRoles is present"))
 			}

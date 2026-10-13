@@ -38,9 +38,43 @@ import (
 )
 
 const (
-	subRoleReplicasAnnotation = "disaggregatedset.x-k8s.io/subrole-replicas"
-	subRolePlanAnnotation     = "disaggregatedset.x-k8s.io/subrole-plan"
+	subRoleReplicasAnnotation             = "disaggregatedset.x-k8s.io/subrole-replicas"
+	subRolePlanAnnotation                 = "disaggregatedset.x-k8s.io/subrole-plan"
+	subRoleOriginalDeletionCostAnnotation = "disaggregatedset.x-k8s.io/original-deletion-cost"
+	// Lowest valid deletion cost; scheduling, phase and readiness still take priority.
+	subRoleDeletionCost = "-2147483648" // math.MinInt32
 )
+
+// Hash retains the accepted targets and Ready floors across label/scale retries.
+// Equal issued and pending counts mean the physical scale has been published.
+// Ordinal pending work keeps its existing plain count-map format.
+type subRolePlan struct {
+	Counts     map[string]int `json:"counts"`
+	ReadyFloor map[string]int `json:"readyFloor"`
+}
+
+func readSubRolePlan(lws *leaderv1.LeaderWorkerSet) (*subRolePlan, error) {
+	value := lws.Annotations[subRolePlanAnnotation]
+	if value == "" || lws.Spec.GroupIdentity != leaderv1.GroupIdentityHash {
+		return nil, nil
+	}
+	var plan subRolePlan
+	if err := json.Unmarshal([]byte(value), &plan); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", subRolePlanAnnotation, err)
+	}
+	if plan.Counts == nil || plan.ReadyFloor == nil {
+		return nil, fmt.Errorf("Hash sub-role plan requires counts and Ready floors")
+	}
+	if err := validateSubRoleCounts(plan.Counts); err != nil {
+		return nil, err
+	}
+	for child, floor := range plan.ReadyFloor {
+		if floor < 0 || floor > plan.Counts[child] {
+			return nil, fmt.Errorf("invalid sub-role readiness floor")
+		}
+	}
+	return &plan, nil
+}
 
 func subRoleCounts(lws *leaderv1.LeaderWorkerSet, key string) (map[string]int, error) {
 	if lws.Annotations[key] == "" {
@@ -81,12 +115,12 @@ func countSubRoles(counts map[string]int) int {
 	return total
 }
 
-func setSubRoleJSON(lws *leaderv1.LeaderWorkerSet, key string, counts map[string]int) {
+func setSubRoleJSON(lws *leaderv1.LeaderWorkerSet, key string, value any) {
 	if lws.Annotations == nil {
 		lws.Annotations = map[string]string{}
 	}
-	value, _ := json.Marshal(counts)
-	lws.Annotations[key] = string(value)
+	encoded, _ := json.Marshal(value)
+	lws.Annotations[key] = string(encoded)
 }
 
 func fitSubRoles(counts map[string]int, total int) map[string]int {
@@ -165,7 +199,7 @@ func stickySubRoleAssignments(groups []replicagroups.Group, target map[string]in
 // still require live observations. A saved Assigned condition is not proof:
 // Pods can be replaced or relabeled without changing the DS generation.
 func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *leaderv1.LeaderWorkerSet, desired map[string]int) bool {
-	if lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash || lws.Annotations[subRolePlanAnnotation] != "" {
+	if lws.Annotations[subRolePlanAnnotation] != "" {
 		return false
 	}
 	for _, key := range []string{subRoleReplicasAnnotation, disaggv1.InitialSubRoleReplicasAnnotationKey} {
@@ -179,13 +213,22 @@ func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *
 		return false
 	}
 	count := countSubRoles(desired)
-	if _, complete := subRolePrefix(s, count); !complete || len(s.Groups) != count {
+	if len(s.Groups) != count {
 		return false
+	}
+	hash := lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash
+	if !hash {
+		if _, complete := subRolePrefix(s, count); !complete {
+			return false
+		}
 	}
 	remaining := maps.Clone(desired)
 	for _, group := range s.Groups {
 		name, coherent := groupSubRole(group)
 		if !coherent || remaining[name] == 0 || !subRoleGroupComplete(group) {
+			return false
+		}
+		if _, overridden := group.Leader.Annotations[subRoleOriginalDeletionCostAnnotation]; hash && overridden {
 			return false
 		}
 		remaining[name]--
@@ -215,6 +258,12 @@ func subRoleGroupComplete(group replicagroups.Group) bool {
 }
 
 func subRoleNativeSettled(s *replicagroups.Snapshot) bool {
+	if s == nil || s.LWS == nil {
+		return false
+	}
+	if s.LWS.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
+		return hashSubRoleNativeAcknowledged(s, false)
+	}
 	sts := s.LeaderStatefulSet
 	return sts != nil && s.LWS.DeletionTimestamp.IsZero() && s.LWS.Status.ObservedGeneration >= s.LWS.Generation &&
 		sts.DeletionTimestamp.IsZero() && sts.Status.ObservedGeneration >= sts.Generation &&
@@ -276,6 +325,7 @@ type subRoleState struct {
 	snapshot                 *replicagroups.Snapshot
 	issued, initial, pending map[string]int
 	written                  bool // A conditional LWS write succeeded in this call.
+	plan                     *subRolePlan
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
@@ -290,7 +340,12 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	if state.issued, err = subRoleCounts(lws, subRoleReplicasAnnotation); err != nil {
 		return state, err
 	}
-	if state.pending, err = subRoleCounts(lws, subRolePlanAnnotation); err != nil {
+	if state.plan, err = readSubRolePlan(lws); err != nil {
+		return state, err
+	}
+	if state.plan != nil {
+		state.pending = state.plan.Counts
+	} else if state.pending, err = subRoleCounts(lws, subRolePlanAnnotation); err != nil {
 		return state, err
 	}
 	// Accepted assignments finish even if baseline metadata or new requests are invalid.
@@ -314,6 +369,7 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	}
 	if len(membership) == 0 {
 		state.pending = map[string]int{"": int(getLWSReplicas(lws))}
+		state.startHashPlan()
 		return state, m.saveSubRoles(ctx, state)
 	}
 	baseline := state.issued
@@ -348,10 +404,28 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	}
 	if decreasing {
 		state.pending = target
+		state.startHashPlan()
 	} else {
 		state.issued = target
 	}
 	return state, m.saveSubRoles(ctx, state)
+}
+
+func (state *subRoleState) startHashPlan() {
+	if state.lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
+		floor := map[string]int{}
+		if state.snapshot != nil {
+			for _, group := range activeSubRoleGroups(state.snapshot) {
+				if name, coherent := groupSubRole(group); coherent && retainedSubRoleEligible(group) {
+					floor[name]++
+				}
+			}
+			for name, ready := range floor {
+				floor[name] = max(0, ready-max(0, state.issued[name]-state.pending[name]))
+			}
+		}
+		state.plan = &subRolePlan{Counts: maps.Clone(state.pending), ReadyFloor: floor}
+	}
 }
 
 // One conditional write owns all durable child state and the matching parent sums.
@@ -363,6 +437,9 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 		if counts != nil {
 			setSubRoleJSON(live, key, counts)
 		}
+	}
+	if state.plan != nil {
+		setSubRoleJSON(live, subRolePlanAnnotation, state.plan)
 	}
 	if state.issued != nil {
 		live.Spec.Replicas = ptr.To(int32(countSubRoles(state.issued)))
@@ -401,7 +478,7 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	}
 	state.snapshot = s
 	if s.LWS.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
-		return fmt.Errorf("sub-role assignment requires Ordinal identity")
+		return m.syncHashSubRoleAssignments(ctx, state)
 	}
 	issued, pending := state.issued, state.pending
 	target := pending
@@ -461,6 +538,240 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	}
 	if !subRoleNativeSettled(s) {
 		return errReplicaGroupsPending
+	}
+	return nil
+}
+
+// Reserve each Ready floor, then prefer eligible Ready groups for every remaining
+// slot. Keep existing child labels within each readiness class, not across them.
+func readySubRoleAssignments(groups []replicagroups.Group, counts, floor map[string]int) map[types.UID]string {
+	var ready, unready []replicagroups.Group
+	for _, group := range groups {
+		if retainedSubRoleEligible(group) {
+			ready = append(ready, group)
+		} else {
+			unready = append(unready, group)
+		}
+	}
+	assignments := stickySubRoleAssignments(ready, floor)
+	if len(assignments) != countSubRoles(floor) {
+		return nil
+	}
+	remaining := maps.Clone(counts)
+	for _, name := range assignments {
+		remaining[name]--
+	}
+	ready = slices.DeleteFunc(ready, func(group replicagroups.Group) bool {
+		_, reserved := assignments[group.Leader.UID]
+		return reserved
+	})
+	for _, candidates := range [][]replicagroups.Group{ready, unready} {
+		for uid, name := range stickySubRoleAssignments(candidates, remaining) {
+			assignments[uid] = name
+			remaining[name]--
+		}
+	}
+	return assignments
+}
+
+func retainedSubRoleEligible(group replicagroups.Group) bool {
+	return group.Ready && !group.Terminating &&
+		group.Leader.Annotations[leaderv1.GroupRestartBudgetExhaustedAnnotationKey] != "true" &&
+		(group.WorkerStatefulSet == nil || group.WorkerStatefulSet.Status.ObservedGeneration >= group.WorkerStatefulSet.Generation)
+}
+
+// Before publishing a scale, acknowledged creation may still be short (e.g. quota).
+// Allow cancelling that growth, but do not skip observed deletions or native rollout.
+func hashSubRoleNativeAcknowledged(s *replicagroups.Snapshot, allowMissing bool) bool {
+	replicas := getLWSReplicas(s.LWS)
+	deployment := s.LeaderDeployment
+	if !s.LWS.DeletionTimestamp.IsZero() || s.LWS.Status.ObservedGeneration < s.LWS.Generation ||
+		deployment == nil || !deployment.DeletionTimestamp.IsZero() ||
+		ptr.Deref(deployment.Spec.Replicas, 1) != replicas || deployment.Status.ObservedGeneration < deployment.Generation {
+		return false
+	}
+	active := map[types.UID]int32{}
+	for _, group := range activeSubRoleGroups(s) {
+		if owner := metav1.GetControllerOf(group.Leader); owner != nil {
+			active[owner.UID]++
+		}
+	}
+	total, present, nonzero := int64(0), int32(0), 0
+	for _, rs := range s.ReplicaSets {
+		n := ptr.Deref(rs.Spec.Replicas, 1)
+		if !rs.DeletionTimestamp.IsZero() || rs.Status.ObservedGeneration < rs.Generation ||
+			rs.Status.Replicas != active[rs.UID] || active[rs.UID] > n {
+			return false
+		}
+		total += int64(n)
+		present += active[rs.UID]
+		if n > 0 {
+			nonzero++
+		}
+	}
+	if present != replicas && (!allowMissing || slices.ContainsFunc(s.Groups, func(group replicagroups.Group) bool {
+		return group.Terminating || group.Leader.Status.Phase == corev1.PodFailed || group.Leader.Status.Phase == corev1.PodSucceeded
+	})) {
+		return false
+	}
+	return total == int64(replicas) && nonzero <= 1
+}
+
+// ReplicaSet chooses leader Pods for deletion in this order:
+//  1. Unscheduled before scheduled.
+//  2. Pending before Unknown before Running.
+//  3. Not Ready before Ready.
+//  4. Lower deletion cost before higher cost, then other tie-breakers.
+//
+// This is intentional: keep scheduled, healthy leaders before honoring our
+// sub-role preference. These checks concern the leader, not the whole group.
+// Cost is best-effort within one ReplicaSet, whose cache may lag our writes;
+// syncHashSubRoleAssignments repairs actual survivors instead of deleting Pods.
+// See https://github.com/kubernetes/kubernetes/blob/f78e722310e50bcaca9276be22276d9e91d91308/pkg/controller/controller_utils.go#L843.
+// Save the previous cost on the same Pod so retries and restarts can restore it.
+// The backup uses "none" for absence and "gated" for the native temporary -100;
+// numeric values are restored verbatim. Cleanup leaves newer external edits untouched.
+func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, group replicagroups.Group, prefer bool) (bool, error) {
+	pod := group.Leader
+	desired := pod.DeepCopy()
+	cost, hasCost := pod.Annotations[corev1.PodDeletionCost]
+	previous, overridden := pod.Annotations[subRoleOriginalDeletionCostAnnotation]
+	gated := slices.ContainsFunc(pod.Spec.SchedulingGates, func(g corev1.PodSchedulingGate) bool { return g.Name == leaderv1.GroupReplacementSchedulingGate })
+	if prefer {
+		if !overridden || cost != subRoleDeletionCost {
+			previous = cost
+			if !hasCost {
+				previous = "none"
+			} else if cost == "-100" && gated {
+				previous = "gated"
+			}
+		}
+		desired.Annotations = mergeLabels(desired.Annotations, map[string]string{
+			corev1.PodDeletionCost: subRoleDeletionCost, subRoleOriginalDeletionCostAnnotation: previous,
+		})
+	} else if overridden {
+		delete(desired.Annotations, subRoleOriginalDeletionCostAnnotation)
+		if cost == subRoleDeletionCost {
+			switch previous {
+			case "none":
+				delete(desired.Annotations, corev1.PodDeletionCost)
+			case "gated":
+				delete(desired.Annotations, corev1.PodDeletionCost)
+				if gated {
+					desired.Annotations[corev1.PodDeletionCost] = "-100"
+				}
+			default:
+				desired.Annotations[corev1.PodDeletionCost] = previous
+			}
+		}
+	}
+	if maps.Equal(pod.Annotations, desired.Annotations) {
+		return false, nil
+	}
+	before := pod.DeepCopy()
+	before.UID = "" // Include UID and resourceVersion to fence replacement/concurrent edits.
+	return true, m.client.Patch(ctx, desired, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+}
+
+func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context, state *subRoleState) error {
+	s := state.snapshot
+	target := state.issued
+	if state.pending != nil {
+		target = state.pending
+	}
+	preparing := state.pending != nil && !maps.Equal(state.issued, target)
+	waiting := !hashSubRoleNativeAcknowledged(s, state.pending == nil || preparing)
+	groups := activeSubRoleGroups(s)
+	_, removing := target[""]
+	assignments := stickySubRoleAssignments(groups, target)
+	floorMet := true
+	// Restore saved floors after native deletion too, whenever survivors allow it.
+	if state.pending != nil && !removing {
+		if ready := readySubRoleAssignments(groups, target, state.plan.ReadyFloor); ready != nil {
+			assignments = ready
+		} else {
+			floorMet = false
+		}
+	}
+	// An overlapping native rollout may need newborn readiness to finish. Give
+	// its temporary surplus groups routing too, without changing deletion costs.
+	startup := assignments
+	if waiting {
+		counts := maps.Clone(target)
+		maps.DeleteFunc(counts, func(_ string, n int) bool { return n == 0 })
+		startup = stickySubRoleAssignments(groups, fitSubRoles(counts, len(groups)))
+	}
+	// Newborn/partial labels may be needed for readiness itself.
+	changed := false
+	for _, group := range groups {
+		name, coherent := groupSubRole(group)
+		if assignment, retained := startup[group.Leader.UID]; retained && !removing && (!coherent || name == "") {
+			if err := m.labelSubRoleGroup(ctx, s.LWS, group, assignment); err != nil {
+				return err
+			}
+			changed = true
+		}
+	}
+	// Keep costs until native scale completes. Never delete preferred victims
+	// ourselves or assume ReplicaSet honored their costs.
+	if changed || waiting {
+		return errReplicaGroupsPending
+	}
+	if preparing && (!floorMet ||
+		len(assignments) != min(int(getLWSReplicas(s.LWS)), countSubRoles(target))) {
+		return errReplicaGroupsPending
+	}
+	healthy := len(assignments) == countSubRoles(target)
+	for _, group := range groups {
+		if _, retained := assignments[group.Leader.UID]; retained {
+			healthy = healthy && retainedSubRoleEligible(group)
+		}
+	}
+	for _, group := range groups {
+		assignment, retained := assignments[group.Leader.UID]
+		name, coherent := groupSubRole(group)
+		if !retained || name == assignment && coherent {
+			continue
+		}
+		if state.pending == nil && !healthy {
+			return errReplicaGroupsPending
+		}
+		if err := m.labelSubRoleGroup(ctx, s.LWS, group, assignment); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if changed {
+		return errReplicaGroupsPending
+	}
+	// Parent intent was checked for this pass; each cost patch still checks the Pod.
+	for _, group := range groups {
+		_, retained := assignments[group.Leader.UID]
+		updated, err := m.preferSubRoleDeletion(ctx, group, !retained && !removing)
+		if err != nil {
+			return err
+		}
+		changed = changed || updated
+	}
+	if changed {
+		return errReplicaGroupsPending
+	}
+	if preparing {
+		state.issued = maps.Clone(target)
+		return m.saveSubRoles(ctx, state)
+	}
+	// Missing growth must not prevent accepting a lower target. Once published,
+	// a pending plan still finishes only at its exact physical count.
+	if len(assignments) != len(groups) || state.pending != nil &&
+		(len(groups) != countSubRoles(target) || !subRoleNativeSettled(s)) {
+		return errReplicaGroupsPending
+	}
+	if state.pending != nil {
+		state.pending, state.plan = nil, nil
+		if removing {
+			state.issued, state.initial = nil, nil
+		}
+		return m.saveSubRoles(ctx, state)
 	}
 	return nil
 }

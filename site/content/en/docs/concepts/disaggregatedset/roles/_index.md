@@ -69,7 +69,7 @@ Because each role maps to an independent child LeaderWorkerSet, each role inheri
 one parent's shared-template LWS into routing pools, totaling four groups per slice.
 Parent `spec.replicas` is ignored and parent `scaling` must be omitted. Children may
 use `scaling.mode: External` without `replicas`; their `<ds>-<parent>-<child>` RoleScalers
-retain the single-slice restriction. This initial implementation requires Ordinal identity.
+retain the single-slice restriction. Both Ordinal and Hash group identities are supported.
 
 Route using the controller-owned `disaggregatedset.x-k8s.io/subrole` Pod label alongside
 set/role/slice labels. Each child inherits independent rollout budgets; there is no parent cap.
@@ -93,7 +93,23 @@ Changing these settings adjusts rollout pacing without creating a new revision.
 `status.roleStatuses` lists parent aggregates, with current children nested in
 `subRoleStatuses` using local names such as `interactive`. Use the parent total or the
 child breakdown, not their sum. `SubRolesAssigned` reports coherent group assignment.
-Labels can briefly duplicate during transfers. Retained groups must be healthy before relabeling
-or shrinking; pending operations block further planning and desired changes until they complete.
+Labels can briefly duplicate during transfers. Ordinal requires a healthy retained prefix;
+Hash prepares assignments using accepted per-child Ready floors. Pending operations block
+further planning and desired changes until they complete.
+
+Hash scale-down uses Kubernetes `controller.kubernetes.io/pod-deletion-cost` to prefer
+removing unwanted groups. ReplicaSet first prefers unscheduled leaders, then compares
+phase (Pending before Unknown before Running), then prefers not-Ready leaders, and only
+then considers cost. This is intentional: keeping scheduled, healthy leaders takes
+priority over our subrole preference. Selection remains best-effort: these checks concern
+the leader, not the whole group, and ReplicaSet may not yet have observed a cost update.
+For example, scaling `A=5,B=1` to `A=4,B=1` can temporarily remove B's only Ready group.
+The controller observes the actual survivors and repairs their labels; it cannot guarantee
+each child's availability budget during that interval. The planner still applies independent
+budgets. The previous deletion cost is saved on the Pod and restored if it survives,
+without overwriting newer external edits. There is no deletion webhook, and DisaggregatedSet
+does not delete Pods directly. The normal default-enabled `PodDeletionCost` feature must be
+enabled for the preference to apply.
+
 See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)
 for assignment ordering, recovery, rollout churn, and removing subroles.

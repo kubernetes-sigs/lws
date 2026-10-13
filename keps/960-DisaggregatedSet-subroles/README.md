@@ -80,7 +80,7 @@ topology by adding parent roles.
 4. Assign LWS groups using a mutable, controller-managed Pod label.
 5. Preserve assignments where possible and reconstruct them after Pod or controller
    restarts.
-6. Preserve coordinated rollout safety while tracking sub-role availability.
+6. Apply coordinated rollout budgets using observed sub-role availability.
 7. Make the label usable by Kubernetes-aware routers such as llm-d.
 8. Permit one parent role and one sub-role so the topology can be extended incrementally.
 
@@ -97,9 +97,6 @@ topology by adding parent roles.
    whenever `subRoles` is present.
 5. **Multi-slice External scaling.** This follows the initial KEP-849 restriction until
    aggregate versus per-slice scaler semantics are defined.
-6. **Hash group identity.** The initial implementation supports only ordinal group
-   identity because scale-down assignment relies on knowing which StatefulSet ordinals
-   will be removed. A role cannot combine `subRoles` with `groupIdentity: Hash`.
 
 ## Proposal
 
@@ -164,9 +161,17 @@ routing.
 scaling down, the allocator swaps labels between interchangeable groups so the groups
 that will be removed represent the planned sub-role drain.
 
-**Hash identity has no predictable scale-down ordinal.** Admission rejects a role that
-combines `subRoles` with `groupIdentity: Hash`. Supporting Deployment-selected victims
-requires a separate assignment protocol and is deferred to a follow-up PR.
+**Hash scale-down selection is best-effort.** The controller sets a lower Kubernetes
+`controller.kubernetes.io/pod-deletion-cost` on leaders it prefers to remove. ReplicaSet
+chooses the actual Pods: unscheduled before scheduled, then Pending before
+Unknown before Running, then not-Ready before Ready, and only then lower deletion cost.
+This order is intentional: we prefer keeping scheduled, healthy leaders over honoring
+the sub-role preference. These checks concern the leader, not the whole group. Costs
+apply within one ReplicaSet, whose cache may not yet contain the updates, and require
+the default-enabled `PodDeletionCost` feature. For `A=5,B=1 -> A=4,B=1`, ReplicaSet can
+therefore remove B's only Ready group instead of an A group. The controller repairs
+the remaining groups' assignments, but B can temporarily fall below its availability
+budget. Independent budgets guide the planner; they cannot guarantee Hash survivors.
 
 **Parent and child targets could conflict.** Parent scaling is rejected when sub-roles
 are present and parent `spec.replicas` is ignored. The webhook warns when an explicit
@@ -281,11 +286,8 @@ of 10 parent roles remains, and each parent may define at most 32 sub-roles.
 
 External sub-roles cannot set `replicas`. Parent `scaling` is forbidden and parent
 `spec.replicas` has no effect when `subRoles` is present. The system sub-role label is
-reserved and cannot appear in user Pod templates. A role with `subRoles` must use the
-default `Ordinal` group identity; admission rejects `groupIdentity: Hash`.
-
-TODO: Add `groupIdentity: Hash` support for sub-roles in a follow-up PR once assignment
-and scale-down semantics for Deployment-selected victims are defined.
+reserved and cannot appear in user Pod templates. Both `Ordinal` and `Hash` group
+identities are supported.
 
 ### Labels, Identity, and Scaler Names
 
@@ -316,7 +318,9 @@ role and sub-role scaler names. When sub-roles exist, no parent scaler is create
 
 The reconciler watches Pods through a mapping from the existing
 `disaggregatedset.x-k8s.io/name` label to the parent DisaggregatedSet. It receives Pod
-`get`, `list`, `watch`, and `patch` permissions and patches only the sub-role label.
+`get`, `list`, `watch`, and `patch` permissions and patches the sub-role label and,
+for Hash, the standard deletion-cost annotation. The previous cost is saved on the Pod
+and restored if it survives, without overwriting newer external edits. It does not delete Pods directly.
 Converged assignments produce no writes; native controllers retain health recovery.
 
 Reconciliation follows this flow:
@@ -334,7 +338,7 @@ Physical aggregation: decode = short + long
 LWS scale and group-label assignment
 ```
 
-For each `(slice, revision, parent role)`, the assignment algorithm:
+For each `(slice, revision, parent role)`, the Ordinal assignment algorithm:
 
 1. Saves pending reductions/transfers without changing issued counts; pure growth publishes directly.
 2. Repairs partial/newborn labels, then waits for the whole retained Ordinal prefix to be Ready.
@@ -343,11 +347,18 @@ For each `(slice, revision, parent role)`, the assignment algorithm:
 4. Observes survivors, clears outgoing labels, then atomically publishes issued counts and
    `LWS.spec.replicas = sum(counts)`, clearing pending work. The observer tracks native deletions.
 
+Hash saves the accepted targets and per-child Ready floors, prepares assignments that
+meet those floors, and lowers deletion costs on unwanted leaders. After observing
+these writes, it publishes issued counts and `LWS.spec.replicas` together. ReplicaSet
+performs the scale-down; the controller repairs actual survivors before completing
+pending work. It never also deletes its preferred victims.
+
 Temporary duplicate labels do not grant planner capacity: `[A,A,B]` may become `[A,B,B]`
 before shrinking to `[A,B]`. Growing `[A,A]` to `A=1,B=2` still requires physical replicas 3.
-Pending targets survive retries/restarts and cannot be superseded. Missing/unhealthy retained
-groups stall that slice's subsequent planning, even if budgets allow progress; recovery may
-require user intervention. Newborn/partial labels repair before health checks to avoid deadlock.
+Pending targets survive retries/restarts and cannot be superseded. A missing/unhealthy
+Ordinal retained group or an unsatisfied Hash Ready floor stalls subsequent planning,
+even if budgets allow progress; recovery may require user intervention. Newborn/partial
+labels repair before health checks to avoid deadlock.
 
 No separate assignment CRD is needed. Live labels provide stickiness, and the desired
 counts reconstruct missing labels after a Pod restart.
@@ -474,9 +485,10 @@ existing tests to make this code solid enough prior to implementation.
 #### Unit tests
 
 - API validation, replica resolution, and generated scaler names.
-- Rejection of `groupIdentity: Hash` when a role defines sub-roles.
+- Both group identities with sub-roles.
 - Stable assignment, UID-safe partial writes, native recovery, and conservative ordinal drains.
 - Ordinary child planner state, independent budgets, retirement history, and initial snapshots.
+- Hash deletion-cost preferences, restart replay, and repair after unexpected native deletion choices.
 - Scaler creation, seeding, status, selector, and cleanup.
 - Parent status aggregation and revision-hash stability.
 
@@ -484,8 +496,9 @@ existing tests to make this code solid enough prior to implementation.
 
 - One parent with one or more sub-roles creates one physical LWS with summed replicas.
 - Static and External target changes converge labels with minimal reassignment.
-- Pod recreation restores assignment; scale-down preserves the requested distribution.
-- Template rollout preserves ordinary child availability and independent budgets.
+- Pod recreation restores assignment; scale-down converges to the requested distribution.
+- Template rollout uses observed child availability and independent planner budgets.
+- Hash reconciliation repairs distribution when ReplicaSet deletes a different group.
 - llm-d observes label changes and filters subsequent endpoint candidates.
 - Static multi-slice behavior works; External multi-slice objects are rejected in alpha.
 
@@ -521,6 +534,8 @@ existing tests to make this code solid enough prior to implementation.
 3. Membership is eventually consistent across router caches.
 4. A one-parent DisaggregatedSet broadens the API beyond its original topology scope.
 5. Rollout execution must translate child plans into one physical scale field.
+6. Hash deletion costs cannot guarantee which group is removed. A child's availability
+   can fall below its budget until the controller observes and repairs the distribution.
 
 ## Alternatives
 

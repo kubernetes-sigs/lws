@@ -17,11 +17,14 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +39,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -116,7 +122,10 @@ func newTestLWSManager(c client.Client) *LeaderWorkerSetManager {
 }
 
 func newTestClient(objects ...client.Object) client.WithWatch {
+	// Reuse the built-in type registry instead of rebuilding it on every
+	// simulated rollout tick. Keep the default converters and a fresh tracker.
 	return fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithTypeConverters(clientgoapplyconfigurations.NewTypeConverter(clientgoscheme.Scheme), managedfields.NewDeducedTypeConverter()).
 		WithObjects(objects...).WithStatusSubresource(statusSubresourceObjects()...).Build()
 }
 
@@ -3053,15 +3062,21 @@ func TestSubRolePendingBarrierResumesEveryAcceptedAssignment(t *testing.T) {
 }
 
 type subRoleFixture struct {
-	t       *testing.T
-	manager *LeaderWorkerSetManager
-	ds      *disaggregatedsetv1.DisaggregatedSet
-	lws     *leaderworkersetv1.LeaderWorkerSet
-	start   int
+	t        *testing.T
+	manager  *LeaderWorkerSetManager
+	ds       *disaggregatedsetv1.DisaggregatedSet
+	lws      *leaderworkersetv1.LeaderWorkerSet
+	start    int
+	nextHash int
+	identity leaderworkersetv1.GroupIdentityType
 }
 
 func newSubRoleFixture(t *testing.T, start int, children ...string) *subRoleFixture {
-	f := &subRoleFixture{t: t, start: start, ds: newDSWithRoles("ds")}
+	return newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityOrdinal, start, children...)
+}
+
+func newSubRoleFixtureForIdentity(t *testing.T, identity leaderworkersetv1.GroupIdentityType, start int, children ...string) *subRoleFixture {
+	f := &subRoleFixture{t: t, start: start, identity: identity, ds: newDSWithRoles("ds")}
 	f.manager = NewLeaderWorkerSetManager(newTestClient(f.ds))
 	return f.withRevision("model", children...)
 }
@@ -3073,9 +3088,9 @@ func (f *subRoleFixture) metadata(name string, owner client.Object, kind schema.
 }
 
 func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleFixture {
-	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
+	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, nextHash: f.start + len(children), identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
 	f.lws.ObjectMeta = f.metadata(name, f.ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))
-	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: leaderworkersetv1.GroupIdentityOrdinal, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
+	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: f.identity, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
 	f.lws.Status.ObservedGeneration = 1
 	counts := map[string]int{}
 	for _, child := range children {
@@ -3084,8 +3099,13 @@ func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleF
 	setSubRoleJSON(f.lws, subRoleReplicasAnnotation, counts)
 	setSubRoleJSON(f.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, counts)
 	setInitialReplicasAnnotation(f.lws, len(children))
-	owner := &appsv1.StatefulSet{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.StatefulSetSpec{Replicas: f.lws.Spec.Replicas, Ordinals: &appsv1.StatefulSetOrdinals{Start: int32(f.start)}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1}}
+	var owner client.Object = &appsv1.StatefulSet{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.StatefulSetSpec{Replicas: f.lws.Spec.Replicas, Ordinals: &appsv1.StatefulSetOrdinals{Start: int32(f.start)}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, Replicas: int32(len(children))}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), f.lws))
+	if f.identity == leaderworkersetv1.GroupIdentityHash {
+		deployment := &appsv1.Deployment{ObjectMeta: f.metadata(name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet")), Spec: appsv1.DeploymentSpec{Replicas: f.lws.Spec.Replicas}, Status: appsv1.DeploymentStatus{ObservedGeneration: 1}}
+		require.NoError(f.t, f.manager.client.Create(f.t.Context(), deployment))
+		owner = &appsv1.ReplicaSet{ObjectMeta: f.metadata(name+"-rs", deployment, appsv1.SchemeGroupVersion.WithKind("Deployment")), Spec: appsv1.ReplicaSetSpec{Replicas: f.lws.Spec.Replicas}, Status: appsv1.ReplicaSetStatus{ObservedGeneration: 1, Replicas: int32(len(children))}}
+	}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), owner))
 	for i, child := range children {
 		f.createGroup(owner, f.start+i, child)
@@ -3094,12 +3114,16 @@ func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleF
 }
 
 // Initial construction and native growth use the same two-worker group shape.
-func (f *subRoleFixture) createGroup(owner *appsv1.StatefulSet, ordinal int, child string) {
+func (f *subRoleFixture) createGroup(owner client.Object, ordinal int, child string) {
 	ready := corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}
 	if child == "" {
 		ready.Conditions = nil // Native growth has not acquired application readiness yet.
 	}
-	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, appsv1.SchemeGroupVersion.WithKind("StatefulSet")), Status: ready}
+	kind := appsv1.SchemeGroupVersion.WithKind("StatefulSet")
+	if _, hash := owner.(*appsv1.ReplicaSet); hash {
+		kind = appsv1.SchemeGroupVersion.WithKind("ReplicaSet")
+	}
+	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, kind), Status: ready}
 	leader.Annotations = map[string]string{leaderworkersetv1.SizeAnnotationKey: "3", "user": "keep"}
 	workers := &appsv1.StatefulSet{ObjectMeta: f.metadata(leader.Name, leader, corev1.SchemeGroupVersion.WithKind("Pod")), Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2), Ordinals: &appsv1.StatefulSetOrdinals{Start: 1}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, AvailableReplicas: 2, CurrentRevision: "a", UpdateRevision: "a"}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), workers))
@@ -3132,9 +3156,51 @@ func (f *subRoleFixture) sync() {
 	require.True(f.t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 }
 
-func (f *subRoleFixture) native() {
+func (f *subRoleFixture) scale(target map[string]int) error {
+	_, err := f.manager.syncSubRoles(f.t.Context(), f.ds, f.observe().LWS, subRoleUpdate{target: target})
+	return err
+}
+
+func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	s := f.observe()
 	n := int(getLWSReplicas(s.LWS))
+	if f.identity == leaderworkersetv1.GroupIdentityHash {
+		// Simulate native writes through the backing fake, independently of any
+		// DS write spy. Tests can deliberately override the deletion-cost choice.
+		c := f.manager.apiReader.(client.Client)
+		s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
+		require.NoError(f.t, c.Update(f.t.Context(), s.LeaderDeployment))
+		s.LeaderDeployment.Status.ObservedGeneration = s.LeaderDeployment.Generation
+		require.NoError(f.t, c.Status().Update(f.t.Context(), s.LeaderDeployment))
+		require.Len(f.t, s.ReplicaSets, 1, "the fixture simulates one active ReplicaSet")
+		rs := s.ReplicaSets[0]
+		rs.Spec.Replicas = ptr.To(int32(n))
+		require.NoError(f.t, c.Update(f.t.Context(), rs))
+		groups := activeSubRoleGroups(s)
+		slices.SortStableFunc(groups, func(a, b replicagroups.Group) int {
+			if wrong := cmp.Compare(slices.Index(wrongVictims, b.Leader.UID), slices.Index(wrongVictims, a.Leader.UID)); wrong != 0 {
+				return wrong
+			}
+			aCost, _ := strconv.Atoi(a.Leader.Annotations[corev1.PodDeletionCost])
+			bCost, _ := strconv.Atoi(b.Leader.Annotations[corev1.PodDeletionCost])
+			return cmp.Compare(aCost, bCost)
+		})
+		for _, group := range groups[:max(0, len(groups)-n)] {
+			for _, pod := range group.Pods {
+				require.NoError(f.t, client.IgnoreNotFound(c.Delete(f.t.Context(), pod)))
+			}
+			if group.WorkerStatefulSet != nil {
+				require.NoError(f.t, c.Delete(f.t.Context(), group.WorkerStatefulSet))
+			}
+		}
+		for count := len(groups); count < n; count++ {
+			f.createGroup(rs, f.nextHash, "")
+			f.nextHash++
+		}
+		rs.Status.ObservedGeneration, rs.Status.Replicas = rs.Generation, int32(n)
+		require.NoError(f.t, c.Status().Update(f.t.Context(), rs))
+		return
+	}
 	s.LeaderStatefulSet.Spec.Replicas = ptr.To(int32(n))
 	require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderStatefulSet))
 	for _, group := range s.Groups {
@@ -3147,6 +3213,27 @@ func (f *subRoleFixture) native() {
 			f.createGroup(s.LeaderStatefulSet, ordinal, "")
 		}
 	}
+	s = f.observe()
+	s.LeaderStatefulSet.Status.Replicas = int32(len(activeSubRoleGroups(s)))
+	require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), s.LeaderStatefulSet))
+}
+
+func assertHashSubRoleCounts(t *testing.T, f *subRoleFixture, want map[string]int) {
+	t.Helper()
+	s := f.observe()
+	require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
+	require.EqualValues(t, countSubRoles(want), getLWSReplicas(s.LWS))
+	actual := maps.Clone(want)
+	for name := range actual {
+		actual[name] = 0
+	}
+	for _, group := range s.Groups {
+		name, coherent := groupSubRole(group)
+		require.True(t, coherent)
+		actual[name]++
+		require.NotContains(t, group.Leader.Annotations, subRoleOriginalDeletionCostAnnotation, "completed survivors must lose the DS cost override")
+	}
+	require.Equal(t, want, actual)
 }
 
 // Exercise the real API observation and reconciler for every initial health mask.
@@ -3196,9 +3283,13 @@ func TestSubRoleTransitions(t *testing.T) {
 }
 
 func TestSubRoleLabelsBatchBeforePlanning(t *testing.T) {
-	for _, newborn := range []bool{true, false} {
-		t.Run(fmt.Sprintf("newborn=%t", newborn), func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a", "a", "a", "a")
+	for _, tc := range []struct {
+		identity leaderworkersetv1.GroupIdentityType
+		newborn  bool
+	}{{leaderworkersetv1.GroupIdentityOrdinal, true}, {leaderworkersetv1.GroupIdentityOrdinal, false}, {leaderworkersetv1.GroupIdentityHash, true}, {leaderworkersetv1.GroupIdentityHash, false}} {
+		identity, newborn := tc.identity, tc.newborn
+		t.Run(fmt.Sprintf("%s/newborn=%t", identity, newborn), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "a", "a", "a")
 			for _, group := range f.observe().Groups {
 				for _, pod := range group.Pods {
 					if newborn {
@@ -3251,9 +3342,13 @@ func TestSubRoleLabelsBatchBeforePlanning(t *testing.T) {
 }
 
 func TestSubRoleLabelsCheckIntentBeforeCompletingGroup(t *testing.T) {
-	for _, repair := range []bool{false, true} {
-		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a")
+	for _, tc := range []struct {
+		identity leaderworkersetv1.GroupIdentityType
+		repair   bool
+	}{{leaderworkersetv1.GroupIdentityOrdinal, false}, {leaderworkersetv1.GroupIdentityOrdinal, true}, {leaderworkersetv1.GroupIdentityHash, false}, {leaderworkersetv1.GroupIdentityHash, true}} {
+		identity, repair := tc.identity, tc.repair
+		t.Run(fmt.Sprintf("%s/repair=%t", identity, repair), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a")
 			name := "b"
 			if repair {
 				name = "a"
@@ -3279,6 +3374,11 @@ func TestSubRoleLabelsCheckIntentBeforeCompletingGroup(t *testing.T) {
 			child, coherent := groupSubRole(after.Groups[0])
 			require.Equal(t, "a", child, "an obsolete intent must not commit the leader")
 			require.False(t, coherent, "repaired workers must also recheck intent before making the group coherent")
+			// Retry from the fresh parent observation after the partial write.
+			require.NoError(t, f.manager.labelSubRoleGroup(t.Context(), after.LWS, after.Groups[0], name))
+			child, coherent = groupSubRole(f.observe().Groups[0])
+			require.Equal(t, name, child)
+			require.True(t, coherent)
 		})
 	}
 }
@@ -3463,6 +3563,794 @@ func TestSubRoleRecoveryPreservesReadyDonor(t *testing.T) {
 	child, coherent := groupSubRole(f.observe().Groups[1])
 	require.True(t, coherent)
 	require.Equal(t, "b", child)
+}
+
+func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
+	for _, wrongVictim := range []bool{false, true} {
+		t.Run(fmt.Sprint("wrong-native-victim=", wrongVictim), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "b")
+			before := f.observe()
+			oldB := before.Groups[3].Leader.UID
+			base := f.manager.client
+			deletes, publications := 0, 0
+			f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					deletes++
+					return errors.New("DS must never delete a Hash group")
+				},
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if lws, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok && getLWSReplicas(lws) == 2 && publications == 0 {
+						preferred := 0
+						for _, group := range f.observe().Groups {
+							if group.Leader.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost {
+								preferred++
+							}
+						}
+						require.Equal(t, 2, preferred, "costs must be observed before publishing the smaller target")
+						publications++
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			require.ErrorIs(t, f.scale(map[string]int{"a": 1, "b": 1}), errReplicaGroupsPending)
+			pending := f.observe()
+			changed := pending.LWS.DeepCopy()
+			changed.Annotations["concurrent"] = "keep"
+			require.NoError(t, base.Update(t.Context(), changed))
+			_, err := f.manager.syncSubRoles(t.Context(), f.ds, pending.LWS, subRoleUpdate{})
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			fresh := f.observe()
+			require.Equal(t, pending.Groups, fresh.Groups, "a stale parent must not write deletion costs")
+
+			// This pass changes two costs, but checks the parent only during
+			// observation and once before acting, not again for every Pod.
+			lwsReads := 0
+			f.manager.apiReader = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						lwsReads++
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			_, err = f.manager.syncSubRoles(t.Context(), f.ds, fresh.LWS, subRoleUpdate{})
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			require.Equal(t, 2, lwsReads, "parent checks must not grow with the number of cost writes")
+			f.manager.apiReader = base
+			for attempt := 0; attempt < 6 && getLWSReplicas(f.observe().LWS) != 2; attempt++ {
+				f.sync()
+			}
+			require.Equal(t, 1, publications)
+			accepted := f.observe()
+			// Neither a restart nor repeated reconciliation may issue an extra
+			// delete, clear costs early, or supersede the accepted pending target.
+			f.manager = NewLeaderWorkerSetManager(f.manager.client)
+			f.manager.apiReader = base
+			for range 2 {
+				f.sync()
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 4, "b": 1}), errReplicaGroupsPending)
+			require.Equal(t, accepted.LWS.Annotations[subRolePlanAnnotation], f.observe().LWS.Annotations[subRolePlanAnnotation])
+			require.Equal(t, accepted.Groups, f.observe().Groups)
+			if wrongVictim {
+				f.native(oldB)
+			} else {
+				f.native()
+			}
+			afterNative := f.observe()
+			keptB, preferredSurvivor := false, false
+			for _, group := range afterNative.Groups {
+				keptB = keptB || group.Leader.UID == oldB
+				preferredSurvivor = preferredSurvivor || group.Leader.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost
+			}
+			require.Equal(t, !wrongVictim, keptB)
+			if wrongVictim {
+				require.True(t, preferredSurvivor, "repair a survivor that had been preferred for deletion, never delete it again")
+				require.NotEmpty(t, afterNative.LWS.Annotations[subRolePlanAnnotation])
+			}
+			for range 6 {
+				f.sync()
+				f.native()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 1, "b": 1})
+			require.Zero(t, deletes, "only the native ReplicaSet simulation may delete Pods")
+		})
+	}
+}
+
+func TestHashSubRoleSurvivorRepairPreservesFeasibleReadyFloors(t *testing.T) {
+	for _, readyAfterDelete := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("ready-survivors=%d", readyAfterDelete), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "b")
+			s := f.observe()
+			worker := s.Groups[2].Pods[1]
+			worker.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			oldB := s.Groups[3].Leader.UID
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2, "b": 1}), errReplicaGroupsPending)
+			plan, err := readSubRolePlan(f.observe().LWS)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "b": 1}, plan.ReadyFloor)
+			for range 6 {
+				f.sync()
+			}
+			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS))
+			f.native(oldB) // ReplicaSet can ignore our preference and remove b.
+			s = f.observe()
+			for _, group := range s.Groups[readyAfterDelete:2] {
+				worker := group.Pods[1]
+				worker.Status.Conditions = nil
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			}
+			if readyAfterDelete == 2 {
+				// Resume a partially relabeled Ready donor after a restart.
+				base, podPatches := f.manager.client, 0
+				f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if _, pod := obj.(*corev1.Pod); pod {
+						podPatches++
+						if podPatches == 2 {
+							return errors.New("interrupted labels")
+						}
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				}})
+				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+				require.ErrorContains(t, err, "interrupted labels")
+				f.manager = NewLeaderWorkerSetManager(base)
+			}
+			for range 8 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 2, "b": 1})
+			ready := map[string]int{}
+			for _, group := range f.observe().Groups {
+				if retainedSubRoleEligible(group) {
+					ready[group.Leader.Labels[disaggregatedsetv1.SubRoleLabelKey]]++
+				}
+			}
+			require.Equal(t, readyAfterDelete, ready["a"]+ready["b"])
+			if readyAfterDelete == 2 {
+				require.Equal(t, 1, ready["a"])
+				require.Equal(t, 1, ready["b"], "use a Ready donor whenever the saved floors are feasible")
+			}
+		})
+	}
+}
+
+func TestHashSubRoleNativeRolloutStartup(t *testing.T) {
+	for _, phase := range []string{"steady", "preparing", "published"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+			if phase != "steady" {
+				require.ErrorIs(t, f.scale(map[string]int{"a": 0, "b": 1}), errReplicaGroupsPending)
+			}
+			if phase == "published" {
+				for attempt := 0; attempt < 6 && getLWSReplicas(f.observe().LWS) != 1; attempt++ {
+					f.sync()
+				}
+				require.EqualValues(t, 1, getLWSReplicas(f.observe().LWS))
+			}
+			s := f.observe()
+			pending := s.LWS.Annotations[subRolePlanAnnotation]
+			// Deployment starts a new ReplicaSet while the old surplus is live.
+			// Its unlabelled newborn needs routing before it can become Ready.
+			rs := s.ReplicaSets[0].DeepCopy()
+			rs.Name, rs.UID, rs.ResourceVersion = "new-rs", "new-rs", ""
+			rs.Spec.Replicas, rs.Status.Replicas = ptr.To[int32](1), 1
+			require.NoError(t, f.manager.client.Create(t.Context(), rs))
+			f.createGroup(rs, 99, "")
+			s.LeaderDeployment.Spec.Replicas = ptr.To(int32(getLWSReplicas(s.LWS)))
+			require.NoError(t, f.manager.client.Update(t.Context(), s.LeaderDeployment))
+			deletes := 0
+			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				deletes++
+				return errors.New("native controller owns deletions")
+			}})
+			f.sync()
+			after := f.observe()
+			require.False(t, subRoleNativeSettled(after))
+			require.Equal(t, pending, after.LWS.Annotations[subRolePlanAnnotation])
+			require.Equal(t, getLWSReplicas(s.LWS), getLWSReplicas(after.LWS), "startup repair cannot publish a physical scale")
+			require.Len(t, after.Groups, 4)
+			found := false
+			for _, group := range after.Groups {
+				if metav1.GetControllerOf(group.Leader).UID == rs.UID {
+					found = true
+					name, coherent := groupSubRole(group)
+					require.True(t, coherent)
+					if phase == "steady" {
+						require.Contains(t, []string{"a", "b"}, name)
+					} else {
+						require.Equal(t, "b", name, "startup must use a positive desired child, not removed a")
+					}
+				}
+			}
+			require.True(t, found)
+			require.Zero(t, deletes)
+		})
+	}
+}
+
+func TestHashSubRoleTransitionsAndStartup(t *testing.T) {
+	for _, target := range []map[string]int{{"a": 1, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 2}, {"a": 0, "b": 0}} {
+		t.Run(fmt.Sprint(target), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+			require.ErrorIs(t, f.scale(target), errReplicaGroupsPending)
+			for range 12 {
+				f.sync()
+				f.native()
+			}
+			assertHashSubRoleCounts(t, f, target)
+		})
+	}
+	// All newborn labels are filled in one pass even while the groups load.
+	f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a")
+	for _, group := range f.observe().Groups {
+		for _, pod := range group.Pods {
+			delete(pod.Labels, disaggregatedsetv1.SubRoleLabelKey)
+			require.NoError(t, f.manager.client.Update(t.Context(), pod))
+			pod.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+		}
+	}
+	_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+	for _, group := range f.observe().Groups {
+		name, coherent := groupSubRole(group)
+		require.True(t, coherent)
+		require.Equal(t, "a", name)
+	}
+}
+
+func TestHashSubRolePendingPlanSurvivesWriteFailures(t *testing.T) {
+	for _, failure := range []string{"cost patch", "Spec patch", "cost RV", "cost UID"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a")
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
+			base, failed := f.manager.client, false
+			f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				_, pod := obj.(*corev1.Pod)
+				lws, physical := obj.(*leaderworkersetv1.LeaderWorkerSet)
+				if !failed && (pod && failure != "Spec patch" || physical && getLWSReplicas(lws) == 2 && failure == "Spec patch") {
+					failed = true
+					if failure == "cost patch" || failure == "Spec patch" {
+						return errors.New("interrupted write")
+					}
+					current := &corev1.Pod{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), current))
+					if failure == "cost UID" {
+						require.NoError(t, c.Delete(ctx, current))
+						current.UID, current.ResourceVersion = "replacement", ""
+						require.NoError(t, c.Create(ctx, current))
+					} else {
+						current.Annotations["concurrent"] = "keep"
+						require.NoError(t, c.Update(ctx, current))
+					}
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			}})
+			for attempt := 0; attempt < 6 && !failed; attempt++ {
+				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+				if failed {
+					require.Error(t, err)
+				} else {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+			}
+			require.True(t, failed)
+			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS), "failed guarded writes cannot publish a drain")
+			require.NotEmpty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+			f.manager = NewLeaderWorkerSetManager(base)
+			for range 12 {
+				f.sync()
+				f.native()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 2})
+		})
+	}
+}
+
+func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
+	for _, change := range []string{"settled", "loading", "cost", "user minimum", "externally changed cost", "native cost", "pending", "native pending", "wrong distribution", "missing worker"} {
+		t.Run(change, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b")
+			s := f.observe()
+			pod := s.Groups[0].Leader
+			var object client.Object = pod
+			switch change {
+			case "loading":
+				pod.Status.Conditions = nil
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+			case "cost":
+				pod.Annotations[corev1.PodDeletionCost] = subRoleDeletionCost
+				pod.Annotations[subRoleOriginalDeletionCostAnnotation] = "none"
+			case "user minimum":
+				pod.Annotations[corev1.PodDeletionCost] = subRoleDeletionCost
+			case "externally changed cost":
+				pod.Annotations[corev1.PodDeletionCost] = "200"
+				pod.Annotations[subRoleOriginalDeletionCostAnnotation] = "100"
+			case "native cost":
+				pod.Annotations[corev1.PodDeletionCost] = "-100"
+			case "pending":
+				s.LWS.Annotations[subRolePlanAnnotation] = "pending"
+				object = s.LWS
+			case "native pending":
+				s.ReplicaSets[0].Generation++
+				object = s.ReplicaSets[0]
+			case "wrong distribution":
+				for _, member := range s.Groups[0].Pods {
+					member.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
+					require.NoError(t, f.manager.client.Update(t.Context(), member))
+				}
+			case "missing worker":
+				require.NoError(t, f.manager.client.Delete(t.Context(), s.Groups[0].Pods[1]))
+			}
+			if change != "wrong distribution" {
+				require.NoError(t, f.manager.client.Update(t.Context(), object))
+			}
+			s = f.observe()
+			require.Equal(t, change == "settled" || change == "loading" || change == "native cost" || change == "user minimum", cachedSubRolesMatchDesired(t.Context(), f.manager.client, s.LWS, map[string]int{"a": 1, "b": 1}))
+			if change == "native cost" {
+				f.sync()
+				require.Equal(t, "-100", f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost], "DS must preserve native scheduling preferences")
+			}
+		})
+	}
+}
+
+func TestHashSubRoleDeletionPreferenceRestoresNativeGateCost(t *testing.T) {
+	for _, gateRemains := range []bool{false, true} {
+		t.Run(fmt.Sprint("gate-remains=", gateRemains), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a")
+			pod := f.observe().Groups[0].Leader
+			pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkersetv1.GroupReplacementSchedulingGate}}
+			pod.Annotations[corev1.PodDeletionCost] = "-100"
+			require.NoError(t, f.manager.client.Update(t.Context(), pod))
+			_, err := f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
+			require.NoError(t, err)
+			pod = f.observe().Groups[0].Leader
+			require.Equal(t, strconv.FormatInt(math.MinInt32, 10), pod.Annotations[corev1.PodDeletionCost])
+			want := "-100"
+			if !gateRemains {
+				pod.Spec.SchedulingGates = nil
+				want = ""
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+			}
+			_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], false)
+			require.NoError(t, err)
+			require.Equal(t, want, f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost])
+			require.NotContains(t, f.observe().Groups[0].Leader.Annotations, subRoleOriginalDeletionCostAnnotation)
+		})
+	}
+}
+
+func TestHashSubRoleSurvivorRestoresOriginalDeletionCost(t *testing.T) {
+	for _, original := range []string{"", "0", "100", "-100", subRoleDeletionCost} {
+		t.Run("original="+original, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+			s := f.observe()
+			pod := s.Groups[1].Leader
+			if original != "" {
+				pod.Annotations[corev1.PodDeletionCost] = original
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 1, "b": 1}), errReplicaGroupsPending)
+			for range 6 {
+				f.sync()
+			}
+			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS))
+			require.Equal(t, subRoleDeletionCost, f.observe().Groups[1].Leader.Annotations[corev1.PodDeletionCost])
+			f.manager = NewLeaderWorkerSetManager(f.manager.client)
+			for range 2 {
+				f.sync() // Replaying the pending plan must not replace the saved cost.
+			}
+			f.native(s.Groups[2].Leader.UID) // Delete b, leaving the preferred victim alive.
+			for range 8 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 1, "b": 1})
+			survivor := &corev1.Pod{}
+			require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(pod), survivor))
+			require.Equal(t, pod.UID, survivor.UID)
+			cost, present := survivor.Annotations[corev1.PodDeletionCost]
+			require.Equal(t, original, cost)
+			require.Equal(t, original != "", present)
+		})
+	}
+}
+
+func TestHashSubRoleCostCleanupPreservesExternalEdits(t *testing.T) {
+	for _, edit := range []string{"", "200"} {
+		for _, reapply := range []bool{false, true} {
+			t.Run(fmt.Sprintf("edit=%s/reapply=%t", edit, reapply), func(t *testing.T) {
+				f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a")
+				pod := f.observe().Groups[0].Leader
+				pod.Annotations[corev1.PodDeletionCost] = "100"
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				_, err := f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
+				require.NoError(t, err)
+				pod = f.observe().Groups[0].Leader
+				delete(pod.Annotations, corev1.PodDeletionCost)
+				if edit != "" {
+					pod.Annotations[corev1.PodDeletionCost] = edit
+				}
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				if reapply {
+					_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
+					require.NoError(t, err)
+				}
+				_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], false)
+				require.NoError(t, err)
+				annotations := f.observe().Groups[0].Leader.Annotations
+				cost, present := annotations[corev1.PodDeletionCost]
+				require.Equal(t, edit, cost)
+				require.Equal(t, edit != "", present)
+				require.NotContains(t, annotations, subRoleOriginalDeletionCostAnnotation)
+			})
+		}
+	}
+}
+
+func TestHashSubRoleNativeObservationBarrier(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(*replicagroups.Snapshot)
+		settled bool
+	}{
+		{"unready", func(s *replicagroups.Snapshot) { s.Groups[0].Ready = false }, true},
+		{"LWS generation", func(s *replicagroups.Snapshot) { s.LWS.Generation++ }, false},
+		{"Deployment generation", func(s *replicagroups.Snapshot) { s.LeaderDeployment.Generation++ }, false},
+		{"ReplicaSet generation", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Generation++ }, false},
+		{"stale native count", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Status.Replicas++ }, false},
+		{"native target", func(s *replicagroups.Snapshot) { s.LeaderDeployment.Spec.Replicas = ptr.To[int32](3) }, false},
+		{"native deleting", func(s *replicagroups.Snapshot) { s.LeaderDeployment.DeletionTimestamp = ptr.To(metav1.Now()) }, false},
+		{"native absent", func(s *replicagroups.Snapshot) { s.LeaderDeployment = nil }, false},
+		{"wrong ownership", func(s *replicagroups.Snapshot) { s.Groups[1].Leader.OwnerReferences[0].UID = "foreign" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b").observe()
+			tc.change(s)
+			require.Equal(t, tc.settled, subRoleNativeSettled(s))
+		})
+	}
+}
+
+func TestSubRoleScaleDownAfterNativeCreationFailure(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "a", "a")
+			s := f.observe()
+			// Native creation is short, for example because quota permits only two groups.
+			for _, pod := range s.Groups[2].Pods {
+				require.NoError(t, f.manager.client.Delete(t.Context(), pod))
+			}
+			require.NoError(t, f.manager.client.Delete(t.Context(), s.Groups[2].WorkerStatefulSet))
+			if identity == leaderworkersetv1.GroupIdentityHash {
+				rs := s.ReplicaSets[0]
+				rs.Status.Replicas = 2
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), rs))
+			} else {
+				s.LeaderStatefulSet.Status.Replicas = 2
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), s.LeaderStatefulSet))
+			}
+			before := f.observe().Groups
+			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				t.Fatal("cancelling missing growth must not delete any group")
+				return nil
+			}})
+			for range 8 {
+				if err := f.scale(map[string]int{"a": 2}); err != nil {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+			}
+			s = f.observe()
+			require.Equal(t, before, s.Groups)
+			require.EqualValues(t, 2, getLWSReplicas(s.LWS), "cancel missing growth without first creating the unwanted group")
+			if identity == leaderworkersetv1.GroupIdentityHash {
+				require.NotEmpty(t, s.LWS.Annotations[subRolePlanAnnotation], "wait for native acknowledgement of the new target")
+				f.native()
+				f.sync()
+				require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+			}
+		})
+	}
+}
+
+func TestHashSubRoleMissingGrowthKeepsNativeBarriers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(*replicagroups.Snapshot)
+		allowed bool
+	}{
+		{"creation shortfall", func(*replicagroups.Snapshot) {}, true},
+		{"stale LWS", func(s *replicagroups.Snapshot) { s.LWS.Generation++ }, false},
+		{"stale Deployment", func(s *replicagroups.Snapshot) { s.LeaderDeployment.Generation++ }, false},
+		{"stale ReplicaSet", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Generation++ }, false},
+		{"stale Pod count", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Status.Replicas++ }, false},
+		{"surplus group", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](1) }, false},
+		{"unacknowledged target", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](2) }, false},
+		{"terminating group", func(s *replicagroups.Snapshot) { s.Groups[0].Terminating = true }, false},
+		{"native rollout", func(s *replicagroups.Snapshot) {
+			s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](2)
+			newRS := s.ReplicaSets[0].DeepCopy()
+			newRS.Name, newRS.UID, newRS.Spec.Replicas, newRS.Status.Replicas = "new", "new", ptr.To[int32](1), 0
+			s.ReplicaSets = append(s.ReplicaSets, newRS)
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a").observe()
+			s.Groups, s.ReplicaSets[0].Status.Replicas = s.Groups[:2], 2
+			tc.change(s)
+			require.Equal(t, tc.allowed, hashSubRoleNativeAcknowledged(s, true))
+			require.False(t, subRoleNativeSettled(s), "creation shortfall is not completed scale")
+		})
+	}
+}
+
+func TestHashSubRolePlanValidationAndReadyReservation(t *testing.T) {
+	lws := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b").lws
+	for _, value := range []string{"{", "null", "{}", `{"counts":{"a":-1},"readyFloor":{}}`, `{"counts":{"a":1},"readyFloor":{"a":2}}`, `{"counts":{"a":1},"readyFloor":{"a":-1}}`} {
+		lws.Annotations[subRolePlanAnnotation] = value
+		_, err := readSubRolePlan(lws)
+		require.Error(t, err, value)
+	}
+	s := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b").observe()
+	s.Groups[1].Ready = false
+	assignments := readySubRoleAssignments(s.Groups, map[string]int{"a": 1, "b": 1}, map[string]int{"b": 1})
+	require.Equal(t, "b", assignments[s.Groups[0].Leader.UID])
+	require.Equal(t, "a", assignments[s.Groups[1].Leader.UID])
+}
+
+func TestHashSubRoleLostReadyFloorDelaysPublication(t *testing.T) {
+	f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a")
+	require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
+	for _, group := range f.observe().Groups[:2] {
+		group.Leader.Status.Conditions = nil
+		require.NoError(t, f.manager.client.Status().Update(t.Context(), group.Leader))
+	}
+	for range 3 {
+		f.sync()
+		require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS), "one Ready group cannot cover the accepted floor of two")
+	}
+	ready := f.observe().Groups[0].Leader
+	ready.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), ready))
+	for range 8 {
+		f.sync()
+		f.native()
+	}
+	assertHashSubRoleCounts(t, f, map[string]int{"a": 2})
+}
+
+func TestHashSubRolePrefersReadyGroupsBeyondFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		children []string
+		unready  int
+		target   map[string]int
+		child    string
+	}{
+		{"same child", []string{"a", "a"}, 0, map[string]int{"a": 1}, "a"},
+		{"Ready donor before unready child", []string{"a", "b"}, 1, map[string]int{"a": 0, "b": 1}, "b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, tc.children...)
+			s := f.observe()
+			worker := s.Groups[tc.unready].Pods[1]
+			worker.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			s = f.observe()
+			require.False(t, s.Groups[tc.unready].Ready)
+			require.True(t, s.Groups[1-tc.unready].Ready)
+			// Both leaders are equally healthy: ReplicaSet sees only their cost,
+			// not the unready worker that makes one whole group unavailable.
+			require.Equal(t, s.Groups[0].Leader.Status, s.Groups[1].Leader.Status)
+			require.Equal(t, s.Groups[0].Leader.Spec.NodeName, s.Groups[1].Leader.Spec.NodeName)
+			survivor := s.Groups[1-tc.unready].Leader.UID
+			require.ErrorIs(t, f.scale(tc.target), errReplicaGroupsPending)
+			for range 6 {
+				f.sync()
+			}
+			s = f.observe()
+			require.EqualValues(t, 1, getLWSReplicas(s.LWS))
+			require.Equal(t, subRoleDeletionCost, s.Groups[tc.unready].Leader.Annotations[corev1.PodDeletionCost])
+			require.Empty(t, s.Groups[1-tc.unready].Leader.Annotations[corev1.PodDeletionCost])
+			f.native()
+			for range 4 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, tc.target)
+			group := f.observe().Groups[0]
+			require.Equal(t, survivor, group.Leader.UID)
+			require.True(t, group.Ready)
+			require.Equal(t, tc.child, group.Leader.Labels[disaggregatedsetv1.SubRoleLabelKey])
+		})
+	}
+}
+
+func TestHashSubRoleReadyFloorExcludesIneligibleGroups(t *testing.T) {
+	for _, reason := range []string{"terminating worker", "unobserved worker generation", "exhausted restart budget"} {
+		t.Run(reason, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a")
+			for _, group := range f.observe().Groups[1:] {
+				switch reason {
+				case "terminating worker":
+					worker := group.Pods[1]
+					worker.Finalizers = []string{"test/hold"}
+					require.NoError(t, f.manager.client.Update(t.Context(), worker))
+					require.NoError(t, f.manager.client.Delete(t.Context(), worker))
+				case "unobserved worker generation":
+					group.WorkerStatefulSet.Generation++
+					require.NoError(t, f.manager.client.Update(t.Context(), group.WorkerStatefulSet))
+				case "exhausted restart budget":
+					group.Leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+					require.NoError(t, f.manager.client.Update(t.Context(), group.Leader))
+				}
+			}
+			for i, group := range f.observe().Groups {
+				require.True(t, group.Ready, "raw readiness alone does not grant retained credit")
+				require.Equal(t, i == 0, retainedSubRoleEligible(group))
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
+			plan, err := readSubRolePlan(f.observe().LWS)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 0}, plan.ReadyFloor)
+			for range 4 {
+				f.sync()
+			}
+			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS), "do not wait for an unattainable raw-Ready floor")
+		})
+	}
+}
+
+func TestHashSubRoleAdapterMembershipAndRemoval(t *testing.T) {
+	f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+	s := f.observe()
+	spoof := s.Groups[0].Leader.DeepCopy()
+	spoof.Name, spoof.UID, spoof.ResourceVersion = "spoof", "foreign", ""
+	spoof.OwnerReferences[0].UID = "foreign-rs"
+	require.NoError(t, f.manager.client.Create(t.Context(), spoof))
+	worker := s.Groups[0].Pods[1]
+	worker.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
+	require.NoError(t, f.manager.client.Update(t.Context(), worker))
+	s = f.observe()
+	require.Len(t, s.Groups, 3, "foreign ownership cannot inflate logical readiness")
+	observed := rolloutReadiness{}
+	observeSubRoleReadiness(&subRoleState{snapshot: s, issued: map[string]int{"a": 2, "b": 1}, initial: map[string]int{"a": 2, "b": 1}}, observed)
+	require.Equal(t, replicaReadiness{spec: 2, initial: 2, raw: 1, committed: 1}, observed.role(f.revision("old"), "model/a"))
+	require.Equal(t, replicaReadiness{spec: 1, initial: 1, raw: 1, committed: 1}, observed.role(f.revision("old"), "model/b"))
+	require.Equal(t, replicaReadiness{}, observed.role(f.revision("old"), "model"))
+	f.sync() // Repair the partial group before accepting new membership.
+	_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{membership: map[string]int{"a": 2, "b": 1, "new": 1}})
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+	counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"a": 2, "b": 1, "new": 0}, counts)
+	for range 12 {
+		_, err = f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{membership: map[string]int{}})
+		require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+		f.native()
+	}
+	s = f.observe()
+	require.EqualValues(t, 3, getLWSReplicas(s.LWS), "unpartitioning keeps physical capacity")
+	require.Empty(t, s.LWS.Annotations[subRoleReplicasAnnotation])
+	for _, group := range s.Groups {
+		child, coherent := groupSubRole(group)
+		require.True(t, coherent)
+		require.Empty(t, child)
+	}
+}
+
+func TestHashSubRoleCollectorEnrollsOnlyCurrentTarget(t *testing.T) {
+	for _, ordinary := range []bool{false, true} {
+		t.Run(fmt.Sprint("ordinary-old=", ordinary), func(t *testing.T) {
+			children := []string{"a", "a"}
+			if ordinary {
+				children = []string{"", ""}
+			}
+			old := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, children...)
+			if ordinary {
+				lws := old.observe().LWS
+				delete(lws.Annotations, subRoleReplicasAnnotation)
+				delete(lws.Annotations, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+				require.NoError(t, old.manager.client.Update(t.Context(), lws))
+			}
+			target := old.withRevision("current", "a")
+			target.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{
+				Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "new"}},
+			}}
+			target.ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
+			desired := map[string]int{"model": 2, "model/a": 1, "model/new": 1}
+			before := old.observe()
+			var err error
+			for range 8 {
+				_, err = target.manager.collectRolloutObservations(t.Context(), target.ds,
+					disaggregatedsetutils.RevisionRolesList{old.revision("old")}, target.revision("current"), desired)
+				if err == nil {
+					break
+				}
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+			}
+			require.NoError(t, err)
+			after := old.observe()
+			require.Equal(t, before.LWS.Annotations, after.LWS.Annotations, "old Hash layout and history stay frozen")
+			require.Equal(t, before.Groups, after.Groups, "old Hash groups must not be enrolled or relabeled")
+			counts, err := subRoleCounts(target.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "new": 0}, counts, "the current Hash target enrolls its new child before scaling")
+
+			executor := &RollingUpdateExecutor{LWSManager: target.manager}
+			require.NoError(t, executor.scaleRevision(t.Context(), target.ds, old.revision("old"),
+				[]string{"model/a", "model/new", "model"}, RoleReplicaState{2, 0, 2}, scaleDown))
+			require.Equal(t, before.LWS.Annotations, old.observe().LWS.Annotations, "old execution cannot add a foreign zero-count child")
+			require.NoError(t, executor.scaleRevision(t.Context(), target.ds, target.revision("current"),
+				[]string{"model/a", "model/new"}, RoleReplicaState{1, 1}, scaleUp), "accepted Hash growth does not block sibling roles")
+			counts, err = subRoleCounts(target.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "new": 1}, counts)
+			require.EqualValues(t, 2, getLWSReplicas(target.lws), "enrolled current children remain executable")
+		})
+	}
+}
+
+func TestHashSubRoleStaleCountsCannotUndoAcceptedDrain(t *testing.T) {
+	for _, targets := range []RoleReplicaState{{4, 2}, {4, 3}, {3, 2}} {
+		t.Run(fmt.Sprint(targets), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "a", "a", "b")
+			executor := &RollingUpdateExecutor{LWSManager: f.manager}
+			original, names := f.revision("old"), []string{"model/a", "model/b"}
+			require.NoError(t, executor.scaleRevision(t.Context(), f.ds, original, names, targets, scaleDown), "accepted Hash targets do not block sibling roles")
+			for range 12 {
+				f.sync()
+				f.native()
+			}
+			counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": targets[0], "b": 1}, counts)
+			require.ErrorIs(t, executor.scaleRevision(t.Context(), f.ds, original, names, targets, scaleUp), errReplicaGroupsPending)
+			err = executor.scaleRevision(t.Context(), f.ds, f.revision("old"), names, targets, scaleUp)
+			require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+			counts, err = subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": targets[0], "b": targets[1]}, counts)
+		})
+	}
+}
+
+func TestHashSubRoleAcceptedDrainPreservesReadyFloorWithoutWaitingForEverySurvivor(t *testing.T) {
+	for _, initialReady := range []int{2, 0} {
+		t.Run(fmt.Sprint(initialReady), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "a")
+			for _, group := range f.observe().Groups[initialReady:] {
+				group.Leader.Status.Conditions = nil
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), group.Leader))
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 3}), errReplicaGroupsPending)
+			plan, err := readSubRolePlan(f.observe().LWS)
+			require.NoError(t, err)
+			floor := map[string]int{}
+			if initialReady > 0 {
+				floor["a"] = initialReady - 1
+			}
+			require.Equal(t, floor, plan.ReadyFloor, "an explicit empty floor must survive serialized replay")
+			f.manager = NewLeaderWorkerSetManager(f.manager.client)
+			for range 12 {
+				f.sync()
+				f.native()
+			}
+			s := f.observe()
+			require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
+			require.Len(t, s.Groups, 3)
+			ready := 0
+			for _, group := range s.Groups {
+				if group.Ready {
+					ready++
+				}
+			}
+			require.GreaterOrEqual(t, ready, floor["a"])
+			require.Less(t, ready, len(s.Groups), "safe progress must not require every retained group to recover")
+		})
+	}
 }
 
 func TestSubRoleRolloutAppliesEveryParent(t *testing.T) {

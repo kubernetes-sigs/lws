@@ -346,7 +346,7 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		ginkgo.Entry("rejects negative targets", "negative", "greater than or equal to 0"),
 		ginkgo.Entry("rejects External replicas", "external replicas", "replicas must be omitted"),
 		ginkgo.Entry("rejects slash in child name", "invalid child name", ".name"),
-		ginkgo.Entry("defers Hash children", "Hash", "subRoles requires Ordinal"),
+		ginkgo.Entry("persists Hash pools and independent zero", "Hash", ""),
 		ginkgo.Entry("rejects parent scaling", "parent scaling", "parent scaling must be omitted"),
 		ginkgo.Entry("rejects External slices", "external slices", "spec.slices > 1"),
 		ginkgo.Entry("rejects overflowing totals", "overflow", "maximum LWS replica count"),

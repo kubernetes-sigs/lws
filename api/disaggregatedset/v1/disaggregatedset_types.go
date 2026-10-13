@@ -193,7 +193,7 @@ type DisaggregatedRoleSpec struct {
 	// +required
 	Name string `json:"name"`
 
-	// SubRoles partitions one Ordinal LWS into pools sharing its templates.
+	// SubRoles partitions one LWS into pools sharing its templates.
 	// Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.
 	// +optional
 	// +listType=map

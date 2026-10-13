@@ -877,11 +877,13 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		if step.Kind == UnavailableFallbackStep && floor > 1 {
 			floor--
 		}
-		require.GreaterOrEqual(t, afterServing[i], min(beforeServing[i], floor), "serving role %d: state=%+v step=%+v", i, state, step)
+		if afterServing[i] < min(beforeServing[i], floor) {
+			t.Fatalf("serving role %d: got %d, need %d: state=%+v step=%+v", i, afterServing[i], min(beforeServing[i], floor), state, step)
+		}
 		// Draining another role cannot remove this role's physical replicas;
 		// losing structural credit alone is covered by the serving check above.
-		if step.Past[i] < state.ActiveOld.SpecReplicas[i] || step.New[i] < state.Target.SpecReplicas[i] {
-			require.GreaterOrEqual(t, afterRole[i], min(beforeRole[i], floor), "per-role %d: state=%+v step=%+v", i, state, step)
+		if (step.Past[i] < state.ActiveOld.SpecReplicas[i] || step.New[i] < state.Target.SpecReplicas[i]) && afterRole[i] < min(beforeRole[i], floor) {
+			t.Fatalf("per-role %d: got %d, need %d: state=%+v step=%+v", i, afterRole[i], min(beforeRole[i], floor), state, step)
 		}
 		old := oldSpec[i]
 		if step.New[i] > state.Target.SpecReplicas[i] {
@@ -891,11 +893,15 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 				ceiling = max(ceiling+1, old+1)
 				budget = max(config.MaxSurge+1, old-surgeBaselines[i]+1) + config.MaxUnavailable
 			}
-			require.LessOrEqual(t, old+step.New[i], ceiling)
+			if old+step.New[i] > ceiling {
+				t.Fatalf("role %d exceeds replica ceiling %d: state=%+v step=%+v", i, ceiling, state, step)
+			}
 			if old > 0 {
 				count := max(state.ActiveOld.InitialReplicas[i], state.Target.DesiredReplicas[i])
 				allowance := (count*budget + steps - 1) / steps
-				require.LessOrEqual(t, step.New[i], state.Target.ReadyReplicas[i]+allowance)
+				if step.New[i] > state.Target.ReadyReplicas[i]+allowance {
+					t.Fatalf("role %d exceeds growth allowance %d: state=%+v step=%+v", i, allowance, state, step)
+				}
 			}
 		}
 	}
@@ -916,8 +922,9 @@ func assertMovingWindow(t *testing.T, current, counts, proposed []int, scaleCorr
 	}
 	for i, count := range counts {
 		if count > 0 && proposed[i] > current[i] && (scaleCorrection == nil || !scaleCorrection[i]) {
-			require.LessOrEqual(t, float64(proposed[i])/float64(count), least+width+1e-9,
-				"coordination current=%v counts=%v proposed=%v", current, counts, proposed)
+			if float64(proposed[i])/float64(count) > least+width+1e-9 {
+				t.Fatalf("coordination current=%v counts=%v proposed=%v", current, counts, proposed)
+			}
 		}
 	}
 }
