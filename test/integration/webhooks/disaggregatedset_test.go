@@ -17,6 +17,7 @@ package webhooks
 
 import (
 	"context"
+	"math"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -262,4 +263,100 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		disagg.Spec.Roles[0].Spec.LeaderWorkerTemplate.MaxGroupRestarts = ptr.To(int32(1))
 		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
 	})
+
+	ginkgo.DescribeTable("virtual role admission and schema",
+		func(change, wantError string) {
+			ds := buildDisaggregatedSet("virtual-schema").Obj()
+			ds.Spec.Roles = ds.Spec.Roles[:1] // One physical role is enough.
+			ds.Spec.Roles[0].SubRoles = []disaggregatedset.DisaggregatedSubRoleSpec{{Name: "hot"}, {Name: "cold", Replicas: ptr.To[int32](0)}}
+			gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
+			role := &ds.Spec.Roles[0]
+			external := &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
+			switch change {
+			case "duplicate":
+				role.SubRoles[1].Name = "hot"
+			case "negative":
+				role.SubRoles[0].Replicas = ptr.To[int32](-1)
+			case "external replicas":
+				role.SubRoles[1].Scaling = external
+			case "invalid child name":
+				role.SubRoles[0].Name = "parent/child"
+			case "Hash":
+				role.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+			case "static slices":
+				ds.Spec.Slices = ptr.To[int32](2)
+			case "parent scaling":
+				role.Scaling = external
+			case "external slices":
+				role.SubRoles[0].Scaling, ds.Spec.Slices = external, ptr.To[int32](2)
+			case "overflow":
+				role.SubRoles[0].Replicas, role.SubRoles[1].Replicas = ptr.To[int32](math.MaxInt32), ptr.To[int32](1)
+			case "worker label":
+				role.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{disaggregatedset.SubRoleLabelKey: "hot"}
+			case "leader label":
+				role.Spec.LeaderWorkerTemplate.LeaderTemplate = role.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+				role.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{disaggregatedset.SubRoleLabelKey: "hot"}
+			case "role label":
+				role.Labels = map[string]string{disaggregatedset.SubRoleLabelKey: "hot"}
+			case "scaler collision":
+				role.SubRoles[0].Scaling = external
+				other := *role.DeepCopy()
+				other.Name, other.SubRoles, other.Scaling = role.Name+"-hot", nil, external
+				ds.Spec.Roles = append(ds.Spec.Roles, other)
+			case "ignored parent zero":
+				role.Spec.Replicas = ptr.To[int32](0)
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: intstr.FromInt(0)}
+			case "rollout overrides":
+				role.SubRoles[0].MaxSurge, role.SubRoles[0].MaxUnavailable = ptr.To(intstr.FromInt(0)), ptr.To(intstr.FromString("100%"))
+				role.SubRoles[1].MaxUnavailable = ptr.To(intstr.FromInt(0))
+			case "invalid rollout override":
+				role.SubRoles[0].MaxSurge = ptr.To(intstr.FromString("101%"))
+			case "zero rollout override":
+				role.SubRoles[0].MaxSurge, role.SubRoles[0].MaxUnavailable = ptr.To(intstr.FromInt(0)), ptr.To(intstr.FromInt(0))
+			}
+			fresh := ds.DeepCopy()
+			expectedSubRoles := fresh.Spec.Roles[0].SubRoles
+			fresh.Name, fresh.ResourceVersion, fresh.UID = ds.Name+"-create", "", ""
+			for _, err := range []error{k8sClient.Create(ctx, fresh), k8sClient.Update(ctx, ds)} {
+				if wantError != "" {
+					gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(wantError)))
+				} else {
+					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				}
+			}
+			if wantError != "" {
+				return
+			}
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(gomega.Succeed())
+			gomega.Expect(ds.Spec.Roles[0].SubRoles).To(gomega.Equal(expectedSubRoles))
+			statuses := []disaggregatedset.RoleStatus{
+				{Name: role.Name, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedset.SubRoleStatus{
+					{Name: "hot", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
+					{Name: "cold"},
+				}},
+			}
+			ds.Status.RoleStatuses = statuses
+			gomega.Expect(k8sClient.Status().Update(ctx, ds)).To(gomega.Succeed())
+			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(gomega.Succeed())
+			gomega.Expect(ds.Status.RoleStatuses).To(gomega.Equal(statuses))
+		},
+		ginkgo.Entry("persists default Ordinal pools and independent zero", "", ""),
+		ginkgo.Entry("allows static children across slices", "static slices", ""),
+		ginkgo.Entry("rejects duplicate child keys", "duplicate", "Duplicate value"),
+		ginkgo.Entry("rejects negative targets", "negative", "greater than or equal to 0"),
+		ginkgo.Entry("rejects External replicas", "external replicas", "replicas must be omitted"),
+		ginkgo.Entry("rejects slash in child name", "invalid child name", ".name"),
+		ginkgo.Entry("defers Hash children", "Hash", "subRoles requires Ordinal"),
+		ginkgo.Entry("rejects parent scaling", "parent scaling", "parent scaling must be omitted"),
+		ginkgo.Entry("rejects External slices", "external slices", "spec.slices > 1"),
+		ginkgo.Entry("rejects overflowing totals", "overflow", "maximum LWS replica count"),
+		ginkgo.Entry("reserves worker labels", "worker label", "reserved"),
+		ginkgo.Entry("reserves leader labels", "leader label", "reserved"),
+		ginkgo.Entry("reserves role labels", "role label", "reserved"),
+		ginkgo.Entry("rejects scaler collision", "scaler collision", "scaler name collides"),
+		ginkgo.Entry("cannot hide zero/zero budgets behind ignored parent zero", "ignored parent zero", "must not be 0"),
+		ginkgo.Entry("persists independent rollout overrides including explicit zero", "rollout overrides", ""),
+		ginkgo.Entry("rejects invalid child rollout budgets", "invalid rollout override", "subRoles[0].maxSurge"),
+		ginkgo.Entry("rejects child rollout budgets that cannot progress", "zero rollout override", "subRoles[0].maxUnavailable"),
+	)
 })

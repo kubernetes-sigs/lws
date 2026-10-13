@@ -64,7 +64,7 @@ spec:
                 type: object
               roles:
                 description: |-
-                  Roles defines the list of roles (at least 2 required).
+                  Roles defines the list of roles (at least 1 required).
                   Each role has a unique name and its own configuration.
                 items:
                   description: |-
@@ -19517,11 +19517,77 @@ spec:
                       required:
                       - leaderWorkerTemplate
                       type: object
+                    subRoles:
+                      description: |-
+                        SubRoles partitions one Ordinal LWS into pools sharing its templates.
+                        Child targets sum to parent replicas; omit parent scaling. Parent spec.replicas is ignored.
+                      items:
+                        description: DisaggregatedSubRoleSpec defines a scaling and
+                          routing pool sharing its parent's templates.
+                        properties:
+                          maxSurge:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              MaxSurge overrides the parent's rollout surge budget for this sub-role.
+                              Accepts a non-negative integer or a percentage up to 100%, rounded up
+                              against this sub-role's replica target. Omitted values inherit the parent;
+                              with no parent rollout configuration, the default is 1. Zero is explicit.
+                            x-kubernetes-int-or-string: true
+                          maxUnavailable:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              MaxUnavailable overrides the parent's rollout unavailability budget for
+                              this sub-role. Accepts a non-negative integer or a percentage up to 100%,
+                              rounded down against this sub-role's replica target. Omitted values inherit
+                              the parent; with no parent rollout configuration, the default is 0.
+                            x-kubernetes-int-or-string: true
+                          name:
+                            description: Name is unique within the parent role.
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          replicas:
+                            description: 'Replicas counts groups (Static default:
+                              1); omit it for External scaling.'
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          scaling:
+                            description: Scaling selects this pool's replica source.
+                            properties:
+                              mode:
+                                default: Static
+                                description: |-
+                                  Mode controls the source of the replica count. Static (default) uses
+                                  inline spec.replicas; External uses the auto-created scaler CR.
+                                enum:
+                                - Static
+                                - External
+                                type: string
+                            type: object
+                        required:
+                        - name
+                        type: object
+                        x-kubernetes-validations:
+                        - message: replicas must be omitted when scaling.mode is External
+                          rule: '!has(self.scaling) || self.scaling.mode != ''External''
+                            || !has(self.replicas)'
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                   required:
                   - name
                   type: object
                 maxItems: 10
-                minItems: 2
+                minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -19557,12 +19623,13 @@ spec:
             - roles
             type: object
             x-kubernetes-validations:
-            - message: replicas must be zero for all non-External roles or non-zero
-                for all non-External roles
-              rule: self.roles.filter(r, !has(r.scaling) || r.scaling.mode != 'External').all(r,
-                !has(r.spec.replicas) || r.spec.replicas == 0) || self.roles.filter(r,
-                !has(r.scaling) || r.scaling.mode != 'External').all(r, has(r.spec.replicas)
-                && r.spec.replicas > 0)
+            - message: replicas must be zero for all non-External unpartitioned roles
+                or non-zero for all non-External unpartitioned roles
+              rule: self.roles.filter(r, (!has(r.subRoles) || size(r.subRoles) ==
+                0) && (!has(r.scaling) || r.scaling.mode != 'External')).all(r, !has(r.spec.replicas)
+                || r.spec.replicas == 0) || self.roles.filter(r, (!has(r.subRoles)
+                || size(r.subRoles) == 0) && (!has(r.scaling) || r.scaling.mode !=
+                'External')).all(r, has(r.spec.replicas) && r.spec.replicas > 0)
           status:
             description: status defines the observed state of DisaggregatedSet
             properties:
@@ -19641,18 +19708,20 @@ spec:
                 type: integer
               roleStatuses:
                 description: |-
-                  RoleStatuses contains the status for each role currently in spec.roles.
-                  The order matches spec.roles. A role removed from spec.roles has no entry
-                  here, even if LeaderWorkerSets for that role still exist while draining.
+                  RoleStatuses lists current parent roles in spec order, with nested sub-role statuses.
+                  Parent counts include historical layouts and may exceed the visible child sum.
+                  Removed roles are omitted even while their groups drain.
                 items:
-                  description: RoleStatus defines the observed state of a single role.
+                  description: RoleStatus defines the observed state of a single parent
+                    role.
                   properties:
                     name:
-                      description: Name is the name of the role (matches spec.roles[].name).
+                      description: Name is the parent role name.
                       type: string
                     readyReplicas:
-                      description: ReadyReplicas is the number of ready replicas for
-                        this role.
+                      description: |-
+                        ReadyReplicas is the number of ready replicas for this role.
+                        Sub-role readiness requires a coherent assignment across the whole group.
                       format: int32
                       type: integer
                     replicas:
@@ -19660,6 +19729,41 @@ spec:
                         role.
                       format: int32
                       type: integer
+                    subRoleStatuses:
+                      description: |-
+                        SubRoleStatuses lists the current sub-roles in spec order.
+                        Removed sub-roles are omitted, but their groups remain in the parent counts
+                        while draining. Do not add child counts to their parent aggregate.
+                      items:
+                        description: SubRoleStatus defines the observed state of a
+                          sub-role within its parent.
+                        properties:
+                          name:
+                            description: Name is the sub-role name, without the parent
+                              prefix.
+                            type: string
+                          readyReplicas:
+                            description: ReadyReplicas counts Ready groups with a
+                              coherent whole-group assignment.
+                            format: int32
+                            type: integer
+                          replicas:
+                            description: Replicas is the number of replica groups
+                              assigned to this sub-role.
+                            format: int32
+                            type: integer
+                          updatedReplicas:
+                            description: UpdatedReplicas counts groups belonging to
+                              the latest revision.
+                            format: int32
+                            type: integer
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     updatedReplicas:
                       description: UpdatedReplicas is the number of replicas updated
                         to the latest revision.

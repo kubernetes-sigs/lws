@@ -708,6 +708,61 @@ func TestValidateZeroReplicaRolloutStrategy(t *testing.T) {
 	}
 }
 
+func TestValidateSubRoleRolloutOverrides(t *testing.T) {
+	zero, one := intstr.FromInt(0), intstr.FromInt(1)
+	zeroPercent, quarter := intstr.FromString("0%"), intstr.FromString("25%")
+	parent := &leaderworkerset.RollingUpdateConfiguration{MaxSurge: zero, MaxUnavailable: quarter}
+	for _, tc := range []struct {
+		name               string
+		parent             *leaderworkerset.RollingUpdateConfiguration
+		replicas           *int32
+		external           bool
+		surge, unavailable *intstr.IntOrString
+		wantError          string
+	}{
+		{name: "inherit existing small-child budgets", parent: parent},
+		{name: "inherit default surge", unavailable: &zero},
+		{name: "explicit zero overrides default surge", surge: &zero, wantError: "maxUnavailable"},
+		{name: "override both", surge: &zero, unavailable: &one},
+		{name: "inherit unavailable", parent: parent, surge: &one},
+		{name: "partial inherited pair rounds to zero", parent: parent, unavailable: &quarter, wantError: "maxUnavailable"},
+		{name: "percent uses child count", replicas: ptr.To[int32](4), surge: &zero, unavailable: &quarter},
+		{name: "zero child permits zero pair", replicas: ptr.To[int32](0), surge: &zero, unavailable: &zeroPercent},
+		{name: "external unknown target permits positive percentage", external: true, surge: &zero, unavailable: &quarter},
+		{name: "external rejects universally zero pair", external: true, surge: &zero, unavailable: &zeroPercent, wantError: "maxUnavailable"},
+		{name: "negative surge", surge: ptr.To(intstr.FromInt(-1)), wantError: "maxSurge"},
+		{name: "negative unavailable", unavailable: ptr.To(intstr.FromInt(-1)), wantError: "maxUnavailable"},
+		{name: "malformed surge", surge: ptr.To(intstr.FromString("bad")), wantError: "maxSurge"},
+		{name: "malformed unavailable", unavailable: ptr.To(intstr.FromString("bad")), wantError: "maxUnavailable"},
+		{name: "excess surge percentage", surge: ptr.To(intstr.FromString("101%")), wantError: "maxSurge"},
+		{name: "excess unavailable percentage", unavailable: ptr.To(intstr.FromString("101%")), wantError: "maxUnavailable"},
+		{name: "zero child still validates formats", replicas: ptr.To[int32](0), surge: ptr.To(intstr.FromString("bad")), wantError: "maxSurge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := disaggv1.DisaggregatedSubRoleSpec{Name: "hot", Replicas: tc.replicas, MaxSurge: tc.surge, MaxUnavailable: tc.unavailable}
+			if tc.external {
+				child.Scaling = &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+			}
+			obj := &disaggv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+			obj.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{
+				Name:     "model",
+				SubRoles: []disaggv1.DisaggregatedSubRoleSpec{child, {Name: "cold", Replicas: ptr.To[int32](3)}},
+			}}
+			obj.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = tc.parent
+			webhook := &DisaggregatedSetWebhook{}
+			_, createErr := webhook.ValidateCreate(context.Background(), obj)
+			_, updateErr := webhook.ValidateUpdate(context.Background(), obj.DeepCopy(), obj)
+			for _, err := range []error{createErr, updateErr} {
+				if tc.wantError != "" {
+					require.ErrorContains(t, err, "spec.roles[0].subRoles[0]."+tc.wantError)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateUpdate(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()

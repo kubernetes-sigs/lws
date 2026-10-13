@@ -545,8 +545,66 @@ func TestAllGroupsUnscheduled(t *testing.T) {
 			if tc.change != nil {
 				tc.change(snapshot)
 			}
-			assert.Equal(t, tc.want, allGroupsUnscheduled(snapshot))
+			assert.Equal(t, tc.want, allGroupsUnscheduled(snapshot.Groups, int(getLWSReplicas(snapshot.LWS))))
 		})
+	}
+}
+
+func TestSubRoleSchedulingObservation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*replicagroups.Snapshot)
+		want   bool
+	}{
+		{name: "other child scheduled", want: true},
+		{name: "leader scheduled", change: func(s *replicagroups.Snapshot) { s.Groups[0].Leader.Spec.NodeName = "node" }},
+		{name: "worker scheduled", change: func(s *replicagroups.Snapshot) { s.Groups[0].Pods[1].Spec.NodeName = "node" }},
+		{name: "missing group", change: func(s *replicagroups.Snapshot) { s.Groups = s.Groups[1:] }},
+		{name: "missing worker", change: func(s *replicagroups.Snapshot) { s.Groups[0].Pods = s.Groups[0].Pods[:1] }},
+		{name: "partial assignment", change: func(s *replicagroups.Snapshot) { s.Groups[0].Pods[1].Labels[disaggregatedsetv1.SubRoleLabelKey] = "b" }},
+		{name: "terminating group", change: func(s *replicagroups.Snapshot) { s.Groups[0].Terminating = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a", "b")
+			s := f.observe()
+			s.Groups[0].Ready = false
+			for _, pod := range s.Groups[0].Pods {
+				pod.Spec.NodeName, pod.Status = "", corev1.PodStatus{Phase: corev1.PodPending}
+			}
+			if tc.change != nil {
+				tc.change(s)
+			}
+			observed := rolloutReadiness{}
+			observeSubRoleReadiness(&subRoleState{snapshot: s, issued: map[string]int{"a": 1, "b": 1}}, observed)
+			state := rolloutStateForRevision([]string{"model/a", "model/b"}, nil, disaggregatedsetutils.RevisionRoles{}, f.revision("target"), []int{1, 1}, configs([]int{1, 1}, []int{0, 0}), observed)
+			require.Equal(t, []bool{tc.want, false}, state.Target.AllUnscheduled, "only complete, unbound groups of this child authorize cancellation")
+		})
+	}
+}
+
+func TestSubRoleScalingDuringRolloutPolicies(t *testing.T) {
+	f := newSubRoleFixture(t, 0, "pool", "pool")
+	f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "pool", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}}}}}
+	target := f.withRevision("target", "pool", "pool", "pool", "pool", "pool")
+	old := disaggregatedsetutils.RevisionRolesList{f.revision("old")}
+	observed := rolloutReadiness{}
+	for fixture, count := range map[*subRoleFixture]int{f: 2, target: 5} {
+		observeSubRoleReadiness(&subRoleState{snapshot: fixture.observe(), issued: map[string]int{"pool": count}}, observed)
+	}
+	for _, immediate := range []bool{false, true} {
+		f.ds.Spec.ScalingPolicy = nil
+		want := 5
+		if immediate {
+			f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
+			want = 2
+		}
+		inputs := buildRolloutInputs(f.ds, old, target.revision("target"), map[string]int{"model/pool": 2}, observed)
+		require.Equal(t, immediate, inputs.scaleDownDuringRollout)
+		require.Equal(t, []string{"model/pool"}, inputs.allRoleNames)
+		require.Equal(t, RoleReplicaState{want}, inputs.targetReplicas, "only Deferred retains the issued External child target")
+		complete, ready := rolloutCompletionStatus(nil, target.revision("target"), inputs.allRoleNames, RoleReplicaState{2}, observed, immediate)
+		require.Equal(t, !immediate, complete, "Immediate must first reduce this child to its exact target")
+		require.Equal(t, !immediate, ready)
 	}
 }
 
@@ -1123,7 +1181,7 @@ func TestScalingDuringRolloutKeepsDefaultCandidatePreference(t *testing.T) {
 	old, target, err := executor.LWSManager.GetRevisionRolesList(context.Background(), ds, 0, "hashC")
 	require.NoError(t, err)
 	require.NotNil(t, target)
-	readiness, err := executor.LWSManager.observeRolloutReadiness(context.Background(), old, *target)
+	readiness, err := executor.LWSManager.collectRolloutObservations(context.Background(), ds, old, *target, resolveDesiredReplicasByRole(ds, nil))
 	require.NoError(t, err)
 	inputs := rolloutInputs{
 		allRoleNames: append(testRoleNames(), "new-prefill", "new-decode"), targetReplicas: []int{0, 0, 4, 4},
@@ -1159,7 +1217,7 @@ func TestScalingDuringRolloutExposesLatestExternalTarget(t *testing.T) {
 		testRolePrefill: revisionLWS("target", testRolePrefill, 5, 0, time.Now(), 5),
 	}}
 	readTarget := func() []int {
-		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2})
+		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2}, nil)
 	}
 	assert.Equal(t, []int{5}, readTarget(), "default keeps the in-flight External target")
 	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
@@ -1188,7 +1246,7 @@ func TestScalingDuringRolloutAppliesTargetDrainBeforeGrowth(t *testing.T) {
 			state := rolloutState([]int{0, 0}, []int{0, 0}, []int{0, 0}, nil, nil,
 				[]int{4, 8}, []int{4, 8}, []int{8, 4}, configs([]int{1, 1}, []int{0, 0}))
 			state.ScaleDownDuringRollout = true
-			inputs := rolloutInputs{allRoleNames: testRoleNames(), targetRoleNames: testRoleNames(), scaleDownDuringRollout: true}
+			inputs := rolloutInputs{allRoleNames: testRoleNames(), scaleDownDuringRollout: true}
 			err = executor.applyRolloutStep(context.Background(), ds, *target, inputs, disaggregatedsetutils.RevisionRoles{}, state, ComputeNextStep(state))
 			if failDrain {
 				require.ErrorContains(t, err, "injected drain failure")

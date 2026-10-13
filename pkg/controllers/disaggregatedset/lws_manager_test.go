@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -31,12 +32,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -429,6 +432,14 @@ func TestCachedWorkloadsMatchDesired(t *testing.T) {
 			s.ds.Spec.Roles[1].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
 		}, true},
 		{"unresolved target", func(s *state) { delete(s.desired, testRolePrefill) }, false},
+		{"child assignment needs observation", func(s *state) {
+			s.ds.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](4)}}
+		}, false},
+		{"previous child layout needs observation", func(s *state) { s.workloads[0].Annotations[subRoleReplicasAnnotation] = `{"a":4}` }, false},
+		{"pending child assignment", func(s *state) { s.workloads[0].Annotations[subRolePlanAnnotation] = `{"a":4}` }, false},
+		{"child history recovery", func(s *state) {
+			s.workloads[0].Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"a":4}`
+		}, false},
 		{"changed target", func(s *state) { s.desired[testRolePrefill]++ }, false},
 		{"missing workload", func(s *state) { s.workloads = s.workloads[:3] }, false},
 		{"nil workload", func(s *state) { s.workloads[0] = nil }, false},
@@ -477,19 +488,146 @@ func TestCachedWorkloadsMatchDesired(t *testing.T) {
 			if tc.change != nil {
 				tc.change(&s)
 			}
-			assert.Equal(t, tc.want, cachedWorkloadsMatchDesired(s.ds, s.workloads, "target", s.desired))
+			assert.Equal(t, tc.want, cachedWorkloadsMatchDesired(t.Context(), nil, s.ds, s.workloads, "target", s.desired))
 		})
 	}
 }
 
-func TestScaleRejectsConcurrentReplicaChange(t *testing.T) {
+func TestCachedSubRolesRequireObservedAssignments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*replicagroups.Snapshot) client.Object
+		remove bool
+		want   bool
+	}{
+		{"settled", nil, false, true},
+		{"unready but assigned", func(s *replicagroups.Snapshot) client.Object {
+			s.Groups[0].Leader.Status.Conditions = nil
+			return s.Groups[0].Leader
+		}, false, true},
+		{"missing worker", func(s *replicagroups.Snapshot) client.Object { return s.Groups[0].Pods[1] }, true, false},
+		{"missing leader", func(s *replicagroups.Snapshot) client.Object { return s.Groups[0].Leader }, true, false},
+		{"worker lost label", func(s *replicagroups.Snapshot) client.Object {
+			delete(s.Groups[0].Pods[1].Labels, disaggregatedsetv1.SubRoleLabelKey)
+			return s.Groups[0].Pods[1]
+		}, false, false},
+		{"leader lost label", func(s *replicagroups.Snapshot) client.Object {
+			delete(s.Groups[0].Leader.Labels, disaggregatedsetv1.SubRoleLabelKey)
+			return s.Groups[0].Leader
+		}, false, false},
+		{"pending plan", func(s *replicagroups.Snapshot) client.Object {
+			s.LWS.Annotations[subRolePlanAnnotation] = `{"a":1,"b":1}`
+			return s.LWS
+		}, false, false},
+		{"stale child history", func(s *replicagroups.Snapshot) client.Object {
+			s.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"a":2,"b":0}`
+			return s.LWS
+		}, false, false},
+		{"native target unobserved", func(s *replicagroups.Snapshot) client.Object {
+			s.LeaderStatefulSet.Generation++
+			return s.LeaderStatefulSet
+		}, false, false},
+		{"native worker target unobserved", func(s *replicagroups.Snapshot) client.Object {
+			s.Groups[0].WorkerStatefulSet.Generation++
+			return s.Groups[0].WorkerStatefulSet
+		}, false, false},
+		{"wrong ordinal prefix", func(s *replicagroups.Snapshot) client.Object {
+			s.LeaderStatefulSet.Spec.Ordinals.Start = 1
+			return s.LeaderStatefulSet
+		}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a", "b")
+			if tc.change != nil {
+				object := tc.change(f.observe())
+				if tc.remove {
+					require.NoError(t, f.manager.client.Delete(t.Context(), object))
+				} else {
+					before := object.DeepCopyObject()
+					require.NoError(t, f.manager.client.Update(t.Context(), object))
+					if pod, ok := object.(*corev1.Pod); ok {
+						pod.Status = before.(*corev1.Pod).Status
+						require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+					}
+				}
+			}
+			require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(f.lws), f.lws))
+			assert.Equal(t, tc.want, cachedSubRolesMatchDesired(t.Context(), f.manager.client, f.lws, map[string]int{"a": 1, "b": 1}))
+		})
+	}
+
+	t.Run("coherent labels are not proof of requested counts", func(t *testing.T) {
+		f := newSubRoleFixture(t, 0, "a", "b")
+		for _, pod := range f.observe().Groups[0].Pods {
+			pod.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
+			require.NoError(t, f.manager.client.Update(t.Context(), pod))
+		}
+		_, assigned, err := f.manager.subRoleStatus(t.Context(), &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}, []*leaderworkersetv1.LeaderWorkerSet{f.lws}, f.lws.Name)
+		require.NoError(t, err)
+		require.True(t, assigned, "the saved condition only describes coherence")
+		require.False(t, cachedSubRolesMatchDesired(t.Context(), f.manager.client, f.lws, map[string]int{"a": 1, "b": 1}))
+	})
+	t.Run("cache read failure falls back to live path", func(t *testing.T) {
+		f := newSubRoleFixture(t, 0, "a", "b")
+		reader := interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("cache failed")
+		}})
+		require.False(t, cachedSubRolesMatchDesired(t.Context(), reader, f.lws, map[string]int{"a": 1, "b": 1}))
+	})
+}
+
+func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
+	ds := newDSWithRoles("ds", disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}})
+	desired := resolveDesiredReplicasByRole(ds, nil)
+	budget, err := maxUnavailableAnnotation(ds, rolloutRoleNames(ds), desired)
+	require.NoError(t, err)
+	ds.Annotations = map[string]string{disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion, disaggregatedsetv1.MaxUnavailableAnnotationKey: budget}
+	c := newTestClient(ds)
+	f := &subRoleFixture{t: t, ds: ds, manager: NewLeaderWorkerSetManager(c)}
+	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+	f = f.withRevision(disaggregatedsetutils.GenerateName(ds.Name, 0, revision, "model"), "a", "b")
+	f.lws.Labels[disaggregatedsetv1.RevisionLabelKey] = revision
+	require.NoError(t, c.Update(t.Context(), f.lws))
+	liveReads := 0
+	f.manager.apiReader = interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			liveReads++
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			liveReads++
+			return c.List(ctx, list, opts...)
+		},
+	})
+	r := newTestReconciler(c)
+	r.LWSManager = f.manager
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
+	_, err = r.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	require.Zero(t, liveReads, "idle assignment and status must use only informer data")
+
+	// The old condition stays True, but the updated Pod cache must force repair.
+	s, err := replicagroups.Observe(t.Context(), c, f.lws)
+	require.NoError(t, err)
+	worker := s.Groups[0].Pods[1]
+	delete(worker.Labels, disaggregatedsetv1.SubRoleLabelKey)
+	require.NoError(t, c.Update(t.Context(), worker))
+	_, err = r.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	require.Positive(t, liveReads, "assignment repair still requires live checks")
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(worker), worker))
+	require.Equal(t, "a", worker.Labels[disaggregatedsetv1.SubRoleLabelKey])
+}
+
+func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
 	lws := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 4)
 	base := newTestClient(lws)
+	concurrentChange := func(current *leaderworkersetv1.LeaderWorkerSet) { current.Spec.Replicas = ptr.To[int32](3) }
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			current := &leaderworkersetv1.LeaderWorkerSet{}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), current))
-			current.Spec.Replicas = ptr.To[int32](3)
+			concurrentChange(current)
 			require.NoError(t, c.Update(ctx, current))
 			return c.Patch(ctx, obj, patch, opts...)
 		},
@@ -498,10 +636,23 @@ func TestScaleRejectsConcurrentReplicaChange(t *testing.T) {
 	err := NewLeaderWorkerSetManager(c).Scale(t.Context(), ds, lws, 2)
 	require.True(t, apierrors.IsConflict(err), "stale scale write must conflict: %v", err)
 	assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, lws.Name))
+
+	// Enabling subroles between the baseline read and patch must also conflict.
+	concurrentChange = func(current *leaderworkersetv1.LeaderWorkerSet) {
+		current.Annotations[subRoleReplicasAnnotation] = `{"pool":3}`
+		current.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"pool":4}`
+	}
+	err = NewLeaderWorkerSetManager(c).UpdateInitialReplicas(t.Context(), ds, lws, 5)
+	require.True(t, apierrors.IsConflict(err), "ordinary baseline must conflict with live enablement: %v", err)
+	live := &leaderworkersetv1.LeaderWorkerSet{}
+	require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), live))
+	assert.Equal(t, "4", live.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+	assert.Equal(t, "4", lws.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+	assert.Equal(t, `{"pool":4}`, live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey])
 }
 
 func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
-	for _, change := range []string{"smaller Spec", "larger Spec", "generation", "replacement", "deleting", "status only"} {
+	for _, change := range []string{"smaller Spec", "larger Spec", "generation", "replacement", "deleting", "sub-roles enabled", "status only"} {
 		t.Run(change, func(t *testing.T) {
 			observed := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 4)
 			live := observed.DeepCopy()
@@ -516,6 +667,9 @@ func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
 				live.UID = "replacement"
 			case "deleting":
 				live.DeletionTimestamp, live.Finalizers = ptr.To(metav1.Now()), []string{"test/hold"}
+			case "sub-roles enabled":
+				live.Annotations[subRoleReplicasAnnotation] = `{"pool":4}`
+				live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"pool":4}`
 			case "status only":
 				live.Status.ReadyReplicas = 3
 			}
@@ -528,6 +682,13 @@ func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
 			} else {
 				require.True(t, apierrors.IsConflict(err), "changed scale input must retry: %v", err)
 				assert.Equal(t, getLWSReplicas(live), getTestLWSReplicas(c, testNamespace, live.Name))
+			}
+			if change == "sub-roles enabled" {
+				require.ErrorIs(t, NewLeaderWorkerSetManager(c).UpdateInitialReplicas(t.Context(), ds, observed, 5), errReplicaGroupsPending)
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(live), live))
+				assert.Equal(t, "4", live.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+				assert.Equal(t, "4", observed.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+				assert.Equal(t, `{"pool":4}`, live.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey])
 			}
 		})
 	}

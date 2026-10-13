@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -53,28 +54,121 @@ func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
 var errReplicaGroupsPending = errors.New("replica-group observation no longer matches the rollout")
 
 type replicaReadiness struct {
-	raw       int // Ready groups, including groups committed to removal.
-	committed int // Ready groups that can authorize another drain.
+	spec, initial int // Issued and frozen baseline counts for a child role.
+	raw           int // Ready groups, including groups committed to removal.
+	committed     int // Ready groups that can authorize another drain.
 	// Positive evidence only: missing or incomplete observations stay false.
 	allUnscheduled bool
 }
 
-// rolloutReadiness is local to one slice and one reconciliation. It never
-// changes LWS status or carries deletion reservations between reconciliations.
+// Child keys use LWS-name/child; ordinary keys retain the physical LWS name.
 type rolloutReadiness map[string]replicaReadiness
 
-func (manager *LeaderWorkerSetManager) observeRolloutReadiness(
+func (readiness rolloutReadiness) role(revision disaggregatedsetutils.RevisionRoles, name string) replicaReadiness {
+	parent, child := roleParts(name)
+	lws := revision.Roles[parent]
+	if lws == nil || (child != "") != (lws.Annotations[subRoleReplicasAnnotation] != "") {
+		return replicaReadiness{}
+	}
+	observed := readiness[childRoleKey(lws.Name, child)]
+	if child == "" {
+		observed.spec = int(getLWSReplicas(lws))
+		observed.initial = max(observed.spec, revision.GetInitialReplicasPerRole(parent))
+	}
+	return observed
+}
+
+func (readiness rolloutReadiness) totalReplicas(revisions disaggregatedsetutils.RevisionRolesList, name string) int {
+	total := 0
+	for _, revision := range revisions {
+		total += readiness.role(revision, name).spec
+	}
+	return total
+}
+
+// collectRolloutObservations visits physical LWS objects once for readiness.
+// The metadata prepass resumes accepted assignments before changing any role's
+// membership or baseline. Physical revisions never acquire synthetic children.
+func (manager *LeaderWorkerSetManager) collectRolloutObservations(
 	ctx context.Context,
+	ds *disaggregatedsetv1.DisaggregatedSet,
 	old disaggregatedsetutils.RevisionRolesList,
 	target disaggregatedsetutils.RevisionRoles,
+	desired map[string]int,
 ) (rolloutReadiness, error) {
-	var sets []*leaderworkersetv1.LeaderWorkerSet
-	for _, revision := range append(slices.Clone(old), target) {
+	revisions := append(slices.Clone(old), target)
+	pending := false
+	for _, revision := range revisions {
 		for _, lws := range revision.Roles {
-			sets = append(sets, lws)
+			if lws.Annotations[subRolePlanAnnotation] != "" {
+				if _, err := manager.syncSubRoles(ctx, ds, lws, subRoleUpdate{}); err != nil && !errors.Is(err, errReplicaGroupsPending) {
+					return nil, err
+				}
+				pending = true
+			}
 		}
 	}
-	return manager.observeReadiness(ctx, sets)
+	if pending {
+		return nil, errReplicaGroupsPending
+	}
+	configs, result := disaggregatedsetutils.GetRoleConfigs(ds), make(rolloutReadiness)
+	var ordinary []*leaderworkersetv1.LeaderWorkerSet
+	for i, revision := range revisions {
+		for name, lws := range revision.Roles {
+			// Only the appended target follows desired membership. Old revisions
+			// and removed parents keep their recorded layout while draining.
+			var counts map[string]int
+			if config := configs[name]; i == len(old) && config != nil {
+				counts = desiredSubRoles(config, desired)
+			}
+			state, err := manager.syncSubRoles(ctx, ds, lws, subRoleUpdate{membership: counts})
+			if err != nil {
+				return nil, err
+			}
+			if state != nil {
+				revision.Roles[name] = state.snapshot.LWS
+				observeSubRoleReadiness(state, result)
+				continue
+			}
+			ordinary = append(ordinary, lws)
+		}
+	}
+	observed, err := manager.observeReadiness(ctx, ordinary)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(result, observed)
+	return result, nil
+}
+
+func observeSubRoleReadiness(state *subRoleState, observed rolloutReadiness) {
+	s, counts, initial := state.snapshot, state.issued, state.initial
+	// Preserve baseline-only names as well as issued children. Only Ready is
+	// masked: Availability must still see every potential physical deletion victim.
+	children := make(map[string]int, len(initial)+len(counts))
+	maps.Copy(children, initial)
+	maps.Copy(children, counts)
+	view := *s
+	view.Groups = slices.Clone(s.Groups)
+	raw := 0
+	for child := range children {
+		var groups []replicagroups.Group
+		for i, group := range s.Groups {
+			assigned, coherent := groupSubRole(group)
+			view.Groups[i].Ready = group.Ready && coherent && assigned == child
+			if coherent && assigned == child {
+				groups = append(groups, group)
+			}
+		}
+		availability := view.Availability()
+		raw += int(availability.ReadyReplicas)
+		observed[childRoleKey(s.LWS.Name, child)] = replicaReadiness{
+			spec: counts[child], initial: max(counts[child], initial[child]),
+			raw: int(availability.ReadyReplicas), committed: int(availability.RetainedReadyReplicas),
+			allUnscheduled: allGroupsUnscheduled(groups, counts[child]),
+		}
+	}
+	observed[s.LWS.Name] = replicaReadiness{raw: raw}
 }
 
 // observeLiveReadiness adapts shared group observations to readiness and scheduling facts.
@@ -103,7 +197,7 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 		result[lws.Name] = replicaReadiness{
 			raw:            int(availability.ReadyReplicas),
 			committed:      int(availability.RetainedReadyReplicas),
-			allUnscheduled: allGroupsUnscheduled(snapshot),
+			allUnscheduled: allGroupsUnscheduled(snapshot.Groups, int(getLWSReplicas(snapshot.LWS))),
 		}
 	}
 	return result, nil
@@ -113,12 +207,11 @@ func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context,
 // group has begun using a node. Missing groups or workers are unknown, not
 // unscheduled; an assigned worker protects the role even if its leader is unbound.
 // These are facts from the existing observation, not a scheduling reservation.
-func allGroupsUnscheduled(snapshot *replicagroups.Snapshot) bool {
-	replicas := int(getLWSReplicas(snapshot.LWS))
-	if replicas == 0 || len(snapshot.Groups) != replicas {
+func allGroupsUnscheduled(groups []replicagroups.Group, replicas int) bool {
+	if replicas == 0 || len(groups) != replicas {
 		return false
 	}
-	for _, group := range snapshot.Groups {
+	for _, group := range groups {
 		// The observer already validates group ownership and the size annotation.
 		size, _ := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
 		if group.Terminating || len(group.Pods) != size {
@@ -228,7 +321,7 @@ func (manager *LeaderWorkerSetManager) Create(
 	return nil
 }
 
-// Scale applies an observed scale intent only while its object and Spec still
+// Scale applies an observed scale intent only while its object, Spec and layout still
 // match. Status-only updates are harmless; a replaced object or changed Spec
 // needs a new plan. The optimistic patch also guards changes after the live Get.
 func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int) error {
@@ -241,7 +334,8 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to scale it", name, ds.Name)
 	}
 	if leaderWorkerSet.UID != observed.UID || leaderWorkerSet.Generation != observed.Generation ||
-		getLWSReplicas(leaderWorkerSet) != getLWSReplicas(observed) || !leaderWorkerSet.DeletionTimestamp.IsZero() {
+		getLWSReplicas(leaderWorkerSet) != getLWSReplicas(observed) || !leaderWorkerSet.DeletionTimestamp.IsZero() ||
+		leaderWorkerSet.Annotations[subRoleReplicasAnnotation] != "" {
 		return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), name,
 			errors.New("LeaderWorkerSet changed since scale observation"))
 	}
@@ -398,6 +492,35 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 	return *leaderWorkerSet.Spec.Replicas
 }
 
+// retainedRolloutRoleNames includes current roles and every role whose budget
+// must survive while old workloads drain, including removed children.
+func (m *LeaderWorkerSetManager) retainedRolloutRoleNames(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) ([]string, error) {
+	// Only a live, ownership-filtered list can safely prune history. Retain even
+	// zero-Spec LWS until deletion, and never erase history due to informer lag.
+	workloads, err := m.listWithReader(ctx, m.apiReader, ds, "")
+	if err != nil {
+		return nil, err
+	}
+	roles := sets.New(rolloutRoleNames(ds)...)
+	for _, lws := range workloads {
+		parent := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] == "" {
+			roles.Insert(parent)
+			continue
+		}
+		for _, key := range []string{subRoleReplicasAnnotation, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey} {
+			counts, err := subRoleCounts(lws, key)
+			if err != nil {
+				return nil, err
+			}
+			for child := range counts {
+				roles.Insert(childRoleKey(parent, child))
+			}
+		}
+	}
+	return sets.List(roles), nil
+}
+
 // GetRevisionRolesList fetches all LWS for a DisaggregatedSet, splits them into
 // old (non-target) and new (target revision), and groups each set by revision.
 // Returns: (oldRevisions, newRevision, error). newRevision is nil if no LWS
@@ -471,16 +594,19 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 ) error {
 	current := &leaderworkersetv1.LeaderWorkerSet{}
 	key := types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: ds.Namespace}
-	if err := manager.client.Get(ctx, key, current); err != nil {
+	if err := manager.apiReader.Get(ctx, key, current); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
 	}
 	if !metav1.IsControlledBy(current, ds) {
 		return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to update initial replicas", current.Name, ds.Name)
 	}
+	if current.Annotations[subRoleReplicasAnnotation] != "" {
+		return errReplicaGroupsPending
+	}
 
 	currentValue := parseInitialReplicasAnnotation(current)
 	if currentValue == nil || *currentValue != replicas {
-		patch := client.MergeFrom(current.DeepCopy())
+		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		setInitialReplicasAnnotation(current, replicas)
 		if err := manager.client.Patch(ctx, current, patch); err != nil {
 			return fmt.Errorf("failed to update initial-replicas annotation on %s: %w", current.Name, err)
