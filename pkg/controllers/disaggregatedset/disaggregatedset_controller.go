@@ -26,8 +26,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,6 +39,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
@@ -68,8 +69,8 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{}
 	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
 		if apierrors.IsNotFound(err) {
-			if r.LWSManager.observations != nil {
-				r.LWSManager.observations.forget(req.NamespacedName)
+			if r.LWSManager.pending != nil {
+				r.LWSManager.pending.forget(req.NamespacedName)
 			}
 			return ctrl.Result{}, nil
 		}
@@ -259,8 +260,10 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 // after attach.
 func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) func(string) (int32, error) {
 	return func(role string) (int32, error) {
-		if r.LWSManager.observations != nil {
-			if err := r.LWSManager.observations.observed(ctx, ds.UID, ""); err != nil {
+		// Only called for a missing scaler. Do not freeze an initial target
+		// from a cache that has not yet observed our preceding workload writes.
+		if r.LWSManager.pending != nil {
+			if err := r.LWSManager.pending.observed(ctx, ds.UID, ""); err != nil {
 				return 0, err
 			}
 		}
@@ -312,8 +315,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	revision string,
 	desiredReplicasByRole map[string]int,
 ) (ctrl.Result, error) {
-	if r.LWSManager.observations != nil {
-		if err := r.LWSManager.observations.observed(ctx, disaggregatedSet.UID, strconv.Itoa(slice)); err != nil {
+	if r.LWSManager.pending != nil {
+		if err := r.LWSManager.pending.observed(ctx, disaggregatedSet.UID, strconv.Itoa(slice)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -325,7 +328,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if r.LWSManager.observations != nil {
+	if r.LWSManager.pending != nil {
 		// This also guards steady-state scaling and changes of rollout target.
 		// Wait for replica creation/deletion, not for model readiness.
 		target := disaggregatedsetutils.RevisionRoles{}
@@ -568,21 +571,26 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.LWSManager == nil {
 		r.LWSManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}
-	observations, err := newInformerObservation(mgr)
+	changes := make(chan event.GenericEvent, 1024)
+	observer, err := replicagroups.NewObserver(mgr, func(lws *leaderworkersetv1.LeaderWorkerSet) {
+		owner := metav1.GetControllerOf(lws)
+		if owner == nil || owner.Kind != "DisaggregatedSet" || owner.APIVersion != disaggregatedsetv1.GroupVersion.String() {
+			return
+		}
+		parent := &disaggregatedsetv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: owner.Name, Namespace: lws.Namespace}}
+		select {
+		case changes <- event.GenericEvent{Object: parent}:
+		default: // Pending operations also requeue; a full queue cannot grant credit.
+		}
+	})
 	if err != nil {
 		return err
 	}
-	if err := mgr.Add(observations); err != nil {
+	if err := mgr.Add(observer); err != nil {
 		return err
 	}
-	r.LWSManager.observations, r.LWSManager.reader = observations, observations
-	changes := make(chan event.GenericEvent, 1024)
-	observations.enqueue = func(object client.Object) {
-		select {
-		case changes <- event.GenericEvent{Object: object}:
-		default: // Pending operations also requeue; a full queue cannot grant credit.
-		}
-	}
+	r.LWSManager.reader = observer
+	r.LWSManager.pending = &pendingWrites{Reader: observer, writes: make(map[client.ObjectKey]*pendingWrite)}
 
 	if r.ScalerManager == nil {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)

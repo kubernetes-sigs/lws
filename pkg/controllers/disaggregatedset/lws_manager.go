@@ -23,6 +23,9 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"sync"
+
+	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,7 +45,7 @@ import (
 type LeaderWorkerSetManager struct {
 	client           client.Client
 	reader           client.Reader
-	observations     *informerObservation
+	pending          *pendingWrites
 	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 
@@ -187,25 +190,22 @@ func observeSubRoleReadiness(state *subRoleState, observed rolloutReadiness) {
 // sets come from the same informer as discovery. The controller waits for write
 // receipts and native scale acknowledgement before planning another step.
 // Unknown observations must retry, not look like zero serving capacity: that
-// could lower the planner's no-worsening floor. Unacknowledged native decisions
-// still expose raw readiness, but withhold retained credit for another drain.
+// could lower the planner's no-worsening floor.
 func (manager *LeaderWorkerSetManager) observeCachedReadiness(ctx context.Context, sets []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error) {
 	result := make(rolloutReadiness, len(sets))
 	if len(sets) == 0 {
 		return result, nil
 	}
-	// Observe descendants of this slice's cached LWS without listing the LWS again.
-	// A broken group in another slice must not block this one.
-	snapshots, err := replicagroups.ObserveCached(ctx, manager.reader, sets)
-	if err != nil {
-		return nil, err
-	}
 	for _, lws := range sets {
-		snapshot := snapshots[lws.UID]
-		if snapshot == nil || snapshot.LWS.UID != lws.UID || !snapshot.LWS.DeletionTimestamp.IsZero() {
+		snapshot, err := replicagroups.Observe(ctx, manager.reader, lws)
+		if err != nil {
+			return nil, err
+		}
+		if snapshot == nil || snapshot.LWS.Generation != lws.Generation ||
+			!lws.DeletionTimestamp.IsZero() || !snapshot.LWS.DeletionTimestamp.IsZero() {
 			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
 		}
-		if manager.observations != nil && !snapshot.ScalingObserved() {
+		if manager.pending != nil && !snapshot.ScalingObserved() {
 			return nil, fmt.Errorf("waiting for native scaling of %s: %w", lws.Name, errReplicaGroupsPending)
 		}
 		availability := snapshot.Availability()
@@ -541,8 +541,8 @@ func (m *LeaderWorkerSetManager) retainedRolloutRoleNames(ctx context.Context, d
 	// Keep history while writes are outstanding; stale absence must not prune
 	// a role or child that still has capacity in an older revision.
 	roles := sets.New(rolloutRoleNames(ds)...)
-	if m.observations != nil {
-		if err := m.observations.observed(ctx, ds.UID, ""); err != nil {
+	if m.pending != nil {
+		if err := m.pending.observed(ctx, ds.UID, ""); err != nil {
 			if !errors.Is(err, errReplicaGroupsPending) {
 				return nil, err
 			}
@@ -673,8 +673,141 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 }
 
 func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet, deleting bool, apply func(context.Context) error) error {
-	if manager.observations == nil {
+	if manager.pending == nil {
 		return apply(ctx)
 	}
-	return manager.observations.mutate(ctx, lws, deleting, apply)
+	return manager.pending.mutate(ctx, lws, deleting, apply)
+}
+
+// A receipt identifies our write without comparing opaque resource versions or
+// waiting to see one exact version that a watch is allowed to coalesce away.
+const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
+
+// pendingWrites remembers mutations until the shared informer observes them.
+// All role writes in a slice must be observed before its next rollout step.
+type pendingWrites struct {
+	client.Reader
+	mu     sync.Mutex
+	writes map[client.ObjectKey]*pendingWrite
+}
+
+type pendingWrite struct {
+	owner   types.UID
+	parent  client.ObjectKey
+	slice   string
+	uid     types.UID
+	receipt string
+	deleted bool
+	// Replaying the same conditional mutation resolves an ambiguous transport
+	// error. We never turn a timeout into permission to forget a possible write.
+	retry func(context.Context) error
+}
+
+func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet, deleting bool, apply func(context.Context) error) error {
+	owner := metav1.GetControllerOf(lws)
+	if owner == nil {
+		return errors.New("observed writes require a controller-owned LeaderWorkerSet")
+	}
+	key := client.ObjectKeyFromObject(lws)
+	o.mu.Lock()
+	previous, exists := o.writes[key]
+	var previousWrite pendingWrite
+	if exists {
+		previousWrite = *previous
+	}
+	o.mu.Unlock()
+	if exists {
+		if err := o.checkWrite(ctx, key, previousWrite); err != nil {
+			return err
+		}
+	}
+	written := &pendingWrite{owner: owner.UID, parent: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}, slice: lws.Labels[disaggregatedsetv1.SliceLabelKey], uid: lws.UID, deleted: deleting}
+	if !deleting {
+		if lws.Annotations == nil {
+			lws.Annotations = make(map[string]string)
+		}
+		written.receipt = uuid.NewString()
+		lws.Annotations[observationReceiptAnnotation] = written.receipt
+	}
+	// Record before the request, including when its outcome is not known.
+	o.mu.Lock()
+	o.writes[key] = written
+	o.mu.Unlock()
+	err := apply(ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if err == nil {
+		written.uid = lws.UID // Create returns the persisted UID.
+	} else if apierrors.IsConflict(err) || apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsAlreadyExists(err) || apierrors.IsNotFound(err) {
+		delete(o.writes, key) // This request definitively did not mutate the object.
+	} else {
+		written.retry = apply
+	}
+	return err
+}
+
+// Once the parent has disappeared from its informer, it cannot authorize more
+// rollout steps. Release its ledger entries instead of leaking them forever.
+func (o *pendingWrites) forget(parent client.ObjectKey) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for key, written := range o.writes {
+		if written.parent == parent {
+			delete(o.writes, key)
+		}
+	}
+}
+
+// observed checks a whole slice, not just the next LWS to change. Otherwise a
+// delayed update to A could authorize another deletion in B using A's old credit.
+func (o *pendingWrites) observed(ctx context.Context, owner types.UID, slice string) error {
+	o.mu.Lock()
+	writes := make(map[client.ObjectKey]pendingWrite)
+	for key, written := range o.writes {
+		if written.owner == owner && (slice == "" || written.slice == slice) {
+			writes[key] = *written
+		}
+	}
+	o.mu.Unlock()
+	for key, written := range writes {
+		if err := o.checkWrite(ctx, key, written); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, written pendingWrite) error {
+	lws := &leaderworkersetv1.LeaderWorkerSet{}
+	err := o.Get(ctx, key, lws)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	seen := written.deleted && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
+	seen = seen || err == nil && !written.deleted &&
+		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt
+	if seen {
+		o.mu.Lock()
+		if current := o.writes[key]; current != nil && current.receipt == written.receipt && current.uid == written.uid {
+			delete(o.writes, key)
+		}
+		o.mu.Unlock()
+		return nil
+	}
+	if written.retry != nil {
+		// A conflict may mean the first request succeeded. Retain the
+		// expectation until its receipt is visible, not until a timer expires.
+		err := written.retry(ctx)
+		if err != nil && !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err == nil {
+			o.mu.Lock()
+			if current := o.writes[key]; current != nil && current.receipt == written.receipt {
+				current.retry = nil // Accepted; only the watch is outstanding now.
+			}
+			o.mu.Unlock()
+		}
+	}
+	return fmt.Errorf("waiting to observe write to %s: %w", key, errReplicaGroupsPending)
 }

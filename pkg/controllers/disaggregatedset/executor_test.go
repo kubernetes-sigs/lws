@@ -783,7 +783,7 @@ func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready i
 	return objects
 }
 
-func TestRolloutGuardsLiveInputs(t *testing.T) {
+func TestRolloutGuardsChangedInformerInputs(t *testing.T) {
 	for _, change := range []string{"missing", "replacement", "generation changed", "deleting", "terminating input", "read error"} {
 		t.Run(change, func(t *testing.T) {
 			ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
@@ -800,7 +800,7 @@ func TestRolloutGuardsLiveInputs(t *testing.T) {
 			failure := errors.New("read unavailable")
 			manager.reader = interceptor.NewClient(c, interceptor.Funcs{
 				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-					// LWS were already discovered live. Only descendant lists follow.
+					// LWS are read by key; only descendant lists follow.
 					assert.IsNotType(t, &leaderworkersetv1.LeaderWorkerSetList{}, list)
 					if change == "read error" {
 						return failure
@@ -811,11 +811,11 @@ func TestRolloutGuardsLiveInputs(t *testing.T) {
 					if err := c.Get(ctx, key, obj, opts...); err != nil {
 						return err
 					}
-					if key.Name != old.Name {
+					lws, isLWS := obj.(*leaderworkersetv1.LeaderWorkerSet)
+					if key.Name != old.Name || !isLWS {
 						return nil
 					}
-					// A change after discovery must be caught by Scale's live guard.
-					lws := obj.(*leaderworkersetv1.LeaderWorkerSet)
+					// A change since discovery must defer the old plan.
 					switch change {
 					case "missing":
 						return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
@@ -835,13 +835,9 @@ func TestRolloutGuardsLiveInputs(t *testing.T) {
 			switch change {
 			case "read error":
 				require.ErrorIs(t, err, failure)
-			case "missing":
-				require.True(t, apierrors.IsNotFound(err), "missing scale input must retry: %v", err)
-			case "terminating input":
+			default:
 				require.NoError(t, err)
 				assert.Equal(t, time.Second, result.RequeueAfter)
-			default:
-				require.True(t, apierrors.IsConflict(err), "changed scale input must retry: %v", err)
 			}
 			assert.False(t, complete)
 			assert.EqualValues(t, 4, getTestLWSReplicas(c, testNamespace, old.Name))
@@ -2037,8 +2033,8 @@ func TestReconcileInformerObservationsAreSliceLocal(t *testing.T) {
 						return c.List(ctx, list, opts...)
 					},
 				})
-				o := testObservations(r.LWSManager.reader)
-				r.LWSManager.reader, r.LWSManager.observations = o, o
+				o := testPendingWrites(r.LWSManager.reader)
+				r.LWSManager.reader, r.LWSManager.pending = o, o
 				result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
 				switch tc.failure {
 				case "read":
@@ -2096,18 +2092,18 @@ func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
 	r.LWSManager = NewLeaderWorkerSetManager(cached)
 	_, err := r.ScalerManager.Reconcile(t.Context(), ds, func(string) (int32, error) { return 4, nil })
 	require.NoError(t, err)
-	o := testObservations(cached)
-	o.writes[client.ObjectKeyFromObject(old)] = &observedWrite{owner: ds.UID, slice: "0", uid: old.UID, receipt: "created"}
+	o := testPendingWrites(cached)
+	o.writes[client.ObjectKeyFromObject(old)] = &pendingWrite{owner: ds.UID, slice: "0", uid: old.UID, receipt: "created"}
 	// Hide the create from both Get and List until the watch catches up.
-	o.cache = testObservationCache{reader: interceptor.NewClient(cached, interceptor.Funcs{
+	o.Reader = interceptor.NewClient(cached, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
 			if !caughtUp && key == client.ObjectKeyFromObject(old) {
 				return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
 			}
 			return c.Get(ctx, key, object, opts...)
 		},
-	})}
-	r.LWSManager.reader, r.LWSManager.observations = o, o
+	})
+	r.LWSManager.reader, r.LWSManager.pending = o, o
 	for _, advance := range []bool{false, true} {
 		caughtUp = advance
 		if caughtUp {

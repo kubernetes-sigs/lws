@@ -25,22 +25,160 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/pager"
+	toolscache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
 )
+
+// Observer owns a cold-on-leadership informer cache. Its initial lists are
+// ordered and consistent, so a new leader does not start from a warm standby's
+// stale view. Reads after startup use only the cache.
+type Observer struct {
+	cache   cache.Cache
+	ready   chan struct{}
+	changed func(*leaderworkersetv1.LeaderWorkerSet)
+}
+
+const setNameIndex = "replicagroups.setName"
+
+// NewObserver constructs the shared reader; register it with mgr.Add before
+// starting the manager. changed wakes a consumer when an LWS or descendant
+// changes. Consumers still own write tracking and their rollout budgets.
+func NewObserver(mgr manager.Manager, changed func(*leaderworkersetv1.LeaderWorkerSet)) (*Observer, error) {
+	c, err := cache.New(mgr.GetConfig(), cache.Options{
+		Scheme: mgr.GetScheme(), Mapper: mgr.GetRESTMapper(), HTTPClient: mgr.GetHTTPClient(),
+		NewInformer: consistentInitialInformer,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Observer{cache: c, ready: make(chan struct{}), changed: changed}, nil
+}
+
+// A reflector's legacy initial LIST uses RV=0 (possibly stale). Bootstrap must
+// include the previous leader's writes, even when streaming lists are disabled.
+// This changes the informer's LIST semantics, not the reconciliation read path.
+func consistentInitialInformer(lw toolscache.ListerWatcher, object runtime.Object, resync time.Duration, indexes toolscache.Indexers) toolscache.SharedIndexInformer {
+	watcher := toolscache.ToListerWatcherWithContext(lw)
+	return toolscache.NewSharedIndexInformer(&toolscache.ListWatch{
+		ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
+			if options.ResourceVersion == "0" {
+				options.ResourceVersion = ""
+			}
+			return watcher.ListWithContext(ctx, options)
+		},
+		WatchFuncWithContext: watcher.WatchWithContext,
+	}, object, resync, indexes)
+}
+
+func (*Observer) NeedLeaderElection() bool { return true }
+
+func (o *Observer) Start(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { finished <- o.cache.Start(ctx) }()
+	// Register lazily and in causal order. The initial Pod list follows the
+	// workload lists; subsequent observations use only these running informers.
+	for _, object := range []client.Object{
+		&leaderworkersetv1.LeaderWorkerSet{}, &appsv1.StatefulSet{},
+		&appsv1.Deployment{}, &appsv1.ReplicaSet{}, &corev1.Pod{},
+	} {
+		informer, err := o.cache.GetInformer(ctx, object)
+		if err != nil {
+			return err
+		}
+		// GetInformer can return before syncing if cache.Start has not entered
+		// its goroutine yet. Explicitly wait before starting the next kind.
+		if !toolscache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+			return ctx.Err()
+		}
+		if err := o.cache.IndexField(ctx, object, setNameIndex, func(object client.Object) []string {
+			if name := object.GetLabels()[leaderworkersetv1.SetNameLabelKey]; name != "" {
+				return []string{name}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+			AddFunc: o.notify, UpdateFunc: func(_, current any) { o.notify(current) }, DeleteFunc: o.notify,
+		}); err != nil {
+			return err
+		}
+	}
+	close(o.ready)
+	return <-finished
+}
+
+func (o *Observer) waitForStartup(ctx context.Context) error {
+	select {
+	case <-o.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (o *Observer) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if err := o.waitForStartup(ctx); err != nil {
+		return err
+	}
+	return o.cache.Get(ctx, key, object, options...)
+}
+
+func (o *Observer) List(ctx context.Context, objects client.ObjectList, options ...client.ListOption) error {
+	if err := o.waitForStartup(ctx); err != nil {
+		return err
+	}
+	query := (&client.ListOptions{}).ApplyOptions(options)
+	if query.LabelSelector != nil {
+		if name, exact := query.LabelSelector.RequiresExactMatch(leaderworkersetv1.SetNameLabelKey); exact {
+			indexed := fields.OneTermEqualSelector(setNameIndex, name)
+			if query.FieldSelector == nil {
+				query.FieldSelector = indexed
+			} else {
+				query.FieldSelector = fields.AndSelectors(query.FieldSelector, indexed)
+			}
+		}
+	}
+	return o.cache.List(ctx, objects, query)
+}
+
+func (o *Observer) notify(value any) {
+	if tombstone, ok := value.(toolscache.DeletedFinalStateUnknown); ok {
+		value = tombstone.Obj
+	}
+	object, ok := value.(client.Object)
+	if !ok || o.changed == nil {
+		return
+	}
+	lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet)
+	if !ok {
+		name := object.GetLabels()[leaderworkersetv1.SetNameLabelKey]
+		if name == "" {
+			return
+		}
+		lws = &leaderworkersetv1.LeaderWorkerSet{}
+		if err := o.cache.Get(context.Background(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, lws); err != nil {
+			return
+		}
+	}
+	o.changed(lws)
+}
 
 // Snapshot contains one LWS and its observed, UID-verified descendants. Exactly
 // one leader workload is populated, unless it is missing or foreign-owned.
@@ -77,20 +215,15 @@ type Group struct {
 	Terminating bool
 }
 
-// Observe reads the expected LWS, its native controllers, and finally its Pods
-// through the supplied reader. Callers making safety-sensitive decisions must
-// pass an uncached API reader (mgr.GetAPIReader()), not a cached client. All Pod
-// membership and readiness facts come from the same namespace-scoped Pod list.
+// Observe reads one LWS and its UID-verified descendants from an informer-backed
+// reader. Observer supplies indexed lookups; no API batches or pagination are
+// needed. This is not an atomic snapshot or a read-after-write guarantee:
+// mutation consumers must track their writes, check ScalingObserved, and guard
+// writes with UID/resource-version preconditions.
 //
-// A missing or same-named replacement LWS returns (nil, nil). A missing or
-// foreign-owned leader workload returns an empty snapshot of the live LWS.
-// Read failures or invalid group-size metadata return an error, never a partial
-// observation or a fallback to status counters. expected must identify a
-// persisted LWS by a nonempty UID.
-// Objects returned by Observe are read-only; mutation consumers must copy them
-// and enforce their own UID/resource-version preconditions when writing.
-// Consumers planning from an earlier LWS spec must also match its generation
-// against Snapshot.LWS. A nil snapshot is unknown, not an observed zero Ready.
+// Missing or replaced LWS return nil, not zero availability. Read errors or
+// malformed group sizes return no snapshot. Results are read-only; callers
+// planning from an earlier LWS must also check its generation.
 func Observe(ctx context.Context, reader client.Reader, expected *leaderworkersetv1.LeaderWorkerSet) (*Snapshot, error) {
 	lws, err := readLWS(ctx, reader, expected)
 	if err != nil || lws == nil {
@@ -135,229 +268,6 @@ func Observe(ctx context.Context, reader client.Reader, expected *leaderworkerse
 	return buildSnapshot(lws, workload, itemPointers(replicaSets.Items), itemPointers(workerSets.Items), itemPointers(pods.Items))
 }
 
-// Bound selector length independently of the number of roles or revisions.
-const maxLWSPerBatch = 100
-
-// ObserveMany is Observe's batched counterpart for LWS in one namespace. It
-// first lists live LWS, then reads native workloads followed by Pods for each
-// bounded batch.
-// options scope the LWS list (for example, to one owner's slice); only objects
-// matching an expected name and UID are observed. Missing or replaced LWS have
-// no map entry: consumers must treat that as unknown, not zero readiness.
-//
-// Like Observe, this requires an uncached reader for safety-sensitive decisions,
-// returns read-only objects, and is ordered rather than atomic. Consumers must
-// compare generations against their earlier intents and guard writes. All list
-// pages are read; any read or metadata error returns no partial result. Callers
-// needing independent failure domains should use separate batches for them.
-func ObserveMany(ctx context.Context, reader client.Reader, expected []*leaderworkersetv1.LeaderWorkerSet, options ...client.ListOption) (map[types.UID]*Snapshot, error) {
-	wanted, err := lwsUIDs(expected)
-	if err != nil {
-		return nil, err
-	}
-	if len(expected) == 0 {
-		return map[types.UID]*Snapshot{}, nil
-	}
-	var live leaderworkersetv1.LeaderWorkerSetList
-	if err := listAll(ctx, reader, &live, append(slices.Clone(options), client.InNamespace(expected[0].Namespace))...); err != nil {
-		return nil, err
-	}
-	var matched []*leaderworkersetv1.LeaderWorkerSet
-	for i := range live.Items {
-		lws := &live.Items[i]
-		if uid, found := wanted[lws.Name]; found && uid == lws.UID {
-			matched = append(matched, lws)
-		}
-	}
-	return ObserveLive(ctx, reader, matched)
-}
-
-// ObserveLive observes descendants of LWS already read through an uncached API
-// reader in this reconciliation, avoiding ObserveMany's additional LWS list.
-// Inputs must come from one namespace and must not be cached or reused across
-// reconciliations. This function does not refresh their identity or generation.
-//
-// Native workloads and then Pods are read in bounded batches; reader must also
-// be uncached for safety-sensitive decisions.
-// Like ObserveMany, observations are read-only, ordered rather than atomic, and
-// returned only if every batch succeeds. Callers must still guard their writes
-// against intervening LWS changes; the supplied objects are not a reservation.
-func ObserveLive(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet) (map[types.UID]*Snapshot, error) {
-	return observeMany(ctx, reader, live, func(ctx context.Context, objects client.ObjectList, options ...client.ListOption) error {
-		return listAll(ctx, reader, objects, options...)
-	})
-}
-
-// ObserveCached assembles an informer observation without API pagination. Unlike
-// ObserveLive, this does not establish read-after-write ordering. Mutation
-// consumers must track their writes, wait for ScalingObserved, and guard writes
-// with optimistic concurrency. It is not a drop-in replacement for live reads.
-func ObserveCached(ctx context.Context, reader client.Reader, workloads []*leaderworkersetv1.LeaderWorkerSet) (map[types.UID]*Snapshot, error) {
-	return observeMany(ctx, reader, workloads, reader.List)
-}
-
-type listResources func(context.Context, client.ObjectList, ...client.ListOption) error
-
-func observeMany(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet, list listResources) (map[types.UID]*Snapshot, error) {
-	if _, err := lwsUIDs(live); err != nil {
-		return nil, err
-	}
-	result := make(map[types.UID]*Snapshot, len(live))
-	for batch := range slices.Chunk(live, maxLWSPerBatch) {
-		if err := observeBatch(ctx, reader, list, batch, result); err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
-}
-
-// lwsUIDs validates batch identities and indexes them by name.
-func lwsUIDs(workloads []*leaderworkersetv1.LeaderWorkerSet) (map[string]types.UID, error) {
-	wanted := make(map[string]types.UID, len(workloads))
-	for _, lws := range workloads {
-		if lws == nil || lws.UID == "" || lws.Name == "" || lws.Namespace == "" {
-			return nil, fmt.Errorf("observing replica groups requires an LWS namespace, name and UID")
-		}
-		if lws.Namespace != workloads[0].Namespace {
-			return nil, fmt.Errorf("batched LWS observations require one namespace")
-		}
-		if uid, found := wanted[lws.Name]; found && uid != lws.UID {
-			return nil, fmt.Errorf("conflicting expected UIDs for LeaderWorkerSet %s", lws.Name)
-		}
-		wanted[lws.Name] = lws.UID
-	}
-	return wanted, nil
-}
-
-type batchResources struct {
-	lws         *leaderworkersetv1.LeaderWorkerSet
-	leader      client.Object
-	replicaSets []*appsv1.ReplicaSet
-	workerSets  []*appsv1.StatefulSet
-	pods        []*corev1.Pod
-}
-
-func observeBatch(ctx context.Context, reader client.Reader, list listResources, live []*leaderworkersetv1.LeaderWorkerSet, result map[types.UID]*Snapshot) error {
-	byName := make(map[string]*batchResources, len(live))
-	names, hasHash := make([]string, 0, len(live)), false
-	for _, lws := range live {
-		byName[lws.Name] = &batchResources{lws: lws}
-		names = append(names, lws.Name)
-		hasHash = hasHash || lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash
-	}
-	requirement, err := labels.NewRequirement(leaderworkersetv1.SetNameLabelKey, selection.In, names)
-	if err != nil {
-		return err
-	}
-	options := []client.ListOption{client.InNamespace(live[0].Namespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*requirement)}}
-
-	// Partition each resource once; snapshot assembly never scans another LWS's
-	// Pods. Leaders are also indexed by name, independently of their label.
-	var statefulSets appsv1.StatefulSetList
-	if err := list(ctx, &statefulSets, options...); err != nil {
-		return err
-	}
-	for i := range statefulSets.Items {
-		sts := &statefulSets.Items[i]
-		if resources := byName[sts.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
-			resources.workerSets = append(resources.workerSets, sts)
-		}
-		if resources := byName[sts.Name]; resources != nil && resources.lws.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
-			resources.leader = sts
-		}
-	}
-	if hasHash {
-		var deployments appsv1.DeploymentList
-		if err := list(ctx, &deployments, options...); err != nil {
-			return err
-		}
-		for i := range deployments.Items {
-			deployment := &deployments.Items[i]
-			if resources := byName[deployment.Name]; resources != nil && resources.lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
-				resources.leader = deployment
-			}
-		}
-	}
-	// Observe finds leaders by name even when their label is missing or wrong.
-	// Preserve that contract, reading fallback Deployments before ReplicaSets.
-	for _, resources := range byName {
-		if resources.leader != nil {
-			continue
-		}
-		var leader client.Object = &appsv1.StatefulSet{}
-		if resources.lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash {
-			leader = &appsv1.Deployment{}
-		}
-		if err := reader.Get(ctx, client.ObjectKeyFromObject(resources.lws), leader); err != nil {
-			if client.IgnoreNotFound(err) != nil {
-				return fmt.Errorf("reading leader workload: %w", err)
-			}
-			continue
-		}
-		resources.leader = leader
-	}
-	if hasHash {
-		var replicaSets appsv1.ReplicaSetList
-		if err := list(ctx, &replicaSets, options...); err != nil {
-			return err
-		}
-		for i := range replicaSets.Items {
-			rs := &replicaSets.Items[i]
-			if resources := byName[rs.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
-				resources.replicaSets = append(resources.replicaSets, rs)
-			}
-		}
-	}
-	var pods corev1.PodList
-	if err := list(ctx, &pods, options...); err != nil {
-		return err
-	}
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		if resources := byName[pod.Labels[leaderworkersetv1.SetNameLabelKey]]; resources != nil {
-			resources.pods = append(resources.pods, pod)
-		}
-	}
-	for _, resources := range byName {
-		snapshot, err := buildSnapshot(resources.lws, resources.leader, resources.replicaSets, resources.workerSets, resources.pods)
-		if err != nil {
-			return err
-		}
-		result[resources.lws.UID] = snapshot
-	}
-	return nil
-}
-
-// listAll bounds individual responses without treating a partial page as a
-// complete observation (which could grant credit to groups awaiting deletion).
-func listAll(ctx context.Context, reader client.Reader, list client.ObjectList, options ...client.ListOption) error {
-	query := (&client.ListOptions{}).ApplyOptions(options)
-	if query.Raw != nil {
-		query.Raw = query.Raw.DeepCopy()
-	}
-	query.Limit, query.Continue = 500, ""
-	pages := pager.New(func(ctx context.Context, pageOptions metav1.ListOptions) (runtime.Object, error) {
-		// A fresh destination keeps prior Items and continuation metadata out
-		// of the next decode. list stays empty until every page has been read.
-		page := list.DeepCopyObject().(client.ObjectList)
-		request := *query
-		request.Raw = &pageOptions
-		request.Limit, request.Continue = pageOptions.Limit, pageOptions.Continue
-		return page, reader.List(ctx, page, &request)
-	})
-	// An expired observation needs a retry, not an unbounded replacement read.
-	pages.FullListIfExpired = false
-	all, _, err := pages.List(ctx, *query.AsListOptions())
-	if err != nil {
-		return fmt.Errorf("listing %T: %w", list, err)
-	}
-	items, err := meta.ExtractList(all)
-	if err != nil {
-		return err
-	}
-	return meta.SetList(list, items)
-}
-
 // itemPointers shares the list's read-only objects without copying their structs.
 func itemPointers[T any](items []T) []*T {
 	pointers := make([]*T, len(items))
@@ -367,8 +277,7 @@ func itemPointers[T any](items []T) []*T {
 	return pointers
 }
 
-// buildSnapshot is shared by single and batched observations. Descendant lists
-// are scoped to one LWS by label; owner UIDs, not labels, establish membership.
+// buildSnapshot scopes descendants by owner UID, not merely their LWS label.
 func buildSnapshot(lws *leaderworkersetv1.LeaderWorkerSet, workload client.Object,
 	replicaSets []*appsv1.ReplicaSet, workerSets []*appsv1.StatefulSet, pods []*corev1.Pod,
 ) (*Snapshot, error) {
@@ -451,8 +360,8 @@ func buildSnapshot(lws *leaderworkersetv1.LeaderWorkerSet, workload client.Objec
 }
 
 func readLWS(ctx context.Context, reader client.Reader, expected *leaderworkersetv1.LeaderWorkerSet) (*leaderworkersetv1.LeaderWorkerSet, error) {
-	if expected == nil || expected.UID == "" {
-		return nil, fmt.Errorf("observing replica groups requires an LWS UID")
+	if expected == nil || expected.UID == "" || expected.Name == "" || expected.Namespace == "" {
+		return nil, fmt.Errorf("observing replica groups requires an LWS namespace, name and UID")
 	}
 	lws := &leaderworkersetv1.LeaderWorkerSet{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(expected), lws); err != nil {

@@ -356,9 +356,9 @@ func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
 			objects := replicaGroupObjects(lws, 4, 4)
 			base, cached := newTestClient(objects...), newTestClient(objects...)
-			o := testObservations(cached)
+			o := testPendingWrites(cached)
 			manager := NewLeaderWorkerSetManager(base)
-			manager.reader, manager.observations = o, o
+			manager.reader, manager.pending = o, o
 			r := &DisaggregatedSetReconciler{LWSManager: manager}
 			ds := newTwoRoleTestDisaggregatedSet([2]int32{tc.desired, 4}, [2]int{1, 1}, [2]int{})
 			ds.Spec.Roles = ds.Spec.Roles[:1]
@@ -370,7 +370,7 @@ func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 				require.ErrorIs(t, err, errReplicaGroupsPending)
 			}
 			require.EqualValues(t, 4, getTestLWSReplicas(base, lws.Namespace, lws.Name), "wait for our policy write before changing scale")
-			o.cache = testObservationCache{reader: base} // The watch catches up.
+			o.Reader = base // The watch catches up.
 			_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
 			require.NoError(t, err)
 			stored := &leaderworkersetv1.LeaderWorkerSet{}
@@ -384,192 +384,7 @@ func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 	}
 }
 
-func TestCachedWorkloadsMatchDesired(t *testing.T) {
-	type state struct {
-		ds        *disaggregatedsetv1.DisaggregatedSet
-		workloads []*leaderworkersetv1.LeaderWorkerSet
-		desired   map[string]int
-	}
-	for _, tc := range []struct {
-		name   string
-		change func(*state)
-		want   bool
-	}{
-		{"matching", nil, true},
-		{"status does not require a workload mutation", func(s *state) { s.workloads[0].Status.ReadyReplicas = 0 }, true},
-		{"resolved external target overrides inline replicas", func(s *state) {
-			s.ds.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
-			s.ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](99)
-		}, true},
-		{"zero slices", func(s *state) { s.ds.Spec.Slices, s.workloads = ptr.To[int32](0), nil }, true},
-		{"zero replicas", func(s *state) {
-			for i := range s.ds.Spec.Roles {
-				s.ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](0)
-			}
-			for role := range s.desired {
-				s.desired[role] = 0
-			}
-			for _, lws := range s.workloads {
-				lws.Spec.Replicas = ptr.To[int32](0)
-				setInitialReplicasAnnotation(lws, 0)
-			}
-		}, true},
-		{"default Hash policy is equivalent to explicit PostTermination", func(s *state) {
-			s.ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementPostTermination
-			s.workloads[0].Spec.GroupReplacementPolicy = ""
-		}, true},
-		{"Ordinal policy is not synchronized", func(s *state) {
-			s.ds.Spec.Roles[1].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
-		}, true},
-		{"unresolved target", func(s *state) { delete(s.desired, testRolePrefill) }, false},
-		{"child assignment needs observation", func(s *state) {
-			s.ds.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](4)}}
-		}, false},
-		{"previous child layout needs observation", func(s *state) { s.workloads[0].Annotations[subRoleReplicasAnnotation] = `{"a":4}` }, false},
-		{"pending child assignment", func(s *state) { s.workloads[0].Annotations[subRolePlanAnnotation] = `{"a":4}` }, false},
-		{"child history recovery", func(s *state) {
-			s.workloads[0].Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"a":4}`
-		}, false},
-		{"changed target", func(s *state) { s.desired[testRolePrefill]++ }, false},
-		{"missing workload", func(s *state) { s.workloads = s.workloads[:3] }, false},
-		{"nil workload", func(s *state) { s.workloads[0] = nil }, false},
-		{"extra workload", func(s *state) { s.workloads = append(s.workloads, s.workloads[0]) }, false},
-		{"duplicate replaces a missing role", func(s *state) { s.workloads[3] = s.workloads[0] }, false},
-		{"wrong deterministic name", func(s *state) { s.workloads[0].Name += "-extra" }, false},
-		{"old revision", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.RevisionLabelKey] = "old" }, false},
-		{"terminating workload", func(s *state) { s.workloads[0].DeletionTimestamp = ptr.To(metav1.Now()) }, false},
-		{"unknown role", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.RoleLabelKey] = "removed" }, false},
-		{"malformed slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "bad" }, false},
-		{"noncanonical slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "00" }, false},
-		{"negative slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "-1" }, false},
-		{"removed slice", func(s *state) { s.workloads[0].Labels[disaggregatedsetv1.SliceLabelKey] = "2" }, false},
-		{"replica drift", func(s *state) { s.workloads[0].Spec.Replicas = ptr.To[int32](3) }, false},
-		{"missing baseline", func(s *state) { s.workloads[0].Annotations = nil }, false},
-		{"malformed baseline", func(s *state) { s.workloads[0].Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey] = "bad" }, false},
-		{"stale baseline", func(s *state) { setInitialReplicasAnnotation(s.workloads[0], 3) }, false},
-		{"Hash policy changed", func(s *state) {
-			s.ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
-		}, false},
-		{"missing budget history", func(s *state) { s.ds.Annotations = nil }, false},
-		{"malformed budget history", func(s *state) { s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = "{" }, false},
-		{"old role still has remembered budget", func(s *state) {
-			s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = `{"decode":0,"prefill":1,"removed":2}`
-		}, false},
-		{"policy reset requires budget update", func(s *state) {
-			s.ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] = `{"decode":0,"prefill":2}`
-			s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
-		}, false},
-		{"percentage budget needs recomputing", func(s *state) {
-			s.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("50%")
-		}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := state{ds: newTwoRoleTestDisaggregatedSet([2]int32{4, 2}, [2]int{1, 1}, [2]int{1, 0}), desired: map[string]int{testRolePrefill: 4, testRoleDecode: 2}}
-			s.ds.Spec.Slices = ptr.To[int32](2)
-			s.ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
-			s.ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"decode":0,"prefill":1}`}
-			for slice := range 2 {
-				for _, role := range s.ds.Spec.Roles {
-					lws := revisionLWS("target", role.Name, *role.Spec.Replicas, *role.Spec.Replicas, time.Time{}, *role.Spec.Replicas)
-					lws.Name = disaggregatedsetutils.GenerateName(s.ds.Name, slice, "target", role.Name)
-					lws.UID = types.UID(lws.Name)
-					lws.Labels = disaggregatedsetutils.GenerateLabels(s.ds.Name, slice, "target", role.Name)
-					lws.Spec.GroupIdentity, lws.Spec.GroupReplacementPolicy = role.Spec.GroupIdentity, leaderworkersetv1.GroupReplacementPostTermination
-					s.workloads = append(s.workloads, lws)
-				}
-			}
-			if tc.change != nil {
-				tc.change(&s)
-			}
-			assert.Equal(t, tc.want, cachedWorkloadsMatchDesired(t.Context(), nil, s.ds, s.workloads, "target", s.desired))
-		})
-	}
-}
-
-func TestCachedSubRolesRequireObservedAssignments(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		change func(*replicagroups.Snapshot) client.Object
-		remove bool
-		want   bool
-	}{
-		{"settled", nil, false, true},
-		{"unready but assigned", func(s *replicagroups.Snapshot) client.Object {
-			s.Groups[0].Leader.Status.Conditions = nil
-			return s.Groups[0].Leader
-		}, false, true},
-		{"missing worker", func(s *replicagroups.Snapshot) client.Object { return s.Groups[0].Pods[1] }, true, false},
-		{"missing leader", func(s *replicagroups.Snapshot) client.Object { return s.Groups[0].Leader }, true, false},
-		{"worker lost label", func(s *replicagroups.Snapshot) client.Object {
-			delete(s.Groups[0].Pods[1].Labels, disaggregatedsetv1.SubRoleLabelKey)
-			return s.Groups[0].Pods[1]
-		}, false, false},
-		{"leader lost label", func(s *replicagroups.Snapshot) client.Object {
-			delete(s.Groups[0].Leader.Labels, disaggregatedsetv1.SubRoleLabelKey)
-			return s.Groups[0].Leader
-		}, false, false},
-		{"pending plan", func(s *replicagroups.Snapshot) client.Object {
-			s.LWS.Annotations[subRolePlanAnnotation] = `{"a":1,"b":1}`
-			return s.LWS
-		}, false, false},
-		{"stale child history", func(s *replicagroups.Snapshot) client.Object {
-			s.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"a":2,"b":0}`
-			return s.LWS
-		}, false, false},
-		{"native target unobserved", func(s *replicagroups.Snapshot) client.Object {
-			s.LeaderStatefulSet.Generation++
-			return s.LeaderStatefulSet
-		}, false, false},
-		{"native worker target unobserved", func(s *replicagroups.Snapshot) client.Object {
-			s.Groups[0].WorkerStatefulSet.Generation++
-			return s.Groups[0].WorkerStatefulSet
-		}, false, false},
-		{"wrong ordinal prefix", func(s *replicagroups.Snapshot) client.Object {
-			s.LeaderStatefulSet.Spec.Ordinals.Start = 1
-			return s.LeaderStatefulSet
-		}, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a", "b")
-			if tc.change != nil {
-				object := tc.change(f.observe())
-				if tc.remove {
-					require.NoError(t, f.manager.client.Delete(t.Context(), object))
-				} else {
-					before := object.DeepCopyObject()
-					require.NoError(t, f.manager.client.Update(t.Context(), object))
-					if pod, ok := object.(*corev1.Pod); ok {
-						pod.Status = before.(*corev1.Pod).Status
-						require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
-					}
-				}
-			}
-			require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(f.lws), f.lws))
-			assert.Equal(t, tc.want, cachedSubRolesMatchDesired(t.Context(), f.manager.client, f.lws, map[string]int{"a": 1, "b": 1}))
-		})
-	}
-
-	t.Run("coherent labels are not proof of requested counts", func(t *testing.T) {
-		f := newSubRoleFixture(t, 0, "a", "b")
-		for _, pod := range f.observe().Groups[0].Pods {
-			pod.Labels[disaggregatedsetv1.SubRoleLabelKey] = "b"
-			require.NoError(t, f.manager.client.Update(t.Context(), pod))
-		}
-		_, assigned, err := f.manager.subRoleStatus(t.Context(), &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}, []*leaderworkersetv1.LeaderWorkerSet{f.lws}, f.lws.Name)
-		require.NoError(t, err)
-		require.True(t, assigned, "the saved condition only describes coherence")
-		require.False(t, cachedSubRolesMatchDesired(t.Context(), f.manager.client, f.lws, map[string]int{"a": 1, "b": 1}))
-	})
-	t.Run("cache read failure falls back to live path", func(t *testing.T) {
-		f := newSubRoleFixture(t, 0, "a", "b")
-		reader := interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-			return errors.New("cache failed")
-		}})
-		require.False(t, cachedSubRolesMatchDesired(t.Context(), reader, f.lws, map[string]int{"a": 1, "b": 1}))
-	})
-}
-
-func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
+func TestSubRoleReconcileUsesOnlyInformerReads(t *testing.T) {
 	ds := newDSWithRoles("ds", disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}})
 	desired := resolveDesiredReplicasByRole(ds, nil)
 	budget, err := maxUnavailableAnnotation(ds, rolloutRoleNames(ds), desired)
@@ -581,15 +396,15 @@ func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
 	f = f.withRevision(disaggregatedsetutils.GenerateName(ds.Name, 0, revision, "model"), "a", "b")
 	f.lws.Labels[disaggregatedsetv1.RevisionLabelKey] = revision
 	require.NoError(t, c.Update(t.Context(), f.lws))
-	liveReads := 0
-	f.manager.reader = interceptor.NewClient(c, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			liveReads++
-			return c.Get(ctx, key, obj, opts...)
+	f.manager.pending = testPendingWrites(c)
+	f.manager.client = interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			t.Error("observation bypassed the informer")
+			return errors.New("direct GET")
 		},
-		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			liveReads++
-			return c.List(ctx, list, opts...)
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			t.Error("observation bypassed the informer")
+			return errors.New("direct LIST")
 		},
 	})
 	r := newTestReconciler(c)
@@ -597,7 +412,6 @@ func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
 	_, err = r.Reconcile(t.Context(), request)
 	require.NoError(t, err)
-	require.Zero(t, liveReads, "idle assignment and status must use only informer data")
 
 	// The old condition stays True, but the updated Pod cache must force repair.
 	s, err := replicagroups.Observe(t.Context(), c, f.lws)
@@ -607,9 +421,70 @@ func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
 	require.NoError(t, c.Update(t.Context(), worker))
 	_, err = r.Reconcile(t.Context(), request)
 	require.NoError(t, err)
-	require.Positive(t, liveReads, "assignment repair still requires live checks")
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(worker), worker))
 	require.Equal(t, "a", worker.Labels[disaggregatedsetv1.SubRoleLabelKey])
+}
+
+func TestSubRoleScaleWaitsForInformerObservations(t *testing.T) {
+	f := newSubRoleFixture(t, 0, "a", "a", "b")
+	before := f.observe()
+	base := f.manager.client.(client.WithWatch)
+	hideLWS, hidePods := true, true
+	reader := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok && hideLWS {
+				before.LWS.DeepCopyInto(lws)
+				return nil
+			}
+			return c.Get(ctx, key, object, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if pods, ok := list.(*corev1.PodList); ok && hidePods {
+				pods.Items = nil
+				for _, group := range before.Groups {
+					for _, pod := range group.Pods {
+						pods.Items = append(pods.Items, *pod.DeepCopy())
+					}
+				}
+				return nil
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	f.manager.reader, f.manager.pending = reader, testPendingWrites(reader)
+	_, err := f.manager.syncSubRoles(t.Context(), f.ds, before.LWS, subRoleUpdate{target: map[string]int{"a": 1, "b": 1}})
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+	r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+	f.ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"model/removed":2}`}
+	for range 3 {
+		_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), f.ds, 0, "target", nil)
+		require.ErrorIs(t, err, errReplicaGroupsPending, "unseen assignment intent blocks the whole slice")
+		_, err = r.seedForRole(t.Context(), f.ds)("model/a")
+		require.ErrorIs(t, err, errReplicaGroupsPending, "a scaler must not freeze the old child count")
+		roles, err := f.manager.retainedRolloutRoleNames(t.Context(), f.ds)
+		require.NoError(t, err)
+		require.Contains(t, roles, "model/removed", "unseen writes must not prune child budget history")
+	}
+	hideLWS = false
+	require.NoError(t, f.manager.pending.observed(t.Context(), f.ds.UID, "0"))
+	f.sync() // Relabel the retained second group from a to b.
+	for range 3 {
+		_, err = f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+		require.Error(t, err, "stale Pod versions must not complete the assignment")
+		require.EqualValues(t, 3, getTestLWSReplicas(base, f.ds.Namespace, f.lws.Name))
+	}
+	hidePods = false
+	f.sync() // Observe the retained labels, clear the tail, and publish replicas=2.
+	require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS))
+	_, err = f.manager.observeRolloutReadiness(t.Context(), nil, f.revision("old"))
+	require.ErrorIs(t, err, errReplicaGroupsPending, "the native scale must also be observed")
+	f.native()
+	f.sync()
+	observed, err := f.manager.collectRolloutObservations(t.Context(), f.ds, disaggregatedsetutils.RevisionRolesList{f.revision("old")}, disaggregatedsetutils.RevisionRoles{}, nil)
+	require.NoError(t, err)
+	for name, initial := range map[string]int{"model/a": 2, "model/b": 1} {
+		require.Equal(t, replicaReadiness{spec: 1, initial: initial, raw: 1, committed: 1}, observed.role(f.revision("old"), name))
+	}
 }
 
 func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
@@ -1353,4 +1228,177 @@ func TestComputeRevisionGroupIdentity(t *testing.T) {
 			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityOrdinal)),
 			disaggregatedsetutils.ComputeRevision(buildRoles(leaderworkersetv1.GroupIdentityHash)))
 	})
+}
+
+func testPendingWrites(reader client.Reader) *pendingWrites {
+	return &pendingWrites{Reader: reader, writes: make(map[client.ObjectKey]*pendingWrite)}
+}
+
+func TestObserveReadinessRejectsPartialRoleMaps(t *testing.T) {
+	a := revisionLWS("old", testRolePrefill, 1, 1, time.Time{}, 1)
+	b := revisionLWS("old", testRoleDecode, 1, 1, time.Time{}, 1)
+	a.Spec.LeaderWorkerTemplate.Size, b.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
+	objects := append(replicaGroupObjects(a, 1, 1), replicaGroupObjects(b, 1, 1)...)
+	objects[len(objects)-1].SetAnnotations(nil) // The second role has invalid group metadata.
+	manager := NewLeaderWorkerSetManager(newTestClient(objects...))
+	readiness, err := manager.observeCachedReadiness(t.Context(), []*leaderworkersetv1.LeaderWorkerSet{a, b})
+	require.ErrorContains(t, err, "invalid group size")
+	require.Nil(t, readiness, "the first role's Ready credit must not escape a failed observation")
+}
+
+func TestWriteReceiptsWaitForTheWholeSlice(t *testing.T) {
+	a := revisionLWS("old", testRolePrefill, 4, 4, time.Time{}, 4)
+	b := revisionLWS("old", testRoleDecode, 4, 4, time.Time{}, 4)
+	base := newTestClient(a, b)
+	cached := newTestClient(a.DeepCopy(), b.DeepCopy())
+	o := testPendingWrites(cached)
+	manager := NewLeaderWorkerSetManager(base)
+	manager.reader, manager.pending = o, o
+	ds := newTestDisaggregatedSet()
+	// Two writes in one already-planned step are allowed. The next step must
+	// observe BOTH, even if it would only mutate a different role.
+	for _, lws := range []*leaderworkersetv1.LeaderWorkerSet{a, b} {
+		require.NoError(t, manager.Scale(t.Context(), ds, lws, 3))
+	}
+	require.ErrorIs(t, o.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending)
+	require.NoError(t, o.observed(t.Context(), ds.UID, "1"), "another slice is independent")
+	require.NoError(t, o.observed(t.Context(), types.UID("another-owner"), "0"))
+	r := &DisaggregatedSetReconciler{LWSManager: manager}
+	seed := r.seedForRole(t.Context(), ds)
+	_, err := seed(testRolePrefill)
+	require.ErrorIs(t, err, errReplicaGroupsPending, "a new scaler must not freeze a stale count")
+	for i, lws := range []*leaderworkersetv1.LeaderWorkerSet{a, b} {
+		current := &leaderworkersetv1.LeaderWorkerSet{}
+		require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+		// The informer can skip the exact write response and deliver a later
+		// status update. The receipt, not equality of resource versions, matters.
+		previous := &leaderworkersetv1.LeaderWorkerSet{}
+		require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), previous))
+		current.ResourceVersion = previous.ResourceVersion
+		require.NoError(t, cached.Update(t.Context(), current))
+		err := o.observed(t.Context(), ds.UID, "0")
+		if i == 0 {
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	require.Empty(t, o.writes)
+	count, err := seed(testRolePrefill)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, count)
+}
+
+func TestWriteReceiptErrors(t *testing.T) {
+	for _, mode := range []string{"rejected", "not-applied", "applied"} {
+		t.Run(mode, func(t *testing.T) {
+			lws := revisionLWS("old", testRolePrefill, 4, 4, time.Time{}, 4)
+			base, cached := newTestClient(lws), newTestClient(lws.DeepCopy())
+			o := testPendingWrites(cached)
+			calls := 0
+			writer := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					calls++
+					if calls == 1 {
+						if mode == "rejected" {
+							return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), object.GetName(), errors.New("concurrent write"))
+						}
+						if mode == "applied" {
+							copy := object.DeepCopyObject().(client.Object)
+							require.NoError(t, c.Patch(ctx, copy, patch, opts...))
+						}
+						return errors.New("response lost")
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+			})
+			manager := NewLeaderWorkerSetManager(writer)
+			manager.reader, manager.pending = o, o
+			ds := newTestDisaggregatedSet()
+			require.Error(t, manager.Scale(t.Context(), ds, lws, 3))
+			if mode == "rejected" {
+				require.Empty(t, o.writes, "a definitive rejection reserves nothing")
+				return
+			}
+			for range 3 {
+				require.ErrorIs(t, o.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending, "neither elapsed retries nor a retry conflict proves safety")
+			}
+			current := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+			require.EqualValues(t, 3, getLWSReplicas(current))
+			previous := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), previous))
+			current.ResourceVersion = previous.ResourceVersion
+			require.NoError(t, cached.Update(t.Context(), current))
+			require.NoError(t, o.observed(t.Context(), ds.UID, "0"))
+		})
+	}
+}
+
+func TestDeletionReceiptDoesNotWaitForPhysicalRemoval(t *testing.T) {
+	lws := revisionLWS("old", testRolePrefill, 0, 0, time.Time{}, 4)
+	lws.Finalizers = []string{"hold-test-deletion"}
+	base, cached := newTestClient(lws), newTestClient(lws.DeepCopy())
+	o := testPendingWrites(cached)
+	manager := NewLeaderWorkerSetManager(base)
+	manager.pending = o
+	require.NoError(t, manager.deleteInForeground(t.Context(), lws))
+	owner := metav1.GetControllerOf(lws).UID
+	require.ErrorIs(t, o.observed(t.Context(), owner, "0"), errReplicaGroupsPending)
+	require.NoError(t, cached.Delete(t.Context(), lws))
+	require.NoError(t, o.observed(t.Context(), owner, "0"))
+	current := &leaderworkersetv1.LeaderWorkerSet{}
+	require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+	require.False(t, current.DeletionTimestamp.IsZero())
+}
+
+func TestCreateReceiptSurvivesCoalescingAndParentDeletion(t *testing.T) {
+	lws := revisionLWS("new", testRolePrefill, 0, 0, time.Time{}, 4)
+	lws.UID = ""
+	base, cached := newTestClient(), newTestClient()
+	o := testPendingWrites(cached)
+	require.NoError(t, o.mutate(t.Context(), lws, false, func(ctx context.Context) error { return base.Create(ctx, lws) }))
+	owner := metav1.GetControllerOf(lws)
+	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending, "absence from an older cache cannot acknowledge creation")
+	// Deliver a later version bearing the same receipt; no exact RV match.
+	lws.ResourceVersion = ""
+	require.NoError(t, cached.Create(t.Context(), lws))
+	require.NoError(t, o.observed(t.Context(), owner.UID, "0"))
+	require.Empty(t, o.writes)
+	key := client.ObjectKeyFromObject(lws)
+	parent := client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}
+	o.writes[key] = &pendingWrite{parent: parent, receipt: "unseen"}
+	o.forget(client.ObjectKey{Namespace: "other", Name: owner.Name})
+	require.Len(t, o.writes, 1)
+	o.forget(parent)
+	require.Empty(t, o.writes)
+}
+
+func TestBudgetHistoryDoesNotPruneAnUnobservedCreate(t *testing.T) {
+	ds := newTestDisaggregatedSet()
+	ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"removed":2}`}
+	lws := revisionLWS("old", "removed", 0, 0, time.Time{}, 4)
+	lws.Annotations[observationReceiptAnnotation] = "created"
+	base := newTestClient(ds, lws)
+	// The receipt GET advances the fake cache. The subsequent list must see
+	// the created LWS before history can be pruned.
+	visible := false
+	cached := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			visible = true
+			return c.Get(ctx, key, object, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if !visible {
+				return nil
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	o := testPendingWrites(cached)
+	o.writes[client.ObjectKeyFromObject(lws)] = &pendingWrite{owner: ds.UID, slice: "0", uid: lws.UID, receipt: "created"}
+	r := newTestReconciler(base)
+	r.LWSManager.reader, r.LWSManager.pending = o, o
+	require.NoError(t, r.syncMaxUnavailable(t.Context(), ds, map[string]int{}))
+	require.Equal(t, 2, rememberedMaxUnavailable(ds)["removed"])
 }

@@ -151,9 +151,8 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 	}
 	assigned := true
 	for _, lws := range workloads {
-		// Status is eventually consistent; it must not duplicate the live reads
-		// reserved for assignment and scale decisions.
-		s, err := replicagroups.Observe(ctx, m.client, lws)
+		// Status shares the indexed informer reader used for rollout observations.
+		s, err := replicagroups.Observe(ctx, m.reader, lws)
 		if err != nil {
 			return status, false, err
 		}

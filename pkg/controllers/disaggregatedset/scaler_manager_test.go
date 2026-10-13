@@ -307,7 +307,7 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			require.NoError(t, c.Status().Update(t.Context(), f.ds))
 			old := f.withRevision("old", "a")
 			podLists := 0
-			f.manager.client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+			f.manager.reader = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
 				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 					if _, pods := list.(*corev1.PodList); pods {
 						podLists++
@@ -319,9 +319,9 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 				},
 			})
 			m := NewScalerManager(c, events.NewFakeRecorder(10))
-			scalers, err := m.Reconcile(t.Context(), f.ds, func(key string) int32 {
+			scalers, err := m.Reconcile(t.Context(), f.ds, func(key string) (int32, error) {
 				require.Equal(t, "model/a", key)
-				return 9
+				return 9, nil
 			})
 			require.NoError(t, err)
 			require.Len(t, scalers, 1)
@@ -383,7 +383,7 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			scaler.Finalizers = []string{"test/hold"}
 			require.NoError(t, c.Update(t.Context(), scaler))
 			f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{externalRole("model-a")}
-			scalers, err = m.Reconcile(t.Context(), f.ds, func(string) int32 { return 3 })
+			scalers, err = m.Reconcile(t.Context(), f.ds, func(string) (int32, error) { return 3, nil })
 			require.NoError(t, err)
 			require.Empty(t, scalers)
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(scaler), scaler))

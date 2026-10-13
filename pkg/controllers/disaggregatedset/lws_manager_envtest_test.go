@@ -40,6 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/replicagroups"
 )
 
 type observationTransport struct {
@@ -57,6 +58,7 @@ func (t *observationTransport) RoundTrip(request *http.Request) (*http.Response,
 	return t.RoundTripper.RoundTrip(request)
 }
 
+// Exercises the manager's pending writes against the shared informer observer.
 // Run with KUBEBUILDER_ASSETS=<envtest binaries> go test -tags=integration
 // ./pkg/controllers/disaggregatedset -run TestInformerObservationWithAPIServer.
 func TestInformerObservationWithAPIServer(t *testing.T) {
@@ -134,13 +136,13 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				}
 			}
 			acknowledge(2)
-			start := func() (*informerObservation, *observationTransport, func()) {
+			start := func() (*replicagroups.Observer, *observationTransport, func()) {
 				cfg := rest.CopyConfig(config)
 				trace := &observationTransport{}
 				cfg.WrapTransport = func(rt http.RoundTripper) http.RoundTripper { trace.RoundTripper = rt; return trace }
 				mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
 				require.NoError(t, err)
-				o, err := newInformerObservation(mgr)
+				o, err := replicagroups.NewObserver(mgr, nil)
 				require.NoError(t, err)
 				require.True(t, o.NeedLeaderElection())
 				ctx, cancel := context.WithCancel(t.Context())
@@ -148,7 +150,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				go func() { finished <- o.Start(ctx) }()
 				wait, stopWaiting := context.WithTimeout(ctx, 20*time.Second)
 				defer stopWaiting()
-				require.NoError(t, o.waitForStartup(wait))
+				require.NoError(t, o.Get(wait, client.ObjectKeyFromObject(lws), &leaderworkersetv1.LeaderWorkerSet{}))
 				stop := func() { cancel(); require.NoError(t, <-finished) }
 				trace.mu.Lock()
 				trace.reads = nil
@@ -166,7 +168,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 					return nil
 				},
 			}))
-			manager.reader, manager.observations = o, o
+			manager.reader, manager.pending = o, testPendingWrites(o)
 			observe := func() error {
 				current := &leaderworkersetv1.LeaderWorkerSet{}
 				if err := o.Get(t.Context(), client.ObjectKeyFromObject(lws), current); err != nil {
@@ -176,8 +178,40 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				return err
 			}
 			require.NoError(t, observe(), "Pending Pods do not block scaling")
+			if identity == leaderworkersetv1.GroupIdentityOrdinal {
+				// Exercise the merged subrole path with real watch delivery too:
+				// assign Pending groups, then remove routing without live reads.
+				for _, membership := range []map[string]int{{"a": 1, "b": 1}, {}} {
+					require.Eventually(t, func() bool {
+						if err := manager.pending.observed(t.Context(), metav1.GetControllerOf(lws).UID, "0"); err != nil {
+							return false
+						}
+						require.NoError(t, o.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
+						_, err := manager.syncSubRoles(t.Context(), newTestDisaggregatedSet(), lws, subRoleUpdate{membership: membership})
+						if err != nil {
+							require.ErrorIs(t, err, errReplicaGroupsPending)
+							return false
+						}
+						return true
+					}, 5*time.Second, 10*time.Millisecond)
+					snapshot, err := replicagroups.Observe(t.Context(), o, lws)
+					require.NoError(t, err)
+					for _, group := range snapshot.Groups {
+						child, coherent := groupSubRole(group)
+						require.True(t, coherent)
+						if len(membership) == 0 {
+							require.Empty(t, child)
+						} else {
+							require.Contains(t, membership, child)
+						}
+						require.False(t, group.Ready, "assignment must not require readiness")
+					}
+				}
+			}
 			require.NoError(t, manager.Scale(t.Context(), newTestDisaggregatedSet(), lws, 1))
-			require.Eventually(t, func() bool { return o.observed(t.Context(), metav1.GetControllerOf(lws).UID, "0") == nil }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool {
+				return manager.pending.observed(t.Context(), metav1.GetControllerOf(lws).UID, "0") == nil
+			}, 5*time.Second, 10*time.Millisecond)
 			require.ErrorIs(t, observe(), errReplicaGroupsPending, "the LWS receipt alone is insufficient")
 			acknowledge(1)
 			require.ErrorIs(t, observe(), errReplicaGroupsPending, "native acknowledgement alone is insufficient")
@@ -190,7 +224,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			// see the pending deletion left by the previous process.
 			o, _, stop = start()
 			defer stop()
-			manager.reader, manager.observations = o, o
+			manager.reader, manager.pending = o, testPendingWrites(o)
 			require.ErrorIs(t, observe(), errReplicaGroupsPending)
 			require.NoError(t, writer.Delete(t.Context(), victim))
 			require.Eventually(t, func() bool { return observe() == nil }, 5*time.Second, 10*time.Millisecond)
