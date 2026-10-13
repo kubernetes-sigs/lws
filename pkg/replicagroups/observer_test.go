@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -852,4 +853,34 @@ func TestObserverIndexesWithoutChangingCallerSelectors(t *testing.T) {
 		require.Equal(t, before, query.FieldSelector.String(), "the caller's options remain unchanged")
 		require.Equal(t, query.LabelSelector, c.query.LabelSelector)
 	}
+}
+
+type notificationCache struct {
+	cache.Cache
+	parent *leaderworkersetv1.LeaderWorkerSet
+	query  *client.GetOptions
+}
+
+func (c *notificationCache) Get(_ context.Context, _ client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	c.query = (&client.GetOptions{}).ApplyOptions(options)
+	*object.(*leaderworkersetv1.LeaderWorkerSet) = *c.parent
+	return nil
+}
+
+func TestObserverNotificationUsesReadOnlyParent(t *testing.T) {
+	parent := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 1, 1).lws
+	before := parent.DeepCopy()
+	c := &notificationCache{parent: parent}
+	calls := 0
+	o := &Observer{cache: c, changed: func(lws *leaderworkersetv1.LeaderWorkerSet) {
+		calls++
+		require.Equal(t, before, lws)
+	}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: parent.Namespace, Labels: map[string]string{leaderworkersetv1.SetNameLabelKey: parent.Name}}}
+	for _, event := range []any{parent, pod, toolscache.DeletedFinalStateUnknown{Obj: pod}} {
+		o.notify(event)
+	}
+	require.Equal(t, 3, calls)
+	require.Equal(t, ptr.To(true), c.query.UnsafeDisableDeepCopy, "parent lookup is read-only, like direct LWS notifications")
+	require.Equal(t, before, parent, "notification must not mutate the cached object")
 }

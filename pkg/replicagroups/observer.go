@@ -57,7 +57,8 @@ const setNameIndex = "replicagroups.setName"
 
 // NewObserver constructs the shared reader; register it with mgr.Add before
 // starting the manager. changed wakes a consumer when an LWS or descendant
-// changes. Consumers still own write tracking and their rollout budgets.
+// changes, passing a read-only cached LWS. Consumers still own write tracking
+// and their rollout budgets, and must copy the LWS before any mutation.
 func NewObserver(mgr manager.Manager, changed func(*leaderworkersetv1.LeaderWorkerSet)) (*Observer, error) {
 	selector, err := labels.Parse(leaderworkersetv1.SetNameLabelKey)
 	if err != nil {
@@ -185,7 +186,7 @@ func (o *Observer) notify(value any) {
 			return
 		}
 		lws = &leaderworkersetv1.LeaderWorkerSet{}
-		if err := o.cache.Get(context.Background(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, lws); err != nil {
+		if err := o.cache.Get(context.Background(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, lws, client.UnsafeDisableDeepCopy); err != nil {
 			return
 		}
 	}
