@@ -420,7 +420,7 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	if s.LWS.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
 		return m.syncHashSubRoleAssignments(ctx, state)
 	}
-	if m.pending != nil && !s.ScalingObserved() {
+	if m.pending != nil && !s.DeletionsObserved() {
 		return errReplicaGroupsPending
 	}
 	issued, pending := state.issued, state.pending
@@ -623,7 +623,7 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 		target = state.pending
 	}
 	preparing := state.pending != nil && !maps.Equal(state.issued, target)
-	waiting := !hashSubRoleNativeAcknowledged(s, state.pending == nil || preparing) || m.pending != nil && !s.ScalingObserved()
+	waiting := !hashSubRoleNativeAcknowledged(s, state.pending == nil || preparing)
 	groups := activeSubRoleGroups(s)
 	_, removing := target[""]
 	assignments := stickySubRoleAssignments(groups, target)

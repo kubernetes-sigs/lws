@@ -4112,12 +4112,8 @@ func TestSubRoleScaleDownAfterNativeCreationFailure(t *testing.T) {
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), s.LeaderStatefulSet))
 			}
 			before := f.observe().Groups
-			// Informer mode waits for the full cohort, even for a creation
-			// shortfall. The assignment algorithm alone can cancel missing growth.
+			// Use production receipt tracking: missing growth must remain cancellable.
 			f.manager.pending = testPendingWrites(f.manager.reader)
-			require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
-			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS))
-			f.manager.pending = nil
 			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
 				t.Fatal("cancelling missing growth must not delete any group")
 				return nil
