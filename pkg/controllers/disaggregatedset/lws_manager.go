@@ -669,6 +669,11 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 		}); err != nil {
 			return fmt.Errorf("failed to update initial-replicas annotation on %s: %w", current.Name, err)
 		}
+		if manager.pending != nil {
+			if err := manager.pending.observed(ctx, ds.UID, current.Labels[disaggregatedsetv1.SliceLabelKey]); err != nil {
+				return err
+			}
+		}
 	}
 
 	current.DeepCopyInto(leaderWorkerSet)

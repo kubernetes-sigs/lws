@@ -417,6 +417,54 @@ func TestReconcileSliceRecoversFromMissingGrowth(t *testing.T) {
 	}
 }
 
+func TestRolloutWaitsForMetadataReceipts(t *testing.T) {
+	for _, change := range []string{"old baseline", "target baseline", "replacement policy"} {
+		t.Run(change, func(t *testing.T) {
+			ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(1)))
+			old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1, 0), 4)
+			target := revisionLWS("target", testRolePrefill, 1, 1, time.Unix(2, 0), 4)
+			if change == "old baseline" {
+				delete(old.Annotations, disaggregatedsetv1.InitialReplicasAnnotationKey)
+			} else if change == "target baseline" {
+				setInitialReplicasAnnotation(target, 1)
+			} else {
+				ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+				old.Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+			}
+			var objects []client.Object
+			for _, lws := range []*leaderworkersetv1.LeaderWorkerSet{old, target} {
+				lws.Spec.GroupIdentity, lws.Spec.LeaderWorkerTemplate.Size = leaderworkersetv1.GroupIdentityHash, ptr.To[int32](1)
+				objects = append(objects, replicaGroupObjects(lws, getLWSReplicas(lws), getLWSReplicas(lws))...)
+			}
+			base, cached := newTestClient(objects...), newTestClient(objects...)
+			r := newTestReconciler(base)
+			r.LWSManager = NewLeaderWorkerSetManager(base)
+			r.LWSManager.reader, r.LWSManager.pending = cached, testPendingWrites(cached)
+			r.LWSManager.pending.initialized = map[types.UID]client.ObjectKey{old.UID: client.ObjectKeyFromObject(ds), target.UID: client.ObjectKeyFromObject(ds)}
+			for range 3 {
+				_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "target", map[string]int{testRolePrefill: 4})
+				if err != nil {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+				require.EqualValues(t, 4, getTestLWSReplicas(base, ds.Namespace, old.Name), "metadata writes must be observed before ANY drain")
+				require.EqualValues(t, 1, getTestLWSReplicas(base, ds.Namespace, target.Name))
+			}
+			for _, lws := range []*leaderworkersetv1.LeaderWorkerSet{old, target} {
+				stored, previous := &leaderworkersetv1.LeaderWorkerSet{}, &leaderworkersetv1.LeaderWorkerSet{}
+				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+				require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), previous))
+				if stored.ResourceVersion != previous.ResourceVersion {
+					stored.ResourceVersion = previous.ResourceVersion
+					require.NoError(t, cached.Update(t.Context(), stored))
+				}
+			}
+			_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "target", map[string]int{testRolePrefill: 4})
+			require.NoError(t, err)
+			require.Less(t, getTestLWSReplicas(base, ds.Namespace, old.Name), int32(4), "observation unblocks rollout progress")
+		})
+	}
+}
+
 func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 	for _, tc := range []struct {
 		name             string

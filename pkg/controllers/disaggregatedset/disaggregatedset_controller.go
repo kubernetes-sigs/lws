@@ -322,6 +322,11 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	if err := r.syncGroupReplacementPolicies(ctx, disaggregatedSet, slice); err != nil {
 		return ctrl.Result{}, err
 	}
+	if r.LWSManager.pending != nil {
+		if err := r.LWSManager.pending.observed(ctx, disaggregatedSet.UID, strconv.Itoa(slice)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	oldRevisions, newRevision, err := executor.LWSManager.GetRevisionRolesList(ctx, disaggregatedSet, slice, revision)
 	if err != nil {
