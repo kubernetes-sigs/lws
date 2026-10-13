@@ -335,6 +335,9 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 				require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
 				require.Equal(t, a == 1, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)))
 			}
+			// A missing child target is unknown, even when that child has no groups.
+			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 2, "model/a": 1, "model/b": 1}, nil))
+			require.False(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)))
 			worker := f.observe().Groups[0].Pods[1]
 			delete(worker.Labels, disaggregatedsetv1.SubRoleLabelKey)
 			require.NoError(t, c.Update(t.Context(), worker))

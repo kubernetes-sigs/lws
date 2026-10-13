@@ -24,14 +24,11 @@ import (
 	"fmt"
 	"maps"
 	"strconv"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
@@ -46,7 +43,6 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
-	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
@@ -226,48 +222,6 @@ func cachedWorkloadsMatchDesired(ctx context.Context, reader client.Reader, ds *
 	return err == nil && ds.Annotations[disaggregatedsetv1.MaxUnavailableAnnotationKey] == encoded
 }
 
-// Only cached objects authorize this no-op; actual assignment and scale writes
-// still require live observations. A saved Assigned condition is not proof:
-// Pods can be replaced or relabeled without changing the DS generation.
-func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *leaderworkersetv1.LeaderWorkerSet, desired map[string]int) bool {
-	if lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash || lws.Annotations[subRolePlanAnnotation] != "" {
-		return false
-	}
-	for _, key := range []string{subRoleReplicasAnnotation, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey} {
-		counts, err := subRoleCounts(lws, key)
-		if err != nil || !maps.Equal(counts, desired) {
-			return false
-		}
-	}
-	s, err := replicagroups.Observe(ctx, reader, lws)
-	if err != nil || s == nil || s.LWS.ResourceVersion != lws.ResourceVersion || !subRoleNativeSettled(s) {
-		return false
-	}
-	count := countSubRoles(desired)
-	if _, complete := subRolePrefix(s, count); !complete || len(s.Groups) != count {
-		return false
-	}
-	remaining := maps.Clone(desired)
-	for _, group := range s.Groups {
-		name, coherent := groupSubRole(group)
-		size, _ := strconv.Atoi(group.Leader.Annotations[leaderworkersetv1.SizeAnnotationKey])
-		if !coherent || remaining[name] == 0 || group.Terminating || len(group.Pods) != size ||
-			group.Leader.Status.Phase == corev1.PodFailed || group.Leader.Status.Phase == corev1.PodSucceeded {
-			return false
-		}
-		if workers := group.WorkerStatefulSet; size > 1 && (workers == nil || workers.Status.ObservedGeneration < workers.Generation || ptr.Deref(workers.Spec.Replicas, 0) != int32(size-1)) {
-			return false
-		}
-		for i, pod := range group.Pods[1:] {
-			if pod.Name != fmt.Sprintf("%s-%d", group.WorkerStatefulSet.Name, i+1) || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-				return false
-			}
-		}
-		remaining[name]--
-	}
-	return true
-}
-
 // syncMaxUnavailable remembers live budgets, including policy-only updates.
 // Persisting resolved counts freezes percentages for removed roles and gives
 // every old-revision candidate the same allowance.
@@ -276,31 +230,11 @@ func (r *DisaggregatedSetReconciler) syncMaxUnavailable(
 	ds *disaggregatedsetv1.DisaggregatedSet,
 	desiredReplicasByRole map[string]int,
 ) error {
-	// Only a live, ownership-filtered list can safely prune history. Retain even
-	// zero-Spec LWS until deletion, and never erase history due to informer lag.
-	workloads, err := r.LWSManager.listWithReader(ctx, r.LWSManager.apiReader, ds, "")
+	roles, err := r.LWSManager.retainedRolloutRoleNames(ctx, ds)
 	if err != nil {
 		return err
 	}
-	roles := sets.New(rolloutRoleNames(ds)...)
-	for _, lws := range workloads {
-		parent := lws.Labels[disaggregatedsetv1.RoleLabelKey]
-		if lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] == "" {
-			roles.Insert(parent)
-			continue
-		}
-		// Retain removed children's budgets until their physical history is gone.
-		for _, key := range []string{subRoleReplicasAnnotation, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey} {
-			counts, err := subRoleCounts(lws, key)
-			if err != nil {
-				return err
-			}
-			for child := range counts {
-				roles.Insert(childRoleKey(parent, child))
-			}
-		}
-	}
-	encoded, err := maxUnavailableAnnotation(ds, sets.List(roles), desiredReplicasByRole)
+	encoded, err := maxUnavailableAnnotation(ds, roles, desiredReplicasByRole)
 	if err != nil {
 		return err
 	}
@@ -360,257 +294,6 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 	default:
 		return "", false, fmt.Errorf("unsupported revision hash version %q", revisionHashVersion)
 	}
-}
-
-// updateStatus recomputes per-role replica counts and the Available/Progressing
-// condition from the LWS objects the DisaggregatedSet owns (aggregated across all
-// slices and revisions), and persists the result if anything changed. roleNames is
-// always the current spec.roles: a role removed from spec has no RoleStatuses entry
-// even while its old LWS objects are still draining down to 0 (see RoleStatuses doc).
-// Each parent aggregate contains its current children in spec order.
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
-	roleStatuses := make([]disaggregatedsetv1.RoleStatus, 0, len(roleNames))
-	observedReplicas := make(map[string]int32, len(scalers))
-	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
-	subRolesAssigned, hasSubRoles := true, false
-	sliceCount := disaggregatedsetutils.GetSlices(disaggregatedSet)
-	unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole)
-	available := true
-
-	for _, role := range roleNames {
-		lwsList, err := r.LWSManager.ListAll(ctx, disaggregatedSet, role)
-		if err != nil {
-			return fmt.Errorf("failed to list LWS for role %s status: %w", role, err)
-		}
-		statuses := []disaggregatedsetv1.RoleStatus{{Name: role}}
-		if config := roleConfigs[role]; config != nil && len(config.SubRoles) > 0 {
-			hasSubRoles = true
-			var assigned bool
-			statuses, assigned, err = r.LWSManager.subRoleStatus(ctx, config, lwsList, revision)
-			if err != nil {
-				return err
-			}
-			subRolesAssigned = subRolesAssigned && assigned
-			available = available && assigned
-		} else {
-			for _, lws := range lwsList {
-				statuses[0].Replicas += lws.Status.Replicas
-				statuses[0].ReadyReplicas += lws.Status.ReadyReplicas
-				if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
-					statuses[0].UpdatedReplicas += lws.Status.UpdatedReplicas
-				}
-			}
-		}
-		parentStatus := statuses[0]
-		for _, status := range statuses[1:] {
-			_, child := roleParts(status.Name)
-			parentStatus.SubRoleStatuses = append(parentStatus.SubRoleStatuses, disaggregatedsetv1.SubRoleStatus{
-				Name: child, Replicas: status.Replicas, ReadyReplicas: status.ReadyReplicas, UpdatedReplicas: status.UpdatedReplicas,
-			})
-		}
-		roleStatuses = append(roleStatuses, parentStatus)
-		for _, status := range statuses {
-			observedReplicas[status.Name] = status.Replicas
-			// Unknown targets must not be mistaken for a requested zero.
-			perSlice, known := desiredReplicasByRole[status.Name]
-			desired := int32(perSlice) * sliceCount
-			if !known || status.Replicas != desired || status.ReadyReplicas != desired || status.UpdatedReplicas != desired {
-				available = false
-			}
-		}
-	}
-
-	changed := setRoleStatuses(disaggregatedSet, roleStatuses)
-	if hasSubRoles {
-		condition := metav1.Condition{Type: string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned), Status: metav1.ConditionTrue, Reason: "Assigned", Message: "Every replica group has a coherent sub-role assignment", ObservedGeneration: disaggregatedSet.Generation}
-		if !subRolesAssigned {
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = "AssignmentPending"
-			condition.Message = "Waiting for group sub-role assignments"
-		}
-		changed = setDisaggregatedSetCondition(disaggregatedSet, condition) || changed
-	} else if meta.FindStatusCondition(disaggregatedSet.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)) != nil {
-		meta.RemoveStatusCondition(&disaggregatedSet.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned))
-		changed = true
-	}
-	if setDisaggregatedSetCondition(disaggregatedSet, disaggregatedSetCondition(disaggregatedSet, available, unresolvedRoles)) {
-		changed = true
-	}
-	if disaggregatedSet.Status.ObservedGeneration != disaggregatedSet.Generation {
-		disaggregatedSet.Status.ObservedGeneration = disaggregatedSet.Generation
-		changed = true
-	}
-
-	// A failure of one status writer must not suppress the other.
-	var statusErr error
-	if len(scalers) > 0 {
-		statusErr = r.ScalerManager.WriteStatus(ctx, disaggregatedSet, scalers, observedReplicas)
-	}
-	if changed {
-		if err := r.Status().Update(ctx, disaggregatedSet); err != nil {
-			statusErr = errors.Join(statusErr, fmt.Errorf("failed to update DisaggregatedSet status: %w", err))
-		}
-	}
-	return statusErr
-}
-
-// subRoleStatus counts coherent groups in the parent, including historical
-// layouts. Current child entries are the matching subset of that aggregate.
-// Internal names retain parent/child keys for scaler and target lookups;
-// updateStatus nests the published children under their parent.
-func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disaggregatedsetv1.DisaggregatedRoleSpec, workloads []*leaderworkersetv1.LeaderWorkerSet, revision string) ([]disaggregatedsetv1.RoleStatus, bool, error) {
-	statuses := make([]disaggregatedsetv1.RoleStatus, len(role.SubRoles)+1)
-	statuses[0].Name = role.Name
-	index := map[string]int{}
-	for i, child := range role.SubRoles {
-		index[child.Name] = i + 1
-		statuses[i+1].Name = childRoleKey(role.Name, child.Name)
-	}
-	assigned := true
-	for _, lws := range workloads {
-		// Status is eventually consistent; it must not duplicate the live reads
-		// reserved for assignment and scale decisions.
-		s, err := replicagroups.Observe(ctx, m.client, lws)
-		if err != nil {
-			return nil, false, err
-		}
-		if s == nil {
-			return nil, false, errReplicaGroupsPending
-		}
-		membership, err := subRoleCounts(s.LWS, subRoleReplicasAnnotation)
-		if err != nil {
-			return nil, false, err
-		}
-		current := s.LWS.Labels[disaggregatedsetv1.RevisionLabelKey] == revision
-		for _, group := range activeSubRoleGroups(s) {
-			name, coherent := groupSubRole(group)
-			i, known := index[name]
-			valid := known
-			if !current {
-				_, valid = membership[name]
-				valid = valid || membership == nil && name == ""
-			}
-			if !valid || !coherent {
-				assigned = false
-				continue
-			}
-			groupStatuses := []*disaggregatedsetv1.RoleStatus{&statuses[0]}
-			if known {
-				groupStatuses = append(groupStatuses, &statuses[i])
-			}
-			for _, status := range groupStatuses {
-				status.Replicas++
-				if group.Ready && !group.Terminating {
-					status.ReadyReplicas++
-				}
-				if current {
-					status.UpdatedReplicas++
-				}
-			}
-		}
-	}
-	return statuses, assigned, nil
-}
-
-func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) bool {
-	if equality.Semantic.DeepEqual(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
-		return false
-	}
-	disaggregatedSet.Status.RoleStatuses = roleStatuses
-	return true
-}
-
-func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool, unresolvedRoles []string) metav1.Condition {
-	condType := disaggregatedsetv1.DisaggregatedSetProgressing
-	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
-	if len(unresolvedRoles) > 0 {
-		reason = "ReplicaTargetsUnresolved"
-		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", strings.Join(unresolvedRoles, ", "))
-	} else if available {
-		condType = disaggregatedsetv1.DisaggregatedSetAvailable
-		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
-	}
-
-	return metav1.Condition{
-		Type:               string(condType),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: disaggregatedSet.Generation,
-		Reason:             reason,
-		Message:            message,
-	}
-}
-
-// exclusiveConditionTypes reports whether t1 and t2 are a mutually-exclusive
-// pair, where one being true means the other must be false. Only
-// Available/Progressing are exclusive today; a condition type outside that
-// pair (added later, or written by another controller) is left untouched by
-// setDisaggregatedSetCondition rather than being clobbered just because it
-// happened to also be true.
-func exclusiveConditionTypes(t1, t2 string) bool {
-	pair := func(a, b disaggregatedsetv1.DisaggregatedSetConditionType) bool {
-		return (t1 == string(a) && t2 == string(b)) || (t1 == string(b) && t2 == string(a))
-	}
-	return pair(disaggregatedsetv1.DisaggregatedSetAvailable, disaggregatedsetv1.DisaggregatedSetProgressing)
-}
-
-// setDisaggregatedSetCondition records newCondition as true and, since Available and
-// Progressing are mutually exclusive, marks the other one of that specific pair as
-// false (see exclusiveConditionTypes) — any other condition type is left alone.
-// LastTransitionTime is only touched when a condition's Status actually flips, per
-// the metav1.Condition contract; a same-Status update (e.g. only ObservedGeneration
-// changed) must not look like a fresh transition to clients. Returns whether the
-// status changed.
-func setDisaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, newCondition metav1.Condition) bool {
-	now := metav1.Now()
-	changed, found := false, false
-
-	for i, cond := range disaggregatedSet.Status.Conditions {
-		if cond.Type == newCondition.Type {
-			found = true
-			if cond.Status != newCondition.Status {
-				newCondition.LastTransitionTime = now
-				disaggregatedSet.Status.Conditions[i] = newCondition
-				changed = true
-			} else if cond.ObservedGeneration != newCondition.ObservedGeneration || cond.Reason != newCondition.Reason || cond.Message != newCondition.Message {
-				// Status is unchanged, so LastTransitionTime is preserved, but every
-				// other field still syncs to the latest computed condition.
-				disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-				disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
-				disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
-				changed = true
-			}
-			continue
-		}
-		if !exclusiveConditionTypes(cond.Type, newCondition.Type) {
-			continue
-		}
-		if cond.Status == metav1.ConditionTrue {
-			// newCondition becoming true is exactly why this mutually-exclusive
-			// condition is now false, so it explains the flip with the same
-			// Reason/Message rather than leaving this condition's old (now
-			// contradictory) ones in place.
-			disaggregatedSet.Status.Conditions[i].Status = metav1.ConditionFalse
-			disaggregatedSet.Status.Conditions[i].LastTransitionTime = now
-			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-			disaggregatedSet.Status.Conditions[i].Reason = newCondition.Reason
-			disaggregatedSet.Status.Conditions[i].Message = newCondition.Message
-			changed = true
-		} else if cond.ObservedGeneration != newCondition.ObservedGeneration {
-			// Already false and staying false — no real transition, so only
-			// ObservedGeneration needs to catch up; Reason/Message still
-			// accurately describe why it became false and don't need to change.
-			disaggregatedSet.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
-			changed = true
-		}
-	}
-
-	if !found {
-		newCondition.LastTransitionTime = now
-		disaggregatedSet.Status.Conditions = append(disaggregatedSet.Status.Conditions, newCondition)
-		changed = true
-	}
-
-	return changed
 }
 
 // seedForRole returns a callback that yields the initial spec.replicas value
@@ -787,6 +470,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// Outside rollout, membership, issued target and effective baseline all follow desired.
 	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts})
 	if err != nil || state != nil {
+		// A non-nil state means subrole reconciliation owns this LWS's scaling.
 		return err
 	}
 

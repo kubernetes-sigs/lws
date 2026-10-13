@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -489,6 +490,35 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 		return 1
 	}
 	return *leaderWorkerSet.Spec.Replicas
+}
+
+// retainedRolloutRoleNames includes current roles and every role whose budget
+// must survive while old workloads drain, including removed children.
+func (m *LeaderWorkerSetManager) retainedRolloutRoleNames(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) ([]string, error) {
+	// Only a live, ownership-filtered list can safely prune history. Retain even
+	// zero-Spec LWS until deletion, and never erase history due to informer lag.
+	workloads, err := m.listWithReader(ctx, m.apiReader, ds, "")
+	if err != nil {
+		return nil, err
+	}
+	roles := sets.New(rolloutRoleNames(ds)...)
+	for _, lws := range workloads {
+		parent := lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] == "" {
+			roles.Insert(parent)
+			continue
+		}
+		for _, key := range []string{subRoleReplicasAnnotation, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey} {
+			counts, err := subRoleCounts(lws, key)
+			if err != nil {
+				return nil, err
+			}
+			for child := range counts {
+				roles.Insert(childRoleKey(parent, child))
+			}
+		}
+	}
+	return sets.List(roles), nil
 }
 
 // GetRevisionRolesList fetches all LWS for a DisaggregatedSet, splits them into

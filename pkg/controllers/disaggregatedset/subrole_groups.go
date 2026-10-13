@@ -161,6 +161,59 @@ func stickySubRoleAssignments(groups []replicagroups.Group, target map[string]in
 	return assignments
 }
 
+// Only cached objects authorize this no-op; actual assignment and scale writes
+// still require live observations. A saved Assigned condition is not proof:
+// Pods can be replaced or relabeled without changing the DS generation.
+func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *leaderv1.LeaderWorkerSet, desired map[string]int) bool {
+	if lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash || lws.Annotations[subRolePlanAnnotation] != "" {
+		return false
+	}
+	for _, key := range []string{subRoleReplicasAnnotation, disaggv1.InitialSubRoleReplicasAnnotationKey} {
+		counts, err := subRoleCounts(lws, key)
+		if err != nil || !maps.Equal(counts, desired) {
+			return false
+		}
+	}
+	s, err := replicagroups.Observe(ctx, reader, lws)
+	if err != nil || s == nil || s.LWS.ResourceVersion != lws.ResourceVersion || !subRoleNativeSettled(s) {
+		return false
+	}
+	count := countSubRoles(desired)
+	if _, complete := subRolePrefix(s, count); !complete || len(s.Groups) != count {
+		return false
+	}
+	remaining := maps.Clone(desired)
+	for _, group := range s.Groups {
+		name, coherent := groupSubRole(group)
+		if !coherent || remaining[name] == 0 || !subRoleGroupComplete(group) {
+			return false
+		}
+		remaining[name]--
+	}
+	return true
+}
+
+// Complete means the expected, nonterminal Pods exist and the worker controller
+// has observed their target. Pods may still be unscheduled or loading: neither
+// scheduling nor readiness changes their sub-role assignment.
+func subRoleGroupComplete(group replicagroups.Group) bool {
+	size, _ := strconv.Atoi(group.Leader.Annotations[leaderv1.SizeAnnotationKey])
+	if group.Terminating || len(group.Pods) != size ||
+		group.Leader.Status.Phase == corev1.PodFailed || group.Leader.Status.Phase == corev1.PodSucceeded {
+		return false
+	}
+	workers := group.WorkerStatefulSet
+	if size > 1 && (workers == nil || workers.Status.ObservedGeneration < workers.Generation || ptr.Deref(workers.Spec.Replicas, 0) != int32(size-1)) {
+		return false
+	}
+	for i, pod := range group.Pods[1:] {
+		if pod.Name != fmt.Sprintf("%s-%d", workers.Name, i+1) || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+			return false
+		}
+	}
+	return true
+}
+
 func subRoleNativeSettled(s *replicagroups.Snapshot) bool {
 	sts := s.LeaderStatefulSet
 	return sts != nil && s.LWS.DeletionTimestamp.IsZero() && s.LWS.Status.ObservedGeneration >= s.LWS.Generation &&
