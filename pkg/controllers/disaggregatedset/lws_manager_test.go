@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -618,52 +617,6 @@ func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
 	require.Positive(t, liveReads, "assignment repair still requires live checks")
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(worker), worker))
 	require.Equal(t, "a", worker.Labels[disaggregatedsetv1.SubRoleLabelKey])
-}
-
-func TestSubRolePodPredicate(t *testing.T) {
-	before := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod", Labels: map[string]string{disaggregatedsetv1.SetNameLabelKey: "ds"}, Annotations: map[string]string{}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}}
-	p := subRolePodPredicate()
-	assert.True(t, p.Create(event.CreateEvent{Object: before}))
-	assert.True(t, p.Delete(event.DeleteEvent{Object: before}))
-	for _, tc := range []struct {
-		name   string
-		change func(*corev1.Pod)
-		want   bool
-	}{
-		{"resource version", func(p *corev1.Pod) { p.ResourceVersion = "2" }, false},
-		{"unrelated status", func(p *corev1.Pod) { p.Status.Message = "new message" }, false},
-		{"ready heartbeat", func(p *corev1.Pod) { p.Status.Conditions[0].LastProbeTime = metav1.Now() }, false},
-		{"label repair", func(p *corev1.Pod) { p.Labels[disaggregatedsetv1.SubRoleLabelKey] = "a" }, true},
-		{"removed set label", func(p *corev1.Pod) { delete(p.Labels, disaggregatedsetv1.SetNameLabelKey) }, true},
-		{"deletion", func(p *corev1.Pod) { p.DeletionTimestamp = ptr.To(metav1.Now()) }, true},
-		{"scheduled", func(p *corev1.Pod) { p.Spec.NodeName = "node" }, true},
-		{"phase", func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed }, true},
-		{"readiness", func(p *corev1.Pod) { p.Status.Conditions = nil }, true},
-		{"restart budget", func(p *corev1.Pod) {
-			p.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] = "true"
-		}, true},
-		{"ownership", func(p *corev1.Pod) { p.OwnerReferences = []metav1.OwnerReference{{UID: "new-owner"}} }, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			after := before.DeepCopy()
-			tc.change(after)
-			assert.Equal(t, tc.want, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: after}))
-		})
-	}
-	// The scheduling timeout begins while a Pod remains Pending and unbound.
-	before.Status = corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonSchedulingGated}}}
-	for _, field := range []string{"status", "reason", "transition"} {
-		after := before.DeepCopy()
-		switch field {
-		case "status":
-			after.Status.Conditions[0].Status = corev1.ConditionTrue
-		case "reason":
-			after.Status.Conditions[0].Reason = corev1.PodReasonUnschedulable
-		case "transition":
-			after.Status.Conditions[0].LastTransitionTime = metav1.Now()
-		}
-		assert.True(t, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: after}), field)
-	}
 }
 
 func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {

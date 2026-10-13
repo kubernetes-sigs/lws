@@ -22,12 +22,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -36,7 +34,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -44,7 +41,6 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
-	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
 
 // DisaggregatedSetReconciler reconciles a DisaggregatedSet object
@@ -605,42 +601,15 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
+		// Pod labels and readiness change independently of generation.
+		// Process every stored update; skip unchanged informer resyncs.
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, pod client.Object) []ctrl.Request {
 			name := pod.GetLabels()[disaggregatedsetv1.SetNameLabelKey]
 			if name == "" {
 				return nil
 			}
 			return []ctrl.Request{{NamespacedName: client.ObjectKey{Namespace: pod.GetNamespace(), Name: name}}}
-		}), builder.WithPredicates(subRolePodPredicate())).
+		}), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named("disaggregatedset").
 		Complete(r)
-}
-
-// Keep events that affect membership, readiness or scheduling. In particular,
-// Pod generation alone misses both label repairs and readiness transitions.
-func subRolePodPredicate() predicate.Predicate {
-	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
-		before, oldOK := e.ObjectOld.(*corev1.Pod)
-		after, newOK := e.ObjectNew.(*corev1.Pod)
-		if !oldOK || !newOK || before == nil || after == nil {
-			return true
-		}
-		return before.UID != after.UID || !maps.Equal(before.Labels, after.Labels) ||
-			!maps.Equal(before.Annotations, after.Annotations) ||
-			!equality.Semantic.DeepEqual(before.OwnerReferences, after.OwnerReferences) ||
-			!equality.Semantic.DeepEqual(before.DeletionTimestamp, after.DeletionTimestamp) ||
-			before.Spec.NodeName != after.Spec.NodeName || before.Status.Phase != after.Status.Phase ||
-			podSchedulingChanged(before, after) ||
-			podutils.PodRunningAndReady(*before) != podutils.PodRunningAndReady(*after)
-	}}
-}
-
-func podSchedulingChanged(before, after *corev1.Pod) bool {
-	_, oldCondition := podutils.GetPodCondition(&before.Status, corev1.PodScheduled)
-	_, newCondition := podutils.GetPodCondition(&after.Status, corev1.PodScheduled)
-	if oldCondition == nil || newCondition == nil {
-		return oldCondition != newCondition
-	}
-	return oldCondition.Status != newCondition.Status || oldCondition.Reason != newCondition.Reason ||
-		!oldCondition.LastTransitionTime.Equal(&newCondition.LastTransitionTime)
 }
