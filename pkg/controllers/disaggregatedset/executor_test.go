@@ -2064,7 +2064,7 @@ func TestReconcileInformerObservationsAreSliceLocal(t *testing.T) {
 	}
 }
 
-func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
+func TestInformerReceiptKeepsStatusFreshWhileWaiting(t *testing.T) {
 	ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
 	ds.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
 	ds.Annotations = map[string]string{
@@ -2075,17 +2075,21 @@ func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
 	old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1000, 0), 4)
 	target := revisionLWS(targetRevision, testRolePrefill, 1, 1, time.Unix(2000, 0), 4)
 	old.Spec.LeaderWorkerTemplate.Size, target.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
-	old.Annotations[observationReceiptAnnotation] = "created"
+	old.Annotations[observationReceiptAnnotation] = "updated"
 	objects := append(replicaGroupObjects(old, 4, 4), replicaGroupObjects(target, 1, 1)...)
 	base := fake.NewClientBuilder().WithScheme(testSchemeForUnit()).WithObjects(append(objects, ds)...).
 		WithStatusSubresource(append(statusSubresourceObjects(), &disaggregatedsetv1.DisaggregatedSetRoleScaler{})...).Build()
 	cachedTarget := target.DeepCopy()
 	cachedTarget.Spec.Replicas, cachedTarget.Status.Replicas, cachedTarget.Status.ReadyReplicas = ptr.To[int32](4), 4, 2
+	cachedOld := old.DeepCopy()
+	cachedOld.ResourceVersion = "previous"
+	cachedOld.Spec.Replicas, cachedOld.Status.Replicas = ptr.To[int32](5), 5
+	delete(cachedOld.Annotations, observationReceiptAnnotation)
 	patches, caughtUp := 0, false
 	cached := interceptor.NewClient(base, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			if sets, ok := list.(*leaderworkersetv1.LeaderWorkerSetList); ok && !caughtUp {
-				sets.Items = []leaderworkersetv1.LeaderWorkerSet{*cachedTarget.DeepCopy()} // The cache also hides the old revision.
+				sets.Items = []leaderworkersetv1.LeaderWorkerSet{*cachedTarget.DeepCopy(), *cachedOld.DeepCopy()}
 				return nil
 			}
 			return c.List(ctx, list, opts...)
@@ -2100,12 +2104,13 @@ func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
 	_, err := r.ScalerManager.Reconcile(t.Context(), ds, func(string) (int32, error) { return 4, nil })
 	require.NoError(t, err)
 	o := testPendingWrites(cached)
-	o.writes[client.ObjectKeyFromObject(old)] = &pendingWrite{owner: ds.UID, slice: "0", uid: old.UID, receipt: "created"}
-	// Hide the create from both Get and List until the watch catches up.
+	o.writes[client.ObjectKeyFromObject(old)] = &pendingWrite{owner: ds.UID, slice: "0", uid: old.UID, receipt: "updated", baseVersion: cachedOld.ResourceVersion}
+	// The scale-down receipt has not reached either informer read yet.
 	o.Reader = interceptor.NewClient(cached, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
 			if !caughtUp && key == client.ObjectKeyFromObject(old) {
-				return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
+				cachedOld.DeepCopyInto(object.(*leaderworkersetv1.LeaderWorkerSet))
+				return nil
 			}
 			return c.Get(ctx, key, object, opts...)
 		},
@@ -2128,16 +2133,21 @@ func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
 		stored := &disaggregatedsetv1.DisaggregatedSet{}
 		require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(ds), stored))
 		require.Len(t, stored.Status.RoleStatuses, 1)
-		assert.Equal(t, cachedTarget.Status.ReadyReplicas, stored.Status.RoleStatuses[0].ReadyReplicas, "status still follows informer updates")
+		wantReady, wantReplicas := cachedTarget.Status.ReadyReplicas, cachedTarget.Status.Replicas
+		if !caughtUp {
+			wantReady += cachedOld.Status.ReadyReplicas
+			wantReplicas += cachedOld.Status.Replicas
+		}
+		assert.Equal(t, wantReady, stored.Status.RoleStatuses[0].ReadyReplicas, "status still follows informer updates")
 		scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
 		require.NoError(t, base.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: ScalerName(ds.Name, testRolePrefill)}, scaler))
-		assert.Equal(t, cachedTarget.Status.Replicas, scaler.Status.Replicas, "scaler status must also refresh on the no-op path")
+		assert.Equal(t, wantReplicas, scaler.Status.Replicas, "scaler status must also refresh on the no-op path")
 		if !caughtUp {
 			assert.Equal(t, time.Second, result.RequeueAfter, "unseen writes wait for informer events")
 			assert.Zero(t, patches, "a stale no-op must not change workloads or budget history")
 			assert.EqualValues(t, 4, getTestLWSReplicas(base, testNamespace, old.Name))
 		} else {
-			assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, old.Name), "fresh discovery finds the hidden old revision and uses the rollout planner")
+			assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, old.Name), "fresh observations allow the next rollout step")
 		}
 		assert.EqualValues(t, 1, getTestLWSReplicas(base, testNamespace, target.Name), "must not bypass maxSurge=1 by growing the target directly to four")
 	}

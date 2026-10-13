@@ -806,7 +806,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
 		require.NoError(t, err) // Should not error, creation is idempotent
 	})
 
@@ -826,7 +826,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
 		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
@@ -836,7 +836,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 0, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -857,7 +857,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Annotations = map[string]string{"note": "val"}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, revision, 1, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -882,7 +882,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 1, revision, 2, 2)
+		err := manager.Create(context.Background(), ds, role, 1, revision, 2)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -920,7 +920,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, revision, 1, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -1245,7 +1245,7 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
 	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-	require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2, 2))
+	require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2))
 
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name)
 	lws, err := manager.Get(context.Background(), ds, lwsName)
@@ -1639,11 +1639,10 @@ func TestWriteReceiptRetiresDeletedChild(t *testing.T) {
 			case "disappeared":
 				role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
 				role.Spec = lws.Spec
-				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "old", 4, 4))
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "old", 4))
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
-				require.EqualValues(t, 4, getLWSReplicas(current))
-				require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending,
-					"the newly created child must still be observed")
+				require.Zero(t, getLWSReplicas(current), "recreation cannot start Pods before a fresh plan")
+				require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
 			case "terminating":
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
 				require.False(t, current.DeletionTimestamp.IsZero(), "physical disappearance is not required")
@@ -1674,99 +1673,123 @@ func TestDeletionReceiptDoesNotWaitForPhysicalRemoval(t *testing.T) {
 	require.False(t, current.DeletionTimestamp.IsZero())
 }
 
-func TestCreateReceiptSurvivesCoalescingAndParentDeletion(t *testing.T) {
-	lws := revisionLWS("new", testRolePrefill, 0, 0, time.Time{}, 4)
-	lws.UID = ""
-	base, cached := newTestClient(), newTestClient()
-	o := testPendingWrites(cached)
-	require.NoError(t, o.mutate(t.Context(), lws, false, func(ctx context.Context) error { return base.Create(ctx, lws) }))
-	owner := metav1.GetControllerOf(lws)
-	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending, "absence from an older cache cannot acknowledge creation")
-	// A lagging cache may even contain a previous object with this name.
-	// Its UID is not evidence that our never-observed creation was replaced.
-	previous := lws.DeepCopy()
-	previous.UID, previous.ResourceVersion, previous.Annotations = "previous-child", "", nil
-	require.NoError(t, cached.Create(t.Context(), previous))
-	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending)
-	require.NoError(t, cached.Delete(t.Context(), previous))
-	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending)
-	// Deliver a later version bearing the same receipt; no exact RV match.
-	lws.ResourceVersion = ""
-	require.NoError(t, cached.Create(t.Context(), lws))
-	require.NoError(t, o.observed(t.Context(), owner.UID, "0"))
-	require.Empty(t, o.writes)
-	key := client.ObjectKeyFromObject(lws)
-	parent := client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}
-	o.writes[key] = &pendingWrite{parent: parent, receipt: "unseen"}
-	o.forget(client.ObjectKey{Namespace: "other", Name: owner.Name})
-	require.Len(t, o.writes, 1)
-	o.forget(parent)
-	require.Empty(t, o.writes)
-}
-
-func TestCreateReceiptRetiresAfterInformerNotification(t *testing.T) {
-	for _, response := range []string{"before notification", "after notification", "lost"} {
-		for _, state := range []string{"disappeared", "terminating", "replaced"} {
-			t.Run(response+"/"+state, func(t *testing.T) {
-				lws := revisionLWS("new", testRolePrefill, 0, 0, time.Time{}, 4)
-				lws.UID = ""
-				if state == "terminating" {
-					lws.Finalizers = []string{"test.example/hold"}
-				}
+func TestCreateDefersGrowthUntilObserved(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, outcome := range []string{"unapplied", "response lost", "late commit", "deleted before observation"} {
+			t.Run(string(identity)+"/"+outcome, func(t *testing.T) {
+				ds, role := testManagerDSWithRole("create-test")
+				role.Spec.GroupIdentity = identity
 				base, cached := newTestClient(), newTestClient()
-				o := testPendingWrites(cached)
-				notifyThenRetire := func() {
-					observed := lws.DeepCopy()
-					observed.ResourceVersion = ""
-					require.NoError(t, cached.Create(t.Context(), observed))
-					o.observeCreation(observed)
-					require.NoError(t, base.Delete(t.Context(), lws))
-					require.NoError(t, cached.Delete(t.Context(), observed))
-					if state == "replaced" {
-						observed.UID, observed.ResourceVersion, observed.Annotations = "replacement", "", nil
-						require.NoError(t, base.Create(t.Context(), observed.DeepCopy()))
-						require.NoError(t, cached.Create(t.Context(), observed))
+				var delayed client.Object
+				calls := 0
+				writer := interceptor.NewClient(base, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+					calls++
+					require.Zero(t, getLWSReplicas(object.(*leaderworkersetv1.LeaderWorkerSet)))
+					if calls != 1 {
+						return c.Create(ctx, object, opts...)
 					}
-				}
-				err := o.mutate(t.Context(), lws, false, func(ctx context.Context) error {
-					lws.UID = "created-child" // Simulate the API assigning the UID.
-					if err := base.Create(ctx, lws); err != nil {
-						return err
+					delayed = object.DeepCopyObject().(client.Object)
+					if outcome == "response lost" || outcome == "deleted before observation" {
+						require.NoError(t, c.Create(ctx, object, opts...))
 					}
-					if response != "before notification" {
-						notifyThenRetire() // Watch delivery can precede the HTTP response.
+					if outcome == "deleted before observation" {
+						return c.Delete(ctx, object)
 					}
-					if response == "lost" {
-						return errors.New("response lost")
-					}
-					return nil
-				})
-				if response == "lost" {
-					require.Error(t, err)
-				} else {
+					return errors.New("create response lost")
+				}})
+				manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
+				manager.reader, manager.pending = cached, testPendingWrites(cached)
+				err := manager.Create(t.Context(), ds, role, 0, "obsolete", 4)
+				if outcome == "deleted before observation" {
 					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
 				}
-				owner := metav1.GetControllerOf(lws).UID
-				if response == "before notification" {
-					// Neither another receipt nor a previous same-name UID proves
-					// that this creation has reached the informer.
-					for _, wrong := range []string{"receipt", "UID"} {
-						other := lws.DeepCopy()
-						if wrong == "receipt" {
-							other.Annotations[observationReceiptAnnotation] = "other"
-						} else {
-							other.UID = "previous-child"
-						}
-						o.observeCreation(other)
-						require.ErrorIs(t, o.observed(t.Context(), owner, "0"), errReplicaGroupsPending)
-					}
-					notifyThenRetire()
+				require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+				require.Empty(t, manager.pending.writes)
+				require.Equal(t, 1, calls, "checking receipts must not replay an obsolete create")
+
+				// The user selects another revision and replica count while the
+				// informer is still empty. Even a later original commit stays empty.
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "latest", 2))
+				if outcome == "late commit" {
+					require.NoError(t, base.Create(t.Context(), delayed))
 				}
-				require.NoError(t, o.observed(t.Context(), owner, "0"))
-				require.Empty(t, o.writes)
+				all := &leaderworkersetv1.LeaderWorkerSetList{}
+				require.NoError(t, base.List(t.Context(), all))
+				for i := range all.Items {
+					require.Zero(t, getLWSReplicas(&all.Items[i]), "no obsolete or unobserved workload can start Pods")
+				}
+				manager.reader, manager.pending.Reader = base, base // Deliver the current informer state.
+				current, err := manager.GetForRole(t.Context(), ds, 0, "latest", role.Name)
+				require.NoError(t, err)
+				r := &DisaggregatedSetReconciler{LWSManager: manager}
+				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "latest", map[string]int{role.Name: 2}))
+				require.EqualValues(t, 2, getTestLWSReplicas(base, ds.Namespace, current.Name))
 			})
 		}
 	}
+}
+
+func TestCreateSubRolesStartEmpty(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			ds, role := testManagerDSWithRole("create-subroles")
+			role.Spec.GroupIdentity = identity
+			role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}
+			base := newTestClient()
+			manager := NewLeaderWorkerSetManager(base)
+			manager.pending = testPendingWrites(base)
+			require.NoError(t, manager.Create(t.Context(), ds, role, 0, "current", 6))
+			current, err := manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
+			require.NoError(t, err)
+			current.UID = "created-child"
+			require.NoError(t, base.Update(t.Context(), current))
+			for _, object := range replicaGroupObjects(current, 0, 0)[1:] {
+				require.NoError(t, base.Create(t.Context(), object))
+			}
+			// A changed desired layout is metadata first, never permission to
+			// start the original six groups while discovery catches up.
+			_, err = manager.syncSubRoles(t.Context(), ds, current, subRoleUpdate{membership: map[string]int{"a": 1, "b": 2}})
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			current, err = manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
+			require.NoError(t, err)
+			require.Zero(t, getLWSReplicas(current))
+			issued, err := subRoleCounts(current, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 0, "b": 0}, issued)
+			initial, ok := disaggregatedsetutils.GetInitialReplicas(current)
+			require.True(t, ok)
+			require.EqualValues(t, 6, initial, "the original intended baseline remains available to interrupted rollouts")
+			r := &DisaggregatedSetReconciler{LWSManager: manager}
+			for range 3 {
+				require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+				current, err = manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
+				require.NoError(t, err)
+				err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "current",
+					map[string]int{role.Name: 3, role.Name + "/a": 1, role.Name + "/b": 2})
+				if err != nil {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+			}
+			current, err = manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
+			require.NoError(t, err)
+			require.EqualValues(t, 3, getLWSReplicas(current), "only the current child targets may start groups")
+			issued, err = subRoleCounts(current, subRoleReplicasAnnotation)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 1, "b": 2}, issued)
+		})
+	}
+}
+
+func TestPendingWritesForgetOnlyTheirParent(t *testing.T) {
+	parent := client.ObjectKey{Namespace: "ns", Name: "parent"}
+	o := testPendingWrites(nil)
+	o.writes[client.ObjectKey{Namespace: "ns", Name: "child"}] = &pendingWrite{parent: parent}
+	o.forget(client.ObjectKey{Namespace: "other", Name: parent.Name})
+	require.Len(t, o.writes, 1)
+	o.forget(parent)
+	require.Empty(t, o.writes)
 }
 
 type observationTransport struct {
@@ -1808,7 +1831,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
 		require.NoError(t, err)
 		pending := testPendingWrites(nil)
-		o, err := replicagroups.NewObserver(mgr, pending.observeCreation)
+		o, err := replicagroups.NewObserver(mgr, nil)
 		require.NoError(t, err)
 		require.True(t, o.NeedLeaderElection())
 		ctx, cancel := context.WithCancel(t.Context())
@@ -1847,32 +1870,46 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 		manager.reader, manager.pending = o, pending
 		return manager, trace, stop
 	}
-	t.Run("creation deleted before receipt check", func(t *testing.T) {
-		manager, _, _ := start(t)
-		o := manager.reader
-		ds := newTestDisaggregatedSet()
-		role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
-		role.Spec = revisionLWS("created", testRolePrefill, 1, 0, time.Time{}).Spec
-		role.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
-		role.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
-		role.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "test", Image: "test.invalid/image"}}
-		require.NoError(t, manager.Create(t.Context(), ds, role, 0, "created", 1, 1))
-		key := client.ObjectKey{Namespace: ds.Namespace, Name: ds.Name + "-0-created-" + role.Name}
-		created := &leaderworkersetv1.LeaderWorkerSet{}
-		require.Eventually(t, func() bool { return o.Get(t.Context(), key, created) == nil }, 5*time.Second, 10*time.Millisecond)
-		uid := created.UID
-		// The informer receives both events before reconciliation ever checks the receipt.
-		require.NoError(t, writer.Delete(t.Context(), created))
-		require.Eventually(t, func() bool {
-			return apierrors.IsNotFound(o.Get(t.Context(), key, &leaderworkersetv1.LeaderWorkerSet{}))
-		}, 5*time.Second, 10*time.Millisecond)
-		require.Eventually(t, func() bool { return manager.pending.observed(t.Context(), ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond,
-			"a fully current informer must not wait forever for a deleted creation")
-		require.NoError(t, manager.Create(t.Context(), ds, role, 0, "created", 1, 1))
-		require.Eventually(t, func() bool {
-			return o.Get(t.Context(), key, created) == nil && created.UID != uid && manager.pending.observed(t.Context(), ds.UID, "0") == nil
-		}, 5*time.Second, 10*time.Millisecond, "the missing child can be recreated and its new receipt observed")
-	})
+	for _, watchStarted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "watch misses creation and deletion", true: "creation deleted before reconcile"}[watchStarted], func(t *testing.T) {
+			manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
+			manager.pending = testPendingWrites(nil)
+			if watchStarted {
+				manager, _, _ = start(t)
+			}
+			ds := newTestDisaggregatedSet()
+			role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
+			role.Spec = revisionLWS("created", testRolePrefill, 1, 0, time.Time{}).Spec
+			role.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
+			role.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+			role.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "test", Image: "test.invalid/image"}}
+			require.NoError(t, manager.Create(t.Context(), ds, role, 0, "created", 1))
+			key := client.ObjectKey{Namespace: ds.Namespace, Name: ds.Name + "-0-created-" + role.Name}
+			created := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, writer.Get(t.Context(), key, created))
+			if watchStarted {
+				require.Eventually(t, func() bool { return manager.reader.Get(t.Context(), key, created) == nil }, 5*time.Second, 10*time.Millisecond)
+			}
+			uid := created.UID
+			require.Zero(t, getLWSReplicas(created))
+			require.NoError(t, writer.Delete(t.Context(), created))
+			if !watchStarted {
+				fresh, _, _ := start(t)
+				manager.reader, manager.pending.Reader = fresh.reader, fresh.reader
+			}
+			o := manager.reader
+			require.Eventually(t, func() bool {
+				return apierrors.IsNotFound(o.Get(t.Context(), key, &leaderworkersetv1.LeaderWorkerSet{}))
+			}, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return manager.pending.observed(t.Context(), ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond,
+				"a fully current informer must not wait forever for a deleted creation")
+			require.NoError(t, manager.Create(t.Context(), ds, role, 0, "created", 1))
+			require.Eventually(t, func() bool {
+				return o.Get(t.Context(), key, created) == nil && created.UID != uid && manager.pending.observed(t.Context(), ds.UID, "0") == nil
+			}, 5*time.Second, 10*time.Millisecond, "the missing child can be recreated without any creation receipt")
+			require.NoError(t, writer.Delete(t.Context(), created))
+		})
+	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
 			lws := revisionLWS(string(identity), testRolePrefill, 2, 0, time.Time{}, 2)
@@ -2053,14 +2090,14 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 	}
 }
 
-func TestBudgetHistoryDoesNotPruneAnUnobservedCreate(t *testing.T) {
+func TestBudgetHistoryDoesNotPruneAnUnobservedWrite(t *testing.T) {
 	ds := newTestDisaggregatedSet()
 	ds.Annotations = map[string]string{disaggregatedsetv1.MaxUnavailableAnnotationKey: `{"removed":2}`}
 	lws := revisionLWS("old", "removed", 0, 0, time.Time{}, 4)
-	lws.Annotations[observationReceiptAnnotation] = "created"
+	lws.Annotations[observationReceiptAnnotation] = "updated"
 	base := newTestClient(ds, lws)
 	// The receipt GET advances the fake cache. The subsequent list must see
-	// the created LWS before history can be pruned.
+	// the updated LWS before history can be pruned.
 	visible := false
 	cached := interceptor.NewClient(base, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
@@ -2075,7 +2112,7 @@ func TestBudgetHistoryDoesNotPruneAnUnobservedCreate(t *testing.T) {
 		},
 	})
 	o := testPendingWrites(cached)
-	o.writes[client.ObjectKeyFromObject(lws)] = &pendingWrite{owner: ds.UID, slice: "0", uid: lws.UID, receipt: "created"}
+	o.writes[client.ObjectKeyFromObject(lws)] = &pendingWrite{owner: ds.UID, slice: "0", uid: lws.UID, receipt: "updated", baseVersion: "previous"}
 	r := newTestReconciler(base)
 	r.LWSManager.reader, r.LWSManager.pending = o, o
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), ds, map[string]int{}))

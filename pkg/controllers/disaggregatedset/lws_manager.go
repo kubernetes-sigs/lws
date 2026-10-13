@@ -261,13 +261,16 @@ func (manager *LeaderWorkerSetManager) Create(
 	role *disaggregatedsetv1.DisaggregatedRoleSpec,
 	slice int,
 	revision string,
-	startingReplicas, initialReplicas int,
+	initialReplicas int,
 ) error {
 	// The reconciler selects the hash generation. Recomputing here would assign
 	// current-version names and labels to children of a legacy DisaggregatedSet.
 	lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role.Name)
 	labels := disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, slice, revision, role.Name)
-	replicas := int32(startingReplicas)
+	// Create never starts Pods: an ambiguous request may commit after the user
+	// changes the desired revision. Growth is a separate conditional update,
+	// selected from the current plan after the informer observes this object.
+	replicas := int32(0)
 
 	// Copy the spec and override replicas.
 	lwsSpec := role.Spec
@@ -306,13 +309,13 @@ func (manager *LeaderWorkerSetManager) Create(
 		},
 		Spec: lwsSpec,
 	}
-	// startingReplicas is the initial Spec value. initialReplicas is the revision's
-	// intended size, which may be larger when a rollout starts the LWS at zero.
+	// Preserve the revision's intended size even though it starts empty.
 	setInitialReplicasAnnotation(leaderWorkerSet, initialReplicas)
 
-	if err := manager.mutate(ctx, leaderWorkerSet, false, func(ctx context.Context) error {
-		return manager.client.Create(ctx, leaderWorkerSet)
-	}); err != nil {
+	// No write receipt or captured retry is needed for an empty LWS. A delayed
+	// creation cannot spend a rollout budget; the next reconcile follows the
+	// latest desired revision, including if this object has already disappeared.
+	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create LeaderWorkerSet %s: %w", lwsName, err)
 		}
@@ -334,7 +337,7 @@ func (manager *LeaderWorkerSetManager) Create(
 	}
 
 	log := logf.FromContext(ctx)
-	log.Info("Created LWS", "name", lwsName, "role", role.Name, "revision", revision, "replicas", startingReplicas)
+	log.Info("Created empty LWS", "name", lwsName, "role", role.Name, "revision", revision)
 	return nil
 }
 
@@ -724,8 +727,9 @@ func (manager *LeaderWorkerSetManager) prepareSlice(ctx context.Context, ds *dis
 // version that a watch is allowed to coalesce away.
 const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
 
-// pendingWrites remembers mutations until the shared informer observes them.
-// All role writes in a slice must be observed before its next rollout step.
+// pendingWrites remembers conditional mutations until the informer observes them.
+// Every such write in a slice must be observed before its next rollout step.
+// Creation is untracked because new LWS objects always start at zero replicas.
 type pendingWrites struct {
 	client.Reader
 	mu     sync.Mutex
@@ -743,10 +747,7 @@ type pendingWrite struct {
 	receipt string
 	deleted bool
 	// Version read from this informer and used as the mutation precondition.
-	// Empty for creates, which cannot be ruled out by a version change.
 	baseVersion string
-	// The informer delivered the creation, even if it was deleted before our next GET.
-	creationObserved bool
 	// Replaying the same conditional mutation resolves an ambiguous transport
 	// error. We never turn a timeout into permission to forget a possible write.
 	retry func(context.Context) error
@@ -789,26 +790,12 @@ func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.Leade
 	err := apply(ctx)
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if err == nil {
-		written.uid = lws.UID // Create returns the persisted UID.
-	} else if apierrors.IsConflict(err) || apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsAlreadyExists(err) || apierrors.IsNotFound(err) {
+	if apierrors.IsConflict(err) || apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsAlreadyExists(err) || apierrors.IsNotFound(err) {
 		delete(o.writes, key) // This request definitively did not mutate the object.
-	} else {
+	} else if err != nil {
 		written.retry = apply
 	}
 	return err
-}
-
-// Observe creation receipts in informer notifications, not just reconciliation.
-// A subsequent deletion may remove the object before checkWrite gets to read it.
-func (o *pendingWrites) observeCreation(lws *leaderworkersetv1.LeaderWorkerSet) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	written := o.writes[client.ObjectKeyFromObject(lws)]
-	if written != nil && written.baseVersion == "" && written.receipt != "" && lws.UID != "" &&
-		(written.uid == "" || written.uid == lws.UID) && lws.Annotations[observationReceiptAnnotation] == written.receipt {
-		written.uid, written.creationObserved = lws.UID, true
-	}
 }
 
 // Once the parent has disappeared from its informer, it cannot authorize more
@@ -854,12 +841,10 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 		return err
 	}
 	// An object previously read from this informer cannot disappear or change
-	// UID without being deleted. A creation notification establishes the same
-	// history. Otherwise absence (or a previous UID) may just be cache lag.
-	known := written.deleted || written.baseVersion != "" || written.creationObserved
-	seen := known && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
+	// UID without being deleted. Creates need no receipts: they start empty.
+	seen := apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero()
 	receiptObserved := err == nil && !written.deleted && lws.DeletionTimestamp.IsZero() &&
-		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt
+		lws.UID == written.uid && lws.Annotations[observationReceiptAnnotation] == written.receipt
 	seen = seen || receiptObserved
 	// This informer supplied baseVersion. A different version of the same UID
 	// means an unapplied conditional request can no longer succeed. Resolve the
