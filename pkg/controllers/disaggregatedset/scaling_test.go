@@ -70,9 +70,9 @@ func TestMovingTargetKeepsDisjointStartupBounds(t *testing.T) {
 			require.NotNil(t, step)
 			assert.Equal(t, tc.wantOld, step.Past)
 			assert.Equal(t, tc.wantNew, step.New)
-			assert.Equal(t, tc.rebalance, step.UsesTargetRebalance)
-			assert.False(t, step.UsesBootstrapSurge)
-			assert.False(t, step.UsesUnavailableFallback)
+			assert.Equal(t, tc.rebalance, step.Kind == TargetRebalanceStep)
+			assert.False(t, step.Kind == BootstrapSurgeStep)
+			assert.False(t, step.Kind == UnavailableFallbackStep)
 			require.NoError(t, validateUpdateStep(state, step))
 		})
 	}
@@ -347,13 +347,13 @@ func TestDisjointTargetCorrectionReadiness(t *testing.T) {
 				state.ParkedOld = []ParkedRevisionState{{RequiredRoles: []bool{true, true},
 					SpecReplicas: []int{tc.parked, tc.parked}, RawReadyReplicas: []int{tc.parked, tc.parked}, ReadyReplicas: []int{tc.parked, tc.parked}}}
 			}
-			assert.Equal(t, []int{0, tc.want}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
-			assert.True(t, targetScaleDownPreservesAvailability(state, []int{0, tc.want}))
+			assert.Equal(t, []int{0, tc.want}, furthestTargetScaleDownTargets(snapshotForRolloutState(state)))
+			assert.True(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{0, tc.want}))
 			if tc.want == 110 {
 				assert.Nil(t, ComputeNextStep(state), "replacement credit still protects the old availability floor")
 			}
 			if tc.want > 100 {
-				assert.False(t, targetScaleDownPreservesAvailability(state, []int{0, tc.want - 1}), "one extra deletion must not spend reserved Ready credit")
+				assert.False(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{0, tc.want - 1}), "one extra deletion must not spend reserved Ready credit")
 				assert.Error(t, validateUpdateStep(state, &UpdateStep{Past: state.ActiveOld.SpecReplicas, New: []int{0, tc.want - 1}}))
 			}
 		})
@@ -364,9 +364,9 @@ func TestDisjointTargetCorrectionKeepsWholeRevisionFraction(t *testing.T) {
 	state := rolloutState([]int{3, 0, 0}, []int{1, 0, 0}, []int{1, 0, 0}, nil, nil,
 		[]int{0, 4, 4}, []int{0, 2, 3}, []int{0, 2, 3}, configs([]int{1, 1, 1}, []int{0, 1, 1}))
 	state.ScaleDownDuringRollout = true
-	assert.Equal(t, []int{0, 4, 3}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
-	assert.True(t, targetScaleDownPreservesAvailability(state, []int{0, 4, 3}))
-	assert.False(t, targetScaleDownPreservesAvailability(state, []int{0, 3, 3}), "B must retain ceil(2*2/3)=2 Ready; B1 replaces only one A")
+	assert.Equal(t, []int{0, 4, 3}, furthestTargetScaleDownTargets(snapshotForRolloutState(state)))
+	assert.True(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{0, 4, 3}))
+	assert.False(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{0, 3, 3}), "B must retain ceil(2*2/3)=2 Ready; B1 replaces only one A")
 }
 
 func TestDisjointTargetCorrectionIgnoresOverlappingOldReadyCredit(t *testing.T) {
@@ -378,11 +378,11 @@ func TestDisjointTargetCorrectionIgnoresOverlappingOldReadyCredit(t *testing.T) 
 		state.ParkedOld[0].RawReadyReplicas = []int{0, 0, 1}
 		// The W baseline comes from the disjoint revision, not active A/W.
 		// Its one W plus target half-readiness supply the floor of three.
-		numerator, denominator := disjointTargetReadyFraction(state, snapshotForRolloutState(state))
+		numerator, denominator := disjointTargetReadyFraction(snapshotForRolloutState(state))
 		require.Equal(t, float64(3-retainedOld)/4, float64(numerator)/float64(denominator))
-		require.Equal(t, []int{5, 5, 0}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
+		require.Equal(t, []int{5, 5, 0}, furthestTargetScaleDownTargets(snapshotForRolloutState(state)))
 		for _, next := range [][]int{{4, 5, 0}, {5, 4, 0}} {
-			require.False(t, targetScaleDownPreservesAvailability(state, next), "either deletion could consume required Ready credit")
+			require.False(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), next), "either deletion could consume required Ready credit")
 		}
 	}
 }
@@ -393,9 +393,9 @@ func TestDisjointTargetCorrectionKeepsResidualSourceRole(t *testing.T) {
 	state := rolloutState([]int{100, 0}, []int{5, 0}, []int{5, 0}, nil, nil,
 		[]int{10, 110}, []int{10, 90}, []int{0, 100}, configs([]int{1, 1}, []int{0, 30}))
 	state.ScaleDownDuringRollout = true
-	assert.Equal(t, []int{5, 110}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
-	assert.True(t, targetScaleDownPreservesAvailability(state, []int{5, 110}))
-	assert.False(t, targetScaleDownPreservesAvailability(state, []int{4, 110}))
+	assert.Equal(t, []int{5, 110}, furthestTargetScaleDownTargets(snapshotForRolloutState(state)))
+	assert.True(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{5, 110}))
+	assert.False(t, targetScaleDownPreservesAvailability(snapshotForRolloutState(state), []int{4, 110}))
 }
 
 func TestScalingDuringRolloutDecisions(t *testing.T) {
@@ -487,7 +487,7 @@ func TestTargetCorrectionPreservesScheduledWork(t *testing.T) {
 	// startup work even when availability alone would permit the correction.
 	for _, retained := range []int{0, 1} {
 		state.Target.RawReadyReplicas, state.Target.ReadyReplicas = []int{1}, []int{retained}
-		assert.Equal(t, []int{4}, furthestTargetScaleDownTargets(state, snapshotForRolloutState(state)))
+		assert.Equal(t, []int{4}, furthestTargetScaleDownTargets(snapshotForRolloutState(state)))
 		assert.Error(t, validateUpdateStep(state, &UpdateStep{Past: []int{4}, New: []int{1}}))
 	}
 	state.Target.RawReadyReplicas, state.Target.ReadyReplicas = []int{0}, []int{0}
@@ -506,9 +506,9 @@ func TestScaleUpUsesDesiredAvailabilityFloorForEitherDrain(t *testing.T) {
 				[]int{1}, []int{1}, []int{8}, configs([]int{1}, []int{0}))
 			state.ScaleDownDuringRollout = immediate
 			observed := snapshotForRolloutState(state)
-			assert.Equal(t, 8, availabilityFloor(observed[0]), "both candidates protect the desired capacity, not their smaller history")
-			assert.Equal(t, []int{max(0, 8-parked-1)}, minimumAvailableTargets(observed, state.ActiveOld.RequiredRoles))
-			assert.Equal(t, 8, availabilityFloor(targetDrainSnapshot(state, observed)[0]), "old and target reductions use the same floor")
+			assert.Equal(t, 8, observed.availabilityFloor(0), "both candidates protect the desired capacity, not their smaller history")
+			assert.Equal(t, []int{max(0, 8-parked-1)}, observed.oldDrain().minimumTargets())
+			assert.Equal(t, 8, observed.targetDrain().roles[0].floor, "old and target reductions use the same floor")
 		}
 	}
 }
@@ -727,7 +727,7 @@ func TestMovingTargetUnschedulableFallbackUsesLatestSurgeCeiling(t *testing.T) {
 	state.Target.UnschedulableRoles = []bool{true, false}
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
-	assert.True(t, step.UsesUnavailableFallback)
+	assert.True(t, step.Kind == UnavailableFallbackStep)
 	assert.Equal(t, []int{3, 3}, step.Past)
 	assert.Equal(t, []int{1, 1}, step.New)
 	require.NoError(t, validateUpdateStep(state, step))
@@ -744,7 +744,7 @@ func TestMovingTargetCoordinationBootstrapDoesNotStack(t *testing.T) {
 	state.ScaleDownDuringRollout = true
 	step := ComputeNextStep(state)
 	require.NotNil(t, step)
-	require.True(t, step.UsesBootstrapSurge)
+	require.True(t, step.Kind == BootstrapSurgeStep)
 	require.Equal(t, []int{6, 3}, step.New)
 
 	// The decode role is now one above its ceiling. Neither repeated
@@ -756,7 +756,7 @@ func TestMovingTargetCoordinationBootstrapDoesNotStack(t *testing.T) {
 		state.Target.RawReadyReplicas = slices.Clone(ready)
 		correction := ComputeNextStep(state)
 		require.NotNil(t, correction)
-		require.False(t, correction.UsesBootstrapSurge)
+		require.False(t, correction.Kind == BootstrapSurgeStep)
 		require.Equal(t, state.Target.SpecReplicas, correction.New)
 		require.Equal(t, []int{2, 1}, correction.Past, "release only the one excess old group")
 		require.NoError(t, validateUpdateStep(state, correction))
@@ -766,7 +766,7 @@ func TestMovingTargetCoordinationBootstrapDoesNotStack(t *testing.T) {
 	state.Target.ReadyReplicas, state.Target.RawReadyReplicas = []int{6, 3}, []int{6, 3}
 	step = ComputeNextStep(state)
 	require.NotNil(t, step)
-	require.False(t, step.UsesBootstrapSurge)
+	require.False(t, step.Kind == BootstrapSurgeStep)
 	require.Equal(t, []int{0, 0}, step.Past)
 	assertScalingSafety(t, state, step)
 }
@@ -874,7 +874,7 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 			require.GreaterOrEqual(t, step.New[i], min(state.Target.SpecReplicas[i], state.Target.DesiredReplicas[i]), "preserve scheduled or unknown work")
 		}
 		floor := max(0, state.Target.DesiredReplicas[i]-config.MaxUnavailable)
-		if step.UsesUnavailableFallback && floor > 1 {
+		if step.Kind == UnavailableFallbackStep && floor > 1 {
 			floor--
 		}
 		require.GreaterOrEqual(t, afterServing[i], min(beforeServing[i], floor), "serving role %d: state=%+v step=%+v", i, state, step)
@@ -887,7 +887,7 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		if step.New[i] > state.Target.SpecReplicas[i] {
 			ceiling := surgeBaselines[i] + config.MaxSurge
 			budget := config.MaxSurge + config.MaxUnavailable
-			if step.UsesBootstrapSurge {
+			if step.Kind == BootstrapSurgeStep {
 				ceiling = max(ceiling+1, old+1)
 				budget = max(config.MaxSurge+1, old-surgeBaselines[i]+1) + config.MaxUnavailable
 			}
@@ -1231,7 +1231,7 @@ func TestRolloutPrefersOldDrainOverTargetRebalance(t *testing.T) {
 			first := rolloutStateForRevision(inputs.allRoleNames, old, candidates[0], *target, inputs.targetReplicas, inputs.config, readiness)
 			first.ScaleDownDuringRollout = immediate
 			repair := ComputeNextStep(first)
-			require.Equal(t, &UpdateStep{Past: []int{1, 1, 0, 0}, New: []int{0, 0, 1, 1}, UsesTargetRebalance: true}, repair)
+			require.Equal(t, &UpdateStep{Past: []int{1, 1, 0, 0}, New: []int{0, 0, 1, 1}, Kind: TargetRebalanceStep}, repair)
 			require.NoError(t, validateUpdateStep(first, repair), "the competing target reduction must remain a safe option")
 			selected, state, step, err := executor.selectNextRolloutStep(context.Background(), candidates, old, *target, inputs)
 			require.NoError(t, err)
