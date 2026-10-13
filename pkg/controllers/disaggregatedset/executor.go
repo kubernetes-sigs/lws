@@ -657,8 +657,8 @@ func extractRollingUpdateConfig(
 }
 
 // defaultRollingUpdateConfig applies to a role without a rollingUpdateConfiguration.
-// It matches the LeaderWorkerSet default, so a rollout never needs capacity beyond
-// the role's replicas.
+// It matches the LeaderWorkerSet default and avoids surge in ordinary steps.
+// The planner may still borrow a surge slot for bootstrap recovery.
 var defaultRollingUpdateConfig = RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1}
 
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {

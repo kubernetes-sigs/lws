@@ -209,7 +209,8 @@ func GetRoleConfigs(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) map[s
 // SubRoleRolloutConfig resolves each child override independently, without
 // changing the parent's policy. An unnamed child represents an ordinary role.
 func SubRoleRolloutConfig(role *disaggregatedsetv1.DisaggregatedRoleSpec, child *disaggregatedsetv1.DisaggregatedSubRoleSpec) leaderworkersetv1.RollingUpdateConfiguration {
-	// The LeaderWorkerSet default: a rollout needs no capacity beyond the role's replicas.
+	// The LeaderWorkerSet default avoids surge in ordinary rollout steps;
+	// the DisaggregatedSet planner may still borrow a slot for bootstrap recovery.
 	config := leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: intstr.FromInt(1)}
 	if parent := role.Spec.RolloutStrategy.RollingUpdateConfiguration; parent != nil {
 		config = *parent

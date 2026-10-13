@@ -742,6 +742,65 @@ func TestUnavailableFallbackRequiresExcessBootstrapCapacity(t *testing.T) {
 	}
 }
 
+func TestZeroSurgeRolloutOnFullCluster(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		decodeUnavailable int
+		wantStalled       bool
+	}{
+		{"preserve serving Decode despite a zero Prefill floor", 1, true},
+		{"explicitly permit both roles to become unavailable", 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const capacity = 3 // Every group consumes one slot, regardless of role or revision.
+			state := rolloutState([]int{1, 2}, []int{1, 2}, []int{1, 2}, nil, nil,
+				[]int{0, 0}, []int{0, 0}, []int{1, 2}, configs([]int{0, 0}, []int{1, tc.decodeUnavailable}))
+			sawBootstrap, sawOutage, quiescent := false, false, false
+			for range 20 {
+				step := ComputeNextStep(state)
+				if step == nil {
+					quiescent = true
+					break
+				}
+				require.NoError(t, validateUpdateStep(state, step))
+				sawBootstrap = sawBootstrap || step.Kind == BootstrapSurgeStep
+
+				// Observe old deletions before scheduling new groups. Existing Ready
+				// target groups retain their slots; a pending group is not capacity.
+				state.ActiveOld.observeFullyReady(step.Past)
+				state.Target.SpecReplicas = slices.Clone(step.New)
+				free := capacity - replicaSum(step.Past) - replicaSum(state.Target.ReadyReplicas)
+				require.GreaterOrEqual(t, free, 0)
+				for role, desired := range step.New {
+					require.GreaterOrEqual(t, desired, state.Target.ReadyReplicas[role])
+					added := min(free, desired-state.Target.ReadyReplicas[role])
+					state.Target.ReadyReplicas[role] += added
+					free -= added
+					state.Target.UnschedulableRoles[role] = state.Target.ReadyReplicas[role] < desired
+				}
+				state.Target.RawReadyReplicas = slices.Clone(state.Target.ReadyReplicas)
+				serving := allRequiredRolesPresent(state.ActiveOld.RequiredRoles, state.ActiveOld.ReadyReplicas) ||
+					allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas)
+				sawOutage = sawOutage || !serving
+			}
+			require.True(t, quiescent, "the planner must either complete or stop on the capacity constraint")
+			if tc.wantStalled {
+				assert.True(t, sawBootstrap)
+				assert.False(t, sawOutage, "a zero Prefill floor must not erase Decode's serving floor")
+				assert.Equal(t, []int{1, 1}, state.ActiveOld.SpecReplicas)
+				assert.Equal(t, []int{1, 1}, state.Target.SpecReplicas)
+				assert.Equal(t, []int{0, 1}, state.Target.ReadyReplicas)
+				assert.Equal(t, []bool{true, false}, state.Target.UnschedulableRoles)
+				return
+			}
+			assert.False(t, sawBootstrap, "explicit outage permission should not need a spare slot")
+			assert.True(t, sawOutage)
+			assert.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas)
+			assert.Equal(t, state.Target.DesiredReplicas, state.Target.ReadyReplicas)
+		})
+	}
+}
+
 func TestReadinessSummaryDistinguishesUsableAndPerRoleCapacity(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
