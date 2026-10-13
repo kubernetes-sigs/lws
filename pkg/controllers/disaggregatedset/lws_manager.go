@@ -745,6 +745,8 @@ type pendingWrite struct {
 	// Version read from this informer and used as the mutation precondition.
 	// Empty for creates, which cannot be ruled out by a version change.
 	baseVersion string
+	// The informer delivered the creation, even if it was deleted before our next GET.
+	creationObserved bool
 	// Replaying the same conditional mutation resolves an ambiguous transport
 	// error. We never turn a timeout into permission to forget a possible write.
 	retry func(context.Context) error
@@ -797,6 +799,18 @@ func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.Leade
 	return err
 }
 
+// Observe creation receipts in informer notifications, not just reconciliation.
+// A subsequent deletion may remove the object before checkWrite gets to read it.
+func (o *pendingWrites) observeCreation(lws *leaderworkersetv1.LeaderWorkerSet) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	written := o.writes[client.ObjectKeyFromObject(lws)]
+	if written != nil && written.baseVersion == "" && written.receipt != "" && lws.UID != "" &&
+		(written.uid == "" || written.uid == lws.UID) && lws.Annotations[observationReceiptAnnotation] == written.receipt {
+		written.uid, written.creationObserved = lws.UID, true
+	}
+}
+
 // Once the parent has disappeared from its informer, it cannot authorize more
 // rollout steps. Release its ledger entries instead of leaking them forever.
 func (o *pendingWrites) forget(parent client.ObjectKey) {
@@ -840,9 +854,9 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 		return err
 	}
 	// An object previously read from this informer cannot disappear or change
-	// UID without being deleted. For a never-observed create, however, absence
-	// (or a previous UID) may simply mean the cache has not caught up yet.
-	known := written.deleted || written.baseVersion != ""
+	// UID without being deleted. A creation notification establishes the same
+	// history. Otherwise absence (or a previous UID) may just be cache lag.
+	known := written.deleted || written.baseVersion != "" || written.creationObserved
 	seen := known && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
 	receiptObserved := err == nil && !written.deleted && lws.DeletionTimestamp.IsZero() &&
 		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt

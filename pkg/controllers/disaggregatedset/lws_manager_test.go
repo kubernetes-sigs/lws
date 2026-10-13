@@ -19,6 +19,8 @@ package disaggregatedset
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -36,6 +38,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -1667,6 +1671,122 @@ func TestCreateReceiptSurvivesCoalescingAndParentDeletion(t *testing.T) {
 	require.Len(t, o.writes, 1)
 	o.forget(parent)
 	require.Empty(t, o.writes)
+}
+
+func TestCreateReceiptRetiresAfterInformerNotification(t *testing.T) {
+	for _, response := range []string{"before notification", "after notification", "lost"} {
+		for _, state := range []string{"disappeared", "terminating", "replaced"} {
+			t.Run(response+"/"+state, func(t *testing.T) {
+				lws := revisionLWS("new", testRolePrefill, 0, 0, time.Time{}, 4)
+				lws.UID = ""
+				if state == "terminating" {
+					lws.Finalizers = []string{"test.example/hold"}
+				}
+				base, cached := newTestClient(), newTestClient()
+				o := testPendingWrites(cached)
+				notifyThenRetire := func() {
+					observed := lws.DeepCopy()
+					observed.ResourceVersion = ""
+					require.NoError(t, cached.Create(t.Context(), observed))
+					o.observeCreation(observed)
+					require.NoError(t, base.Delete(t.Context(), lws))
+					require.NoError(t, cached.Delete(t.Context(), observed))
+					if state == "replaced" {
+						observed.UID, observed.ResourceVersion, observed.Annotations = "replacement", "", nil
+						require.NoError(t, base.Create(t.Context(), observed.DeepCopy()))
+						require.NoError(t, cached.Create(t.Context(), observed))
+					}
+				}
+				err := o.mutate(t.Context(), lws, false, func(ctx context.Context) error {
+					lws.UID = "created-child" // Simulate the API assigning the UID.
+					if err := base.Create(ctx, lws); err != nil {
+						return err
+					}
+					if response != "before notification" {
+						notifyThenRetire() // Watch delivery can precede the HTTP response.
+					}
+					if response == "lost" {
+						return errors.New("response lost")
+					}
+					return nil
+				})
+				if response == "lost" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				owner := metav1.GetControllerOf(lws).UID
+				if response == "before notification" {
+					// Neither another receipt nor a previous same-name UID proves
+					// that this creation has reached the informer.
+					for _, wrong := range []string{"receipt", "UID"} {
+						other := lws.DeepCopy()
+						if wrong == "receipt" {
+							other.Annotations[observationReceiptAnnotation] = "other"
+						} else {
+							other.UID = "previous-child"
+						}
+						o.observeCreation(other)
+						require.ErrorIs(t, o.observed(t.Context(), owner, "0"), errReplicaGroupsPending)
+					}
+					notifyThenRetire()
+				}
+				require.NoError(t, o.observed(t.Context(), owner, "0"))
+				require.Empty(t, o.writes)
+			})
+		}
+	}
+}
+
+func TestInformerCreationReceiptAfterDeletion(t *testing.T) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("set KUBEBUILDER_ASSETS for the real API server test; make test supplies it")
+	}
+	environment := &envtest.Environment{UseExistingCluster: ptr.To(false), CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crd", "bases")}, ErrorIfCRDPathMissing: true}
+	config, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	scheme := testSchemeForUnit()
+	writer, err := client.New(config, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	mgr, err := ctrl.NewManager(config, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
+	require.NoError(t, err)
+	pending := testPendingWrites(nil)
+	o, err := replicagroups.NewObserver(mgr, pending.observeCreation)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	finished := make(chan error, 1)
+	go func() { finished <- o.Start(ctx) }()
+	t.Cleanup(func() { cancel(); require.NoError(t, <-finished) })
+	startup, stop := context.WithTimeout(ctx, 20*time.Second)
+	defer stop()
+	require.NoError(t, o.List(startup, &leaderworkersetv1.LeaderWorkerSetList{}))
+
+	manager := NewLeaderWorkerSetManager(writer)
+	pending.Reader = o
+	manager.reader, manager.pending = o, pending
+	ds := newTestDisaggregatedSet()
+	role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
+	role.Spec = revisionLWS("created", testRolePrefill, 1, 0, time.Time{}).Spec
+	role.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
+	role.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+	role.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "test", Image: "test.invalid/image"}}
+	require.NoError(t, manager.Create(ctx, ds, role, 0, "created", 1, 1))
+	key := client.ObjectKey{Namespace: ds.Namespace, Name: ds.Name + "-0-created-" + role.Name}
+	created := &leaderworkersetv1.LeaderWorkerSet{}
+	require.Eventually(t, func() bool { return o.Get(ctx, key, created) == nil }, 5*time.Second, 10*time.Millisecond)
+	uid := created.UID
+	// The informer receives both events before reconciliation ever checks the receipt.
+	require.NoError(t, writer.Delete(ctx, created))
+	require.Eventually(t, func() bool {
+		return apierrors.IsNotFound(o.Get(ctx, key, &leaderworkersetv1.LeaderWorkerSet{}))
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return manager.pending.observed(ctx, ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond,
+		"a fully current informer must not wait forever for a deleted creation")
+	require.NoError(t, manager.Create(ctx, ds, role, 0, "created", 1, 1))
+	require.Eventually(t, func() bool {
+		return o.Get(ctx, key, created) == nil && created.UID != uid && manager.pending.observed(ctx, ds.UID, "0") == nil
+	}, 5*time.Second, 10*time.Millisecond, "the missing child can be recreated and its new receipt observed")
 }
 
 func TestBudgetHistoryDoesNotPruneAnUnobservedCreate(t *testing.T) {

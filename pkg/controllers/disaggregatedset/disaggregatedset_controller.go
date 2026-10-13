@@ -587,6 +587,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	changes := make(chan event.GenericEvent, 1024)
 	observer, err := replicagroups.NewObserver(mgr, func(lws *leaderworkersetv1.LeaderWorkerSet) {
+		r.LWSManager.pending.observeCreation(lws)
 		owner := metav1.GetControllerOf(lws)
 		if owner == nil || owner.Kind != "DisaggregatedSet" || owner.APIVersion != disaggregatedsetv1.GroupVersion.String() {
 			return
