@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -334,6 +335,21 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 			target = *newRevision
 		}
 		if _, err := r.LWSManager.observeRolloutReadiness(ctx, oldRevisions, target); err != nil {
+			if errors.Is(err, errReplicaGroupsPending) {
+				// Hash replacement groups may need routing labels to start.
+				// Finish that work while waiting; syncSubRoles still prevents
+				// physical scaling until native observations have caught up.
+				for _, rev := range append(slices.Clone(oldRevisions), target) {
+					for _, lws := range rev.Roles {
+						if lws.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
+							continue
+						}
+						if _, syncErr := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, lws, subRoleUpdate{}); syncErr != nil && !errors.Is(syncErr, errReplicaGroupsPending) {
+							return ctrl.Result{}, syncErr
+						}
+					}
+				}
+			}
 			return ctrl.Result{}, err
 		}
 	}

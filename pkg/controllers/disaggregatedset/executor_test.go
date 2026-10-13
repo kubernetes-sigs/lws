@@ -3116,13 +3116,14 @@ func TestSubRolePendingBarrierResumesEveryAcceptedAssignment(t *testing.T) {
 }
 
 type subRoleFixture struct {
-	t        *testing.T
-	manager  *LeaderWorkerSetManager
-	ds       *disaggregatedsetv1.DisaggregatedSet
-	lws      *leaderworkersetv1.LeaderWorkerSet
-	start    int
-	nextHash int
-	identity leaderworkersetv1.GroupIdentityType
+	t            *testing.T
+	manager      *LeaderWorkerSetManager
+	nativeClient client.Client // Backing fake for native-controller writes, not DS observations.
+	ds           *disaggregatedsetv1.DisaggregatedSet
+	lws          *leaderworkersetv1.LeaderWorkerSet
+	start        int
+	nextHash     int
+	identity     leaderworkersetv1.GroupIdentityType
 }
 
 func newSubRoleFixture(t *testing.T, start int, children ...string) *subRoleFixture {
@@ -3132,6 +3133,7 @@ func newSubRoleFixture(t *testing.T, start int, children ...string) *subRoleFixt
 func newSubRoleFixtureForIdentity(t *testing.T, identity leaderworkersetv1.GroupIdentityType, start int, children ...string) *subRoleFixture {
 	f := &subRoleFixture{t: t, start: start, identity: identity, ds: newDSWithRoles("ds")}
 	f.manager = NewLeaderWorkerSetManager(newTestClient(f.ds))
+	f.nativeClient = f.manager.client
 	return f.withRevision("model", children...)
 }
 
@@ -3142,7 +3144,7 @@ func (f *subRoleFixture) metadata(name string, owner client.Object, kind schema.
 }
 
 func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleFixture {
-	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, nextHash: f.start + len(children), identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
+	f = &subRoleFixture{t: f.t, manager: f.manager, nativeClient: f.nativeClient, ds: f.ds, start: f.start, nextHash: f.start + len(children), identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
 	f.lws.ObjectMeta = f.metadata(name, f.ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))
 	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: f.identity, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
 	f.lws.Status.ObservedGeneration = 1
@@ -3221,7 +3223,7 @@ func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	if f.identity == leaderworkersetv1.GroupIdentityHash {
 		// Simulate native writes through the backing fake, independently of any
 		// DS write spy. Tests can deliberately override the deletion-cost choice.
-		c := f.manager.apiReader.(client.Client)
+		c := f.nativeClient
 		s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
 		require.NoError(f.t, c.Update(f.t.Context(), s.LeaderDeployment))
 		s.LeaderDeployment.Status.ObservedGeneration = s.LeaderDeployment.Generation
@@ -3659,7 +3661,7 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 			// This pass changes two costs, but checks the parent only during
 			// observation and once before acting, not again for every Pod.
 			lwsReads := 0
-			f.manager.apiReader = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+			f.manager.reader = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
 						lwsReads++
@@ -3670,7 +3672,7 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 			_, err = f.manager.syncSubRoles(t.Context(), f.ds, fresh.LWS, subRoleUpdate{})
 			require.ErrorIs(t, err, errReplicaGroupsPending)
 			require.Equal(t, 2, lwsReads, "parent checks must not grow with the number of cost writes")
-			f.manager.apiReader = base
+			f.manager.reader = base
 			for attempt := 0; attempt < 6 && getLWSReplicas(f.observe().LWS) != 2; attempt++ {
 				f.sync()
 			}
@@ -3679,7 +3681,7 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 			// Neither a restart nor repeated reconciliation may issue an extra
 			// delete, clear costs early, or supersede the accepted pending target.
 			f.manager = NewLeaderWorkerSetManager(f.manager.client)
-			f.manager.apiReader = base
+			f.manager.reader = base
 			for range 2 {
 				f.sync()
 			}
@@ -3775,6 +3777,7 @@ func TestHashSubRoleNativeRolloutStartup(t *testing.T) {
 	for _, phase := range []string{"steady", "preparing", "published"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+			f.manager.pending = testPendingWrites(f.manager.reader)
 			if phase != "steady" {
 				require.ErrorIs(t, f.scale(map[string]int{"a": 0, "b": 1}), errReplicaGroupsPending)
 			}
@@ -3800,7 +3803,11 @@ func TestHashSubRoleNativeRolloutStartup(t *testing.T) {
 				deletes++
 				return errors.New("native controller owns deletions")
 			}})
-			f.sync()
+			r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+			for range 3 {
+				_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), f.ds, 0, "target", nil)
+				require.ErrorIs(t, err, errReplicaGroupsPending, "routing repair must not unblock rollout planning")
+			}
 			after := f.observe()
 			require.False(t, subRoleNativeSettled(after))
 			require.Equal(t, pending, after.LWS.Annotations[subRolePlanAnnotation])
@@ -3904,7 +3911,7 @@ func TestHashSubRolePendingPlanSurvivesWriteFailures(t *testing.T) {
 	}
 }
 
-func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
+func TestHashSubRolesObserveNativeStateAndRepairCosts(t *testing.T) {
 	for _, change := range []string{"settled", "loading", "cost", "user minimum", "externally changed cost", "native cost", "pending", "native pending", "wrong distribution", "missing worker"} {
 		t.Run(change, func(t *testing.T) {
 			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b")
@@ -3943,7 +3950,24 @@ func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
 				require.NoError(t, f.manager.client.Update(t.Context(), object))
 			}
 			s = f.observe()
-			require.Equal(t, change == "settled" || change == "loading" || change == "native cost" || change == "user minimum", cachedSubRolesMatchDesired(t.Context(), f.manager.client, s.LWS, map[string]int{"a": 1, "b": 1}))
+			// The informer-only implementation has no separate cached no-op
+			// predicate. Exercise the real reconciliation and its write path.
+			f.manager.pending = testPendingWrites(f.manager.reader)
+			_, err := f.manager.syncSubRoles(t.Context(), f.ds, s.LWS, subRoleUpdate{})
+			switch change {
+			case "pending":
+				require.Error(t, err, "malformed saved work must not be ignored")
+			case "cost", "externally changed cost", "native pending", "wrong distribution":
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+			default:
+				require.NoError(t, err)
+			}
+			if change == "missing worker" {
+				require.False(t, f.observe().Groups[0].Ready, "an incomplete group contributes no Ready credit")
+			}
+			if change == "cost" || change == "externally changed cost" {
+				require.NotContains(t, f.observe().Groups[0].Leader.Annotations, subRoleOriginalDeletionCostAnnotation)
+			}
 			if change == "native cost" {
 				f.sync()
 				require.Equal(t, "-100", f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost], "DS must preserve native scheduling preferences")
@@ -4088,6 +4112,12 @@ func TestSubRoleScaleDownAfterNativeCreationFailure(t *testing.T) {
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), s.LeaderStatefulSet))
 			}
 			before := f.observe().Groups
+			// Informer mode waits for the full cohort, even for a creation
+			// shortfall. The assignment algorithm alone can cancel missing growth.
+			f.manager.pending = testPendingWrites(f.manager.reader)
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
+			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS))
+			f.manager.pending = nil
 			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
 				t.Fatal("cancelling missing growth must not delete any group")
 				return nil
