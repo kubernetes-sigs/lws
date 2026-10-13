@@ -3219,7 +3219,7 @@ func assertHashSubRoleCounts(t *testing.T, f *subRoleFixture, want map[string]in
 		name, coherent := groupSubRole(group)
 		require.True(t, coherent)
 		actual[name]++
-		require.NotEqual(t, "-1000", group.Leader.Annotations[corev1.PodDeletionCost], "completed survivors must lose the DS deletion preference")
+		require.NotEqual(t, subRoleDeletionCost, group.Leader.Annotations[corev1.PodDeletionCost], "completed survivors must lose the DS deletion preference")
 	}
 	require.Equal(t, want, actual)
 }
@@ -3570,7 +3570,7 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 					if lws, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok && getLWSReplicas(lws) == 2 && publications == 0 {
 						preferred := 0
 						for _, group := range f.observe().Groups {
-							if group.Leader.Annotations[corev1.PodDeletionCost] == "-1000" {
+							if group.Leader.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost {
 								preferred++
 							}
 						}
@@ -3605,7 +3605,7 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 			keptB, preferredSurvivor := false, false
 			for _, group := range afterNative.Groups {
 				keptB = keptB || group.Leader.UID == oldB
-				preferredSurvivor = preferredSurvivor || group.Leader.Annotations[corev1.PodDeletionCost] == "-1000"
+				preferredSurvivor = preferredSurvivor || group.Leader.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost
 			}
 			require.Equal(t, !wrongVictim, keptB)
 			if wrongVictim {
@@ -3767,7 +3767,7 @@ func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
 				pod.Status.Conditions = nil
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
 			case "cost":
-				pod.Annotations[corev1.PodDeletionCost] = "-1000"
+				pod.Annotations[corev1.PodDeletionCost] = subRoleDeletionCost
 			case "native cost":
 				pod.Annotations[corev1.PodDeletionCost] = "-100"
 			case "pending":
@@ -3808,7 +3808,7 @@ func TestHashSubRoleDeletionPreferenceRestoresNativeGateCost(t *testing.T) {
 			_, err := f.manager.preferSubRoleDeletion(t.Context(), f.lws, f.observe().Groups[0], true)
 			require.NoError(t, err)
 			pod = f.observe().Groups[0].Leader
-			require.Equal(t, "-1000", pod.Annotations[corev1.PodDeletionCost])
+			require.Equal(t, strconv.FormatInt(math.MinInt32, 10), pod.Annotations[corev1.PodDeletionCost])
 			want := "-100"
 			if !gateRemains {
 				pod.Spec.SchedulingGates = nil

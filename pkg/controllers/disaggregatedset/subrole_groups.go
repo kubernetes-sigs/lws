@@ -40,7 +40,8 @@ import (
 const (
 	subRoleReplicasAnnotation = "disaggregatedset.x-k8s.io/subrole-replicas"
 	subRolePlanAnnotation     = "disaggregatedset.x-k8s.io/subrole-plan"
-	subRoleDeletionCost       = "-1000"
+	// Lowest valid deletion cost; scheduling, phase and readiness still take priority.
+	subRoleDeletionCost = "-2147483648" // math.MinInt32
 )
 
 // Hash retains the accepted targets and Ready floors across label/scale retries.
