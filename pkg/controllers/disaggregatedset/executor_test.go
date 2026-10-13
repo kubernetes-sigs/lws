@@ -481,7 +481,7 @@ func TestValidateDisjointSurplusStep(t *testing.T) {
 	// true excess may shrink; W3 keeps its historical floor of four minus one.
 	state := rolloutState([]int{0, 0, 4}, []int{0, 0, 3}, []int{0, 0, 3}, nil, nil,
 		[]int{3, 1, 0}, []int{3, 0, 0}, []int{2, 2, 0}, configs([]int{0, 0, 0}, []int{1, 1, 1}))
-	valid := &UpdateStep{Past: []int{0, 0, 3}, New: []int{2, 1, 0}, UsesTargetRebalance: true}
+	valid := &UpdateStep{Past: []int{0, 0, 3}, New: []int{2, 1, 0}, Kind: TargetRebalanceStep}
 	require.Equal(t, valid, ComputeNextStep(state))
 	require.NoError(t, validateUpdateStep(state, valid))
 	for _, tc := range []struct {
@@ -492,12 +492,13 @@ func TestValidateDisjointSurplusStep(t *testing.T) {
 		{"last Ready group", func(step *UpdateStep) { step.New[0] = 0 }},
 		{"below desired", func(step *UpdateStep) { step.New[0] = 1 }},
 		{"target growth", func(step *UpdateStep) { step.New[1]++ }},
-		{"unmarked shrink", func(step *UpdateStep) { step.UsesTargetRebalance = false }},
-		{"bootstrap flag", func(step *UpdateStep) { step.UsesBootstrapSurge = true }},
-		{"unavailable flag", func(step *UpdateStep) { step.UsesUnavailableFallback = true }},
+		{"unmarked shrink", func(step *UpdateStep) { step.Kind = OrdinaryStep }},
+		{"bootstrap flag", func(step *UpdateStep) { step.Kind = BootstrapSurgeStep }},
+		{"unavailable flag", func(step *UpdateStep) { step.Kind = UnavailableFallbackStep }},
+		{"unknown kind", func(step *UpdateStep) { step.Kind = StepKind(255) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			step := &UpdateStep{Past: slicesClone(valid.Past), New: slicesClone(valid.New), UsesTargetRebalance: true}
+			step := &UpdateStep{Past: slicesClone(valid.Past), New: slicesClone(valid.New), Kind: TargetRebalanceStep}
 			tc.edit(step)
 			require.Error(t, validateUpdateStep(state, step))
 		})
@@ -2784,9 +2785,9 @@ func TestSubRoleMigrationFromOrdinaryToOrdinal(t *testing.T) {
 			// Each child protects its desired count without inheriting ordinary history;
 			// disjoint replacement separately preserves the removed model's floor.
 			snapshot := snapshotForRolloutState(state)
-			require.Equal(t, 1, availabilityFloor(snapshot[0]))
-			require.Equal(t, 1, availabilityFloor(snapshot[1]))
-			require.Equal(t, 1, availabilityFloor(snapshot[2]), "removed ordinary roles can release one group")
+			require.Equal(t, 1, snapshot.availabilityFloor(0))
+			require.Equal(t, 1, snapshot.availabilityFloor(1))
+			require.Equal(t, 1, snapshot.availabilityFloor(2), "removed ordinary roles can release one group")
 			executor := newTestExecutor(f.manager.client)
 			executor.LWSManager = f.manager
 			for range 2 {
@@ -3479,7 +3480,7 @@ func TestSubRoleRolloutAppliesEveryParent(t *testing.T) {
 			state := rolloutState(tc.initial, tc.old, tc.old, nil, nil, tc.target, tc.target, tc.initial, configs(tc.surge, []int{1, 1}))
 			step := ComputeNextStep(state)
 			require.NotNil(t, step)
-			require.Equal(t, tc.bootstrap, step.UsesBootstrapSurge)
+			require.Equal(t, tc.bootstrap, step.Kind == BootstrapSurgeStep)
 			err := executor.applyRolloutStep(t.Context(), old[0].ds, subRoleParentRevision(target), rolloutInputs{allRoleNames: []string{"prefill/pool", "decode/pool"}}, subRoleParentRevision(old), state, step)
 			require.NoError(t, err)
 			for i := range target {

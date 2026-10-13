@@ -294,7 +294,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 		}
 		// Remember the first emergency step, but prefer ordinary progress from
 		// any candidate before exceeding a configured surge ceiling.
-		if step.UsesBootstrapSurge {
+		if step.Kind == BootstrapSurgeStep {
 			if selectedStep == nil {
 				selectedRevision, selectedState, selectedStep = candidate, state, step
 			}
@@ -303,7 +303,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 		// Keep looking for an ordinary old drain before reducing the target.
 		// A safe target reduction still beats an emergency bootstrap step.
 		if targetRevisionScalesDown(state, step) {
-			if selectedStep == nil || selectedStep.UsesBootstrapSurge {
+			if selectedStep == nil || selectedStep.Kind == BootstrapSurgeStep {
 				selectedRevision, selectedState, selectedStep = candidate, state, step
 			}
 			continue
@@ -361,7 +361,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	log := logf.FromContext(ctx)
 	logArgs := append([]interface{}{"revision", selectedRevision.Revision}, buildStepLogArgs(inputs.allRoleNames, selectedStep)...)
 	log.Info("Next rollout step computed", logArgs...)
-	if selectedStep.UsesTargetRebalance {
+	if selectedStep.Kind == TargetRebalanceStep {
 		return executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.allRoleNames, selectedStep.New, scaleDown)
 	}
 	// Child assignment may wait for a healthy retained prefix. New is bounded
@@ -383,7 +383,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 	if err := executor.scaleRevision(ctx, disaggregatedSet, targetRevision, inputs.allRoleNames, selectedStep.New, scaleUp); err != nil {
 		return err
 	}
-	if selectedStep.UsesBootstrapSurge {
+	if selectedStep.Kind == BootstrapSurgeStep {
 		roles := bootstrapSurgeRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used bootstrap surge to unblock rolling update", "roles", roles)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge, "Bootstrap", "Created one bootstrap replica for roles %v without a free maxSurge slot to preserve revision completeness", roles)
@@ -393,7 +393,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 			return err
 		}
 	}
-	if selectedStep.UsesUnavailableFallback {
+	if selectedStep.Kind == UnavailableFallbackStep {
 		roles := unavailableFallbackRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used availability fallback for scheduler-unschedulable target Pods", "roles", roles)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily relaxed availability by at most one replica per role while retiring revision %s to release excess bootstrap capacity for scheduler-unschedulable target roles %v", selectedRevision.Revision, roles)
@@ -520,59 +520,33 @@ func rolloutStateForRevision(
 ) RolloutState {
 	initial, activeState := observeOldRevision(active, roleNames, readiness)
 	state := RolloutState{
-		ActiveOld: ActiveRevisionState{
-			RequiredRoles:    activeState.RequiredRoles,
-			InitialReplicas:  initial,
-			SpecReplicas:     activeState.SpecReplicas,
-			RawReadyReplicas: activeState.RawReadyReplicas,
-			ReadyReplicas:    activeState.ReadyReplicas,
-		},
-		Target: TargetRevisionState{
-			RequiredRoles:      make([]bool, len(roleNames)),
-			SpecReplicas:       make(RoleReplicaState, len(roleNames)),
-			RawReadyReplicas:   make(RoleReplicaState, len(roleNames)),
-			ReadyReplicas:      make(RoleReplicaState, len(roleNames)),
-			DesiredReplicas:    slicesClone(targetReplicas),
-			UnschedulableRoles: make([]bool, len(roleNames)),
-			AllUnscheduled:     make([]bool, len(roleNames)),
-		},
+		ActiveOld:            ActiveRevisionState{RevisionState: activeState, InitialReplicas: initial},
+		Target:               observeTargetRevision(target, roleNames, targetReplicas, readiness),
 		AvailabilityBaseline: make(RoleReplicaState, len(roleNames)),
 		Config:               slices.Clone(config),
 	}
-	// Shared roles retain every old baseline. Removed roles need only the
-	// disjoint baselines: an overlapping revision must not inflate their floor.
-	includeBaseline := func(initial, spec RoleReplicaState) {
-		if replicaSum(spec) == 0 {
-			return
-		}
-		overlapsTarget := false
-		for i, replicas := range initial {
-			overlapsTarget = overlapsTarget || replicas > 0 && targetReplicas[i] > 0
-		}
-		for i, replicas := range initial {
-			if targetReplicas[i] > 0 || !overlapsTarget {
-				state.AvailabilityBaseline[i] = max(state.AvailabilityBaseline[i], replicas)
-			}
-		}
-	}
-	includeBaseline(initial, activeState.SpecReplicas)
+	state.includeHistoricalBaseline(initial, activeState.SpecReplicas)
 	for _, revision := range oldRevisions {
 		if revision.Revision == active.Revision {
 			continue
 		}
 		parkedInitial, parked := observeOldRevision(revision, roleNames, readiness)
 		state.ParkedOld = append(state.ParkedOld, parked)
-		includeBaseline(parkedInitial, parked.SpecReplicas)
-	}
-	for i, roleName := range roleNames {
-		state.Target.RequiredRoles[i] = targetReplicas[i] > 0
-		observed := readiness.role(target, roleName)
-		state.Target.SpecReplicas[i] = observed.spec
-		state.Target.RawReadyReplicas[i] = observed.raw
-		state.Target.ReadyReplicas[i] = observed.committed
-		state.Target.AllUnscheduled[i] = observed.allUnscheduled
+		state.includeHistoricalBaseline(parkedInitial, parked.SpecReplicas)
 	}
 	return state
+}
+
+func observeTargetRevision(revision disaggregatedsetutils.RevisionRoles, roleNames []string, desired RoleReplicaState, readiness rolloutReadiness) TargetRevisionState {
+	target := newTargetRevisionState(desired)
+	for i, roleName := range roleNames {
+		observed := readiness.role(revision, roleName)
+		target.SpecReplicas[i] = observed.spec
+		target.RawReadyReplicas[i] = observed.raw
+		target.ReadyReplicas[i] = observed.committed
+		target.AllUnscheduled[i] = observed.allUnscheduled
+	}
+	return target
 }
 
 func observeOldRevision(
@@ -581,12 +555,7 @@ func observeOldRevision(
 	readiness rolloutReadiness,
 ) (RoleReplicaState, ParkedRevisionState) {
 	initial := make(RoleReplicaState, len(roleNames))
-	state := ParkedRevisionState{
-		RequiredRoles:    make([]bool, len(roleNames)),
-		SpecReplicas:     make(RoleReplicaState, len(roleNames)),
-		RawReadyReplicas: make(RoleReplicaState, len(roleNames)),
-		ReadyReplicas:    make(RoleReplicaState, len(roleNames)),
-	}
+	state := newRevisionState(len(roleNames))
 	for i, roleName := range roleNames {
 		observed := readiness.role(revision, roleName)
 		state.SpecReplicas[i] = observed.spec
@@ -827,47 +796,44 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 	if err := validateStepStructure(state, step); err != nil {
 		return err
 	}
-
-	snapshot := snapshotForRolloutState(state)
-	if step.UsesTargetRebalance {
-		expected := disjointSurplusStep(state, snapshot)
-		if expected == nil || step.UsesBootstrapSurge || step.UsesUnavailableFallback ||
-			!slices.Equal(step.Past, expected.Past) || !slices.Equal(step.New, expected.New) {
+	plan := prepareRolloutPlan(state)
+	if step.Kind == TargetRebalanceStep {
+		expected := disjointSurplusStep(plan.snapshot)
+		if expected == nil || !slices.Equal(step.Past, expected.Past) || !slices.Equal(step.New, expected.New) {
 			return fmt.Errorf("target rebalance does not match the disjoint surplus limit")
 		}
-		if !targetScaleDownPreservesAvailability(state, step.New) {
+		if !targetScaleDownPreservesAvailability(plan.snapshot, step.New) {
 			return fmt.Errorf("target rebalance exceeds its retained-readiness or scheduling budget")
 		}
 		return nil
 	}
-	phaseTargets := targetReplicasForActiveRevision(snapshot)
-	normalLimits := hardNewReplicaLimits(snapshot)
-	newLimits, availabilitySnapshot, err := validateFallbackSelection(state, step, snapshot, phaseTargets, normalLimits)
+	snapshot, limits, err := plan.boundsForStep(step)
 	if err != nil {
 		return err
 	}
-	if err := validateReplicaTargets(state, step, snapshot, phaseTargets, normalLimits, newLimits); err != nil {
+	if err := plan.validateTargets(step, limits); err != nil {
 		return err
 	}
 	if targetRevisionScalesDown(state, step) {
 		if !state.ScaleDownDuringRollout || !slices.Equal(step.Past, state.ActiveOld.SpecReplicas) {
 			return fmt.Errorf("target reduction requires opt-in and cannot accompany an old drain")
 		}
-		if !targetScaleDownPreservesAvailability(state, step.New) {
+		if !targetScaleDownPreservesAvailability(plan.snapshot, step.New) {
 			return fmt.Errorf("target reduction exceeds its retained-readiness budget")
 		}
 	}
-	if !availabilityPreserved(availabilitySnapshot, step.Past, state.ActiveOld.RequiredRoles) {
+	if !snapshot.oldDrain().preserves(step.Past) {
 		return fmt.Errorf("old targets reduce usable readiness below its safe bound")
 	}
 	return nil
 }
 
-// validateStepStructure checks that the planner output matches the role layout
-// and does not leave only part of the active revision running.
 func validateStepStructure(state RolloutState, step *UpdateStep) error {
 	if step == nil {
 		return fmt.Errorf("step is nil")
+	}
+	if step.Kind > TargetRebalanceStep {
+		return fmt.Errorf("unknown step kind %d", step.Kind)
 	}
 	if len(step.Past) != len(state.Config) || len(step.New) != len(state.Config) {
 		return fmt.Errorf("target lengths do not match role count")
@@ -878,120 +844,64 @@ func validateStepStructure(state RolloutState, step *UpdateStep) error {
 	return nil
 }
 
-// validateFallbackSelection verifies that an emergency policy is used only
-// when safer progress is unavailable and returns the bounds for that policy.
-func validateFallbackSelection(
-	state RolloutState,
-	step *UpdateStep,
-	snapshot rolloutSnapshot,
-	phaseTargets RoleReplicaState,
-	normalLimits RoleReplicaState,
-) (RoleReplicaState, rolloutSnapshot, error) {
-	ordinaryPast, ordinaryNew := ordinaryReplicaTargets(state, snapshot, phaseTargets)
-	ordinaryStepAvailable := anyChange(ordinaryPast, ordinaryNew, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas)
-	bootstrapSnapshot, bootstrapSurgeAvailable := snapshotWithBootstrapSurge(snapshot, phaseTargets)
-	bootstrapStepAvailable := bootstrapSurgeAvailable && anyChange(ordinaryPast, furthestNewTargets(bootstrapSnapshot, phaseTargets), state.ActiveOld.SpecReplicas, state.Target.SpecReplicas)
-	newLimits := normalLimits
-	availabilitySnapshot := snapshot
-	if step.UsesBootstrapSurge && step.UsesUnavailableFallback {
-		return nil, nil, fmt.Errorf("bootstrap surge and availability fallback cannot be used together")
+// Recovery must be both applicable and necessary. Ordinary bounds remain the
+// reference for coordination and for deciding whether the marker is truthful.
+func (plan rolloutPlan) boundsForStep(step *UpdateStep) (rolloutSnapshot, RoleReplicaState, error) {
+	snapshot, limits := plan.snapshot, plan.growthLimits
+	if step.Kind == OrdinaryStep {
+		return snapshot, limits, nil
 	}
-	if step.UsesBootstrapSurge {
-		if err := validateBootstrapSurgeStep(ordinaryStepAvailable, bootstrapSurgeAvailable); err != nil {
-			return nil, nil, err
+	if plan.changes(&plan.ordinary) {
+		return snapshot, nil, fmt.Errorf("recovery used while an ordinary rollout step is available")
+	}
+	if step.Kind == BootstrapSurgeStep {
+		bootstrap, allowed := snapshotWithBootstrapSurge(snapshot, plan.phaseTargets, limits)
+		if !allowed {
+			return snapshot, nil, fmt.Errorf("bootstrap surge used without a blocked target role")
 		}
-		newLimits = hardNewReplicaLimits(bootstrapSnapshot)
+		return bootstrap, hardNewReplicaLimits(bootstrap), nil
 	}
-	if step.UsesUnavailableFallback {
-		fallbackSnapshot := snapshotWithUnavailableFallback(snapshot)
-		if err := validateUnavailableFallbackStep(state, step, fallbackSnapshot, ordinaryStepAvailable, bootstrapStepAvailable); err != nil {
-			return nil, nil, err
-		}
-		availabilitySnapshot = fallbackSnapshot
+	if plan.bootstrapStep() != nil {
+		return snapshot, nil, fmt.Errorf("availability fallback used while bootstrap surge is available")
 	}
-	return newLimits, availabilitySnapshot, nil
+	fallback := snapshotWithUnavailableFallback(snapshot)
+	if !slices.Equal(step.Past, furthestOldTargets(fallback)) || !slices.Equal(step.New, snapshot.Target.SpecReplicas) {
+		return snapshot, nil, fmt.Errorf("availability fallback does not match the bounded planner target")
+	}
+	if !drainsOverSurgeUnschedulableRole(fallback, step.Past, snapshot.Target.UnschedulableRoles) {
+		return snapshot, nil, fmt.Errorf("availability fallback does not release excess surge for an unschedulable target role")
+	}
+	return fallback, limits, nil
 }
 
-// validateReplicaTargets checks the fractional window and per-role replica
-// bounds, and rejects an incorrectly marked or no-op step.
-func validateReplicaTargets(
-	state RolloutState,
-	step *UpdateStep,
-	snapshot rolloutSnapshot,
-	phaseTargets RoleReplicaState,
-	normalLimits RoleReplicaState,
-	newLimits RoleReplicaState,
-) error {
-	if bounded := boundDrainingSnapshotTargets(snapshot, state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, step.Past); !slices.Equal(bounded, step.Past) {
+func (plan rolloutPlan) validateTargets(step *UpdateStep, limits RoleReplicaState) error {
+	snapshot, phase := plan.snapshot, plan.phaseTargets
+	if bounded := boundDrainingSnapshotTargets(snapshot, step.Past); !slices.Equal(bounded, step.Past) {
 		return fmt.Errorf("old targets exceed the fractional coordination window")
 	}
-	growthTargets := slices.Clone(step.New)
-	for i := range growthTargets {
-		growthTargets[i] = max(growthTargets[i], state.Target.SpecReplicas[i])
+	growth := slices.Clone(step.New)
+	for i := range growth {
+		growth[i] = max(growth[i], snapshot.Target.SpecReplicas[i])
 	}
-	if bounded := boundGrowingRoleTargetsToWindow(state.Target.SpecReplicas, phaseTargets, growthTargets); !slices.Equal(bounded, growthTargets) {
+	if bounded := boundGrowingRoleTargetsToWindow(snapshot.Target.SpecReplicas, phase, growth); !slices.Equal(bounded, growth) {
 		return fmt.Errorf("new targets exceed the fractional coordination window")
 	}
-	_, ordinaryNew := ordinaryReplicaTargets(state, snapshot, phaseTargets)
-	changed := false
-	usedBootstrapSurge := false
-	for i, role := range snapshot {
-		if step.Past[i] < 0 || step.Past[i] > role.DrainingSpecReplicas {
-			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, role.DrainingSpecReplicas)
+	usedBootstrap := false
+	for i, old := range snapshot.ActiveOld.SpecReplicas {
+		if step.Past[i] < 0 || step.Past[i] > old {
+			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, old)
 		}
-		maxNew := min(newLimits[i], phaseTargets[i])
-		minNew := min(role.NewSpecReplicas, ordinaryNew[i])
-		if step.New[i] < minNew || step.New[i] > maxNew {
-			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, minNew, maxNew)
+		minimum, maximum := min(snapshot.Target.SpecReplicas[i], plan.ordinary.New[i]), min(limits[i], phase[i])
+		if step.New[i] < minimum || step.New[i] > maximum {
+			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, minimum, maximum)
 		}
-		usedBootstrapSurge = usedBootstrapSurge || step.New[i] > min(normalLimits[i], phaseTargets[i])
-		changed = changed || step.Past[i] < role.DrainingSpecReplicas || step.New[i] != role.NewSpecReplicas
+		usedBootstrap = usedBootstrap || step.New[i] > min(plan.growthLimits[i], phase[i])
 	}
-	if step.UsesBootstrapSurge != usedBootstrapSurge {
+	if (step.Kind == BootstrapSurgeStep) != usedBootstrap {
 		return fmt.Errorf("bootstrap surge marker does not match the new replica targets")
 	}
-	if !changed {
+	if !plan.changes(step) {
 		return fmt.Errorf("plan makes no API change")
-	}
-	return nil
-}
-
-func validateBootstrapSurgeStep(
-	ordinaryStepAvailable, bootstrapSurgeAvailable bool,
-) error {
-	if ordinaryStepAvailable {
-		return fmt.Errorf("bootstrap surge used while an ordinary rollout step is available")
-	}
-	if !bootstrapSurgeAvailable {
-		return fmt.Errorf("bootstrap surge used without a blocked target role")
-	}
-	return nil
-}
-
-func validateUnavailableFallbackStep(
-	state RolloutState,
-	step *UpdateStep,
-	fallbackSnapshot rolloutSnapshot,
-	ordinaryStepAvailable, bootstrapStepAvailable bool,
-) error {
-	if ordinaryStepAvailable {
-		return fmt.Errorf("availability fallback used while an ordinary rollout step is available")
-	}
-	if bootstrapStepAvailable {
-		return fmt.Errorf("availability fallback used while bootstrap surge is available")
-	}
-
-	expectedPast := furthestOldTargets(fallbackSnapshot, state.ActiveOld.RequiredRoles)
-	if !slices.Equal(step.Past, expectedPast) || !slices.Equal(step.New, state.Target.SpecReplicas) {
-		return fmt.Errorf("availability fallback does not match the bounded planner target")
-	}
-	if !drainsOverSurgeUnschedulableRole(
-		fallbackSnapshot,
-		state.ActiveOld.SpecReplicas,
-		step.Past,
-		state.Target.UnschedulableRoles,
-	) {
-		return fmt.Errorf("availability fallback does not release excess surge for an unschedulable target role")
 	}
 	return nil
 }
