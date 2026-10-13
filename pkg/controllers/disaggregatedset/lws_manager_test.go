@@ -1209,6 +1209,53 @@ func TestManagerListSliceBucketing(t *testing.T) {
 	})
 }
 
+func TestManagerListRejectsDuplicateRoles(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	ds := testManagerDS("test-deployment")
+	first := buildOwnedManagerTestLWS("first", 3, ds).DeepCopy()
+	first.Labels[disaggregatedsetv1.SliceLabelKey] = "0"
+
+	for _, tc := range []struct {
+		name   string
+		change func(*leaderworkersetv1.LeaderWorkerSet)
+		count  int
+	}{
+		{"same role", func(*leaderworkersetv1.LeaderWorkerSet) {}, 0},
+		{"different slice", func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.Labels[disaggregatedsetv1.SliceLabelKey] = "1" }, 2},
+		{"different revision", func(lws *leaderworkersetv1.LeaderWorkerSet) {
+			lws.Labels[disaggregatedsetv1.RevisionLabelKey] = "other"
+		}, 2},
+		{"different role", func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.Labels[disaggregatedsetv1.RoleLabelKey] = "decode" }, 2},
+		{"unowned", func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.OwnerReferences = nil }, 1},
+		{"foreign owner", func(lws *leaderworkersetv1.LeaderWorkerSet) {
+			lws.OwnerReferences = []metav1.OwnerReference{ownerRefFor(testManagerDS("other-ds"))}
+		}, 1},
+		{"stale owner", func(lws *leaderworkersetv1.LeaderWorkerSet) { lws.OwnerReferences[0].UID = "previous-ds" }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			second := first.DeepCopy()
+			second.Name = "second"
+			tc.change(second)
+			manager := NewLeaderWorkerSetManager(fake.NewClientBuilder().WithScheme(scheme).WithObjects(first, second).Build())
+			got, err := manager.ListAll(t.Context(), ds, "")
+			if tc.count != 0 {
+				require.NoError(t, err)
+				require.Len(t, got, tc.count)
+				return
+			}
+			require.ErrorContains(t, err, `LeaderWorkerSets "first" and "second" claim the same slice "0", revision "abc123", role "prefill"`)
+			require.Nil(t, got, "do not return a partial list that hides a duplicate")
+			_, err = manager.ListForSlice(t.Context(), ds, 0, "")
+			require.Error(t, err, "cleanup must reject the same ambiguous role")
+			old, target, err := manager.GetRevisionRolesList(t.Context(), ds, 0, "abc123")
+			require.Error(t, err, "live rollout discovery must not silently overwrite a role")
+			require.Nil(t, old)
+			require.Nil(t, target)
+		})
+	}
+}
+
 // TestManagerGetForRoleIgnoresForeignOwnedLWS is a regression test for #981:
 // GetForRole must treat a same-named LWS as absent when it is owned by a different
 // DisaggregatedSet (e.g. left over from a same-named DisaggregatedSet that was
