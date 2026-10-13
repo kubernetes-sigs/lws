@@ -205,7 +205,7 @@ func (manager *LeaderWorkerSetManager) observeCachedReadiness(ctx context.Contex
 			!lws.DeletionTimestamp.IsZero() || !snapshot.LWS.DeletionTimestamp.IsZero() {
 			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
 		}
-		if manager.pending != nil && !snapshot.ScalingObserved() {
+		if manager.pending != nil && !snapshot.DeletionsObserved() {
 			return nil, fmt.Errorf("waiting for native scaling of %s: %w", lws.Name, errReplicaGroupsPending)
 		}
 		availability := snapshot.Availability()

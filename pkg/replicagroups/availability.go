@@ -143,6 +143,19 @@ func (s *Snapshot) replicaTargets() (map[types.UID]int32, int, bool) {
 // Pods count; model readiness and physical disappearance of terminating groups
 // are not required. Callers must separately wait for their LWS write receipts.
 func (s *Snapshot) ScalingObserved() bool {
+	return s.scalingObserved(false)
+}
+
+// DeletionsObserved also allows acknowledged creation shortfalls. This lets a
+// caller cancel missing growth without waiting for unwanted Pods to be created.
+// Missing Pods alone are not proof: native status must agree with the observed
+// cohort, otherwise a lagging Pod cache could hide unobserved deletion victims.
+// Availability still determines which Ready groups can fund another drain.
+func (s *Snapshot) DeletionsObserved() bool {
+	return s.scalingObserved(true)
+}
+
+func (s *Snapshot) scalingObserved(allowMissing bool) bool {
 	targets, start, acknowledged := s.replicaTargets()
 	if !acknowledged {
 		return false
@@ -163,7 +176,18 @@ func (s *Snapshot) ScalingObserved() bool {
 		// startup). They affect availability, not whether scaling was observed.
 	}
 	for uid, target := range targets {
-		if active[uid] != target {
+		if active[uid] > target || !allowMissing && active[uid] < target {
+			return false
+		}
+	}
+	// Only a shortfall needs this extra evidence. StatefulSet status includes
+	// terminating and terminal Pods; ReplicaSet status counts active Pods.
+	if sts := s.LeaderStatefulSet; sts != nil && active[sts.UID] < targets[sts.UID] &&
+		sts.Status.Replicas != int32(len(s.Groups)) {
+		return false
+	}
+	for _, rs := range s.ReplicaSets {
+		if active[rs.UID] < targets[rs.UID] && rs.Status.Replicas != active[rs.UID] {
 			return false
 		}
 	}

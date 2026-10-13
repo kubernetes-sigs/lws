@@ -180,6 +180,48 @@ func TestScalingObservedDoesNotRequireReadiness(t *testing.T) {
 	}
 }
 
+func TestDeletionsObservedDuringCreationShortfall(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name   string
+			change func(*fixture)
+			want   bool
+		}{
+			{"confirmed shortfall", func(*fixture) {}, true},
+			{"Pods lag native status", func(f *fixture) { f.leaders = f.leaders[:1] }, false},
+			{"LWS not acknowledged", func(f *fixture) { f.lws.Generation++ }, false},
+			{"native not acknowledged", func(f *fixture) { f.workload.SetGeneration(4) }, false},
+			{"native target mismatch", func(f *fixture) { f.lws.Spec.Replicas = ptr.To[int32](4) }, false},
+			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				f := newFixture(identity, 3, 1)
+				f.leaders = f.leaders[:2]
+				if f.replicaSet != nil {
+					f.replicaSet.Status.Replicas = 2
+				} else {
+					f.workload.(*appsv1.StatefulSet).Status.Replicas = 2
+				}
+				tc.change(f)
+				snapshot, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+				require.NoError(t, err)
+				require.False(t, snapshot.ScalingObserved())
+				require.Equal(t, tc.want, snapshot.DeletionsObserved())
+			})
+		}
+	}
+	t.Run("one Hash ReplicaSet cannot hide another's pending deletion", func(t *testing.T) {
+		f := newFixture(leaderworkersetv1.GroupIdentityHash, 3, 1)
+		f.leaders = f.leaders[:2]
+		f.replicaSet.Spec.Replicas, f.replicaSet.Status.Replicas = ptr.To[int32](1), 2
+		missing := f.replicaSet.DeepCopy()
+		missing.Name, missing.UID, missing.Spec.Replicas, missing.Status.Replicas = "missing", "missing", ptr.To[int32](2), 0
+		snapshot, err := Observe(t.Context(), newReader(t, append(f.objects(), missing)...), f.lws)
+		require.NoError(t, err)
+		require.False(t, snapshot.DeletionsObserved(), "total active < desired is insufficient")
+	})
+}
+
 func TestObserveNeverPaginates(t *testing.T) {
 	f := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 501, 1)
 	base := newReader(t, f.objects()...)

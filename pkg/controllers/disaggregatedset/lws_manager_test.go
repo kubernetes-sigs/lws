@@ -346,6 +346,76 @@ func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
 	}
 }
 
+func TestReconcileSliceRecoversFromMissingGrowth(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name                      string
+			actual, reported, desired int32
+			old, terminating, blocked bool
+		}{
+			{name: "cancel missing group", actual: 2, reported: 2, desired: 2},
+			{name: "cancel entirely missing growth", desired: 0},
+			{name: "drain old to free quota", actual: 2, reported: 2, desired: 4, old: true},
+			{name: "Pod cache still behind", actual: 2, reported: 3, desired: 2, blocked: true},
+			{name: "deletion still unobserved", actual: 4, reported: 4, desired: 2, blocked: true},
+			{name: "termination already observed", actual: 3, reported: 3, desired: 2, terminating: true},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, tc.desired, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(1)))
+				target := revisionLWS("target", testRolePrefill, 3, tc.actual, time.Unix(2, 0), 3)
+				target.Spec.GroupIdentity, target.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
+				objects := replicaGroupObjects(target, tc.actual, tc.actual)
+				for _, object := range objects {
+					switch object := object.(type) {
+					case *appsv1.StatefulSet:
+						object.Status.Replicas = tc.reported
+					case *appsv1.ReplicaSet:
+						object.Status.Replicas = tc.reported
+						if tc.terminating {
+							object.Status.Replicas-- // ReplicaSet status excludes terminating Pods.
+						}
+					}
+				}
+				if tc.terminating {
+					pod := objects[len(objects)-1].(*corev1.Pod)
+					pod.Finalizers, pod.DeletionTimestamp = []string{"test/hold"}, ptr.To(metav1.Now())
+				}
+				old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1, 0), 4)
+				if tc.old {
+					old.Spec.GroupIdentity, old.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
+					objects = append(objects, replicaGroupObjects(old, 4, 4)...)
+				}
+				c := newTestClient(objects...)
+				r := newTestReconciler(c)
+				r.LWSManager = NewLeaderWorkerSetManager(writeOnlyTestClient(t, c))
+				r.LWSManager.reader, r.LWSManager.pending = c, testPendingWrites(c)
+				before := &corev1.PodList{}
+				require.NoError(t, c.List(t.Context(), before))
+				for range 4 { // Includes takeover and baseline receipt observations.
+					_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "target", map[string]int{testRolePrefill: int(tc.desired)})
+					if err != nil {
+						require.ErrorIs(t, err, errReplicaGroupsPending)
+					}
+				}
+				got := getTestLWSReplicas(c, ds.Namespace, target.Name)
+				switch {
+				case tc.blocked:
+					require.EqualValues(t, 3, got, "unobserved deletions cannot be bypassed")
+				case tc.old:
+					retainedOld := getTestLWSReplicas(c, ds.Namespace, old.Name)
+					require.Less(t, retainedOld, int32(4), "missing target growth must not block safe old drain")
+					require.GreaterOrEqual(t, retainedOld+tc.actual, int32(3), "retain desired - maxUnavailable Ready groups")
+				default:
+					require.EqualValues(t, tc.desired, got)
+				}
+				after := &corev1.PodList{}
+				require.NoError(t, c.List(t.Context(), after))
+				require.Equal(t, before.Items, after.Items, "recovery changes intent, never directly deletes Pods")
+			})
+		}
+	}
+}
+
 func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 	for _, tc := range []struct {
 		name             string

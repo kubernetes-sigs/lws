@@ -329,7 +329,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	}
 	if r.LWSManager.pending != nil {
 		// This also guards steady-state scaling and changes of rollout target.
-		// Wait for replica creation/deletion, not for model readiness.
+		// Observe deletions before reusing capacity. A confirmed creation
+		// shortfall must not prevent lowering the target or freeing quota.
 		target := disaggregatedsetutils.RevisionRoles{}
 		if newRevision != nil {
 			target = *newRevision
