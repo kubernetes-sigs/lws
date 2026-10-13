@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -1232,6 +1233,178 @@ func TestComputeRevisionGroupIdentity(t *testing.T) {
 
 func testPendingWrites(reader client.Reader) *pendingWrites {
 	return &pendingWrites{Reader: reader, writes: make(map[client.ObjectKey]*pendingWrite)}
+}
+
+func TestTakeoverRejectsLateScaleDown(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, order := range []string{"old-first", "takeover-first", "crash-during-takeover"} {
+			t.Run(string(identity)+"/"+order, func(t *testing.T) {
+				ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(0), intstr.FromInt(1)))
+				var objects []client.Object
+				for i, revision := range []string{"a", "b", "c"} {
+					count := int32(2)
+					if revision == "c" {
+						count = 0
+					}
+					lws := revisionLWS(revision, testRolePrefill, count, count, time.Unix(int64(i+1), 0), 4)
+					lws.Spec.GroupIdentity, lws.Spec.LeaderWorkerTemplate.Size = identity, ptr.To[int32](1)
+					objects = append(objects, replicaGroupObjects(lws, count, count)...)
+				}
+				base := newTestClient(objects...)
+				var release func() error
+				oldWriter := interceptor.NewClient(base, interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						payload, err := patch.Data(object)
+						require.NoError(t, err)
+						copy := object.DeepCopyObject().(client.Object)
+						release = func() error { return c.Patch(t.Context(), copy, client.RawPatch(patch.Type(), payload), opts...) }
+						return errors.New("old controller lost the response")
+					},
+				})
+				old := NewLeaderWorkerSetManager(oldWriter)
+				old.reader, old.pending = base, testPendingWrites(base)
+				b := &leaderworkersetv1.LeaderWorkerSet{}
+				require.NoError(t, base.Get(t.Context(), client.ObjectKey{Namespace: ds.Namespace, Name: "test-0-b-prefill"}, b))
+				require.Error(t, old.Scale(t.Context(), ds, b, 1))
+				require.NotNil(t, release)
+				if order == "old-first" {
+					require.NoError(t, release())
+				}
+				newController := func() *DisaggregatedSetReconciler {
+					r := newTestReconciler(base)
+					r.LWSManager = NewLeaderWorkerSetManager(base)
+					r.LWSManager.pending = testPendingWrites(base)
+					return r
+				}
+				r := newController()
+				if order == "crash-during-takeover" {
+					// A second crash loses the new receipt expectations too.
+					require.ErrorIs(t, r.LWSManager.prepareSlice(t.Context(), ds, 0), errReplicaGroupsPending)
+					r = newController()
+				}
+				for range 3 {
+					// The user rolled back to B: the planner would now drain A.
+					_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "b", map[string]int{testRolePrefill: 4})
+					if err != nil {
+						require.ErrorIs(t, err, errReplicaGroupsPending)
+					}
+				}
+				if order != "old-first" {
+					require.True(t, apierrors.IsConflict(release()), "the original request cannot spend the allowance a second time")
+				}
+				wantA, wantB := 1, 2
+				if order == "old-first" {
+					wantA, wantB = 2, 1
+				}
+				require.EqualValues(t, wantA, getTestLWSReplicas(base, ds.Namespace, "test-0-a-prefill"))
+				require.EqualValues(t, wantB, getTestLWSReplicas(base, ds.Namespace, "test-0-b-prefill"))
+				// All original groups were Ready. These issued targets retain
+				// three, instead of the pre-fix result A=1, B=1 (floor=3).
+			})
+		}
+	}
+}
+
+func TestTakeoverWaitsForEveryReceipt(t *testing.T) {
+	ds := newTestDisaggregatedSet()
+	a := revisionLWS("old", testRolePrefill, 2, 2, time.Time{}, 2)
+	b := revisionLWS("old", testRoleDecode, 2, 2, time.Time{}, 2)
+	base := newTestClient(a, b)
+	cached := newTestClient(a.DeepCopy(), b.DeepCopy())
+	patches := 0
+	writer := interceptor.NewClient(base, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			payload, err := patch.Data(object)
+			require.NoError(t, err)
+			require.NotContains(t, string(payload), "\"spec\"", "takeover only changes metadata")
+			require.Contains(t, string(payload), "\"resourceVersion\"")
+			patches++
+			return c.Patch(ctx, object, patch, opts...)
+		},
+	})
+	manager := NewLeaderWorkerSetManager(writer)
+	manager.reader, manager.pending = cached, testPendingWrites(cached)
+	require.ErrorIs(t, manager.prepareSlice(t.Context(), ds, 0), errReplicaGroupsPending)
+	require.Equal(t, 2, patches)
+	require.Empty(t, manager.pending.initialized, "write responses do not release the barrier")
+	require.NoError(t, manager.prepareSlice(t.Context(), ds, 1), "other slices are independent")
+	for i, lws := range []*leaderworkersetv1.LeaderWorkerSet{a, b} {
+		stored, previous := &leaderworkersetv1.LeaderWorkerSet{}, &leaderworkersetv1.LeaderWorkerSet{}
+		require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+		require.Equal(t, lws.Spec, stored.Spec)
+		require.Len(t, stored.Annotations, len(lws.Annotations)+1, "reuse the receipt; no takeover annotation")
+		require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), previous))
+		stored.ResourceVersion = previous.ResourceVersion
+		require.NoError(t, cached.Update(t.Context(), stored)) // Deliver this watch update.
+		err := manager.prepareSlice(t.Context(), ds, 0)
+		if i == 0 {
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	require.NoError(t, manager.prepareSlice(t.Context(), ds, 0))
+	require.Equal(t, 2, patches, "takeover is once per UID, not every reconcile")
+	manager.pending.forget(client.ObjectKeyFromObject(ds))
+	require.Empty(t, manager.pending.initialized)
+}
+
+func TestTakeoverRecoversFromConflictAndReplacement(t *testing.T) {
+	for _, mode := range []string{"status-conflict", "lost-response", "deleted", "replaced", "terminating"} {
+		t.Run(mode, func(t *testing.T) {
+			ds := newTestDisaggregatedSet()
+			lws := revisionLWS("old", testRolePrefill, 2, 2, time.Time{}, 2)
+			if mode == "terminating" {
+				lws.Finalizers = []string{"test.example/hold"}
+			}
+			base := newTestClient(lws)
+			cached := &leaderworkersetv1.LeaderWorkerSetList{}
+			require.NoError(t, base.List(t.Context(), cached))
+			reader := interceptor.NewClient(base, interceptor.Funcs{
+				List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+					cached.DeepCopyInto(list.(*leaderworkersetv1.LeaderWorkerSetList))
+					return nil
+				},
+			})
+			failed := false
+			writer := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if mode == "lost-response" && !failed {
+						failed = true
+						return errors.New("request never reached the server")
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+			})
+			manager := NewLeaderWorkerSetManager(writer)
+			manager.reader, manager.pending = reader, testPendingWrites(reader)
+			if mode != "status-conflict" {
+				require.Error(t, manager.prepareSlice(t.Context(), ds, 0))
+			}
+			current := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+			switch mode {
+			case "status-conflict", "lost-response":
+				current.Status.ReadyReplicas++
+				require.NoError(t, base.Status().Update(t.Context(), current))
+			case "deleted", "replaced", "terminating":
+				require.NoError(t, base.Delete(t.Context(), current))
+				if mode == "replaced" {
+					current.UID, current.ResourceVersion = "replacement", ""
+					require.NoError(t, base.Create(t.Context(), current))
+				}
+			}
+			if mode == "status-conflict" {
+				require.True(t, apierrors.IsConflict(manager.prepareSlice(t.Context(), ds, 0)))
+			}
+			require.NoError(t, base.List(t.Context(), cached))
+			if mode != "deleted" && mode != "terminating" {
+				require.ErrorIs(t, manager.prepareSlice(t.Context(), ds, 0), errReplicaGroupsPending)
+				require.NoError(t, base.List(t.Context(), cached))
+			}
+			require.NoError(t, manager.prepareSlice(t.Context(), ds, 0), "takeover must recover, not permanently block the slice")
+		})
+	}
 }
 
 func TestObserveReadinessRejectsPartialRoleMaps(t *testing.T) {

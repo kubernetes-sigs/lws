@@ -315,10 +315,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	revision string,
 	desiredReplicasByRole map[string]int,
 ) (ctrl.Result, error) {
-	if r.LWSManager.pending != nil {
-		if err := r.LWSManager.pending.observed(ctx, disaggregatedSet.UID, strconv.Itoa(slice)); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.LWSManager.prepareSlice(ctx, disaggregatedSet, slice); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.syncGroupReplacementPolicies(ctx, disaggregatedSet, slice); err != nil {
 		return ctrl.Result{}, err

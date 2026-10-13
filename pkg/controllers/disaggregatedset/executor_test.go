@@ -2038,6 +2038,11 @@ func TestReconcileInformerObservationsAreSliceLocal(t *testing.T) {
 				o := testPendingWrites(r.LWSManager.reader)
 				r.LWSManager.reader, r.LWSManager.pending = o, o
 				result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+				if err == nil {
+					// The first pass only writes takeover receipts. This fully
+					// current reader observes them before the second pass plans.
+					result, err = r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+				}
 				switch tc.failure {
 				case "read":
 					require.ErrorIs(t, err, failure)
@@ -2115,6 +2120,11 @@ func TestInformerReceiptPreventsBypassingHiddenRollout(t *testing.T) {
 		}
 		result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
 		require.NoError(t, err)
+		if caughtUp {
+			// Discovery also takes over the newly visible target before planning.
+			result, err = r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+			require.NoError(t, err)
+		}
 		stored := &disaggregatedsetv1.DisaggregatedSet{}
 		require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(ds), stored))
 		require.Len(t, stored.Status.RoleStatuses, 1)

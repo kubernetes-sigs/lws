@@ -679,6 +679,47 @@ func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderwo
 	return manager.pending.mutate(ctx, lws, deleting, apply)
 }
 
+// prepareSlice invalidates conditional LWS requests left in flight by a previous
+// process. A cold cache includes committed writes, but not future commits. Before
+// planning, change each existing LWS's resource version with a metadata-only
+// receipt and observe it. Either an old request wins first (our patch conflicts),
+// or our patch wins and the old request can no longer apply.
+// This protects LWS mutations, not writes to their descendants; native scaling
+// must still be observed before granting availability credit.
+func (manager *LeaderWorkerSetManager) prepareSlice(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int) error {
+	o := manager.pending
+	if o == nil {
+		return nil
+	}
+	if err := o.observed(ctx, ds.UID, strconv.Itoa(slice)); err != nil {
+		return err
+	}
+	workloads, err := manager.ListForSlice(ctx, ds, slice, "")
+	if err != nil {
+		return err
+	}
+	wrote := false
+	for _, lws := range workloads {
+		o.mu.Lock()
+		_, initialized := o.initialized[lws.UID]
+		o.mu.Unlock()
+		if initialized || !lws.DeletionTimestamp.IsZero() {
+			continue
+		}
+		patch := client.MergeFromWithOptions(lws.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if err := manager.mutate(ctx, lws, false, func(ctx context.Context) error {
+			return manager.client.Patch(ctx, lws, patch)
+		}); err != nil {
+			return err
+		}
+		wrote = true
+	}
+	if wrote {
+		return fmt.Errorf("waiting to observe slice takeover: %w", errReplicaGroupsPending)
+	}
+	return nil
+}
+
 // A receipt identifies our write without waiting to see one exact resource
 // version that a watch is allowed to coalesce away.
 const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
@@ -689,6 +730,9 @@ type pendingWrites struct {
 	client.Reader
 	mu     sync.Mutex
 	writes map[client.ObjectKey]*pendingWrite
+	// UIDs whose writes this process has observed; restart repeats takeover.
+	// The parent key allows cleanup when a DisaggregatedSet disappears.
+	initialized map[types.UID]client.ObjectKey
 }
 
 type pendingWrite struct {
@@ -763,6 +807,11 @@ func (o *pendingWrites) forget(parent client.ObjectKey) {
 			delete(o.writes, key)
 		}
 	}
+	for uid, owner := range o.initialized {
+		if owner == parent {
+			delete(o.initialized, uid)
+		}
+	}
 }
 
 // observed checks a whole slice, not just the next LWS to change. Otherwise a
@@ -795,8 +844,9 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 	// (or a previous UID) may simply mean the cache has not caught up yet.
 	known := written.deleted || written.baseVersion != ""
 	seen := known && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
-	seen = seen || err == nil && !written.deleted &&
+	receiptObserved := err == nil && !written.deleted && lws.DeletionTimestamp.IsZero() &&
 		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt
+	seen = seen || receiptObserved
 	// This informer supplied baseVersion. A different version of the same UID
 	// means an unapplied conditional request can no longer succeed. Resolve the
 	// ambiguous outcome and replan; do not replay it against a newer version.
@@ -806,6 +856,14 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 		o.mu.Lock()
 		if current := o.writes[key]; current != nil && current.receipt == written.receipt && current.uid == written.uid {
 			delete(o.writes, key)
+			if receiptObserved {
+				if o.initialized == nil {
+					o.initialized = make(map[types.UID]client.ObjectKey)
+				}
+				o.initialized[lws.UID] = written.parent
+			} else if seen {
+				delete(o.initialized, written.uid)
+			}
 		}
 		o.mu.Unlock()
 		return nil
