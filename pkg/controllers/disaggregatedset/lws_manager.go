@@ -372,7 +372,8 @@ func (manager *LeaderWorkerSetManager) SyncGroupReplacementPolicy(ctx context.Co
 		return nil
 	}
 
-	patch := client.MergeFrom(leaderWorkerSet.DeepCopy())
+	// Reject stale observations, including a same-name replacement owned by someone else.
+	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	leaderWorkerSet.Spec.GroupReplacementPolicy = desired
 	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
 		return fmt.Errorf("failed to set groupReplacementPolicy on LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)

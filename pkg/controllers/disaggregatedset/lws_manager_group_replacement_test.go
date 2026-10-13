@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -88,6 +89,41 @@ func TestManagerSyncGroupReplacementPolicy(t *testing.T) {
 		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-lws"}, &got))
 		require.Equal(t, before, got.ResourceVersion)
 	})
+
+	for _, replaced := range []bool{true, false} {
+		name := "concurrent unrelated update"
+		if replaced {
+			name = "same-name foreign replacement"
+		}
+		t.Run(name, func(t *testing.T) {
+			observed := buildOwnedManagerTestLWS("test-lws", 3, ds)
+			observed.UID, observed.ResourceVersion = "original", "1"
+			observed.Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementPostTermination
+			live := observed.DeepCopy()
+			live.ResourceVersion = "2"
+			if replaced {
+				live.UID, live.OwnerReferences = "replacement", nil
+			} else {
+				live.Annotations = map[string]string{"operator-note": "keep me"}
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(live).Build()
+			manager := NewLeaderWorkerSetManager(fakeClient)
+
+			err := manager.SyncGroupReplacementPolicy(context.Background(), observed, leaderworkersetv1.GroupReplacementImmediate)
+			require.True(t, apierrors.IsConflict(err), "stale policy write must conflict: %v", err)
+			var got leaderworkersetv1.LeaderWorkerSet
+			require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(live), &got))
+			require.Equal(t, live, &got, "a stale observation must not change the live object")
+
+			if !replaced {
+				// A fresh observation allows retrying without losing the other update.
+				require.NoError(t, manager.SyncGroupReplacementPolicy(context.Background(), &got, leaderworkersetv1.GroupReplacementImmediate))
+				require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(live), &got))
+				require.Equal(t, leaderworkersetv1.GroupReplacementImmediate, got.Spec.GroupReplacementPolicy)
+				require.Equal(t, live.Annotations, got.Annotations)
+			}
+		})
+	}
 }
 
 // The policy is a live knob, not a template change: flipping it must not
