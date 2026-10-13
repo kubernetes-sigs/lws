@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -1770,14 +1771,18 @@ func TestCreateReceiptRetiresAfterInformerNotification(t *testing.T) {
 
 type observationTransport struct {
 	http.RoundTripper
-	mu    sync.Mutex
-	reads []string
+	mu       sync.Mutex
+	reads    []string
+	requests []*http.Request
 }
 
 func (t *observationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Method == http.MethodGet && request.URL.Query().Get("watch") != "true" {
+	if request.Method == http.MethodGet {
 		t.mu.Lock()
-		t.reads = append(t.reads, request.URL.Path)
+		t.requests = append(t.requests, request)
+		if request.URL.Query().Get("watch") != "true" {
+			t.reads = append(t.reads, request.URL.Path)
+		}
 		t.mu.Unlock()
 	}
 	return t.RoundTripper.RoundTrip(request)
@@ -1815,8 +1820,28 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 		defer stopWaiting()
 		require.NoError(t, o.List(wait, &leaderworkersetv1.LeaderWorkerSetList{}))
 		trace.mu.Lock()
+		requests := append([]*http.Request(nil), trace.requests...)
 		trace.reads = nil
 		trace.mu.Unlock()
+		var order []string
+		seen := map[string]bool{}
+		for _, request := range requests {
+			kind := path.Base(request.URL.Path)
+			switch kind {
+			case "leaderworkersets", "statefulsets", "deployments", "replicasets", "pods":
+				selector := ""
+				if kind == "pods" || kind == "replicasets" {
+					selector = leaderworkersetv1.SetNameLabelKey
+				}
+				require.Equal(t, selector, request.URL.Query().Get("labelSelector"), "filter both LIST and WATCH for %s", kind)
+				if !seen[kind] {
+					require.NotEqual(t, "0", request.URL.Query().Get("resourceVersion"), "bootstrap must be consistent")
+					order, seen[kind] = append(order, kind), true
+				}
+			}
+		}
+		require.Equal(t, []string{"leaderworkersets", "statefulsets", "deployments", "replicasets", "pods"}, order,
+			"per-kind cache options must not start descendant informers ahead of their parents")
 		manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
 		pending.Reader = o
 		manager.reader, manager.pending = o, pending
@@ -1855,6 +1880,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			lws.Spec.GroupIdentity = identity
 			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
 			objects := replicaGroupObjects(lws, 2, 0)
+			var unrelated []client.Object
 			ids := make(map[types.UID]types.UID)
 			var victim *corev1.Pod
 			// Create a real owner graph. envtest runs no native controllers, so
@@ -1876,9 +1902,11 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 					object.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
 					object.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
 				case *appsv1.StatefulSet:
+					object.Labels = nil // Leader lookup must still work by name.
 					object.Spec.Template, object.Spec.Selector = template, &metav1.LabelSelector{MatchLabels: labels}
 					object.Spec.ServiceName = lws.Name
 				case *appsv1.Deployment:
+					object.Labels = nil
 					object.Spec.Template, object.Spec.Selector = template, &metav1.LabelSelector{MatchLabels: labels}
 				case *appsv1.ReplicaSet:
 					object.Spec.Template, object.Spec.Selector = template, &metav1.LabelSelector{MatchLabels: labels}
@@ -1888,7 +1916,18 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 					victim = object
 				}
 				require.NoError(t, writer.Create(t.Context(), object))
+				require.NotEmpty(t, object.GetManagedFields())
 				ids[oldUID] = object.GetUID()
+				switch object.(type) {
+				case *corev1.Pod, *appsv1.ReplicaSet:
+					other := object.DeepCopyObject().(client.Object)
+					other.SetName("unrelated-" + object.GetName())
+					other.SetUID("")
+					other.SetResourceVersion("")
+					other.SetLabels(nil)
+					require.NoError(t, writer.Create(t.Context(), other))
+					unrelated = append(unrelated, other)
+				}
 			}
 			acknowledge := func(replicas int32) {
 				for _, object := range objects {
@@ -1917,6 +1956,22 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			acknowledge(2)
 			manager, trace, stop := start(t)
 			o := manager.reader
+			for _, object := range objects {
+				cached := object.DeepCopyObject().(client.Object)
+				require.NoError(t, o.Get(t.Context(), client.ObjectKeyFromObject(object), cached))
+				require.Empty(t, cached.GetManagedFields(), "strip unused managed fields for every cached kind")
+			}
+			for _, object := range unrelated {
+				key := client.ObjectKeyFromObject(object)
+				cached := object.DeepCopyObject().(client.Object)
+				require.True(t, apierrors.IsNotFound(o.Get(t.Context(), key, cached)), "unrelated Pods and ReplicaSets are not cached")
+				object.SetLabels(map[string]string{leaderworkersetv1.SetNameLabelKey: "other-lws"})
+				require.NoError(t, writer.Update(t.Context(), object))
+				require.Eventually(t, func() bool { return o.Get(t.Context(), key, cached) == nil }, 5*time.Second, 10*time.Millisecond)
+				object.SetLabels(nil)
+				require.NoError(t, writer.Update(t.Context(), object))
+				require.Eventually(t, func() bool { return apierrors.IsNotFound(o.Get(t.Context(), key, cached)) }, 5*time.Second, 10*time.Millisecond)
+			}
 			observe := func() error {
 				current := &leaderworkersetv1.LeaderWorkerSet{}
 				if err := o.Get(t.Context(), client.ObjectKeyFromObject(lws), current); err != nil {

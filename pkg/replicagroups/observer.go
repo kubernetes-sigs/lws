@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -58,9 +59,20 @@ const setNameIndex = "replicagroups.setName"
 // starting the manager. changed wakes a consumer when an LWS or descendant
 // changes. Consumers still own write tracking and their rollout budgets.
 func NewObserver(mgr manager.Manager, changed func(*leaderworkersetv1.LeaderWorkerSet)) (*Observer, error) {
+	selector, err := labels.Parse(leaderworkersetv1.SetNameLabelKey)
+	if err != nil {
+		return nil, err
+	}
 	c, err := cache.New(mgr.GetConfig(), cache.Options{
 		Scheme: mgr.GetScheme(), Mapper: mgr.GetRESTMapper(), HTTPClient: mgr.GetHTTPClient(),
-		NewInformer: consistentInitialInformer,
+		NewInformer: consistentInitialInformer, DefaultTransform: cache.TransformStripManagedFields(),
+		// Pods and ReplicaSets are always selected by the LWS label. Keep the
+		// leader workloads unfiltered: Observe also resolves those by name.
+		// ByObject configures cache shells, leaving informer registration lazy.
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}:        {Label: selector},
+			&appsv1.ReplicaSet{}: {Label: selector},
+		},
 	})
 	if err != nil {
 		return nil, err
