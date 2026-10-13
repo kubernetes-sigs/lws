@@ -349,7 +349,7 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		ginkgo.Entry("persists Hash pools and independent zero", "Hash", ""),
 		ginkgo.Entry("rejects parent scaling", "parent scaling", "parent scaling must be omitted"),
 		ginkgo.Entry("rejects External slices", "external slices", "spec.slices > 1"),
-		ginkgo.Entry("rejects overflowing totals", "overflow", "maximum LWS replica count"),
+		ginkgo.Entry("rejects overflowing totals", "overflow", "replicas must be equal or less than 1000000"),
 		ginkgo.Entry("reserves worker labels", "worker label", "reserved"),
 		ginkgo.Entry("reserves leader labels", "leader label", "reserved"),
 		ginkgo.Entry("reserves role labels", "role label", "reserved"),
