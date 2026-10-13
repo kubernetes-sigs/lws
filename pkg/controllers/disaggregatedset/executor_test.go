@@ -3870,6 +3870,78 @@ func TestHashSubRoleNativeObservationBarrier(t *testing.T) {
 	}
 }
 
+func TestSubRoleScaleDownAfterNativeCreationFailure(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "a", "a")
+			s := f.observe()
+			// Native creation is short, for example because quota permits only two groups.
+			for _, pod := range s.Groups[2].Pods {
+				require.NoError(t, f.manager.client.Delete(t.Context(), pod))
+			}
+			require.NoError(t, f.manager.client.Delete(t.Context(), s.Groups[2].WorkerStatefulSet))
+			if identity == leaderworkersetv1.GroupIdentityHash {
+				rs := s.ReplicaSets[0]
+				rs.Status.Replicas = 2
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), rs))
+			} else {
+				s.LeaderStatefulSet.Status.Replicas = 2
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), s.LeaderStatefulSet))
+			}
+			before := f.observe().Groups
+			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				t.Fatal("cancelling missing growth must not delete any group")
+				return nil
+			}})
+			for range 8 {
+				if err := f.scale(map[string]int{"a": 2}); err != nil {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+			}
+			s = f.observe()
+			require.Equal(t, before, s.Groups)
+			require.EqualValues(t, 2, getLWSReplicas(s.LWS), "cancel missing growth without first creating the unwanted group")
+			if identity == leaderworkersetv1.GroupIdentityHash {
+				require.NotEmpty(t, s.LWS.Annotations[subRolePlanAnnotation], "wait for native acknowledgement of the new target")
+				f.native()
+				f.sync()
+				require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+			}
+		})
+	}
+}
+
+func TestHashSubRoleMissingGrowthKeepsNativeBarriers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(*replicagroups.Snapshot)
+		allowed bool
+	}{
+		{"creation shortfall", func(*replicagroups.Snapshot) {}, true},
+		{"stale LWS", func(s *replicagroups.Snapshot) { s.LWS.Generation++ }, false},
+		{"stale Deployment", func(s *replicagroups.Snapshot) { s.LeaderDeployment.Generation++ }, false},
+		{"stale ReplicaSet", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Generation++ }, false},
+		{"stale Pod count", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Status.Replicas++ }, false},
+		{"surplus group", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](1) }, false},
+		{"unacknowledged target", func(s *replicagroups.Snapshot) { s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](2) }, false},
+		{"terminating group", func(s *replicagroups.Snapshot) { s.Groups[0].Terminating = true }, false},
+		{"native rollout", func(s *replicagroups.Snapshot) {
+			s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](2)
+			newRS := s.ReplicaSets[0].DeepCopy()
+			newRS.Name, newRS.UID, newRS.Spec.Replicas, newRS.Status.Replicas = "new", "new", ptr.To[int32](1), 0
+			s.ReplicaSets = append(s.ReplicaSets, newRS)
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a").observe()
+			s.Groups, s.ReplicaSets[0].Status.Replicas = s.Groups[:2], 2
+			tc.change(s)
+			require.Equal(t, tc.allowed, hashSubRoleNativeAcknowledged(s, true))
+			require.False(t, subRoleNativeSettled(s), "creation shortfall is not completed scale")
+		})
+	}
+}
+
 func TestHashSubRolePlanValidationAndReadyReservation(t *testing.T) {
 	lws := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b").lws
 	for _, value := range []string{"{", "null", "{}", `{"counts":{"a":-1},"readyFloor":{}}`, `{"counts":{"a":1},"readyFloor":{"a":2}}`, `{"counts":{"a":1},"readyFloor":{"a":-1}}`} {

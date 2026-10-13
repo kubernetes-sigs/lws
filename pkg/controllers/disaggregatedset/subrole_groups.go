@@ -261,7 +261,7 @@ func subRoleNativeSettled(s *replicagroups.Snapshot) bool {
 		return false
 	}
 	if s.LWS.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
-		return hashSubRoleNativeSettled(s)
+		return hashSubRoleNativeAcknowledged(s, false)
 	}
 	sts := s.LeaderStatefulSet
 	return sts != nil && s.LWS.DeletionTimestamp.IsZero() && s.LWS.Status.ObservedGeneration >= s.LWS.Generation &&
@@ -579,8 +579,9 @@ func retainedSubRoleEligible(group replicagroups.Group) bool {
 		(group.WorkerStatefulSet == nil || group.WorkerStatefulSet.Status.ObservedGeneration >= group.WorkerStatefulSet.Generation)
 }
 
-// Native counts acknowledge completion, not readiness or deletion-cost ordering.
-func hashSubRoleNativeSettled(s *replicagroups.Snapshot) bool {
+// Before publishing a scale, acknowledged creation may still be short (e.g. quota).
+// Allow cancelling that growth, but do not skip observed deletions or native rollout.
+func hashSubRoleNativeAcknowledged(s *replicagroups.Snapshot, allowMissing bool) bool {
 	replicas := getLWSReplicas(s.LWS)
 	deployment := s.LeaderDeployment
 	if !s.LWS.DeletionTimestamp.IsZero() || s.LWS.Status.ObservedGeneration < s.LWS.Generation ||
@@ -594,17 +595,23 @@ func hashSubRoleNativeSettled(s *replicagroups.Snapshot) bool {
 			active[owner.UID]++
 		}
 	}
-	total, nonzero := int64(0), 0
+	total, present, nonzero := int64(0), int32(0), 0
 	for _, rs := range s.ReplicaSets {
 		n := ptr.Deref(rs.Spec.Replicas, 1)
 		if !rs.DeletionTimestamp.IsZero() || rs.Status.ObservedGeneration < rs.Generation ||
-			rs.Status.Replicas != n || active[rs.UID] != n {
+			rs.Status.Replicas != active[rs.UID] || active[rs.UID] > n {
 			return false
 		}
 		total += int64(n)
+		present += active[rs.UID]
 		if n > 0 {
 			nonzero++
 		}
+	}
+	if present != replicas && (!allowMissing || slices.ContainsFunc(s.Groups, func(group replicagroups.Group) bool {
+		return group.Terminating || group.Leader.Status.Phase == corev1.PodFailed || group.Leader.Status.Phase == corev1.PodSucceeded
+	})) {
+		return false
 	}
 	return total == int64(replicas) && nonzero <= 1
 }
@@ -647,7 +654,7 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 		target = state.pending
 	}
 	preparing := state.pending != nil && !maps.Equal(state.issued, target)
-	waiting := !subRoleNativeSettled(s)
+	waiting := !hashSubRoleNativeAcknowledged(s, state.pending == nil || preparing)
 	groups := activeSubRoleGroups(s)
 	_, removing := target[""]
 	assignments := stickySubRoleAssignments(groups, target)
@@ -726,7 +733,10 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 		state.issued = maps.Clone(target)
 		return m.saveSubRoles(ctx, state)
 	}
-	if len(groups) != countSubRoles(target) || len(assignments) != len(groups) || !subRoleNativeSettled(s) {
+	// Missing growth must not prevent accepting a lower target. Once published,
+	// a pending plan still finishes only at its exact physical count.
+	if len(assignments) != len(groups) || state.pending != nil &&
+		(len(groups) != countSubRoles(target) || !subRoleNativeSettled(s)) {
 		return errReplicaGroupsPending
 	}
 	if state.pending != nil {
