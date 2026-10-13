@@ -94,15 +94,21 @@ Changing these settings adjusts rollout pacing without creating a new revision.
 `subRoleStatuses` using local names such as `interactive`. Use the parent total or the
 child breakdown, not their sum. `SubRolesAssigned` reports coherent group assignment.
 Labels can briefly duplicate during transfers. Ordinal requires a healthy retained prefix;
-Hash preserves the accepted per-child Ready floors. Pending operations block further planning
-and desired changes until they complete.
+Hash prepares assignments using accepted per-child Ready floors. Pending operations block
+further planning and desired changes until they complete.
 
-Assigned Hash leaders carry UID-bound `leaderworkerset.sigs.k8s.io/scale-protection`
-annotations. A DELETE-only webhook rejects stale native victim choices; accepted exact-UID
-scale victims and native health replacements are allowed. Terminal/terminating leaders
-bypass it. Parent teardown requires the endpoint to be online; an administrative override
-removes the leader's protection annotation before deletion. Removing subroles finishes
-accepted work and clears protection with assignments.
+Hash scale-down uses Kubernetes `controller.kubernetes.io/pod-deletion-cost` to prefer
+removing unwanted groups. ReplicaSet first prefers unscheduled leaders, then compares
+phase (Pending before Unknown before Running), then prefers not-Ready leaders, and only
+then considers cost. This is intentional: keeping scheduled, healthy leaders takes
+priority over our subrole preference. Selection remains best-effort: these checks concern
+the leader, not the whole group, and ReplicaSet may not yet have observed a cost update.
+For example, scaling `A=5,B=1` to `A=4,B=1` can temporarily remove B's only Ready group.
+The controller observes the actual survivors and repairs their labels; it cannot guarantee
+each child's availability budget during that interval. The planner still applies independent
+budgets. There are no custom deletion tags or deletion webhook, and DisaggregatedSet does
+not delete Pods directly. The normal default-enabled `PodDeletionCost` feature must be
+enabled for the preference to apply.
 
 See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)
 for assignment ordering, recovery, rollout churn, and removing subroles.

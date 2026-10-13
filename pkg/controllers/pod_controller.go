@@ -51,7 +51,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/internal/groupdeletion"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -478,7 +477,11 @@ func (r *PodReconciler) recreateGroupSplitByUpgrade(ctx context.Context, lws *le
 			return false, nil
 		}
 	}
-	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, leader); err != nil {
+	propagation := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, leader, &client.DeleteOptions{
+		PropagationPolicy: &propagation,
+		Preconditions:     &metav1.Preconditions{UID: &leader.UID},
+	}); err != nil {
 		// The leader is gone or has been replaced already.
 		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return true, nil
@@ -678,7 +681,10 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			return false, ctrl.Result{}, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 		}
 	}
-	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, &leader); err != nil {
+	deletionOpt := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, &leader, &client.DeleteOptions{
+		PropagationPolicy: &deletionOpt,
+	}); err != nil {
 		return false, ctrl.Result{}, err
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
@@ -791,7 +797,8 @@ func (r *PodReconciler) terminateExhaustedGroup(ctx context.Context, lws *leader
 	if leader.DeletionTimestamp != nil {
 		return true, nil
 	}
-	if err := groupdeletion.DeleteForReplacement(ctx, r.Client, leader); err != nil {
+	deletionOpt := metav1.DeletePropagationForeground
+	if err := r.Delete(ctx, leader, &client.DeleteOptions{PropagationPolicy: &deletionOpt}); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	r.Record.Eventf(lws, leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded", Delete,

@@ -17,11 +17,13 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +47,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/internal/groupdeletion"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
@@ -3053,6 +3054,7 @@ type subRoleFixture struct {
 	ds       *disaggregatedsetv1.DisaggregatedSet
 	lws      *leaderworkersetv1.LeaderWorkerSet
 	start    int
+	nextHash int
 	identity leaderworkersetv1.GroupIdentityType
 }
 
@@ -3073,7 +3075,7 @@ func (f *subRoleFixture) metadata(name string, owner client.Object, kind schema.
 }
 
 func (f *subRoleFixture) withRevision(name string, children ...string) *subRoleFixture {
-	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
+	f = &subRoleFixture{t: f.t, manager: f.manager, ds: f.ds, start: f.start, nextHash: f.start + len(children), identity: f.identity, lws: &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: name}}}
 	f.lws.ObjectMeta = f.metadata(name, f.ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))
 	f.lws.Spec = leaderworkersetv1.LeaderWorkerSetSpec{GroupIdentity: f.identity, Replicas: ptr.To(int32(len(children))), LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{Size: ptr.To[int32](3)}}
 	f.lws.Status.ObservedGeneration = 1
@@ -3110,9 +3112,6 @@ func (f *subRoleFixture) createGroup(owner client.Object, ordinal int, child str
 	}
 	leader := &corev1.Pod{ObjectMeta: f.metadata(fmt.Sprintf("%s-%d", f.lws.Name, ordinal), owner, kind), Status: ready}
 	leader.Annotations = map[string]string{leaderworkersetv1.SizeAnnotationKey: "3", "user": "keep"}
-	if f.identity == leaderworkersetv1.GroupIdentityHash && child != "" {
-		leader.Annotations[groupdeletion.ProtectionAnnotation] = string(f.lws.UID) + "/" + string(leader.UID)
-	}
 	workers := &appsv1.StatefulSet{ObjectMeta: f.metadata(leader.Name, leader, corev1.SchemeGroupVersion.WithKind("Pod")), Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2), Ordinals: &appsv1.StatefulSetOrdinals{Start: 1}}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 1, AvailableReplicas: 2, CurrentRevision: "a", UpdateRevision: "a"}}
 	require.NoError(f.t, f.manager.client.Create(f.t.Context(), workers))
 	for i := range 3 {
@@ -3144,19 +3143,45 @@ func (f *subRoleFixture) sync() {
 	require.True(f.t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 }
 
-func (f *subRoleFixture) native() {
+func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	s := f.observe()
 	n := int(getLWSReplicas(s.LWS))
 	if f.identity == leaderworkersetv1.GroupIdentityHash {
+		// Simulate native writes through the backing fake, independently of any
+		// DS write spy. Tests can deliberately override the deletion-cost choice.
+		c := f.manager.apiReader.(client.Client)
 		s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
-		require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderDeployment))
-		for _, rs := range s.ReplicaSets {
-			rs.Spec.Replicas = ptr.To(int32(n))
-			require.NoError(f.t, f.manager.client.Update(f.t.Context(), rs))
-			rs.Status.Replicas = int32(len(activeSubRoleGroups(f.observe())))
-			require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), rs))
+		require.NoError(f.t, c.Update(f.t.Context(), s.LeaderDeployment))
+		s.LeaderDeployment.Status.ObservedGeneration = s.LeaderDeployment.Generation
+		require.NoError(f.t, c.Status().Update(f.t.Context(), s.LeaderDeployment))
+		require.Len(f.t, s.ReplicaSets, 1, "the fixture simulates one active ReplicaSet")
+		rs := s.ReplicaSets[0]
+		rs.Spec.Replicas = ptr.To(int32(n))
+		require.NoError(f.t, c.Update(f.t.Context(), rs))
+		groups := activeSubRoleGroups(s)
+		slices.SortStableFunc(groups, func(a, b replicagroups.Group) int {
+			if wrong := cmp.Compare(slices.Index(wrongVictims, b.Leader.UID), slices.Index(wrongVictims, a.Leader.UID)); wrong != 0 {
+				return wrong
+			}
+			aCost, _ := strconv.Atoi(a.Leader.Annotations[corev1.PodDeletionCost])
+			bCost, _ := strconv.Atoi(b.Leader.Annotations[corev1.PodDeletionCost])
+			return cmp.Compare(aCost, bCost)
+		})
+		for _, group := range groups[:max(0, len(groups)-n)] {
+			for _, pod := range group.Pods {
+				require.NoError(f.t, client.IgnoreNotFound(c.Delete(f.t.Context(), pod)))
+			}
+			if group.WorkerStatefulSet != nil {
+				require.NoError(f.t, c.Delete(f.t.Context(), group.WorkerStatefulSet))
+			}
 		}
-		return // Hash victims are deleted by the implementation, not this simulator.
+		for count := len(groups); count < n; count++ {
+			f.createGroup(rs, f.nextHash, "")
+			f.nextHash++
+		}
+		rs.Status.ObservedGeneration, rs.Status.Replicas = rs.Generation, int32(n)
+		require.NoError(f.t, c.Status().Update(f.t.Context(), rs))
+		return
 	}
 	s.LeaderStatefulSet.Spec.Replicas = ptr.To(int32(n))
 	require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderStatefulSet))
@@ -3222,9 +3247,13 @@ func TestSubRoleTransitions(t *testing.T) {
 }
 
 func TestSubRoleLabelsBatchBeforePlanning(t *testing.T) {
-	for _, newborn := range []bool{true, false} {
-		t.Run(fmt.Sprintf("newborn=%t", newborn), func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a", "a", "a", "a")
+	for _, tc := range []struct {
+		identity leaderworkersetv1.GroupIdentityType
+		newborn  bool
+	}{{leaderworkersetv1.GroupIdentityOrdinal, true}, {leaderworkersetv1.GroupIdentityOrdinal, false}, {leaderworkersetv1.GroupIdentityHash, true}, {leaderworkersetv1.GroupIdentityHash, false}} {
+		identity, newborn := tc.identity, tc.newborn
+		t.Run(fmt.Sprintf("%s/newborn=%t", identity, newborn), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "a", "a", "a")
 			for _, group := range f.observe().Groups {
 				for _, pod := range group.Pods {
 					if newborn {
@@ -3277,9 +3306,13 @@ func TestSubRoleLabelsBatchBeforePlanning(t *testing.T) {
 }
 
 func TestSubRoleLabelsCheckIntentBeforeCompletingGroup(t *testing.T) {
-	for _, repair := range []bool{false, true} {
-		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a")
+	for _, tc := range []struct {
+		identity leaderworkersetv1.GroupIdentityType
+		repair   bool
+	}{{leaderworkersetv1.GroupIdentityOrdinal, false}, {leaderworkersetv1.GroupIdentityOrdinal, true}, {leaderworkersetv1.GroupIdentityHash, false}, {leaderworkersetv1.GroupIdentityHash, true}} {
+		identity, repair := tc.identity, tc.repair
+		t.Run(fmt.Sprintf("%s/repair=%t", identity, repair), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a")
 			name := "b"
 			if repair {
 				name = "a"
@@ -3305,6 +3338,11 @@ func TestSubRoleLabelsCheckIntentBeforeCompletingGroup(t *testing.T) {
 			child, coherent := groupSubRole(after.Groups[0])
 			require.Equal(t, "a", child, "an obsolete intent must not commit the leader")
 			require.False(t, coherent, "repaired workers must also recheck intent before making the group coherent")
+			// Retry from the fresh parent observation after the partial write.
+			require.NoError(t, f.manager.labelSubRoleGroup(t.Context(), after.LWS, after.Groups[0], name))
+			child, coherent = groupSubRole(f.observe().Groups[0])
+			require.Equal(t, name, child)
+			require.True(t, coherent)
 		})
 	}
 }
