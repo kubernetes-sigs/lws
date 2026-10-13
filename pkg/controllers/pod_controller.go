@@ -40,6 +40,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1535,7 +1536,7 @@ func (r *PodReconciler) deleteWorkerStatefulSetIfExists(ctx context.Context, lea
 		return nil
 	}
 	propagation := metav1.DeletePropagationForeground
-	if err := r.Delete(ctx, &workerSts, &client.DeleteOptions{PropagationPolicy: &propagation}); client.IgnoreNotFound(err) != nil {
+	if err := r.Delete(ctx, &workerSts, &client.DeleteOptions{PropagationPolicy: &propagation}, client.Preconditions{UID: ptr.To(workerSts.UID)}); client.IgnoreNotFound(err) != nil {
 		return err
 	}
 	return nil

@@ -3286,6 +3286,45 @@ func TestMergeResult(t *testing.T) {
 	}
 }
 
+func TestParallelWorkerCleanupRejectsReplacement(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model-0", Namespace: "default", UID: "old-leader"}}
+	old := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name: leader.Name, Namespace: leader.Namespace, UID: "old-workers",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+	}}
+	replacement := old.DeepCopy()
+	replacement.UID, replacement.OwnerReferences[0].UID = "new-workers", "new-leader"
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(old).
+		WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			// The old group disappears after the ownership check; its replacement
+			// reuses the worker StatefulSet name before the delete reaches storage.
+			if err := c.Delete(ctx, old); err != nil {
+				return err
+			}
+			if err := c.Create(ctx, replacement); err != nil {
+				return err
+			}
+			// The fake client does not enforce UID preconditions.
+			options := (&client.DeleteOptions{}).ApplyOptions(opts)
+			if options.Preconditions == nil || ptr.Deref(options.Preconditions.UID, "") != old.UID {
+				t.Fatalf("delete must be conditional on the observed worker UID, got %+v", options.Preconditions)
+			}
+			return apierrors.NewConflict(appsv1.Resource("statefulsets"), obj.GetName(), fmt.Errorf("UID precondition failed"))
+		}}).Build()
+	r := &PodReconciler{Client: cl}
+	if err := r.deleteWorkerStatefulSetIfExists(t.Context(), leader); !apierrors.IsConflict(err) {
+		t.Fatalf("stale cleanup must conflict, got %v", err)
+	}
+	var got appsv1.StatefulSet
+	if err := cl.Get(t.Context(), client.ObjectKeyFromObject(replacement), &got); err != nil || got.UID != replacement.UID {
+		t.Fatalf("replacement was not preserved: UID=%s, err=%v", got.UID, err)
+	}
+}
+
 func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 	ctx := context.TODO()
 	scheme := runtime.NewScheme()
