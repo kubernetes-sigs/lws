@@ -1936,6 +1936,79 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 		manager.reader, manager.pending = o, pending
 		return manager, trace, stop
 	}
+	for _, watchFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "create response before watch", true: "watch before create response"}[watchFirst], func(t *testing.T) {
+			revision := map[bool]string{false: "response-first", true: "watch-first"}[watchFirst]
+			ds := newTestDisaggregatedSet()
+			role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
+			role.Spec = revisionLWS("created", testRolePrefill, 4, 0, time.Time{}).Spec
+			role.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
+			role.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+			role.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "test", Image: "test.invalid/image"}}
+			manager := NewLeaderWorkerSetManager(writer)
+			manager.pending = testPendingWrites(nil)
+			if watchFirst {
+				manager, _, _ = start(t)
+			}
+			persisted, response := make(chan struct{}), make(chan struct{})
+			releaseResponse := sync.OnceFunc(func() { close(response) })
+			t.Cleanup(releaseResponse)
+			manager.client = interceptor.NewClient(writeOnlyTestClient(t, writer), interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+					if err := c.Create(ctx, object, opts...); err != nil {
+						return err
+					}
+					close(persisted)
+					select {
+					case <-response:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				},
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			finished := make(chan error, 1)
+			go func() { finished <- manager.Create(ctx, ds, role, 0, revision, 4) }()
+			require.Eventually(t, func() bool {
+				select {
+				case <-persisted:
+					return true
+				default:
+					return false
+				}
+			}, 5*time.Second, 10*time.Millisecond)
+			key := client.ObjectKey{Namespace: ds.Namespace, Name: disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name)}
+			current := &leaderworkersetv1.LeaderWorkerSet{}
+			if watchFirst {
+				require.Eventually(t, func() bool { return manager.reader.Get(ctx, key, current) == nil }, 5*time.Second, 10*time.Millisecond)
+				require.NotEmpty(t, current.UID)
+				require.NoError(t, manager.pending.observed(ctx, ds.UID, "0"), "watch delivery before the HTTP response has no creation receipt to race with")
+			}
+			releaseResponse()
+			require.NoError(t, <-finished)
+			if !watchFirst {
+				fresh, _, _ := start(t)
+				manager.reader, manager.pending.Reader = fresh.reader, fresh.reader
+			}
+			require.Empty(t, manager.pending.writes)
+			require.ErrorIs(t, manager.prepareSlice(ctx, ds, 0), errReplicaGroupsPending)
+			require.Eventually(t, func() bool { return manager.pending.observed(ctx, ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond)
+			require.NoError(t, manager.prepareSlice(ctx, ds, 0), "the observed UID can complete ordinary takeover")
+			r := &DisaggregatedSetReconciler{LWSManager: manager}
+			for range 3 {
+				require.NoError(t, manager.reader.Get(ctx, key, current))
+				if err := r.reconcileCurrentRevisionRole(ctx, ds, 0, current, role, revision, map[string]int{role.Name: 2}); err != nil {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+				require.Eventually(t, func() bool { return manager.pending.observed(ctx, ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond)
+			}
+			require.NoError(t, manager.reader.Get(ctx, key, current))
+			require.EqualValues(t, 2, getLWSReplicas(current), "growth uses the latest desired size, not the four from creation")
+			require.NoError(t, writer.Delete(ctx, current))
+		})
+	}
 	for _, watchStarted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "watch misses creation and deletion", true: "creation deleted before reconcile"}[watchStarted], func(t *testing.T) {
 			manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
