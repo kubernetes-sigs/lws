@@ -2621,10 +2621,9 @@ func TestSubRoleProjectionAndBudgets(t *testing.T) {
 			}
 			state := rolloutStateForRevision(inputs.allRoleNames, disaggregatedsetutils.RevisionRolesList{old}, old, target, inputs.targetReplicas, inputs.config, observed)
 			for i, name := range inputs.allRoleNames {
-				want, targetCount := RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: 1}, 0
+				want, targetCount := RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1}, 0
 				if name == "router" {
 					targetCount = 3
-					want.MaxUnavailable = 0
 				} else if slices.Contains(order, name[len("model/"):]) {
 					targetCount = desired[name]
 					want.MaxSurge, _ = intstr.GetScaledValueFromIntOrPercent(&budget, targetCount, true)
@@ -2660,8 +2659,8 @@ func TestSubRoleBudgetOverrides(t *testing.T) {
 	assert.Equal(t, []RollingUpdateConfig{{MaxUnavailable: 2}, {MaxSurge: 5}},
 		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, scalers)))
 	scalers["model/a"].Spec.Replicas = 1
-	assert.Equal(t, []RollingUpdateConfig{{MaxSurge: 1}, {MaxSurge: 5}},
-		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, scalers)), "retain the existing fallback when scaler changes make both budgets zero")
+	assert.Equal(t, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxSurge: 5}},
+		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, scalers)), "fall back to the default when scaler changes make both budgets zero")
 }
 
 func TestSubRoleBudgetsSurviveRemovalAndPolicyReset(t *testing.T) {
@@ -2695,9 +2694,9 @@ func TestSubRoleBudgetsSurviveRemovalAndPolicyReset(t *testing.T) {
 	f.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
 	require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))
-	assert.Equal(t, map[string]int{"model/a": 3, "model/b": 0, "model/c": 0}, rememberedMaxUnavailable(f.ds))
+	assert.Equal(t, map[string]int{"model/a": 3, "model/b": 1, "model/c": 1}, rememberedMaxUnavailable(f.ds))
 	config := extractRollingUpdateConfig(f.ds, []string{"model/a", "model/b", "model/c"}, resolveDesiredReplicasByRole(f.ds, nil))
-	assert.Equal(t, []RollingUpdateConfig{{MaxSurge: 1, MaxUnavailable: 3}, {MaxSurge: 1}, {MaxSurge: 1}}, config)
+	assert.Equal(t, []RollingUpdateConfig{{MaxUnavailable: 3}, {MaxUnavailable: 1}, {MaxUnavailable: 1}}, config)
 
 	require.NoError(t, f.manager.client.Delete(t.Context(), f.lws))
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))
@@ -2769,6 +2768,8 @@ func TestSubRoleMigrationFromOrdinaryToOrdinal(t *testing.T) {
 			f := newSubRoleFixture(t, 0, "a", "b")
 			f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}}
 			f.ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityOrdinal
+			// The floors below assume a surge-first policy.
+			f.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1), MaxUnavailable: intstr.FromInt(0)}
 			ordinary := f.lws.DeepCopy()
 			ordinary.Name, ordinary.UID, ordinary.ResourceVersion = "old-ordinary", "old-ordinary", ""
 			ordinary.Labels[disaggregatedsetv1.RevisionLabelKey] = "old"
@@ -3007,12 +3008,13 @@ func TestSubRoleExternalBaselineFreezesAfterInterruption(t *testing.T) {
 	a := newSubRoleFixture(t, 0, "pool", "pool")
 	b := a.withRevision("target", "pool", "pool", "pool", "pool", "pool", "pool")
 	b.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "pool", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}}}}}
+	b.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1), MaxUnavailable: intstr.FromInt(0)}
 	for _, fixture := range []*subRoleFixture{a, b} {
 		_, err := fixture.manager.syncSubRoles(t.Context(), fixture.ds, fixture.observe().LWS, subRoleUpdate{initial: map[string]int{"pool": 8}})
 		require.ErrorIs(t, err, errReplicaGroupsPending)
 	}
 	executor := newTestExecutor(b.manager.client)
-	// A8 -> B8 reached A2/B6. Default policy clamps desired 2 to issued 6.
+	// A8 -> B8 reached A2/B6. A surge-first policy clamps desired 2 to issued 6.
 	inputs, err := executor.prepareRolloutInputs(t.Context(), b.ds, disaggregatedsetutils.RevisionRolesList{a.revision("A")}, b.revision("B"), map[string]int{"model/pool": 2})
 	require.ErrorIs(t, err, errReplicaGroupsPending)
 	inputs, err = executor.prepareRolloutInputs(t.Context(), b.ds, disaggregatedsetutils.RevisionRolesList{a.revision("A")}, b.revision("B"), map[string]int{"model/pool": 2})
