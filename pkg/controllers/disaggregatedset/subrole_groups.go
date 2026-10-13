@@ -38,8 +38,9 @@ import (
 )
 
 const (
-	subRoleReplicasAnnotation = "disaggregatedset.x-k8s.io/subrole-replicas"
-	subRolePlanAnnotation     = "disaggregatedset.x-k8s.io/subrole-plan"
+	subRoleReplicasAnnotation             = "disaggregatedset.x-k8s.io/subrole-replicas"
+	subRolePlanAnnotation                 = "disaggregatedset.x-k8s.io/subrole-plan"
+	subRoleOriginalDeletionCostAnnotation = "disaggregatedset.x-k8s.io/original-deletion-cost"
 	// Lowest valid deletion cost; scheduling, phase and readiness still take priority.
 	subRoleDeletionCost = "-2147483648" // math.MinInt32
 )
@@ -227,7 +228,7 @@ func cachedSubRolesMatchDesired(ctx context.Context, reader client.Reader, lws *
 		if !coherent || remaining[name] == 0 || !subRoleGroupComplete(group) {
 			return false
 		}
-		if hash && group.Leader.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost {
+		if _, overridden := group.Leader.Annotations[subRoleOriginalDeletionCostAnnotation]; hash && overridden {
 			return false
 		}
 		remaining[name]--
@@ -627,16 +628,41 @@ func hashSubRoleNativeAcknowledged(s *replicagroups.Snapshot, allowMissing bool)
 // Cost is best-effort within one ReplicaSet, whose cache may lag our writes;
 // syncHashSubRoleAssignments repairs actual survivors instead of deleting Pods.
 // See https://github.com/kubernetes/kubernetes/blob/f78e722310e50bcaca9276be22276d9e91d91308/pkg/controller/controller_utils.go#L843.
-// Clear our value when a group is retained; leave other costs untouched.
+// Save the previous cost on the same Pod so retries and restarts can restore it.
+// The backup uses "none" for absence and "gated" for the native temporary -100;
+// numeric values are restored verbatim. Cleanup leaves newer external edits untouched.
 func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, group replicagroups.Group, prefer bool) (bool, error) {
 	pod := group.Leader
 	desired := pod.DeepCopy()
+	cost, hasCost := pod.Annotations[corev1.PodDeletionCost]
+	previous, overridden := pod.Annotations[subRoleOriginalDeletionCostAnnotation]
+	gated := slices.ContainsFunc(pod.Spec.SchedulingGates, func(g corev1.PodSchedulingGate) bool { return g.Name == leaderv1.GroupReplacementSchedulingGate })
 	if prefer {
-		desired.Annotations = mergeLabels(desired.Annotations, map[string]string{corev1.PodDeletionCost: subRoleDeletionCost})
-	} else if desired.Annotations[corev1.PodDeletionCost] == subRoleDeletionCost {
-		delete(desired.Annotations, corev1.PodDeletionCost)
-		if slices.ContainsFunc(pod.Spec.SchedulingGates, func(g corev1.PodSchedulingGate) bool { return g.Name == leaderv1.GroupReplacementSchedulingGate }) {
-			desired.Annotations[corev1.PodDeletionCost] = "-100" // Native preference while group creation is gated.
+		if !overridden || cost != subRoleDeletionCost {
+			previous = cost
+			if !hasCost {
+				previous = "none"
+			} else if cost == "-100" && gated {
+				previous = "gated"
+			}
+		}
+		desired.Annotations = mergeLabels(desired.Annotations, map[string]string{
+			corev1.PodDeletionCost: subRoleDeletionCost, subRoleOriginalDeletionCostAnnotation: previous,
+		})
+	} else if overridden {
+		delete(desired.Annotations, subRoleOriginalDeletionCostAnnotation)
+		if cost == subRoleDeletionCost {
+			switch previous {
+			case "none":
+				delete(desired.Annotations, corev1.PodDeletionCost)
+			case "gated":
+				delete(desired.Annotations, corev1.PodDeletionCost)
+				if gated {
+					desired.Annotations[corev1.PodDeletionCost] = "-100"
+				}
+			default:
+				desired.Annotations[corev1.PodDeletionCost] = previous
+			}
 		}
 	}
 	if maps.Equal(pod.Annotations, desired.Annotations) {

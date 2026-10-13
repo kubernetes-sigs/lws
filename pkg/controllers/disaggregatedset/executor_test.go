@@ -3219,7 +3219,7 @@ func assertHashSubRoleCounts(t *testing.T, f *subRoleFixture, want map[string]in
 		name, coherent := groupSubRole(group)
 		require.True(t, coherent)
 		actual[name]++
-		require.NotEqual(t, subRoleDeletionCost, group.Leader.Annotations[corev1.PodDeletionCost], "completed survivors must lose the DS deletion preference")
+		require.NotContains(t, group.Leader.Annotations, subRoleOriginalDeletionCostAnnotation, "completed survivors must lose the DS cost override")
 	}
 	require.Equal(t, want, actual)
 }
@@ -3839,7 +3839,7 @@ func TestHashSubRolePendingPlanSurvivesWriteFailures(t *testing.T) {
 }
 
 func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
-	for _, change := range []string{"settled", "loading", "cost", "native cost", "pending", "native pending", "wrong distribution", "missing worker"} {
+	for _, change := range []string{"settled", "loading", "cost", "user minimum", "externally changed cost", "native cost", "pending", "native pending", "wrong distribution", "missing worker"} {
 		t.Run(change, func(t *testing.T) {
 			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "b")
 			s := f.observe()
@@ -3851,6 +3851,12 @@ func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
 			case "cost":
 				pod.Annotations[corev1.PodDeletionCost] = subRoleDeletionCost
+				pod.Annotations[subRoleOriginalDeletionCostAnnotation] = "none"
+			case "user minimum":
+				pod.Annotations[corev1.PodDeletionCost] = subRoleDeletionCost
+			case "externally changed cost":
+				pod.Annotations[corev1.PodDeletionCost] = "200"
+				pod.Annotations[subRoleOriginalDeletionCostAnnotation] = "100"
 			case "native cost":
 				pod.Annotations[corev1.PodDeletionCost] = "-100"
 			case "pending":
@@ -3871,7 +3877,7 @@ func TestCachedHashSubRolesRequireSettledNativeCounts(t *testing.T) {
 				require.NoError(t, f.manager.client.Update(t.Context(), object))
 			}
 			s = f.observe()
-			require.Equal(t, change == "settled" || change == "loading" || change == "native cost", cachedSubRolesMatchDesired(t.Context(), f.manager.client, s.LWS, map[string]int{"a": 1, "b": 1}))
+			require.Equal(t, change == "settled" || change == "loading" || change == "native cost" || change == "user minimum", cachedSubRolesMatchDesired(t.Context(), f.manager.client, s.LWS, map[string]int{"a": 1, "b": 1}))
 			if change == "native cost" {
 				f.sync()
 				require.Equal(t, "-100", f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost], "DS must preserve native scheduling preferences")
@@ -3901,7 +3907,75 @@ func TestHashSubRoleDeletionPreferenceRestoresNativeGateCost(t *testing.T) {
 			_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], false)
 			require.NoError(t, err)
 			require.Equal(t, want, f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost])
+			require.NotContains(t, f.observe().Groups[0].Leader.Annotations, subRoleOriginalDeletionCostAnnotation)
 		})
+	}
+}
+
+func TestHashSubRoleSurvivorRestoresOriginalDeletionCost(t *testing.T) {
+	for _, original := range []string{"", "0", "100", "-100", subRoleDeletionCost} {
+		t.Run("original="+original, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
+			s := f.observe()
+			pod := s.Groups[1].Leader
+			if original != "" {
+				pod.Annotations[corev1.PodDeletionCost] = original
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 1, "b": 1}), errReplicaGroupsPending)
+			for range 6 {
+				f.sync()
+			}
+			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS))
+			require.Equal(t, subRoleDeletionCost, f.observe().Groups[1].Leader.Annotations[corev1.PodDeletionCost])
+			f.manager = NewLeaderWorkerSetManager(f.manager.client)
+			for range 2 {
+				f.sync() // Replaying the pending plan must not replace the saved cost.
+			}
+			f.native(s.Groups[2].Leader.UID) // Delete b, leaving the preferred victim alive.
+			for range 8 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, map[string]int{"a": 1, "b": 1})
+			survivor := &corev1.Pod{}
+			require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(pod), survivor))
+			require.Equal(t, pod.UID, survivor.UID)
+			cost, present := survivor.Annotations[corev1.PodDeletionCost]
+			require.Equal(t, original, cost)
+			require.Equal(t, original != "", present)
+		})
+	}
+}
+
+func TestHashSubRoleCostCleanupPreservesExternalEdits(t *testing.T) {
+	for _, edit := range []string{"", "200"} {
+		for _, reapply := range []bool{false, true} {
+			t.Run(fmt.Sprintf("edit=%s/reapply=%t", edit, reapply), func(t *testing.T) {
+				f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a")
+				pod := f.observe().Groups[0].Leader
+				pod.Annotations[corev1.PodDeletionCost] = "100"
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				_, err := f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
+				require.NoError(t, err)
+				pod = f.observe().Groups[0].Leader
+				delete(pod.Annotations, corev1.PodDeletionCost)
+				if edit != "" {
+					pod.Annotations[corev1.PodDeletionCost] = edit
+				}
+				require.NoError(t, f.manager.client.Update(t.Context(), pod))
+				if reapply {
+					_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
+					require.NoError(t, err)
+				}
+				_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], false)
+				require.NoError(t, err)
+				annotations := f.observe().Groups[0].Leader.Annotations
+				cost, present := annotations[corev1.PodDeletionCost]
+				require.Equal(t, edit, cost)
+				require.Equal(t, edit != "", present)
+				require.NotContains(t, annotations, subRoleOriginalDeletionCostAnnotation)
+			})
+		}
 	}
 }
 

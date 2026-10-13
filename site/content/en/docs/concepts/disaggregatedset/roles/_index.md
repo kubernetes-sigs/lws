@@ -106,8 +106,9 @@ the leader, not the whole group, and ReplicaSet may not yet have observed a cost
 For example, scaling `A=5,B=1` to `A=4,B=1` can temporarily remove B's only Ready group.
 The controller observes the actual survivors and repairs their labels; it cannot guarantee
 each child's availability budget during that interval. The planner still applies independent
-budgets. There are no custom deletion tags or deletion webhook, and DisaggregatedSet does
-not delete Pods directly. The normal default-enabled `PodDeletionCost` feature must be
+budgets. The previous deletion cost is saved on the Pod and restored if it survives,
+without overwriting newer external edits. There is no deletion webhook, and DisaggregatedSet
+does not delete Pods directly. The normal default-enabled `PodDeletionCost` feature must be
 enabled for the preference to apply.
 
 See [KEP-960](https://github.com/kubernetes-sigs/lws/tree/main/keps/960-DisaggregatedSet-subroles)

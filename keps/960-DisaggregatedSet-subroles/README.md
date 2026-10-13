@@ -319,7 +319,8 @@ role and sub-role scaler names. When sub-roles exist, no parent scaler is create
 The reconciler watches Pods through a mapping from the existing
 `disaggregatedset.x-k8s.io/name` label to the parent DisaggregatedSet. It receives Pod
 `get`, `list`, `watch`, and `patch` permissions and patches the sub-role label and,
-for Hash, the standard deletion-cost annotation. It does not delete Pods directly.
+for Hash, the standard deletion-cost annotation. The previous cost is saved on the Pod
+and restored if it survives, without overwriting newer external edits. It does not delete Pods directly.
 Converged assignments produce no writes; native controllers retain health recovery.
 
 Reconciliation follows this flow:
