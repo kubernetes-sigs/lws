@@ -71,7 +71,11 @@ spec:
     scaleDownDuringRollout: Immediate
 ```
 
-Omitting the policy preserves `Deferred` behavior. `Immediate` means the controller considers reductions now, not that Pods disappear instantly: availability and startup safeguards can delay them. Raising the requested count does not raise the availability requirement used for retiring the old revision.
+Omitting the policy preserves `Deferred` behavior. `Immediate` means the controller considers reductions now, not that Pods disappear instantly: availability and startup safeguards can delay them.
+
+For roles still required by the target, both old and target reductions protect `effective desired - maxUnavailable` Ready groups, with a minimum of zero. The effective count normally follows the latest request; under `Deferred`, an External role with overlapping old replicas keeps at least the already-created target count. Requesting more capacity raises this floor. If fewer groups are currently Ready, the controller preserves those groups while growing the target; a smaller old revision is not permission to reduce availability further.
+
+If ordinary scale-up becomes blocked by coordination, either policy can use one temporary extra group per eligible role. That role's existing target groups must all be Ready and its total Spec must be at its surge ceiling. The extra cannot stack while the role remains over its ceiling or waits for readiness. This does not enable `Deferred` to shrink the target in response to a lower replica request.
 
 When an `Immediate` target revision has more replicas than its latest desired count, both Ordinal and Hash follow the same rule for each role:
 

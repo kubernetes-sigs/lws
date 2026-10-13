@@ -248,9 +248,117 @@ func TestRemovedRoleBaselineDistinguishesRemovalFromReplacement(t *testing.T) {
 				[]int{0, 1}, []int{0, 0}, []int{0, 4}, configs([]int{1, 1}, []int{0, 0}))
 			assert.Equal(t, tc.floor, state.AvailabilityBaseline)
 			for i, role := range snapshotForRolloutState(state) {
-				assert.Equal(t, tc.floor[i], availabilityFloor(role), "role %d", i)
+				assert.Equal(t, max(tc.floor[i], state.Target.DesiredReplicas[i]), availabilityFloor(role), "role %d", i)
 			}
 		})
+	}
+}
+
+func TestScaleUpCoordinationBootstrapPreservesDesiredFloor(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		state := rolloutState([]int{2, 3}, []int{2, 2}, []int{2, 2}, nil, nil,
+			[]int{2, 1}, []int{2, 1}, []int{4, 3}, configs([]int{2, 0}, []int{0, 1}))
+		state.ScaleDownDuringRollout = immediate
+		step := ComputeNextStep(state)
+		require.Equal(t, &UpdateStep{Past: []int{2, 2}, New: []int{4, 2}, UsesBootstrapSurge: true}, step)
+		require.NoError(t, validateUpdateStep(state, step))
+		assertScalingSafety(t, state, step)
+		state.Target.SpecReplicas = step.New
+		if pending := ComputeNextStep(state); pending != nil {
+			require.False(t, pending.UsesBootstrapSurge, "do not stack another slot while the first one is unready")
+			require.Equal(t, step.New, pending.New)
+			require.NoError(t, validateUpdateStep(state, pending))
+			assertScalingSafety(t, state, pending)
+		}
+		// Once observed Ready, that extra group unblocks ordinary coordinated
+		// progress. Neither policy needs to relax the desired availability floor.
+		for range 20 {
+			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = state.Target.SpecReplicas, state.Target.SpecReplicas
+			step = ComputeNextStep(state)
+			if step == nil {
+				break
+			}
+			require.NoError(t, validateUpdateStep(state, step))
+			assertScalingSafety(t, state, step)
+			state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+			state.Target.SpecReplicas = step.New
+		}
+		require.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas)
+		require.Equal(t, state.Target.DesiredReplicas, state.Target.SpecReplicas)
+	}
+}
+
+func TestScaleUpRetiresBootstrapExcessBeforeContinuing(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		state := rolloutState([]int{2, 7}, []int{2, 7}, []int{2, 7}, nil, nil,
+			[]int{0, 0}, []int{0, 0}, []int{8, 7}, configs([]int{1, 1}, []int{0, 1}))
+		state.ScaleDownDuringRollout = immediate
+		bootstraps := 0
+		for range 20 {
+			step := ComputeNextStep(state)
+			if step == nil {
+				break
+			}
+			require.NoError(t, validateUpdateStep(state, step))
+			assertScalingSafety(t, state, step)
+			state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+			state.Target.SpecReplicas = step.New
+			if step.UsesBootstrapSurge {
+				bootstraps++
+				// Leave this growth unready for another observation. A safe old
+				// correction may proceed, but another surge slot cannot stack.
+				if pending := ComputeNextStep(state); pending != nil {
+					require.False(t, pending.UsesBootstrapSurge)
+					require.Equal(t, step.New, pending.New)
+					require.NoError(t, validateUpdateStep(state, pending))
+					assertScalingSafety(t, state, pending)
+				}
+			}
+			state.Target.RawReadyReplicas, state.Target.ReadyReplicas = step.New, step.New
+		}
+		// Previously Deferred stopped at old [2,4], new [6,5], all Ready.
+		require.Positive(t, bootstraps)
+		require.Equal(t, []int{0, 0}, state.ActiveOld.SpecReplicas, "immediate=%v", immediate)
+		require.Equal(t, state.Target.DesiredReplicas, state.Target.SpecReplicas)
+	}
+}
+
+func TestScaleUpExcessDrainStaysWithinCapacityAndAvailability(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		for _, tc := range []struct {
+			name                               string
+			targetSpec, targetRaw, targetReady int
+			oldRaw, wantOld                    int
+		}{
+			{"one excess group", 5, 5, 5, 4, 3},
+			{"already at the ceiling", 4, 4, 4, 4, 4},
+			{"already at the availability floor", 5, 2, 2, 4, 4},
+			{"pending target deletion", 5, 3, 2, 4, 4},
+			{"pending old deletion", 5, 2, 2, 5, 4},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				state := rolloutState([]int{2, 7}, []int{2, 4}, []int{2, 4}, nil, nil,
+					[]int{6, tc.targetSpec}, []int{6, tc.targetReady}, []int{8, 7}, configs([]int{1, 1}, []int{0, 1}))
+				state.ScaleDownDuringRollout = immediate
+				state.ActiveOld.RawReadyReplicas[1] = tc.oldRaw
+				state.Target.RawReadyReplicas[1] = tc.targetRaw
+				past := state.ActiveOld.SpecReplicas
+				if step := ComputeNextStep(state); step != nil {
+					require.NoError(t, validateUpdateStep(state, step))
+					assertScalingSafety(t, state, step)
+					past = step.Past
+				}
+				require.Equal(t, []int{2, tc.wantOld}, past)
+			})
+		}
+	}
+	// The exception does not change Deferred retirement pacing without
+	// increased demand, or for a removed role even when another role grows.
+	for _, desired := range [][]int{{2, 7}, {1, 7}, {8, 0}} {
+		state := rolloutState([]int{2, 7}, []int{2, 4}, []int{2, 4}, nil, nil,
+			[]int{6, 5}, []int{6, 5}, desired, configs([]int{1, 1}, []int{0, 1}))
+		bounded := boundDrainingSnapshotTargets(snapshotForRolloutState(state), state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, []int{2, 0})
+		require.Equal(t, []int{2, 4}, bounded, "desired=%v", desired)
 	}
 }
 
@@ -292,6 +400,8 @@ func TestRemovedRoleReadinessUsesItsHistoricalRevisions(t *testing.T) {
 		require.Equal(t, 1, snapshot[2].DrainingUsableReadyReplicas, "physical W readiness still controls revision completeness")
 		if active == 0 {
 			state.ParkedOld[0].ReadyReplicas[2] = 0 // Disjoint W is already committed to deletion.
+			require.Nil(t, ComputeNextStep(state), "target A2 cannot replace old A1 below the desired A4 floor")
+			state.Target.RawReadyReplicas[0], state.Target.ReadyReplicas[0] = 4, 4
 			step := ComputeNextStep(state)
 			require.NotNil(t, step)
 			require.Equal(t, []int{0, 0, 0}, step.Past, "unrelated pending W loss must not prevent retiring A/W")
@@ -420,6 +530,8 @@ func TestDisjointRoleReplacementDoesNotSpendParkedCreditAcrossCandidates(t *test
 	next := rolloutState([]int{0, 1}, []int{0, 1}, []int{0, 1}, first.Past, first.Past,
 		first.New, state.Target.ReadyReplicas, state.Target.DesiredReplicas, state.Config)
 	next.AvailabilityBaseline = state.AvailabilityBaseline // X4/Y1 remains the shared baseline.
+	require.Nil(t, ComputeNextStep(next), "Y1 remains needed while target Y is below its desired floor")
+	next.Target.SpecReplicas, next.Target.RawReadyReplicas, next.Target.ReadyReplicas = []int{0, 4}, []int{0, 4}, []int{0, 4}
 	second := ComputeNextStep(next)
 	require.NotNil(t, second)
 	assert.Equal(t, RoleReplicaState{0, 0}, second.Past)
@@ -435,8 +547,8 @@ func TestDisjointRoleReplacementKeepsFloorWhenOverlappingCandidateSelected(t *te
 	require.NotNil(t, first)
 	assert.Equal(t, RoleReplicaState{3, 0}, first.Past, "only standalone X contributes to its disjoint baseline")
 	require.NoError(t, validateUpdateStep(state, first))
-	// The overlapping X2/Y1 may retire through shared Y readiness without
-	// spending the standalone X3 that still preserves the disjoint floor.
+	// The overlapping X2/Y1 may shed excess X, but must keep Y1 while target
+	// Y is below its desired floor. Standalone X3 still has its separate floor.
 	next := rolloutState([]int{2, 1}, []int{2, 1}, []int{2, 1}, first.Past, first.Past,
 		first.New, state.Target.ReadyReplicas, state.Target.DesiredReplicas, state.Config)
 	next.AvailabilityBaseline = state.AvailabilityBaseline
@@ -445,8 +557,9 @@ func TestDisjointRoleReplacementKeepsFloorWhenOverlappingCandidateSelected(t *te
 		past = second.Past
 		require.NoError(t, validateUpdateStep(next, second))
 	}
-	assert.Equal(t, RoleReplicaState{0, 0}, past, "overlapping retirement does not remove disjoint X capacity")
+	assert.Equal(t, RoleReplicaState{1, 1}, past, "shared Y1 and its same-revision X must remain together")
 	assert.GreaterOrEqual(t, first.Past[0]+next.Target.ReadyReplicas[1], 4)
+	assert.Equal(t, 2, past[1]+next.Target.ReadyReplicas[1], "do not worsen Y's existing readiness shortfall")
 }
 
 func TestDisjointRoleReplacementBoundsIntroducedRoleWhenOverlappingCandidateSelected(t *testing.T) {
@@ -466,6 +579,7 @@ func TestDisjointRoleReplacementDoesNotSpendPendingDeletionCredit(t *testing.T) 
 			switch revision {
 			case "target":
 				state.Target.RawReadyReplicas = RoleReplicaState{0, 2, 2}
+				wantOld = 4 // Wait for the target's pending loss to settle below its desired floor.
 			case "active":
 				state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas = []int{3, 0, 0}, []int{3, 0, 0}
 				state.ActiveOld.ReadyReplicas = RoleReplicaState{2, 0, 0}
@@ -948,9 +1062,15 @@ func assertPlannerRolloutInvariants(
 			if bootstrapActive[role] {
 				ceiling++
 			}
-			floor := max(0, min(initial[role], target[role])-config[role].MaxUnavailable)
+			beforeReady, targetReady := initial[role], 0
+			if stepIndex > 0 {
+				previous := steps[stepIndex-1]
+				beforeReady = previous.Past[role] + previous.New[role]
+				targetReady = min(previous.New[role], current.New[role])
+			}
+			floor := min(beforeReady, max(0, target[role]-config[role].MaxUnavailable))
 			assert.LessOrEqual(t, total, ceiling, "step %d role %d exceeds surge", stepIndex, role)
-			assert.GreaterOrEqual(t, total, floor, "step %d role %d crosses availability", stepIndex, role)
+			assert.GreaterOrEqual(t, current.Past[role]+targetReady, floor, "step %d role %d crosses availability", stepIndex, role)
 			if stepIndex > 0 {
 				previous := steps[stepIndex-1]
 				assert.LessOrEqual(t, current.Past[role], previous.Past[role])
@@ -1067,12 +1187,36 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 func hasFeasibleMutation(state RolloutState) bool {
 	snapshot := snapshotForRolloutState(state)
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
+	allowExcess := state.ScaleDownDuringRollout
+	for i, desired := range state.Target.DesiredReplicas {
+		allowExcess = allowExcess || desired > state.AvailabilityBaseline[i]
+	}
+	excessOldMinimum := slices.Clone(state.ActiveOld.SpecReplicas)
+	for i, desired := range state.Target.DesiredReplicas {
+		if !allowExcess || desired == 0 {
+			continue
+		}
+		physical := state.ActiveOld.SpecReplicas[i] + state.Target.SpecReplicas[i]
+		for _, parked := range state.ParkedOld {
+			physical += parked.SpecReplicas[i]
+		}
+		baseline := max(state.ActiveOld.InitialReplicas[i], desired)
+		if state.ScaleDownDuringRollout {
+			baseline = desired
+		}
+		excessOldMinimum[i] -= max(0, physical-baseline-state.Config[i].MaxSurge)
+	}
 	for old0 := 0; old0 <= state.ActiveOld.SpecReplicas[0]; old0++ {
 		for old1 := 0; old1 <= state.ActiveOld.SpecReplicas[1]; old1++ {
 			old := RoleReplicaState{old0, old1}
+			window := boundDrainingRoleTargetsToWindow(state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, old)
+			withinWindow := true
+			for i := range old {
+				withinWindow = withinWindow && old[i] >= min(window[i], excessOldMinimum[i])
+			}
 			if !slices.Equal(boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, old, state.ActiveOld.RequiredRoles), old) ||
 				!availabilityPreserved(snapshot, old, state.ActiveOld.RequiredRoles) ||
-				!slices.Equal(boundDrainingRoleTargetsToWindow(state.ActiveOld.SpecReplicas, state.ActiveOld.InitialReplicas, old), old) {
+				!withinWindow {
 				continue
 			}
 			if !slices.Equal(old, state.ActiveOld.SpecReplicas) {
@@ -1096,7 +1240,7 @@ func hasFeasibleMutation(state RolloutState) bool {
 		return true
 	}
 	// Independently enumerate whether even one surplus target replica can be
-	// removed without touching old service or risking the last Ready replica.
+	// removed without touching old service, needed startup work, or readiness.
 	limits := disjointGrowthLimits(snapshot)
 	if limits != nil && !allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
 		sharedOld := false
@@ -1104,7 +1248,10 @@ func hasFeasibleMutation(state RolloutState) bool {
 			sharedOld = sharedOld || role.NewTargetReplicas > 0 && role.AvailabilityBaselineReplicas > 0
 		}
 		for i, role := range snapshot {
-			if !sharedOld && role.NewSpecReplicas > max(1, limits[i]) && role.NewCommittedReadyReplicas != 1 {
+			candidate := slices.Clone(state.Target.SpecReplicas)
+			candidate[i]--
+			if !sharedOld && role.NewSpecReplicas > max(1, limits[i]) && role.NewCommittedReadyReplicas != 1 &&
+				targetScaleDownPreservesAvailability(state, candidate) {
 				return true
 			}
 		}
@@ -1309,7 +1456,7 @@ func TestDisjointSurplusDoesNotRetractOnReadinessFlaps(t *testing.T) {
 	}
 }
 
-func TestDisjointReadyGrowthMayReclaimSurplusAfterReadinessLoss(t *testing.T) {
+func TestDisjointReadyGrowthSurvivesReadinessLoss(t *testing.T) {
 	for _, immediate := range []bool{false, true} {
 		state := rolloutState([]int{15, 1, 4, 0, 0}, []int{11, 1, 3, 0, 0}, []int{11, 1, 3, 0, 0}, nil, nil,
 			[]int{0, 0, 0, 2, 3}, []int{0, 0, 0, 2, 3}, []int{0, 0, 0, 10, 15},
@@ -1320,15 +1467,38 @@ func TestDisjointReadyGrowthMayReclaimSurplusAfterReadinessLoss(t *testing.T) {
 		require.NoError(t, validateUpdateStep(state, step))
 		state.Target.SpecReplicas = slices.Clone(step.New)
 		state.Target.RawReadyReplicas, state.Target.ReadyReplicas = []int{0, 0, 0, 3, 0}, []int{0, 0, 0, 3, 0}
-		// Losing a required role's readiness removes the extra growth credit.
-		// Existing recovery may reclaim it, but never spends another old group
-		// or removes the other target role's last Ready group.
-		step = ComputeNextStep(state)
-		require.Equal(t, &UpdateStep{Past: []int{11, 1, 3, 0, 0}, New: []int{0, 0, 0, 2, 3}, UsesTargetRebalance: true}, step)
+		// Losing D readiness blocks further progress, but cannot retract needed
+		// P readiness or scheduled/unknown D startup work.
+		require.Nil(t, ComputeNextStep(state))
+		unsafe := &UpdateStep{Past: slices.Clone(state.ActiveOld.SpecReplicas), New: []int{0, 0, 0, 2, 3}, UsesTargetRebalance: true}
+		require.Error(t, validateUpdateStep(state, unsafe))
+	}
+}
+
+func TestDisjointRolloutKeepsReadyGrowthWhenAnotherRoleFails(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		state := rolloutState([]int{4, 1, 0, 0}, []int{4, 1, 0, 0}, []int{4, 1, 0, 0}, nil, nil,
+			[]int{0, 0, 0, 0}, []int{0, 0, 0, 0}, []int{0, 0, 4, 4},
+			configs([]int{0, 0, 1, 1}, []int{1, 1, 0, 0}))
+		state.ScaleDownDuringRollout = immediate
+		for range 2 {
+			step := ComputeNextStep(state)
+			require.NotNil(t, step)
+			require.NoError(t, validateUpdateStep(state, step))
+			state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas = step.Past, step.Past, step.Past
+			state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas = step.New, slices.Clone(step.New), slices.Clone(step.New)
+		}
+		require.Equal(t, []int{2, 1, 0, 0}, state.ActiveOld.SpecReplicas)
+		require.Equal(t, []int{0, 0, 2, 2}, state.Target.SpecReplicas)
+		state.Target.RawReadyReplicas[3], state.Target.ReadyReplicas[3] = 0, 0
+		require.Nil(t, ComputeNextStep(state), "D's readiness loss must not delete Ready P or restart needed D")
+		// If D's failed groups have been recreated and all are unassigned,
+		// recovery can cancel D surplus without touching Ready P.
+		state.Target.AllUnscheduled = []bool{false, false, false, true}
+		step := ComputeNextStep(state)
+		require.Equal(t, &UpdateStep{Past: []int{2, 1, 0, 0}, New: []int{0, 0, 2, 1}, UsesTargetRebalance: true}, step)
 		require.NoError(t, validateUpdateStep(state, step))
-		state.Target.SpecReplicas = slices.Clone(step.New)
-		state.Target.RawReadyReplicas, state.Target.ReadyReplicas = []int{0, 0, 0, 2, 0}, []int{0, 0, 0, 2, 0}
-		require.Nil(t, disjointSurplusStep(state, snapshotForRolloutState(state)), "unchanged observations cannot reclaim another batch")
+		assertScalingSafety(t, state, step)
 	}
 }
 
@@ -1342,16 +1512,21 @@ func TestDisjointSurplusSafety(t *testing.T) {
 		ready := []int{0, rng.Intn(spec[1] + 1), 0}
 		state := rolloutState([]int{4, 0, 0}, []int{old, 0, 0}, []int{old, 0, 0}, nil, nil,
 			spec, ready, desired, configs([]int{0, rng.Intn(2), 0}, []int{4 - old, 2, 2}))
+		state.Target.AllUnscheduled = []bool{false, ready[1] == 0, true}
 		step := ComputeNextStep(state)
 		if step == nil || !step.UsesTargetRebalance {
 			continue
 		}
 		checked++
 		require.NoError(t, validateUpdateStep(state, step))
+		assertScalingSafety(t, state, step)
 		require.Equal(t, state.ActiveOld.SpecReplicas, step.Past)
 		for role := range spec {
 			removed := spec[role] - step.New[role]
 			require.GreaterOrEqual(t, removed, 0)
+			if !state.Target.AllUnscheduled[role] {
+				require.GreaterOrEqual(t, step.New[role], min(spec[role], desired[role]), "keep needed scheduled or Ready groups")
+			}
 			// A native controller may delete Ready groups before unready ones.
 			require.GreaterOrEqual(t, max(0, ready[role]-removed), min(1, ready[role]))
 			if spec[role] > 0 {

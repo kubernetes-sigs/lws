@@ -109,6 +109,10 @@ type RoleScaling struct {
 // RolloutScaleDownPolicy controls when demand-driven target replica reductions are
 // considered during an active rolling update. Both policies allow scale-up and
 // old-revision retirement within the rollout's availability and surge bounds.
+// For roles still present, reductions preserve effective desired - maxUnavailable
+// Ready replicas, or avoid worsening a shortfall if fewer are currently Ready.
+// Deferred External roles use at least the target's current Spec as effective
+// desired while old replicas of that role remain.
 // +kubebuilder:validation:Enum=Deferred;Immediate
 type RolloutScaleDownPolicy string
 
@@ -116,16 +120,16 @@ const (
 	// RolloutScaleDownDeferred preserves the existing rollout behavior. Scale-up
 	// proceeds within rollout bounds; demand-driven target reductions wait until
 	// old revisions finish draining. Old replicas may still drain during the
-	// rollout, and existing renamed-role surplus recovery is unchanged.
+	// rollout. Renamed-role surplus recovery uses the same target availability
+	// and scheduled-startup protection as other target reductions.
 	// The surge ceiling is max(initial old replicas, effective desired) + maxSurge.
 	// External roles retain their target Spec clamp while old replicas overlap.
 	RolloutScaleDownDeferred RolloutScaleDownPolicy = "Deferred"
 
 	// RolloutScaleDownImmediate considers scale-down during the rollout with a
 	// surge ceiling of desired + maxSurge. For roles still present in the target,
-	// old-revision reductions use the floor
-	// max(0, min(historical old baseline, desired) - maxUnavailable), so scale-up
-	// does not raise that floor. Safe old-revision drains are preferred; target
+	// old and target reductions use max(0, desired - maxUnavailable) as their
+	// availability floor. Safe old-revision drains are preferred; target
 	// replicas may shrink when old revisions must remain. Availability and
 	// startup protection can delay reductions: Immediate does not mean instant.
 	RolloutScaleDownImmediate RolloutScaleDownPolicy = "Immediate"

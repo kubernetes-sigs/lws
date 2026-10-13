@@ -85,8 +85,8 @@ type RolloutState struct {
 	ActiveOld ActiveRevisionState
 	ParkedOld []ParkedRevisionState
 	Target    TargetRevisionState
-	// AvailabilityBaseline is shared by every old-revision candidate so
-	// selecting a smaller interrupted revision cannot weaken maxUnavailable.
+	// AvailabilityBaseline shares historical counts across old candidates for
+	// rollout progress and removed-role availability.
 	// Rebuild it from non-drained old revisions on each observation: removed
 	// roles include only disjoint revisions; shared roles include all.
 	AvailabilityBaseline RoleReplicaState
@@ -105,7 +105,7 @@ type RolloutState struct {
 // matching the old revisions that supply their availability baseline.
 type roleRolloutSnapshot struct {
 	InitialOldReplicas              int                 // Durable replica baseline of the active old revision.
-	AvailabilityBaselineReplicas    int                 // Availability baseline for this drain, shared by old-revision candidates.
+	AvailabilityBaselineReplicas    int                 // Historical old baseline used for rollout progress.
 	UnreplacedReplicas              int                 // Old baseline not yet replaced by a complete, disjoint-role target.
 	DrainingSpecReplicas            int                 // Current Spec of the revision being reduced.
 	DrainingCommittedReadyReplicas  int                 // Its Ready replicas not reserved by a pending deletion.
@@ -218,11 +218,6 @@ func targetDrainSnapshot(state RolloutState, observed rolloutSnapshot) rolloutSn
 		role.DrainingReadinessExcluded = false
 		role.ReplacementUsableReadyReplicas = oldCapacity.usable + observed[i].ParkedUsableReadyReplicas
 		role.ReplacementPerRoleReadyReplicas += oldCapacity.perRole - targetReady[i].perRole
-		if target.DesiredReplicas[i] > 0 {
-			// Target reductions must protect the desired capacity, even when
-			// this role has no old baseline or has grown since rollout began.
-			role.AvailabilityBaselineReplicas = target.DesiredReplicas[i]
-		}
 		if target.SpecReplicas[i] == 0 {
 			role.UnreplacedReplicas = 0
 		}
@@ -744,15 +739,16 @@ func disjointGrowthLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	return limits
 }
 
-// Reclaim incomplete target surplus beyond the old-progress budget. This also
-// covers Ready-funded growth after a later readiness loss. Only a target with
-// no shared old roles can shrink; retain its last Ready group per role even if
-// native deletion chooses Ready first.
+// Reclaim incomplete target surplus beyond the old-progress budget, using the
+// same availability and startup protection as ordinary target reductions.
+// Only a target with no shared old roles can shrink; retain its last Ready
+// group per role even if native deletion chooses Ready first.
 func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateStep {
 	limits := disjointGrowthLimits(snapshot)
 	if limits == nil || allRequiredRolesPresent(state.Target.RequiredRoles, state.Target.ReadyReplicas) {
 		return nil
 	}
+	drainSnapshot, minimum := targetScaleDownBounds(state, snapshot)
 	next := slicesClone(state.Target.SpecReplicas)
 	for i, role := range snapshot {
 		if role.NewTargetReplicas > 0 && state.AvailabilityBaseline[i] > 0 {
@@ -760,26 +756,37 @@ func disjointSurplusStep(state RolloutState, snapshot rolloutSnapshot) *UpdateSt
 		}
 		keepReady := minimumSpecToPreserveReady(role.NewSpecReplicas, role.NewCommittedReadyReplicas, min(1, role.NewCommittedReadyReplicas))
 		keep := max(min(1, role.NewSpecReplicas), keepReady)
-		next[i] = min(next[i], max(limits[i], keep))
+		next[i] = min(next[i], max(limits[i], keep, minimum[i]))
 	}
-	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) {
+	if !anyChange(state.ActiveOld.SpecReplicas, next, state.ActiveOld.SpecReplicas, state.Target.SpecReplicas) ||
+		!availabilityPreserved(drainSnapshot, next, state.Target.RequiredRoles) {
 		return nil
 	}
 	return &UpdateStep{Past: slicesClone(state.ActiveOld.SpecReplicas), New: next, UsesTargetRebalance: true}
 }
 
+// Recovery is shared across roles: a role whose demand did not change may
+// need to release excess capacity so another role can grow.
+func demandExceedsOldBaseline(snapshot rolloutSnapshot) bool {
+	return slices.ContainsFunc(snapshot, func(role roleRolloutSnapshot) bool {
+		return role.NewTargetReplicas > role.AvailabilityBaselineReplicas
+	})
+}
+
 // snapshotWithBootstrapSurge grants enough temporary surge for the first
 // replica of each missing required target role. This includes interrupted
 // rollouts where parked old revisions already consume a positive MaxSurge.
-// With moving targets, a Ready role at its new ceiling can also need one slot
-// to unblock fractional coordination. The slot cannot be stacked: a role
-// already above its ceiling or still waiting for Ready replicas is ineligible.
+// A Ready role at its ceiling can also need one slot to unblock fractional
+// coordination: during opt-in scaling, or when demand exceeds old capacity.
+// The slot cannot be stacked: a role already above its ceiling or still waiting
+// for Ready replicas is ineligible.
 // ComputeNextStep considers this only when no ordinary mutation exists.
 func snapshotWithBootstrapSurge(
 	snapshot rolloutSnapshot,
 	phaseTargets RoleReplicaState,
 ) (rolloutSnapshot, bool) {
 	disjointReplacement := disjointGrowthLimits(snapshot) != nil
+	scaleUp := demandExceedsOldBaseline(snapshot)
 	normalLimits := hardNewReplicaLimits(snapshot)
 	bootstrap := append(rolloutSnapshot(nil), snapshot...)
 	needed := false
@@ -790,7 +797,7 @@ func snapshotWithBootstrapSurge(
 			continue
 		}
 		atSurgeCeiling := role.OldSpecReplicas+role.NewSpecReplicas == role.SurgeBaselineReplicas+role.Config.MaxSurge
-		coordinationBlocked := role.ScaleDownDuringRollout && atSurgeCeiling && role.NewCommittedReadyReplicas >= role.NewSpecReplicas
+		coordinationBlocked := (role.ScaleDownDuringRollout || scaleUp) && atSurgeCeiling && role.NewCommittedReadyReplicas >= role.NewSpecReplicas
 		if role.Config.MaxSurge+role.Config.MaxUnavailable > 0 &&
 			phaseTargets[i] > role.NewSpecReplicas && normalLimits[i] == role.NewSpecReplicas &&
 			(role.NewSpecReplicas == 0 || coordinationBlocked) {
@@ -819,12 +826,10 @@ func snapshotWithUnavailableFallback(snapshot rolloutSnapshot) rolloutSnapshot {
 }
 
 // availabilityFloor is the minimum committed Ready capacity required for one
-// role in the observed rollout state.
+// role. Existing roles use current demand; removed roles keep the historical
+// capacity not yet replaced. Both old and target reductions use this floor.
 func availabilityFloor(role roleRolloutSnapshot) int {
-	return max(
-		0,
-		max(min(role.AvailabilityBaselineReplicas, role.NewTargetReplicas), role.UnreplacedReplicas)-role.Config.MaxUnavailable,
-	)
+	return max(0, max(role.NewTargetReplicas, role.UnreplacedReplicas)-role.Config.MaxUnavailable)
 }
 
 // availabilityPreserved checks the worst case after the requested Spec drain:
@@ -924,13 +929,14 @@ func boundGrowingRoleTargetsToWindow(
 }
 
 // boundDrainingSnapshotTargets preserves historical rollout coordination,
-// except that opt-in scaling may release existing physical excess of current
-// roles. Removed roles have no new size to correct and keep their old pacing.
+// except that opt-in scaling or demand above old capacity may release existing
+// physical excess. Removed roles have no new size to correct and keep their pacing.
 // The correction still passes availability and whole-revision completeness.
 func boundDrainingSnapshotTargets(snapshot rolloutSnapshot, current, reference, proposed RoleReplicaState) RoleReplicaState {
+	scaleUp := demandExceedsOldBaseline(snapshot)
 	bounded := boundDrainingRoleTargetsToWindow(current, reference, proposed)
 	for i, role := range snapshot {
-		if role.ScaleDownDuringRollout && role.NewTargetReplicas > 0 {
+		if (role.ScaleDownDuringRollout || scaleUp) && role.NewTargetReplicas > 0 {
 			excess := max(0, role.OldSpecReplicas+role.NewSpecReplicas-role.SurgeBaselineReplicas-role.Config.MaxSurge)
 			bounded[i] = min(bounded[i], max(proposed[i], current[i]-excess))
 		}

@@ -594,7 +594,11 @@ while draining. Do not add child counts to their parent aggregate.</p>
 
 <p>RolloutScaleDownPolicy controls when demand-driven target replica reductions are
 considered during an active rolling update. Both policies allow scale-up and
-old-revision retirement within the rollout's availability and surge bounds.</p>
+old-revision retirement within the rollout's availability and surge bounds.
+For roles still present, reductions preserve effective desired - maxUnavailable
+Ready replicas, or avoid worsening a shortfall if fewer are currently Ready.
+Deferred External roles use at least the target's current Spec as effective
+desired while old replicas of that role remain.</p>
 
 
 

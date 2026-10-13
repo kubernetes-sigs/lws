@@ -302,7 +302,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 		}
 		// Keep looking for an ordinary old drain before reducing the target.
 		// A safe target reduction still beats an emergency bootstrap step.
-		if inputs.scaleDownDuringRollout && targetRevisionScalesDown(state, step) {
+		if targetRevisionScalesDown(state, step) {
 			if selectedStep == nil || selectedStep.UsesBootstrapSurge {
 				selectedRevision, selectedState, selectedStep = candidate, state, step
 			}
@@ -834,6 +834,9 @@ func validateUpdateStep(state RolloutState, step *UpdateStep) error {
 		if expected == nil || step.UsesBootstrapSurge || step.UsesUnavailableFallback ||
 			!slices.Equal(step.Past, expected.Past) || !slices.Equal(step.New, expected.New) {
 			return fmt.Errorf("target rebalance does not match the disjoint surplus limit")
+		}
+		if !targetScaleDownPreservesAvailability(state, step.New) {
+			return fmt.Errorf("target rebalance exceeds its retained-readiness or scheduling budget")
 		}
 		return nil
 	}
