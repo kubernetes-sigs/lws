@@ -1398,6 +1398,57 @@ func TestWriteReceiptRecoversAfterStatusConflict(t *testing.T) {
 	}
 }
 
+func TestWriteReceiptRetiresDeletedChild(t *testing.T) {
+	for _, state := range []string{"disappeared", "terminating", "replaced"} {
+		t.Run(state, func(t *testing.T) {
+			lws := revisionLWS("old", testRolePrefill, 4, 4, time.Time{}, 4)
+			if state == "terminating" {
+				lws.Finalizers = []string{"test.example/hold"}
+			}
+			base, cached := newTestClient(lws), newTestClient(lws.DeepCopy())
+			manager := NewLeaderWorkerSetManager(base)
+			manager.reader, manager.pending = cached, testPendingWrites(cached)
+			ds := newTestDisaggregatedSet()
+			require.NoError(t, manager.Scale(t.Context(), ds, lws, 3))
+			retire := func(c client.WithWatch) {
+				require.NoError(t, c.Delete(t.Context(), lws))
+				if state == "replaced" {
+					replacement := lws.DeepCopy()
+					replacement.UID, replacement.ResourceVersion = "replacement-uid", ""
+					replacement.Spec.Replicas = ptr.To[int32](7)
+					require.NoError(t, c.Create(t.Context(), replacement))
+				}
+			}
+			retire(base)
+			require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending,
+				"the cache has not observed either the write or deletion yet")
+			retire(cached) // Observe deletion/replacement without ever seeing the receipt.
+			require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+			require.Empty(t, manager.pending.writes)
+
+			current := &leaderworkersetv1.LeaderWorkerSet{}
+			switch state {
+			case "disappeared":
+				role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
+				role.Spec = lws.Spec
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "old", 4, 4))
+				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+				require.EqualValues(t, 4, getLWSReplicas(current))
+				require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending,
+					"the newly created child must still be observed")
+			case "terminating":
+				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+				require.False(t, current.DeletionTimestamp.IsZero(), "physical disappearance is not required")
+			case "replaced":
+				require.True(t, apierrors.IsConflict(manager.Scale(t.Context(), ds, lws, 1)), "an old decision cannot change the replacement")
+				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
+				require.Equal(t, types.UID("replacement-uid"), current.UID)
+				require.EqualValues(t, 7, getLWSReplicas(current))
+			}
+		})
+	}
+}
+
 func TestDeletionReceiptDoesNotWaitForPhysicalRemoval(t *testing.T) {
 	lws := revisionLWS("old", testRolePrefill, 0, 0, time.Time{}, 4)
 	lws.Finalizers = []string{"hold-test-deletion"}
@@ -1423,6 +1474,14 @@ func TestCreateReceiptSurvivesCoalescingAndParentDeletion(t *testing.T) {
 	require.NoError(t, o.mutate(t.Context(), lws, false, func(ctx context.Context) error { return base.Create(ctx, lws) }))
 	owner := metav1.GetControllerOf(lws)
 	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending, "absence from an older cache cannot acknowledge creation")
+	// A lagging cache may even contain a previous object with this name.
+	// Its UID is not evidence that our never-observed creation was replaced.
+	previous := lws.DeepCopy()
+	previous.UID, previous.ResourceVersion, previous.Annotations = "previous-child", "", nil
+	require.NoError(t, cached.Create(t.Context(), previous))
+	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending)
+	require.NoError(t, cached.Delete(t.Context(), previous))
+	require.ErrorIs(t, o.observed(t.Context(), owner.UID, "0"), errReplicaGroupsPending)
 	// Deliver a later version bearing the same receipt; no exact RV match.
 	lws.ResourceVersion = ""
 	require.NoError(t, cached.Create(t.Context(), lws))

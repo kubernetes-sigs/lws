@@ -790,7 +790,11 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
-	seen := written.deleted && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
+	// An object previously read from this informer cannot disappear or change
+	// UID without being deleted. For a never-observed create, however, absence
+	// (or a previous UID) may simply mean the cache has not caught up yet.
+	known := written.deleted || written.baseVersion != ""
+	seen := known && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
 	seen = seen || err == nil && !written.deleted &&
 		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt
 	// This informer supplied baseVersion. A different version of the same UID
@@ -808,7 +812,7 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 	}
 	if written.retry != nil {
 		// A conflict may mean the first request succeeded. Retain the
-		// expectation until its receipt is visible, not until a timer expires.
+		// expectation until the informer supplies evidence, not until a timer expires.
 		err := written.retry(ctx)
 		if err != nil && !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) {
 			return err
