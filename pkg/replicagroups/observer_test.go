@@ -144,6 +144,63 @@ func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int
 	return f
 }
 
+func TestScalingObservedDoesNotRequireReadiness(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name   string
+			change func(*fixture)
+			want   bool
+		}{
+			{"steady", func(*fixture) {}, true},
+			{"Pending leaders, no workers under LeaderReady", func(f *fixture) {
+				f.lws.Spec.StartupPolicy = leaderworkersetv1.LeaderReadyStartupPolicy
+				f.workerSets, f.workers = nil, nil
+				for _, pod := range f.leaders {
+					pod.Status = corev1.PodStatus{Phase: corev1.PodPending}
+				}
+			}, true},
+			{"loading leaders", func(f *fixture) {
+				for _, pod := range f.leaders {
+					pod.Status.Conditions = nil
+				}
+			}, true},
+			{"LWS not acknowledged", func(f *fixture) { f.lws.Generation++ }, false},
+			{"native controller not acknowledged", func(f *fixture) { f.workload.SetGeneration(4) }, false},
+			{"native scale not applied", func(f *fixture) { f.lws.Spec.Replicas = ptr.To[int32](1) }, false},
+			{"missing new leader", func(f *fixture) { f.leaders = f.leaders[:1] }, false},
+			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false},
+			{"deletion observed but not finished", func(f *fixture) { f.scale(1); holdTermination(f.leaders[1]) }, true},
+			{"deleted group still needed", func(f *fixture) { holdTermination(f.leaders[1]) }, false},
+			{"terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed }, false},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", identity, tc.name), func(t *testing.T) {
+				f := newFixture(identity, 2, 2)
+				tc.change(f)
+				snapshot, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
+				require.NoError(t, err)
+				require.Equal(t, tc.want, snapshot.ScalingObserved())
+			})
+		}
+	}
+}
+
+func TestObserveCachedNeverPaginates(t *testing.T) {
+	f := newFixture(leaderworkersetv1.GroupIdentityOrdinal, 501, 1)
+	base := newReader(t, f.objects()...)
+	reader := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			options := (&client.ListOptions{}).ApplyOptions(opts)
+			require.Zero(t, options.Limit, "a cache limit silently truncates without API continuation")
+			require.Empty(t, options.Continue)
+			return c.List(ctx, list, opts...)
+		},
+	})
+	snapshots, err := ObserveCached(t.Context(), reader, []*leaderworkersetv1.LeaderWorkerSet{f.lws})
+	require.NoError(t, err)
+	require.Len(t, snapshots[f.lws.UID].Groups, 501)
+	require.True(t, snapshots[f.lws.UID].ScalingObserved())
+}
+
 func readyPodStatus() corev1.PodStatus {
 	return corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}
 }
@@ -689,6 +746,7 @@ func TestHashAvailabilityReservesVictimsPerReplicaSet(t *testing.T) {
 	// All 3 Ready groups belong to the RS targeting 1. The other RS's unused
 	// target of 2 must not erase the first RS's two pending deletions.
 	assert.EqualValues(t, 1, observed.Availability().RetainedReadyReplicas)
+	assert.False(t, observed.ScalingObserved(), "equal total counts cannot hide another ReplicaSet's pending deletions")
 
 	f.leaders[0].OwnerReferences[0] = *metav1.NewControllerRef(second, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
 	for _, leader := range f.leaders[1:] {
@@ -704,6 +762,7 @@ func TestHashAvailabilityReservesVictimsPerReplicaSet(t *testing.T) {
 	observed, err = observeWithBatchParity(t, newReader(t, objects...), f.lws)
 	require.NoError(t, err)
 	assert.Zero(t, observed.Availability().RetainedReadyReplicas)
+	assert.False(t, observed.ScalingObserved(), "every ReplicaSet must acknowledge its target")
 
 	second.Status.ObservedGeneration++
 	second.Spec.Replicas = ptr.To[int32](1)

@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -338,7 +337,7 @@ func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
 	}
 }
 
-func TestReconcileSliceScalesAfterPolicySyncWithLaggingCache(t *testing.T) {
+func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		desired, initial int32
@@ -353,28 +352,13 @@ func TestReconcileSliceScalesAfterPolicySyncWithLaggingCache(t *testing.T) {
 			lws.Generation = 1
 			lws.Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
 			lws.Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementPostTermination
-			base := newTestClient(lws)
-			cached := interceptor.NewClient(base, interceptor.Funcs{
-				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					require.Equal(t, client.ObjectKeyFromObject(lws), key)
-					lws.DeepCopyInto(obj.(*leaderworkersetv1.LeaderWorkerSet))
-					return nil
-				},
-				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-					before := &leaderworkersetv1.LeaderWorkerSet{}
-					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), before))
-					require.NoError(t, c.Patch(ctx, obj, patch, opts...))
-					got := obj.(*leaderworkersetv1.LeaderWorkerSet)
-					// Unlike the API server, the fake client does not increment generation.
-					if before.Spec.GroupReplacementPolicy != got.Spec.GroupReplacementPolicy || getLWSReplicas(before) != getLWSReplicas(got) {
-						got.Generation++
-						return c.Update(ctx, got)
-					}
-					return nil
-				},
-			})
-			manager := NewLeaderWorkerSetManager(cached)
-			manager.apiReader = base
+			lws.Status.ObservedGeneration = lws.Generation
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+			objects := replicaGroupObjects(lws, 4, 4)
+			base, cached := newTestClient(objects...), newTestClient(objects...)
+			o := testObservations(cached)
+			manager := NewLeaderWorkerSetManager(base)
+			manager.reader, manager.observations = o, o
 			r := &DisaggregatedSetReconciler{LWSManager: manager}
 			ds := newTwoRoleTestDisaggregatedSet([2]int32{tc.desired, 4}, [2]int{1, 1}, [2]int{})
 			ds.Spec.Roles = ds.Spec.Roles[:1]
@@ -382,10 +366,16 @@ func TestReconcileSliceScalesAfterPolicySyncWithLaggingCache(t *testing.T) {
 			ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
 
 			_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
-			require.NoError(t, err, "our own policy write must not cause a stale-observation conflict")
+			if err != nil {
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+			}
+			require.EqualValues(t, 4, getTestLWSReplicas(base, lws.Namespace, lws.Name), "wait for our policy write before changing scale")
+			o.cache = testObservationCache{reader: base} // The watch catches up.
+			_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
+			require.NoError(t, err)
 			stored := &leaderworkersetv1.LeaderWorkerSet{}
 			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
-			require.Equal(t, tc.desired, getLWSReplicas(stored), "scale in the same pass, without waiting for the cache")
+			require.Equal(t, tc.desired, getLWSReplicas(stored), "scale after the policy write is observed")
 			require.Equal(t, leaderworkersetv1.GroupReplacementImmediate, stored.Spec.GroupReplacementPolicy)
 			initial, ok := disaggregatedsetutils.GetInitialReplicas(stored)
 			require.True(t, ok)
@@ -592,7 +582,7 @@ func TestSettledSubRolesAvoidLiveReads(t *testing.T) {
 	f.lws.Labels[disaggregatedsetv1.RevisionLabelKey] = revision
 	require.NoError(t, c.Update(t.Context(), f.lws))
 	liveReads := 0
-	f.manager.apiReader = interceptor.NewClient(c, interceptor.Funcs{
+	f.manager.reader = interceptor.NewClient(c, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			liveReads++
 			return c.Get(ctx, key, obj, opts...)
@@ -708,7 +698,7 @@ func TestScaleDoesNotMistakeStaleSpecForCompletedDrain(t *testing.T) {
 		},
 	})
 	manager := NewLeaderWorkerSetManager(cached)
-	manager.apiReader = base
+	manager.reader = base
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 4}, [2]int{1, 1}, [2]int{})
 	require.NoError(t, manager.Scale(t.Context(), ds, lws, 3))
 	assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, lws.Name), "apply a drain before reusing its surge slot")

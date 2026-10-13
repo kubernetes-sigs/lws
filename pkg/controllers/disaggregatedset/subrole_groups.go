@@ -273,7 +273,7 @@ func subRoleNativeSettled(s *replicagroups.Snapshot) bool {
 // Metadata intent must match too: annotation changes do not bump generation.
 func (m *LeaderWorkerSetManager) checkSubRoleLWS(ctx context.Context, expected *leaderv1.LeaderWorkerSet) error {
 	live := &leaderv1.LeaderWorkerSet{}
-	if err := m.apiReader.Get(ctx, client.ObjectKeyFromObject(expected), live); err != nil {
+	if err := m.reader.Get(ctx, client.ObjectKeyFromObject(expected), live); err != nil {
 		return err
 	}
 	if expected.UID == "" || live.UID != expected.UID || live.ResourceVersion != expected.ResourceVersion ||
@@ -466,7 +466,7 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, state *subRoleState) error {
-	s, err := replicagroups.Observe(ctx, m.apiReader, state.lws)
+	s, err := replicagroups.Observe(ctx, m.reader, state.lws)
 	if err != nil {
 		return err
 	}

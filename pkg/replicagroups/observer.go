@@ -183,12 +183,28 @@ func ObserveMany(ctx context.Context, reader client.Reader, expected []*leaderwo
 // returned only if every batch succeeds. Callers must still guard their writes
 // against intervening LWS changes; the supplied objects are not a reservation.
 func ObserveLive(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet) (map[types.UID]*Snapshot, error) {
+	return observeMany(ctx, reader, live, func(ctx context.Context, objects client.ObjectList, options ...client.ListOption) error {
+		return listAll(ctx, reader, objects, options...)
+	})
+}
+
+// ObserveCached assembles an informer observation without API pagination. Unlike
+// ObserveLive, this does not establish read-after-write ordering. Mutation
+// consumers must track their writes, wait for ScalingObserved, and guard writes
+// with optimistic concurrency. It is not a drop-in replacement for live reads.
+func ObserveCached(ctx context.Context, reader client.Reader, workloads []*leaderworkersetv1.LeaderWorkerSet) (map[types.UID]*Snapshot, error) {
+	return observeMany(ctx, reader, workloads, reader.List)
+}
+
+type listResources func(context.Context, client.ObjectList, ...client.ListOption) error
+
+func observeMany(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet, list listResources) (map[types.UID]*Snapshot, error) {
 	if _, err := lwsUIDs(live); err != nil {
 		return nil, err
 	}
 	result := make(map[types.UID]*Snapshot, len(live))
 	for batch := range slices.Chunk(live, maxLWSPerBatch) {
-		if err := observeBatch(ctx, reader, batch, result); err != nil {
+		if err := observeBatch(ctx, reader, list, batch, result); err != nil {
 			return nil, err
 		}
 	}
@@ -221,7 +237,7 @@ type batchResources struct {
 	pods        []*corev1.Pod
 }
 
-func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworkersetv1.LeaderWorkerSet, result map[types.UID]*Snapshot) error {
+func observeBatch(ctx context.Context, reader client.Reader, list listResources, live []*leaderworkersetv1.LeaderWorkerSet, result map[types.UID]*Snapshot) error {
 	byName := make(map[string]*batchResources, len(live))
 	names, hasHash := make([]string, 0, len(live)), false
 	for _, lws := range live {
@@ -238,7 +254,7 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 	// Partition each resource once; snapshot assembly never scans another LWS's
 	// Pods. Leaders are also indexed by name, independently of their label.
 	var statefulSets appsv1.StatefulSetList
-	if err := listAll(ctx, reader, &statefulSets, options...); err != nil {
+	if err := list(ctx, &statefulSets, options...); err != nil {
 		return err
 	}
 	for i := range statefulSets.Items {
@@ -252,7 +268,7 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 	}
 	if hasHash {
 		var deployments appsv1.DeploymentList
-		if err := listAll(ctx, reader, &deployments, options...); err != nil {
+		if err := list(ctx, &deployments, options...); err != nil {
 			return err
 		}
 		for i := range deployments.Items {
@@ -282,7 +298,7 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 	}
 	if hasHash {
 		var replicaSets appsv1.ReplicaSetList
-		if err := listAll(ctx, reader, &replicaSets, options...); err != nil {
+		if err := list(ctx, &replicaSets, options...); err != nil {
 			return err
 		}
 		for i := range replicaSets.Items {
@@ -293,7 +309,7 @@ func observeBatch(ctx context.Context, reader client.Reader, live []*leaderworke
 		}
 	}
 	var pods corev1.PodList
-	if err := listAll(ctx, reader, &pods, options...); err != nil {
+	if err := list(ctx, &pods, options...); err != nil {
 		return err
 	}
 	for i := range pods.Items {
