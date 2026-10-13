@@ -3881,6 +3881,87 @@ func TestHashSubRoleLostReadyFloorDelaysPublication(t *testing.T) {
 	assertHashSubRoleCounts(t, f, map[string]int{"a": 2})
 }
 
+func TestHashSubRolePrefersReadyGroupsBeyondFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		children []string
+		unready  int
+		target   map[string]int
+		child    string
+	}{
+		{"same child", []string{"a", "a"}, 0, map[string]int{"a": 1}, "a"},
+		{"Ready donor before unready child", []string{"a", "b"}, 1, map[string]int{"a": 0, "b": 1}, "b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, tc.children...)
+			s := f.observe()
+			worker := s.Groups[tc.unready].Pods[1]
+			worker.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+			s = f.observe()
+			require.False(t, s.Groups[tc.unready].Ready)
+			require.True(t, s.Groups[1-tc.unready].Ready)
+			// Both leaders are equally healthy: ReplicaSet sees only their cost,
+			// not the unready worker that makes one whole group unavailable.
+			require.Equal(t, s.Groups[0].Leader.Status, s.Groups[1].Leader.Status)
+			require.Equal(t, s.Groups[0].Leader.Spec.NodeName, s.Groups[1].Leader.Spec.NodeName)
+			survivor := s.Groups[1-tc.unready].Leader.UID
+			require.ErrorIs(t, f.scale(tc.target), errReplicaGroupsPending)
+			for range 6 {
+				f.sync()
+			}
+			s = f.observe()
+			require.EqualValues(t, 1, getLWSReplicas(s.LWS))
+			require.Equal(t, subRoleDeletionCost, s.Groups[tc.unready].Leader.Annotations[corev1.PodDeletionCost])
+			require.Empty(t, s.Groups[1-tc.unready].Leader.Annotations[corev1.PodDeletionCost])
+			f.native()
+			for range 4 {
+				f.sync()
+			}
+			assertHashSubRoleCounts(t, f, tc.target)
+			group := f.observe().Groups[0]
+			require.Equal(t, survivor, group.Leader.UID)
+			require.True(t, group.Ready)
+			require.Equal(t, tc.child, group.Leader.Labels[disaggregatedsetv1.SubRoleLabelKey])
+		})
+	}
+}
+
+func TestHashSubRoleReadyFloorExcludesIneligibleGroups(t *testing.T) {
+	for _, reason := range []string{"terminating worker", "unobserved worker generation", "exhausted restart budget"} {
+		t.Run(reason, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a")
+			for _, group := range f.observe().Groups[1:] {
+				switch reason {
+				case "terminating worker":
+					worker := group.Pods[1]
+					worker.Finalizers = []string{"test/hold"}
+					require.NoError(t, f.manager.client.Update(t.Context(), worker))
+					require.NoError(t, f.manager.client.Delete(t.Context(), worker))
+				case "unobserved worker generation":
+					group.WorkerStatefulSet.Generation++
+					require.NoError(t, f.manager.client.Update(t.Context(), group.WorkerStatefulSet))
+				case "exhausted restart budget":
+					group.Leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+					require.NoError(t, f.manager.client.Update(t.Context(), group.Leader))
+				}
+			}
+			for i, group := range f.observe().Groups {
+				require.True(t, group.Ready, "raw readiness alone does not grant retained credit")
+				require.Equal(t, i == 0, retainedSubRoleEligible(group))
+			}
+			require.ErrorIs(t, f.scale(map[string]int{"a": 2}), errReplicaGroupsPending)
+			plan, err := readSubRolePlan(f.observe().LWS)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int{"a": 0}, plan.ReadyFloor)
+			for range 4 {
+				f.sync()
+			}
+			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS), "do not wait for an unattainable raw-Ready floor")
+		})
+	}
+}
+
 func TestHashSubRoleAdapterMembershipAndRemoval(t *testing.T) {
 	f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "b")
 	s := f.observe()

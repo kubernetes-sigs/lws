@@ -415,7 +415,7 @@ func (state *subRoleState) startHashPlan() {
 		floor := map[string]int{}
 		if state.snapshot != nil {
 			for _, group := range activeSubRoleGroups(state.snapshot) {
-				if name, coherent := groupSubRole(group); coherent && group.Ready {
+				if name, coherent := groupSubRole(group); coherent && retainedSubRoleEligible(group) {
 					floor[name]++
 				}
 			}
@@ -541,12 +541,15 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	return nil
 }
 
-// Reserve eligible Ready groups before filling count-only slots.
+// Reserve each Ready floor, then prefer eligible Ready groups for every remaining
+// slot. Keep existing child labels within each readiness class, not across them.
 func readySubRoleAssignments(groups []replicagroups.Group, counts, floor map[string]int) map[types.UID]string {
-	var ready []replicagroups.Group
+	var ready, unready []replicagroups.Group
 	for _, group := range groups {
 		if retainedSubRoleEligible(group) {
 			ready = append(ready, group)
+		} else {
+			unready = append(unready, group)
 		}
 	}
 	assignments := stickySubRoleAssignments(ready, floor)
@@ -557,13 +560,16 @@ func readySubRoleAssignments(groups []replicagroups.Group, counts, floor map[str
 	for _, name := range assignments {
 		remaining[name]--
 	}
-	var unassigned []replicagroups.Group
-	for _, group := range groups {
-		if _, reserved := assignments[group.Leader.UID]; !reserved {
-			unassigned = append(unassigned, group)
+	ready = slices.DeleteFunc(ready, func(group replicagroups.Group) bool {
+		_, reserved := assignments[group.Leader.UID]
+		return reserved
+	})
+	for _, candidates := range [][]replicagroups.Group{ready, unready} {
+		for uid, name := range stickySubRoleAssignments(candidates, remaining) {
+			assignments[uid] = name
+			remaining[name]--
 		}
 	}
-	maps.Copy(assignments, stickySubRoleAssignments(unassigned, remaining))
 	return assignments
 }
 
