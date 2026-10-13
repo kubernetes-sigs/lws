@@ -191,8 +191,10 @@ type LeaderWorkerSetSpec struct {
 	LeaderWorkerTemplate LeaderWorkerTemplate `json:"leaderWorkerTemplate"`
 
 	// rolloutStrategy defines the strategy that will be applied to update replicas
-	// when a revision is made to the leaderWorkerTemplate.
+	// when a revision is made to the leaderWorkerTemplate. It defaults to a
+	// RollingUpdate strategy whose configuration takes its own defaults.
 	// +optional
+	// +kubebuilder:default={type: RollingUpdate}
 	RolloutStrategy RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
 	// startupPolicy determines the startup policy for the worker statefulset.
@@ -481,7 +483,10 @@ type RolloutStrategy struct {
 	Type RolloutStrategyType `json:"type"`
 
 	// rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
+	// It defaults to an object whose fields take their own defaults: maxUnavailable 1,
+	// maxSurge 0 and partition 0.
 	// +optional
+	// +kubebuilder:default={}
 	RollingUpdateConfiguration *RollingUpdateConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 
