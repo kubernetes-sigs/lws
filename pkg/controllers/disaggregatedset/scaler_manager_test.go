@@ -77,6 +77,8 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 			old := f.withRevision("old", tc.child)
 			if tc.current {
 				old.lws.Labels[disaggregatedsetv1.RevisionLabelKey] = f.lws.Name
+				// The same revision and role can recur only in a different slice.
+				old.lws.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
 			}
 			if tc.ordinary {
 				delete(old.lws.Annotations, subRoleReplicasAnnotation)

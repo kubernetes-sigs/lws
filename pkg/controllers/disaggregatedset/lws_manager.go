@@ -457,7 +457,30 @@ func (manager *LeaderWorkerSetManager) listWithReader(ctx context.Context, reade
 			result = append(result, lws)
 		}
 	}
+	if err := validateUniqueRolloutRoles(disaggregatedSet, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// validateUniqueRolloutRoles checks owned LWS before grouping, so planning and
+// cleanup cannot silently discard capacity from a duplicate role.
+func validateUniqueRolloutRoles(ds *disaggregatedsetv1.DisaggregatedSet, ownedLWS []*leaderworkersetv1.LeaderWorkerSet) error {
+	type roleKey struct{ slice, revision, role string }
+	seen := make(map[roleKey]string, len(ownedLWS))
+	for _, lws := range ownedLWS {
+		key := roleKey{
+			slice:    lws.Labels[disaggregatedsetv1.SliceLabelKey],
+			revision: lws.Labels[disaggregatedsetv1.RevisionLabelKey],
+			role:     lws.Labels[disaggregatedsetv1.RoleLabelKey],
+		}
+		if previous, exists := seen[key]; exists {
+			return fmt.Errorf("DisaggregatedSet %s/%s: LeaderWorkerSets %q and %q claim the same slice %q, revision %q, role %q",
+				ds.Namespace, ds.Name, previous, lws.Name, key.slice, key.revision, key.role)
+		}
+		seen[key] = lws.Name
+	}
+	return nil
 }
 
 // GetForRole returns the existing LWS for (slice, revision, role) that is
