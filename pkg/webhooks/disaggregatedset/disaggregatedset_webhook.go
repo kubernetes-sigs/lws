@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -78,12 +80,13 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 		rolePath := rolesPath.Index(i)
 		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 		allErrs = append(allErrs, validateReservedSubRoleLabel(role, rolePath)...)
-		// Reject hash-mode and restart-budget feature combinations the LWS webhook
-		// would reject, so they fail at DisaggregatedSet admission instead of at LWS creation time.
+		// Share child validation so invalid role templates fail at admission,
+		// not later when the controller creates the LWS.
 		allErrs = append(allErrs, webhooks.ValidateMaxGroupRestarts(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidateRestartBackoff(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
 		allErrs = append(allErrs, webhooks.ValidatePodTerminationPolicy(rolePath.Child("spec"), &role.Spec)...)
+		allErrs = append(allErrs, webhooks.ValidateSubGroupPolicy(rolePath.Child("spec"), &role.Spec)...)
 		if len(role.SubRoles) > 0 {
 			if role.Scaling != nil {
 				allErrs = append(allErrs, field.Forbidden(rolePath.Child("scaling"), "parent scaling must be omitted when subRoles is present"))
@@ -102,13 +105,12 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 				hasExternal = true
 				allErrs = append(allErrs, validateScalerName(obj.Name+"-"+role.Name+"-"+child.Name, child.Name, childPath.Child("name"), generatedScalerNames)...)
 			}
-			if staticReplicas > math.MaxInt32 {
-				allErrs = append(allErrs, field.Invalid(rolePath.Child("subRoles"), staticReplicas, "static replica targets exceed the maximum LWS replica count"))
-			}
+			allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("subRoles"), staticReplicas, ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
 			continue
 		}
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
+			allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("spec", "replicas"), int64(ptr.Deref(role.Spec.Replicas, 1)), ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
 			continue
 		}
 		hasExternal = true
@@ -179,13 +181,20 @@ func validationReplicasForRole(role disaggv1.DisaggregatedRoleSpec) *int32 {
 	return ptr.To(int32(min(total, int64(math.MaxInt32))))
 }
 
-// validateGeneratedNames rejects the DisaggregatedSet if any role would produce
-// a generated LWS name, or a name derived from it, exceeding the DNS-1035
-// 63-character limit. The generated name format is:
+// validateGeneratedNames checks DNS-1035 syntax and the length of generated LWS
+// names and their derived names. The generated name format is:
 //
 //	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
 func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
+	// The API server handles name presence. Its DNS-subdomain check is not
+	// sufficient here: the generated LWS name must be a DNS-1035 label.
+	if obj.Name != "" {
+		if errs := utilvalidation.IsDNS1035Label(obj.Name); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), obj.Name,
+				"name is used as a prefix for generated LeaderWorkerSets: "+strings.Join(errs, "; ")))
+		}
+	}
 
 	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
 	slices := int32(1)

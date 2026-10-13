@@ -308,17 +308,9 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	// Ensure replicas and groups number are valid
 	replicas := *lws.Spec.Replicas
-	if replicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or greater than 0"))
-	}
-	if replicas > 1000000 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, "replicas must be equal or less than 1000000"))
-	}
+	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(replicas), *lws.Spec.LeaderWorkerTemplate.Size)...)
 	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
-	}
-	if int64(replicas)*int64(*lws.Spec.LeaderWorkerTemplate.Size) > math.MaxInt32 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), lws.Spec.Replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32)))
 	}
 
 	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
@@ -355,7 +347,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	}
 
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, validateUpdateSubGroupPolicy(specPath, lws)...)
+		allErrs = append(allErrs, ValidateSubGroupPolicy(specPath, &lws.Spec)...)
 	} else {
 		if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
@@ -582,15 +574,36 @@ func validateNonnegativeField(value int64, fldPath *field.Path) field.ErrorList 
 	return allErrs
 }
 
-func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+// ValidateReplicaCount checks the physical LWS replica count and total Pod count.
+// An int64 count also supports sums of DisaggregatedSet sub-role targets.
+func ValidateReplicaCount(path *field.Path, replicas int64, size int32) field.ErrorList {
+	if replicas < 0 {
+		return field.ErrorList{field.Invalid(path, replicas, "replicas must be equal or greater than 0")}
+	}
+	if replicas > 1000000 {
+		return field.ErrorList{field.Invalid(path, replicas, "replicas must be equal or less than 1000000")}
+	}
+	if replicas*int64(size) > math.MaxInt32 {
+		return field.ErrorList{field.Invalid(path, replicas, fmt.Sprintf("the product of replicas and worker replicas must not exceed %d", math.MaxInt32))}
+	}
+	return nil
+}
+
+// ValidateSubGroupPolicy checks that subgroups fit within a replica group.
+// Exported for DisaggregatedSet webhook reuse.
+func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	allErrs := field.ErrorList{}
-	size := int32(*lws.Spec.LeaderWorkerTemplate.Size)
+	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
+	if policy == nil {
+		return allErrs
+	}
+	size := ptr.Deref(spec.LeaderWorkerTemplate.Size, 1)
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize == nil {
+	if policy.SubGroupSize == nil {
 		return append(allErrs, field.Required(subGroupSizePath, "subGroupSize is required"))
 	}
 
-	subGroupSize := *lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize
+	subGroupSize := *policy.SubGroupSize
 	if subGroupSize < 1 {
 		return append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "subGroupSize must be equal or greater than 1"))
 	}
@@ -600,8 +613,8 @@ func validateUpdateSubGroupPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet)
 	if size < subGroupSize {
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "subGroupSize cannot be larger than size"))
 	}
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil &&
-		(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
+	if policy.Type != nil &&
+		(*policy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
 	}

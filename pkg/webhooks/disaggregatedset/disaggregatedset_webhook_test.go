@@ -29,6 +29,8 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
 func TestValidateHashSubRoles(t *testing.T) {
@@ -41,6 +43,104 @@ func TestValidateHashSubRoles(t *testing.T) {
 	require.NoError(t, err)
 	_, err = webhook.ValidateUpdate(t.Context(), ds.DeepCopy(), ds)
 	require.NoError(t, err)
+}
+
+func TestChildAdmissionConstraints(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*disaggv1.DisaggregatedSet)
+		error  string
+	}{
+		{"valid name", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "model-1" }, ""},
+		{"dotted name", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "my.model" }, "metadata.name"},
+		{"numeric prefix", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "1model" }, "metadata.name"},
+		{"compatible subgroup", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
+		}, ""},
+		{"default group size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = nil
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](1)}
+		}, ""},
+		{"subgroup larger than default group", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = nil
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](2)}
+		}, "subGroupSize cannot be larger than size"},
+		{"incompatible subgroup", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](4)}
+		}, "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize"},
+		{"missing subgroup size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+		}, "subGroupSize is required"},
+		{"zero subgroup size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](0)}
+		}, "subGroupSize must be equal or greater than 1"},
+		{"leader excluded", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3), Type: ptr.To(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)}
+		}, "size-1 must be divisible"},
+		{"compatible leader excluded", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](5), Type: ptr.To(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)}
+		}, ""},
+		{"aggregate at limit", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](500000)}, {Name: "b", Replicas: ptr.To[int32](500000)}}
+		}, ""},
+		{"aggregate above limit", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](600000)}, {Name: "b", Replicas: ptr.To[int32](600000)}}
+		}, "spec.roles[0].subRoles"},
+		{"group count times size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](1000000)
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2148)
+		}, "product of replicas"},
+		{"aggregate count times size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](500000)}, {Name: "b", Replicas: ptr.To[int32](500000)}}
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2148)
+		}, "product of replicas"},
+		{"ignored parent count", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](1000000)
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2148)
+			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}
+		}, ""},
+		{"external count unresolved", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](1000000)
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2148)
+			ds.Spec.Roles[0].Scaling = &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := &disaggv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default"}}
+			ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "prefill", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+				Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To[int32](1), LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](6)}},
+			}}}
+			old := ds.DeepCopy()
+			tc.change(ds)
+			before := ds.DeepCopy()
+			hook := &DisaggregatedSetWebhook{}
+			_, createErr := hook.ValidateCreate(t.Context(), ds)
+			_, updateErr := hook.ValidateUpdate(t.Context(), old, ds)
+			require.Equal(t, before, ds, "validation must not mutate the parent")
+			if tc.error != "" {
+				require.ErrorContains(t, createErr, tc.error)
+				require.ErrorContains(t, updateErr, tc.error)
+				return
+			}
+			require.NoError(t, createErr)
+			require.NoError(t, updateErr)
+			// Check accepted configurations against native child admission too.
+			role := ds.Spec.Roles[0]
+			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{
+				Name: disaggutils.GenerateName(ds.Name, 0, disaggutils.ComputeRevision(ds.Spec.Roles), role.Name), Namespace: ds.Namespace,
+			}, Spec: role.Spec}
+			lws.Spec.Replicas = validationReplicasForRole(role)
+			// Size is defaulted by the CRD schema, not the mutating webhook.
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To(ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))
+			if role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {
+				lws.Spec.Replicas = ptr.To[int32](1)
+			}
+			native := &webhooks.LeaderWorkerSetWebhook{}
+			require.NoError(t, native.Default(t.Context(), lws))
+			_, err := native.ValidateCreate(t.Context(), lws)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestValidateCreate(t *testing.T) {
@@ -977,6 +1077,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityHash,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
 					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
 						SubGroupSize: ptr.To(int32(2)),
 					},
@@ -1035,6 +1136,7 @@ func TestValidateCreateGroupIdentity(t *testing.T) {
 				Replicas:      ptr.To(int32(2)),
 				GroupIdentity: leaderworkerset.GroupIdentityOrdinal,
 				LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+					Size: ptr.To[int32](2),
 					SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
 						SubGroupSize: ptr.To(int32(2)),
 					},
