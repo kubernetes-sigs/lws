@@ -86,9 +86,9 @@ topology by adding parent roles.
 
 ### Non-Goals
 
-1. **Different sub-role templates.** Images, arguments, resources, placement, LWS group
-   size, and rollout settings remain parent-level. A configuration difference requires
-   another parent role.
+1. **Different sub-role templates.** Images, arguments, resources, placement, and LWS
+   group size remain parent-level. A template difference requires another parent role;
+   rollout budgets may be overridden per sub-role.
 2. **Request classification.** The controller labels groups; a router decides which
    sub-role should serve a request.
 3. **Built-in autoscaling.** HPA, KEDA, or another `/scale` writer remains responsible
@@ -174,7 +174,9 @@ parent replica value greater than one is observed; the inherited LWS default pre
 strict absence check.
 
 **Independent allowances accumulate physically.** Children inherit the parent's raw
-`maxSurge` and `maxUnavailable` settings; there is no additional parent-wide clamp.
+`maxSurge` and `maxUnavailable` settings unless individually overridden; there is no
+additional parent-wide clamp. Increasing one child's allowance can therefore increase
+the physical LWS's total surge or unavailability.
 
 **Routers observe label changes eventually.** Different router replicas may briefly
 disagree on membership, but both destinations have identical runtime configuration.
@@ -207,6 +209,14 @@ type DisaggregatedSubRoleSpec struct {
     // Omitted or Static uses Replicas; External uses a role scaler.
     // +optional
     Scaling *RoleScaling `json:"scaling,omitempty"`
+
+    // Each omitted budget inherits the parent's setting; zero is explicit.
+    // +optional
+    // +kubebuilder:validation:XIntOrString
+    MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
+    // +optional
+    // +kubebuilder:validation:XIntOrString
+    MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
 type DisaggregatedRoleSpec struct {
@@ -241,6 +251,27 @@ parentDesired(role) = sum(desired(subRole) for subRole in role.subRoles)
 
 Percentage rollout budgets resolve per child (surge up, unavailability down), retaining
 ordinary defaults and zero/zero fallback. A zero sub-role does not force siblings to zero.
+Each child may override `maxSurge`, `maxUnavailable`, or both; an omitted field inherits
+the corresponding parent value. Without a parent rollout configuration, defaults are
+surge 1 and unavailability 0. Budget-only edits change rollout pacing in place, not the
+revision or Pod templates. For example:
+
+```yaml
+subRoles:
+- name: interactive
+  replicas: 3
+  maxSurge: 1
+  maxUnavailable: 0
+- name: batch
+  replicas: 4
+  maxUnavailable: 2 # maxSurge still inherits the parent
+```
+
+Overrides accept non-negative integers or percentages up to 100%. For nonzero Static
+children, the effective pair must not resolve to two zeros. External targets are unknown
+at admission: a universally-zero pair is rejected, but positive percentages remain valid.
+If later scaling makes both resolved budgets zero, the existing one-surge fallback still
+applies. Children without overrides retain their existing validation and behavior.
 
 #### Validation
 

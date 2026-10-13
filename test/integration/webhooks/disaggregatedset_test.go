@@ -270,7 +270,6 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			ds.Spec.Roles = ds.Spec.Roles[:1] // One physical role is enough.
 			ds.Spec.Roles[0].SubRoles = []disaggregatedset.DisaggregatedSubRoleSpec{{Name: "hot"}, {Name: "cold", Replicas: ptr.To[int32](0)}}
 			gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
-			original := ds.DeepCopy()
 			role := &ds.Spec.Roles[0]
 			external := &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
 			switch change {
@@ -307,8 +306,16 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			case "ignored parent zero":
 				role.Spec.Replicas = ptr.To[int32](0)
 				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: intstr.FromInt(0)}
+			case "rollout overrides":
+				role.SubRoles[0].MaxSurge, role.SubRoles[0].MaxUnavailable = ptr.To(intstr.FromInt(0)), ptr.To(intstr.FromString("100%"))
+				role.SubRoles[1].MaxUnavailable = ptr.To(intstr.FromInt(0))
+			case "invalid rollout override":
+				role.SubRoles[0].MaxSurge = ptr.To(intstr.FromString("101%"))
+			case "zero rollout override":
+				role.SubRoles[0].MaxSurge, role.SubRoles[0].MaxUnavailable = ptr.To(intstr.FromInt(0)), ptr.To(intstr.FromInt(0))
 			}
 			fresh := ds.DeepCopy()
+			expectedSubRoles := fresh.Spec.Roles[0].SubRoles
 			fresh.Name, fresh.ResourceVersion, fresh.UID = ds.Name+"-create", "", ""
 			for _, err := range []error{k8sClient.Create(ctx, fresh), k8sClient.Update(ctx, ds)} {
 				if wantError != "" {
@@ -321,7 +328,7 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 				return
 			}
 			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(gomega.Succeed())
-			gomega.Expect(ds.Spec.Roles[0].SubRoles).To(gomega.Equal(original.Spec.Roles[0].SubRoles))
+			gomega.Expect(ds.Spec.Roles[0].SubRoles).To(gomega.Equal(expectedSubRoles))
 			statuses := []disaggregatedset.RoleStatus{
 				{Name: role.Name, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedset.SubRoleStatus{
 					{Name: "hot", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
@@ -348,5 +355,8 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		ginkgo.Entry("reserves role labels", "role label", "reserved"),
 		ginkgo.Entry("rejects scaler collision", "scaler collision", "scaler name collides"),
 		ginkgo.Entry("cannot hide zero/zero budgets behind ignored parent zero", "ignored parent zero", "must not be 0"),
+		ginkgo.Entry("persists independent rollout overrides including explicit zero", "rollout overrides", ""),
+		ginkgo.Entry("rejects invalid child rollout budgets", "invalid rollout override", "subRoles[0].maxSurge"),
+		ginkgo.Entry("rejects child rollout budgets that cannot progress", "zero rollout override", "subRoles[0].maxUnavailable"),
 	)
 })

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -17,6 +18,37 @@ const (
 	testUtilsRolePrefill = "prefill"
 	testUtilsRoleDecode  = "decode"
 )
+
+func TestSubRoleRolloutConfig(t *testing.T) {
+	parent := &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(2), MaxUnavailable: intstr.FromString("50%")}
+	for _, tc := range []struct {
+		name               string
+		parent             *leaderworkersetv1.RollingUpdateConfiguration
+		surge, unavailable *intstr.IntOrString
+		want               leaderworkersetv1.RollingUpdateConfiguration
+	}{
+		{name: "defaults", want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}},
+		{name: "inherit", parent: parent, want: *parent},
+		{name: "explicit zero surge", parent: parent, surge: ptr.To(intstr.FromInt(0)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(0), MaxUnavailable: parent.MaxUnavailable}},
+		{name: "explicit zero unavailable", parent: parent, unavailable: ptr.To(intstr.FromInt(0)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: parent.MaxSurge}},
+		{name: "override both", parent: parent, surge: ptr.To(intstr.FromString("25%")), unavailable: ptr.To(intstr.FromInt(2)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromString("25%"), MaxUnavailable: intstr.FromInt(2)}},
+		{name: "override default", surge: ptr.To(intstr.FromInt(0)), unavailable: ptr.To(intstr.FromInt(1)), want: leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role := roleSpec("model", "image:v1")
+			role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}}
+			beforeV1, beforeV2 := ComputeRevisionV1([]disaggregatedsetv1.DisaggregatedRoleSpec{role}), ComputeRevision([]disaggregatedsetv1.DisaggregatedRoleSpec{role})
+			role.Spec.RolloutStrategy.RollingUpdateConfiguration = tc.parent
+			role.SubRoles[0].MaxSurge, role.SubRoles[0].MaxUnavailable = tc.surge, tc.unavailable
+			before := role.DeepCopy()
+
+			assert.Equal(t, tc.want, SubRoleRolloutConfig(&role, &role.SubRoles[0]))
+			assert.Equal(t, before, &role, "resolving a child must not modify the parent or its siblings")
+			assert.Equal(t, beforeV1, ComputeRevisionV1([]disaggregatedsetv1.DisaggregatedRoleSpec{role}), "budget edits change pacing, not workload identity")
+			assert.Equal(t, beforeV2, ComputeRevision([]disaggregatedsetv1.DisaggregatedRoleSpec{role}))
+		})
+	}
+}
 
 func TestGetInitialReplicas(t *testing.T) {
 	t.Run("returns parsed int from valid annotation", func(t *testing.T) {

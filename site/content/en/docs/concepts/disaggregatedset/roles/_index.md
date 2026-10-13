@@ -73,6 +73,23 @@ retain the single-slice restriction. This initial implementation requires Ordina
 
 Route using the controller-owned `disaggregatedset.x-k8s.io/subrole` Pod label alongside
 set/role/slice labels. Each child inherits independent rollout budgets; there is no parent cap.
+Set `maxSurge` or `maxUnavailable` directly on a sub-role to override that setting:
+
+```yaml
+subRoles:
+- name: interactive
+  replicas: 3
+  maxSurge: 1
+  maxUnavailable: 0
+- name: batch
+  replicas: 1
+  maxUnavailable: 1
+```
+
+Omitted settings still inherit the parent; explicit zero is not omission. Percentages
+use the child's own replica target (surge rounds up, unavailability rounds down).
+Changing these settings adjusts rollout pacing without creating a new revision.
+
 `status.roleStatuses` lists parent aggregates, with current children nested in
 `subRoleStatuses` using local names such as `interactive`. Use the parent total or the
 child breakdown, not their sum. `SubRolesAssigned` reports coherent group assignment.

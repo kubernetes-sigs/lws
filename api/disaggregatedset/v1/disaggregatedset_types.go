@@ -18,6 +18,7 @@ package v1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
@@ -158,6 +159,22 @@ type DisaggregatedSubRoleSpec struct {
 	// Scaling selects this pool's replica source.
 	// +optional
 	Scaling *RoleScaling `json:"scaling,omitempty"`
+
+	// MaxSurge overrides the parent's rollout surge budget for this sub-role.
+	// Accepts a non-negative integer or a percentage up to 100%, rounded up
+	// against this sub-role's replica target. Omitted values inherit the parent;
+	// with no parent rollout configuration, the default is 1. Zero is explicit.
+	// +optional
+	// +kubebuilder:validation:XIntOrString
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
+
+	// MaxUnavailable overrides the parent's rollout unavailability budget for
+	// this sub-role. Accepts a non-negative integer or a percentage up to 100%,
+	// rounded down against this sub-role's replica target. Omitted values inherit
+	// the parent; with no parent rollout configuration, the default is 0.
+	// +optional
+	// +kubebuilder:validation:XIntOrString
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.

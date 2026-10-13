@@ -2612,11 +2612,38 @@ func TestSubRoleProjectionAndBudgets(t *testing.T) {
 	}
 }
 
+func TestSubRoleBudgetOverrides(t *testing.T) {
+	ds := newTestDisaggregatedSet(makeRoleSpec("model", 10, corev1.PodSpec{}, intstr.FromInt(3), intstr.FromString("50%")))
+	ds.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+		{Name: "a", Replicas: ptr.To[int32](3), MaxSurge: ptr.To(intstr.FromInt(0))},
+		{Name: "b", Replicas: ptr.To[int32](7), MaxSurge: ptr.To(intstr.FromString("50%")), MaxUnavailable: ptr.To(intstr.FromInt(0))},
+	}
+	names := []string{"model/a", "model/b"}
+	assert.Equal(t, []RollingUpdateConfig{{MaxUnavailable: 1}, {MaxSurge: 4}},
+		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, nil)))
+	// External scaling resolves percentages against each child's actual target,
+	// not its initial spec count or the total physical LWS size.
+	for i := range ds.Spec.Roles[0].SubRoles {
+		ds.Spec.Roles[0].SubRoles[i].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+		ds.Spec.Roles[0].SubRoles[i].Replicas = nil
+	}
+	scalers := map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler{
+		"model/a": {Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: 5}},
+		"model/b": {Spec: disaggregatedsetv1.DisaggregatedSetRoleScalerSpec{Replicas: 9}},
+	}
+	assert.Equal(t, []RollingUpdateConfig{{MaxUnavailable: 2}, {MaxSurge: 5}},
+		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, scalers)))
+	scalers["model/a"].Spec.Replicas = 1
+	assert.Equal(t, []RollingUpdateConfig{{MaxSurge: 1}, {MaxSurge: 5}},
+		extractRollingUpdateConfig(ds, names, resolveDesiredReplicasByRole(ds, scalers)), "retain the existing fallback when scaler changes make both budgets zero")
+}
+
 func TestSubRoleBudgetsSurviveRemovalAndPolicyReset(t *testing.T) {
 	f := newSubRoleFixture(t, 0, "a", "a", "b", "b")
 	require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(f.ds), f.ds))
 	f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
-		{Name: "a", Replicas: ptr.To[int32](4)}, {Name: "b", Replicas: ptr.To[int32](6)},
+		{Name: "a", Replicas: ptr.To[int32](4), MaxUnavailable: ptr.To(intstr.FromString("75%"))},
+		{Name: "b", Replicas: ptr.To[int32](6), MaxUnavailable: ptr.To(intstr.FromInt(1))},
 	}}}
 	f.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{
 		MaxSurge: intstr.FromInt(1), MaxUnavailable: intstr.FromString("50%"),
@@ -2624,19 +2651,27 @@ func TestSubRoleBudgetsSurviveRemovalAndPolicyReset(t *testing.T) {
 	require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
 	r := newTestReconciler(f.manager.client)
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))
-	assert.Equal(t, map[string]int{"model/a": 2, "model/b": 3}, rememberedMaxUnavailable(f.ds))
+	assert.Equal(t, map[string]int{"model/a": 3, "model/b": 1}, rememberedMaxUnavailable(f.ds))
 
 	// The old child exists only in frozen history. The current children use
-	// their live policy; removing an explicit policy resets their budgets.
+	// their live policy; removing child overrides restores the parent's budget.
 	setSubRoleJSON(f.lws, subRoleReplicasAnnotation, map[string]int{"b": 4})
 	require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
 	f.ds.Spec.Roles[0].SubRoles[0].Name = "c"
+	for i := range f.ds.Spec.Roles[0].SubRoles {
+		f.ds.Spec.Roles[0].SubRoles[i].MaxUnavailable = nil
+	}
+	require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
+	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))
+	assert.Equal(t, map[string]int{"model/a": 3, "model/b": 3, "model/c": 2}, rememberedMaxUnavailable(f.ds))
+
+	// Removing the parent policy then restores the default, without losing history.
 	f.ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
 	require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))
-	assert.Equal(t, map[string]int{"model/a": 2, "model/b": 0, "model/c": 0}, rememberedMaxUnavailable(f.ds))
+	assert.Equal(t, map[string]int{"model/a": 3, "model/b": 0, "model/c": 0}, rememberedMaxUnavailable(f.ds))
 	config := extractRollingUpdateConfig(f.ds, []string{"model/a", "model/b", "model/c"}, resolveDesiredReplicasByRole(f.ds, nil))
-	assert.Equal(t, []RollingUpdateConfig{{MaxSurge: 1, MaxUnavailable: 2}, {MaxSurge: 1}, {MaxSurge: 1}}, config)
+	assert.Equal(t, []RollingUpdateConfig{{MaxSurge: 1, MaxUnavailable: 3}, {MaxSurge: 1}, {MaxSurge: 1}}, config)
 
 	require.NoError(t, f.manager.client.Delete(t.Context(), f.lws))
 	require.NoError(t, r.syncMaxUnavailable(t.Context(), f.ds, resolveDesiredReplicasByRole(f.ds, nil)))

@@ -410,6 +410,26 @@ Each condition has a unique type and reflects the status of a specific aspect of
    <p>Scaling selects this pool's replica source.</p>
 </td>
 </tr>
+<tr><td><code>maxSurge</code><br/>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/util/intstr#IntOrString"><code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code></a>
+</td>
+<td>
+   <p>MaxSurge overrides the parent's rollout surge budget for this sub-role.
+Accepts a non-negative integer or a percentage up to 100%, rounded up
+against this sub-role's replica target. Omitted values inherit the parent;
+with no parent rollout configuration, the default is 1. Zero is explicit.</p>
+</td>
+</tr>
+<tr><td><code>maxUnavailable</code><br/>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/util/intstr#IntOrString"><code>k8s.io/apimachinery/pkg/util/intstr.IntOrString</code></a>
+</td>
+<td>
+   <p>MaxUnavailable overrides the parent's rollout unavailability budget for
+this sub-role. Accepts a non-negative integer or a percentage up to 100%,
+rounded down against this sub-role's replica target. Omitted values inherit
+the parent; with no parent rollout configuration, the default is 0.</p>
+</td>
+</tr>
 </tbody>
 </table>
 

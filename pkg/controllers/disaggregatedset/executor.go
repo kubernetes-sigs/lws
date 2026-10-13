@@ -665,14 +665,10 @@ func extractRollingUpdateConfig(
 	}
 
 	for _, role := range ds.Spec.Roles {
-		rc := role.Spec.RolloutStrategy.RollingUpdateConfiguration
 		for _, child := range roleLeaves(&role) {
 			name := childRoleKey(role.Name, child.Name)
 			// Live policy always wins, including resetting an explicit budget.
-			config[roleIndex[name]] = RollingUpdateConfig{MaxSurge: 1}
-			if rc == nil {
-				continue
-			}
+			rc := disaggregatedsetutils.SubRoleRolloutConfig(&role, &child)
 			replicas := desiredReplicasByRole[name]
 			// Use GetScaledValueFromIntOrPercent to handle both integers and percentages.
 			// For maxSurge, round up (true); for maxUnavailable, round down (false).

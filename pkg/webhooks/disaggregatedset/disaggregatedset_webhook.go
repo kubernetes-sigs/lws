@@ -30,6 +30,7 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
@@ -96,6 +97,7 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 			var staticReplicas int64
 			for j, child := range role.SubRoles {
 				childPath := rolePath.Child("subRoles").Index(j)
+				allErrs = append(allErrs, validateSubRoleRolloutStrategy(&role, &child, childPath)...)
 				if child.Scaling == nil || child.Scaling.Mode != disaggv1.RoleScalingExternal {
 					staticReplicas += int64(ptr.Deref(child.Replicas, 1))
 					continue
@@ -335,6 +337,22 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 	}
 
 	return allErrs
+}
+
+func validateSubRoleRolloutStrategy(role *disaggv1.DisaggregatedRoleSpec, child *disaggv1.DisaggregatedSubRoleSpec, path *field.Path) field.ErrorList {
+	if child.MaxSurge == nil && child.MaxUnavailable == nil {
+		// Preserve inherited budgets, including the existing runtime fallback
+		// when both resolved budgets are zero for a small child.
+		return nil
+	}
+	config := disaggregatedsetutils.SubRoleRolloutConfig(role, child)
+	replicas := ptr.To(ptr.Deref(child.Replicas, 1))
+	if child.Scaling != nil && child.Scaling.Mode == disaggv1.RoleScalingExternal {
+		// The scaler's target is unknown. At denominator 100, p% resolves to p:
+		// reject only a universally-zero pair, not rounding at a guessed target.
+		replicas = ptr.To[int32](100)
+	}
+	return validateRoleMaxSurgeUnavailable(&config, replicas, path)
 }
 
 // validateRoleMaxSurgeUnavailable rejects the combination maxSurge=0 + maxUnavailable=0

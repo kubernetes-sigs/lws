@@ -28,6 +28,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -203,6 +204,22 @@ func GetRoleConfigs(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) map[s
 	}
 
 	return roleConfigs
+}
+
+// SubRoleRolloutConfig resolves each child override independently, without
+// changing the parent's policy. An unnamed child represents an ordinary role.
+func SubRoleRolloutConfig(role *disaggregatedsetv1.DisaggregatedRoleSpec, child *disaggregatedsetv1.DisaggregatedSubRoleSpec) leaderworkersetv1.RollingUpdateConfiguration {
+	config := leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}
+	if parent := role.Spec.RolloutStrategy.RollingUpdateConfiguration; parent != nil {
+		config = *parent
+	}
+	if child.MaxSurge != nil {
+		config.MaxSurge = *child.MaxSurge
+	}
+	if child.MaxUnavailable != nil {
+		config.MaxUnavailable = *child.MaxUnavailable
+	}
+	return config
 }
 
 func GetRoleNames(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) []string {
