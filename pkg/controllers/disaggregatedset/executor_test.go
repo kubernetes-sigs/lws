@@ -39,8 +39,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -119,7 +122,10 @@ func newTestLWSManager(c client.Client) *LeaderWorkerSetManager {
 }
 
 func newTestClient(objects ...client.Object) client.WithWatch {
+	// Reuse the built-in type registry instead of rebuilding it on every
+	// simulated rollout tick. Keep the default converters and a fresh tracker.
 	return fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+		WithTypeConverters(clientgoapplyconfigurations.NewTypeConverter(clientgoscheme.Scheme), managedfields.NewDeducedTypeConverter()).
 		WithObjects(objects...).WithStatusSubresource(statusSubresourceObjects()...).Build()
 }
 
