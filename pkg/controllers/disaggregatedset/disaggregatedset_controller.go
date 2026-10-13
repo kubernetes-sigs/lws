@@ -611,9 +611,10 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.ScalerManager = NewScalerManager(mgr.GetClient(), r.Record)
 	}
 
+	// LWS changes arrive through the observer, after its own cache is updated.
+	// A second Owns watch would wake us against a potentially older observation.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
-		Owns(&leaderworkersetv1.LeaderWorkerSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
 		WatchesRawSource(source.Channel(changes, &handler.EnqueueRequestForObject{})).
 		Named("disaggregatedset").
