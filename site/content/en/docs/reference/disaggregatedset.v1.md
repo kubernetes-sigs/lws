@@ -417,7 +417,7 @@ Each condition has a unique type and reflects the status of a specific aspect of
    <p>MaxSurge overrides the parent's rollout surge budget for this sub-role.
 Accepts a non-negative integer or a percentage up to 100%, rounded up
 against this sub-role's replica target. Omitted values inherit the parent;
-with no parent rollout configuration, the default is 1. Zero is explicit.</p>
+with no parent rollout configuration, the default is 0.</p>
 </td>
 </tr>
 <tr><td><code>maxUnavailable</code><br/>
@@ -427,7 +427,7 @@ with no parent rollout configuration, the default is 1. Zero is explicit.</p>
    <p>MaxUnavailable overrides the parent's rollout unavailability budget for
 this sub-role. Accepts a non-negative integer or a percentage up to 100%,
 rounded down against this sub-role's replica target. Omitted values inherit
-the parent; with no parent rollout configuration, the default is 0.</p>
+the parent; with no parent rollout configuration, the default is 1. Zero is explicit.</p>
 </td>
 </tr>
 </tbody>
