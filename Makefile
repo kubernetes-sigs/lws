@@ -183,14 +183,10 @@ gomod-verify:
 vet: ## Run go vet against code.
 	$(GO_CMD) vet ./...
 
-# CI repeats every package three times with race detection and coverage. The
-# timeout covers all repetitions, so Go's default 10m is too short for rollout tests.
-GO_TEST_TIMEOUT ?= 20m
-
 .PHONY: test
 test: manifests fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- -timeout $(GO_TEST_TIMEOUT) $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... -coverprofile  $(ARTIFACTS)/cover.out
+	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... -coverprofile  $(ARTIFACTS)/cover.out
 
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
