@@ -275,7 +275,8 @@ Default to 1.</p>
 </td>
 <td>
    <p>rolloutStrategy defines the strategy that will be applied to update replicas
-when a revision is made to the leaderWorkerTemplate.</p>
+when a revision is made to the leaderWorkerTemplate. It defaults to a
+RollingUpdate strategy whose configuration takes its own defaults.</p>
 </td>
 </tr>
 <tr><td><code>startupPolicy</code><br/>
@@ -752,7 +753,9 @@ will use to perform replica updates.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-RollingUpdateConfiguration"><code>RollingUpdateConfiguration</code></a>
 </td>
 <td>
-   <p>rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.</p>
+   <p>rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
+It defaults to an object whose fields take their own defaults: maxUnavailable 1,
+maxSurge 0 and partition 0.</p>
 </td>
 </tr>
 </tbody>
