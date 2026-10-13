@@ -679,8 +679,8 @@ func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderwo
 	return manager.pending.mutate(ctx, lws, deleting, apply)
 }
 
-// A receipt identifies our write without comparing opaque resource versions or
-// waiting to see one exact version that a watch is allowed to coalesce away.
+// A receipt identifies our write without waiting to see one exact resource
+// version that a watch is allowed to coalesce away.
 const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
 
 // pendingWrites remembers mutations until the shared informer observes them.
@@ -698,6 +698,9 @@ type pendingWrite struct {
 	uid     types.UID
 	receipt string
 	deleted bool
+	// Version read from this informer and used as the mutation precondition.
+	// Empty for creates, which cannot be ruled out by a version change.
+	baseVersion string
 	// Replaying the same conditional mutation resolves an ambiguous transport
 	// error. We never turn a timeout into permission to forget a possible write.
 	retry func(context.Context) error
@@ -721,7 +724,11 @@ func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.Leade
 			return err
 		}
 	}
-	written := &pendingWrite{owner: owner.UID, parent: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}, slice: lws.Labels[disaggregatedsetv1.SliceLabelKey], uid: lws.UID, deleted: deleting}
+	written := &pendingWrite{
+		owner: owner.UID, parent: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name},
+		slice: lws.Labels[disaggregatedsetv1.SliceLabelKey], uid: lws.UID,
+		deleted: deleting, baseVersion: lws.ResourceVersion,
+	}
 	if !deleting {
 		if lws.Annotations == nil {
 			lws.Annotations = make(map[string]string)
@@ -786,7 +793,12 @@ func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, wr
 	seen := written.deleted && (apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero())
 	seen = seen || err == nil && !written.deleted &&
 		(written.uid == "" || lws.UID == written.uid) && lws.Annotations[observationReceiptAnnotation] == written.receipt
-	if seen {
+	// This informer supplied baseVersion. A different version of the same UID
+	// means an unapplied conditional request can no longer succeed. Resolve the
+	// ambiguous outcome and replan; do not replay it against a newer version.
+	obsolete := written.retry != nil && written.baseVersion != "" && err == nil &&
+		lws.UID == written.uid && lws.ResourceVersion != written.baseVersion
+	if seen || obsolete {
 		o.mu.Lock()
 		if current := o.writes[key]; current != nil && current.receipt == written.receipt && current.uid == written.uid {
 			delete(o.writes, key)

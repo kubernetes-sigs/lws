@@ -1335,6 +1335,69 @@ func TestWriteReceiptErrors(t *testing.T) {
 	}
 }
 
+func TestWriteReceiptRecoversAfterStatusConflict(t *testing.T) {
+	for _, applied := range []bool{false, true} {
+		name := "unapplied request"
+		if applied {
+			name = "applied request with lost response"
+		}
+		t.Run(name, func(t *testing.T) {
+			lws := revisionLWS("old", testRolePrefill, 4, 4, time.Time{}, 4)
+			base := newTestClient(lws)
+			key := client.ObjectKeyFromObject(lws)
+			cachedLWS := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, base.Get(t.Context(), key, cachedLWS))
+			cached := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, object client.Object, _ ...client.GetOption) error {
+					cachedLWS.DeepCopyInto(object.(*leaderworkersetv1.LeaderWorkerSet))
+					return nil
+				},
+			})
+			calls := 0
+			writer := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					calls++
+					if calls == 1 {
+						if applied {
+							require.NoError(t, c.Patch(ctx, object.DeepCopyObject().(client.Object), patch, opts...))
+						}
+						return errors.New("response lost")
+					}
+					return c.Patch(ctx, object, patch, opts...)
+				},
+			})
+			manager := NewLeaderWorkerSetManager(writer)
+			manager.reader, manager.pending = cached, testPendingWrites(cached)
+			ds := newTestDisaggregatedSet()
+			require.Error(t, manager.Scale(t.Context(), ds, cachedLWS, 3))
+
+			// A status-only change makes every replay of the original patch conflict.
+			current := &leaderworkersetv1.LeaderWorkerSet{}
+			require.NoError(t, base.Get(t.Context(), key, current))
+			current.Status.Replicas++
+			require.NoError(t, base.Status().Update(t.Context(), current))
+			require.NotEqual(t, cachedLWS.ResourceVersion, current.ResourceVersion)
+			for range 3 {
+				require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending,
+					"a replay conflict cannot release the barrier while the cache is stale")
+			}
+			beforeObservation := calls
+			require.NoError(t, base.Get(t.Context(), key, cachedLWS)) // Deliver the watch update.
+			require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+			require.Empty(t, manager.pending.writes)
+			require.Equal(t, beforeObservation, calls, "observe the outcome; do not refresh and replay an old decision")
+			if !applied {
+				require.EqualValues(t, 4, getLWSReplicas(cachedLWS))
+				// A new decision based on the current object can now make progress.
+				require.NoError(t, manager.Scale(t.Context(), ds, cachedLWS, 3))
+				require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending)
+			}
+			require.NoError(t, base.Get(t.Context(), key, current))
+			require.EqualValues(t, 3, getLWSReplicas(current))
+		})
+	}
+}
+
 func TestDeletionReceiptDoesNotWaitForPhysicalRemoval(t *testing.T) {
 	lws := revisionLWS("old", testRolePrefill, 0, 0, time.Time{}, 4)
 	lws.Finalizers = []string{"hold-test-deletion"}
