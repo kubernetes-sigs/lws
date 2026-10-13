@@ -492,16 +492,34 @@ func TestReconcileSliceWaitsForPolicyObservationBeforeScaling(t *testing.T) {
 			ds.Spec.Roles = ds.Spec.Roles[:1]
 			ds.Spec.Roles[0].Spec.GroupIdentity = leaderworkersetv1.GroupIdentityHash
 			ds.Spec.Roles[0].Spec.GroupReplacementPolicy = leaderworkersetv1.GroupReplacementImmediate
+			// Skip takeover so the first pass really reaches the policy write.
+			o.initialized = map[types.UID]client.ObjectKey{lws.UID: client.ObjectKeyFromObject(ds)}
+			stored := &leaderworkersetv1.LeaderWorkerSet{}
+			observe := func() {
+				previous := &leaderworkersetv1.LeaderWorkerSet{}
+				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+				require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), previous))
+				stored.ResourceVersion = previous.ResourceVersion
+				require.NoError(t, cached.Update(t.Context(), stored))
+			}
 
 			_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
-			if err != nil {
-				require.ErrorIs(t, err, errReplicaGroupsPending)
-			}
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+			require.Equal(t, leaderworkersetv1.GroupReplacementImmediate, stored.Spec.GroupReplacementPolicy, "policy was actually written")
+			require.NoError(t, cached.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
+			require.Equal(t, leaderworkersetv1.GroupReplacementPostTermination, stored.Spec.GroupReplacementPolicy, "informer remains behind")
 			require.EqualValues(t, 4, getTestLWSReplicas(base, lws.Namespace, lws.Name), "wait for our policy write before changing scale")
-			o.Reader = base // The watch catches up.
-			_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
+			observe() // Only this write becomes visible; the reader never aliases base.
+			result, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
 			require.NoError(t, err)
-			stored := &leaderworkersetv1.LeaderWorkerSet{}
+			if tc.initial != tc.desired {
+				require.Equal(t, time.Second, result.RequeueAfter, "baseline is another write to observe")
+				require.EqualValues(t, 4, getTestLWSReplicas(base, lws.Namespace, lws.Name))
+				observe()
+				_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, "A", map[string]int{testRolePrefill: int(tc.desired)})
+			}
+			require.NoError(t, err)
 			require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), stored))
 			require.Equal(t, tc.desired, getLWSReplicas(stored), "scale after the policy write is observed")
 			require.Equal(t, leaderworkersetv1.GroupReplacementImmediate, stored.Spec.GroupReplacementPolicy)
