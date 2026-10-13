@@ -3581,6 +3581,30 @@ func TestHashSubRoleCostsPrecedeScaleAndRepairActualSurvivors(t *testing.T) {
 				},
 			})
 			require.ErrorIs(t, f.scale(map[string]int{"a": 1, "b": 1}), errReplicaGroupsPending)
+			pending := f.observe()
+			changed := pending.LWS.DeepCopy()
+			changed.Annotations["concurrent"] = "keep"
+			require.NoError(t, base.Update(t.Context(), changed))
+			_, err := f.manager.syncSubRoles(t.Context(), f.ds, pending.LWS, subRoleUpdate{})
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			fresh := f.observe()
+			require.Equal(t, pending.Groups, fresh.Groups, "a stale parent must not write deletion costs")
+
+			// This pass changes two costs, but checks the parent only during
+			// observation and once before acting, not again for every Pod.
+			lwsReads := 0
+			f.manager.apiReader = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						lwsReads++
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			_, err = f.manager.syncSubRoles(t.Context(), f.ds, fresh.LWS, subRoleUpdate{})
+			require.ErrorIs(t, err, errReplicaGroupsPending)
+			require.Equal(t, 2, lwsReads, "parent checks must not grow with the number of cost writes")
+			f.manager.apiReader = base
 			for attempt := 0; attempt < 6 && getLWSReplicas(f.observe().LWS) != 2; attempt++ {
 				f.sync()
 			}
@@ -3805,7 +3829,7 @@ func TestHashSubRoleDeletionPreferenceRestoresNativeGateCost(t *testing.T) {
 			pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkersetv1.GroupReplacementSchedulingGate}}
 			pod.Annotations[corev1.PodDeletionCost] = "-100"
 			require.NoError(t, f.manager.client.Update(t.Context(), pod))
-			_, err := f.manager.preferSubRoleDeletion(t.Context(), f.lws, f.observe().Groups[0], true)
+			_, err := f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], true)
 			require.NoError(t, err)
 			pod = f.observe().Groups[0].Leader
 			require.Equal(t, strconv.FormatInt(math.MinInt32, 10), pod.Annotations[corev1.PodDeletionCost])
@@ -3815,7 +3839,7 @@ func TestHashSubRoleDeletionPreferenceRestoresNativeGateCost(t *testing.T) {
 				want = ""
 				require.NoError(t, f.manager.client.Update(t.Context(), pod))
 			}
-			_, err = f.manager.preferSubRoleDeletion(t.Context(), f.lws, f.observe().Groups[0], false)
+			_, err = f.manager.preferSubRoleDeletion(t.Context(), f.observe().Groups[0], false)
 			require.NoError(t, err)
 			require.Equal(t, want, f.observe().Groups[0].Leader.Annotations[corev1.PodDeletionCost])
 		})

@@ -621,7 +621,7 @@ func hashSubRoleNativeSettled(s *replicagroups.Snapshot) bool {
 // syncHashSubRoleAssignments repairs actual survivors instead of deleting Pods.
 // See https://github.com/kubernetes/kubernetes/blob/f78e722310e50bcaca9276be22276d9e91d91308/pkg/controller/controller_utils.go#L843.
 // Clear our value when a group is retained; leave other costs untouched.
-func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, lws *leaderv1.LeaderWorkerSet, group replicagroups.Group, prefer bool) (bool, error) {
+func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, group replicagroups.Group, prefer bool) (bool, error) {
 	pod := group.Leader
 	desired := pod.DeepCopy()
 	if prefer {
@@ -634,9 +634,6 @@ func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, lws 
 	}
 	if maps.Equal(pod.Annotations, desired.Annotations) {
 		return false, nil
-	}
-	if err := m.checkSubRoleLWS(ctx, lws); err != nil {
-		return false, err
 	}
 	before := pod.DeepCopy()
 	before.UID = "" // Include UID and resourceVersion to fence replacement/concurrent edits.
@@ -713,9 +710,10 @@ func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context,
 	if changed {
 		return errReplicaGroupsPending
 	}
+	// Parent intent was checked for this pass; each cost patch still checks the Pod.
 	for _, group := range groups {
 		_, retained := assignments[group.Leader.UID]
-		updated, err := m.preferSubRoleDeletion(ctx, s.LWS, group, !retained && !removing)
+		updated, err := m.preferSubRoleDeletion(ctx, group, !retained && !removing)
 		if err != nil {
 			return err
 		}
