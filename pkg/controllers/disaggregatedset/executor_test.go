@@ -592,7 +592,7 @@ func TestReconcilerIntegration(t *testing.T) {
 		{
 			name: "keeps drained old workloads until the target is ready", deployName: "test-wait-ready",
 			targetReplicas: 2, oldSpec: 0, oldReady: 0, newSpec: 2, newReady: 1,
-			expectRequeue: time.Second, expectOldRetained: true,
+			expectRequeue: idleRolloutRetry, expectOldRetained: true,
 		},
 		{
 			name: "advances through rolling update", deployName: "test-advance",
@@ -603,7 +603,7 @@ func TestReconcilerIntegration(t *testing.T) {
 			name: "no scale down until new ready", deployName: "test-maxunavail",
 			targetReplicas: 4, oldSpec: 4, oldReady: 4, newSpec: 2, newReady: 0,
 			maxSurge: ptr.To(2), maxUnavailable: ptr.To(0),
-			expectRequeue: time.Second, expectOldScaledDown: false,
+			expectRequeue: idleRolloutRetry, expectOldScaledDown: false,
 		},
 		{
 			name: "scales down when new ready", deployName: "test-partial",
@@ -1131,7 +1131,7 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	for range 5 {
 		result, complete = reconcileExistingForTest(t, executor, ds, "hashC")
 		assert.False(t, complete)
-		assert.Equal(t, time.Second, result.RequeueAfter)
+		assert.Equal(t, idleRolloutRetry, result.RequeueAfter)
 		assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{2, 4})
 		assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
 		require.Len(t, recorder.Events, 1)
