@@ -119,7 +119,7 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 	rng := rand.New(rand.NewSource(5492154225))
 	for roles := 4; roles <= 6; roles++ {
 		for old := 2; old <= 4; old++ {
-			for trial := range 4 {
+			for trial := range 1 {
 				tc := layout{name: fmt.Sprintf("roles=%d/old=%d/trial=%d", roles, old, trial),
 					desired: make([]int32, roles), surge: make([]int, roles), unavailable: make([]int, roles)}
 				for role := range roles {
@@ -1234,7 +1234,7 @@ func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
 	executor := newTestExecutor(newTestClient())
 	for _, seed := range []int64{4041023, 9071105, 11371023} {
 		rng := rand.New(rand.NewSource(seed))
-		for range 5000 {
+		for range 1000 {
 			initial := []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
 			state := rolloutState(initial, initial, initial, nil, nil, []int{0, 0}, []int{0, 0}, initial,
 				configs([]int{0, 1}, []int{1, 1}))

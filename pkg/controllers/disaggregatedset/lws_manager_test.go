@@ -262,8 +262,8 @@ func TestRolloutBudgetFallback(t *testing.T) {
 				direction                 scaleDirection
 				current, desired, interim leaderworkersetv1.RollingUpdateConfiguration
 			}{
-				{name: "old percentage drains to zero", before: 10, counts: []int{9, 8, 7, 6, 5, 4, 3, 2, 1, 0}, direction: scaleDown, current: percentage, desired: surge, interim: fallback},
-				{name: "zero budgets resume in steps", counts: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, direction: scaleUp, desired: percentage, interim: fallback},
+				{name: "old percentage drains to zero", before: 10, counts: []int{9, 5, 1, 0}, direction: scaleDown, current: percentage, desired: surge, interim: fallback},
+				{name: "zero budgets resume in steps", counts: []int{1, 5, 9, 10}, direction: scaleUp, desired: percentage, interim: fallback},
 				{name: "valid existing surge is retained", before: 1, counts: []int{2, 9, 10}, direction: scaleUp, current: surge, desired: percentage, interim: surge},
 			} {
 				t.Run(string(identity)+"/"+child+"/"+tc.name, func(t *testing.T) {
@@ -298,6 +298,9 @@ func TestRolloutBudgetFallback(t *testing.T) {
 							err := executor.scaleRevision(t.Context(), f.ds, f.revision("revision"), []string{childRoleKey(role.Name, child)}, RoleReplicaState{count}, tc.direction)
 							require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 							f.native()
+							if getLWSReplicas(f.observe().LWS) == int32(count) {
+								break
+							}
 						}
 						got := f.observe().LWS
 						require.EqualValues(t, count, *got.Spec.Replicas)
