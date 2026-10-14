@@ -56,6 +56,16 @@ func TestChildAdmissionConstraints(t *testing.T) {
 		{"valid name", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "model-1" }, ""},
 		{"dotted name", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "my.model" }, "metadata.name"},
 		{"numeric prefix", func(ds *disaggv1.DisaggregatedSet) { ds.Name = "1model" }, "metadata.name"},
+		{"zero group size", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](0)
+		}, "size must be equal or greater than 1"},
+		{"subgroup topology without subgroup", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
+		}, "without subGroupSize"},
+		{"subgroup topology with subgroup", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
+		}, ""},
 		{"compatible subgroup", func(ds *disaggv1.DisaggregatedSet) {
 			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
 		}, ""},
@@ -88,6 +98,9 @@ func TestChildAdmissionConstraints(t *testing.T) {
 		{"aggregate above limit", func(ds *disaggv1.DisaggregatedSet) {
 			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](600000)}, {Name: "b", Replicas: ptr.To[int32](600000)}}
 		}, "spec.roles[0].subRoles"},
+		{"external child target is unknown", func(ds *disaggv1.DisaggregatedSet) {
+			ds.Spec.Roles[0].SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To[int32](1000000)}, {Name: "b", Scaling: &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}}}
+		}, ""},
 		{"group count times size", func(ds *disaggv1.DisaggregatedSet) {
 			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](1000000)
 			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2148)
@@ -130,8 +143,15 @@ func TestChildAdmissionConstraints(t *testing.T) {
 			role := ds.Spec.Roles[0]
 			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{
 				Name: disaggutils.GenerateName(ds.Name, 0, disaggutils.ComputeRevision(ds.Spec.Roles), role.Name), Namespace: ds.Namespace,
+				Annotations: role.Annotations,
 			}, Spec: role.Spec}
 			lws.Spec.Replicas = validationReplicasForRole(role)
+			// Unknown External children may resolve to zero; do not invent capacity.
+			for _, child := range role.SubRoles {
+				if child.Scaling != nil && child.Scaling.Mode == disaggv1.RoleScalingExternal {
+					*lws.Spec.Replicas -= ptr.Deref(child.Replicas, 1)
+				}
+			}
 			// Size is defaulted by the CRD schema, not the mutating webhook.
 			lws.Spec.LeaderWorkerTemplate.Size = ptr.To(ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))
 			if role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {

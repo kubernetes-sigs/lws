@@ -86,7 +86,15 @@ var _ = ginkgo.Describe("Controller upgrade", ginkgo.Ordered, func() {
 		switch upgradePhase {
 		case "before":
 			createExistingWorkloads()
-			writeSnapshot(captureSnapshot())
+			// Legacy Available status can precede Pod readiness. Wait for a
+			// complete baseline; the after-upgrade checks must remain strict.
+			var snapshot upgradeSnapshot
+			gomega.Eventually(func() error {
+				var err error
+				snapshot, err = captureSnapshot()
+				return err
+			}, testutils.Timeout, testutils.Interval).Should(gomega.Succeed())
+			writeSnapshot(snapshot)
 		case "after":
 			expected := readSnapshot()
 			expectCurrentControllerReady()
@@ -466,8 +474,7 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func writeSnapshot(snapshot upgradeSnapshot, err error) {
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+func writeSnapshot(snapshot upgradeSnapshot) {
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	gomega.Expect(os.WriteFile(snapshotPath, data, 0o600)).To(gomega.Succeed())
