@@ -2011,6 +2011,7 @@ func TestReconcileInformerObservationsAreSliceLocal(t *testing.T) {
 							lws.UID = types.UID(lws.Name)
 							lws.Labels[disaggregatedsetv1.SliceLabelKey] = fmt.Sprint(slice)
 							lws.Spec.GroupIdentity = identity
+							lws.Spec.RolloutStrategy = *role.Spec.RolloutStrategy.DeepCopy()
 							lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
 							groups := replicaGroupObjects(lws, replicas, replicas)
 							if tc.failure == "metadata" && slice == 0 && revision == "old-1" {
@@ -2074,6 +2075,7 @@ func TestInformerReceiptKeepsStatusFreshWhileWaiting(t *testing.T) {
 	targetRevision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 	old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1000, 0), 4)
 	target := revisionLWS(targetRevision, testRolePrefill, 1, 1, time.Unix(2000, 0), 4)
+	target.Spec.RolloutStrategy = *ds.Spec.Roles[0].Spec.RolloutStrategy.DeepCopy()
 	old.Spec.LeaderWorkerTemplate.Size, target.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
 	old.Annotations[observationReceiptAnnotation] = "updated"
 	objects := append(replicaGroupObjects(old, 4, 4), replicaGroupObjects(target, 1, 1)...)

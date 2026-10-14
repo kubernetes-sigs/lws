@@ -498,7 +498,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	}
 	counts := desiredSubRoles(config, desiredReplicasByRole)
 	// Outside rollout, membership, issued target and effective baseline all follow desired.
-	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts})
+	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts, rolloutStrategy: &config.Spec.RolloutStrategy})
 	if err != nil || state != nil {
 		// A non-nil state means subrole reconciliation owns this LWS's scaling.
 		return err
@@ -521,9 +521,9 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	}
 	if existingReplicas != desiredReplicas {
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
-		if err := r.LWSManager.Scale(ctx, disaggregatedSet, existing, int(desiredReplicas)); err != nil {
-			return fmt.Errorf("failed to scale LWS %s: %w", existing.Name, err)
-		}
+	}
+	if err := r.LWSManager.scale(ctx, disaggregatedSet, existing, int(desiredReplicas), &config.Spec.RolloutStrategy); err != nil {
+		return fmt.Errorf("failed to sync replicas and rollout strategy on LWS %s: %w", existing.Name, err)
 	}
 
 	return nil

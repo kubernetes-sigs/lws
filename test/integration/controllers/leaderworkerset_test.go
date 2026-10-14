@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -41,6 +42,51 @@ import (
 )
 
 var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
+	ginkgo.DescribeTable("Hash zero-budget scaling", func(start int32) {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "hash-zero-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(int(start)).Size(2).Obj()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(start)
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+		key := client.ObjectKeyFromObject(lws)
+		var deployment appsv1.Deployment
+		checkDeployment := func(replicas int32) {
+			wantUnavailable := intstr.FromInt32(0)
+			if replicas == 0 {
+				wantUnavailable = intstr.FromInt32(1)
+			}
+			// A real API server validates the Deployment writes. Envtest does not
+			// run its controller, so this checks the accepted target, not Pod deletion.
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, &deployment)).To(gomega.Succeed())
+				g.Expect(*deployment.Spec.Replicas).To(gomega.Equal(replicas))
+				g.Expect(deployment.Spec.Strategy.RollingUpdate.MaxSurge).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(replicas))))
+				g.Expect(deployment.Spec.Strategy.RollingUpdate.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(wantUnavailable)))
+				g.Expect(k8sClient.Get(ctx, key, lws)).To(gomega.Succeed())
+				g.Expect(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).To(gomega.Equal(intstr.FromInt32(0)))
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		}
+		checkDeployment(start)
+		template := deployment.Spec.Template.DeepCopy()
+		for _, replicas := range []int32{0, 1, 0} {
+			gomega.Eventually(func() error {
+				if err := k8sClient.Get(ctx, key, lws); err != nil {
+					return err
+				}
+				lws.Spec.Replicas = ptr.To(replicas)
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(replicas)
+				return k8sClient.Update(ctx, lws)
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+			checkDeployment(replicas)
+			gomega.Expect(deployment.Spec.Template).To(gomega.Equal(*template), "scaling must not change the Pod template")
+		}
+	},
+		ginkgo.Entry("created at zero", int32(0)),
+		ginkgo.Entry("scaled down to zero", int32(1)),
+	)
+
 	// class representing an update
 	type update struct {
 		lwsUpdateFn       func(*leaderworkerset.LeaderWorkerSet)

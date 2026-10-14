@@ -52,13 +52,269 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
+	"sigs.k8s.io/lws/pkg/webhooks"
+	disaggwebhook "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name                 string
+			before, after        int32
+			oldBudget, newBudget leaderworkersetv1.RollingUpdateConfiguration
+		}{
+			{name: "resume zero", after: 1, newBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}},
+			{name: "percentage needs new replica count", before: 1, after: 10, oldBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}, newBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromString("10%")}},
+			{name: "pause at zero", before: 1, oldBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}},
+			{name: "budget only", before: 1, after: 1, oldBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}, newBudget: leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				ds, role := testManagerDSWithRole("model")
+				role.Spec.GroupIdentity = identity
+				role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+				role.Spec.Replicas = ptr.To(tc.before)
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &tc.oldBudget
+				w := &disaggwebhook.DisaggregatedSetWebhook{}
+				_, err := w.ValidateCreate(t.Context(), ds)
+				require.NoError(t, err)
+				oldDS := ds.DeepCopy()
+				c := admittingLWSClient()
+				manager := NewLeaderWorkerSetManager(c)
+				revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, revision, int(tc.before), nil))
+				// Creation now starts empty; establish the old count before updating it.
+				r := &DisaggregatedSetReconciler{Client: c, LWSManager: manager}
+				existing, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
+				require.NoError(t, err)
+				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.before)}))
+				role.Spec.Replicas = ptr.To(tc.after)
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &tc.newBudget
+				_, err = w.ValidateUpdate(t.Context(), oldDS, ds)
+				require.NoError(t, err)
+				require.Equal(t, revision, disaggregatedsetutils.ComputeRevision(ds.Spec.Roles))
+				before := ds.DeepCopy()
+				for range 2 {
+					existing, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
+					require.NoError(t, err)
+					require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.after)}))
+				}
+				got, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
+				require.NoError(t, err)
+				require.Equal(t, tc.after, *got.Spec.Replicas)
+				require.Equal(t, tc.newBudget.MaxSurge, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge)
+				require.Equal(t, tc.newBudget.MaxUnavailable, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable)
+				resourceVersion := got.ResourceVersion
+				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, got, role, revision, map[string]int{role.Name: int(tc.after)}))
+				got, err = manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
+				require.NoError(t, err)
+				require.Equal(t, resourceVersion, got.ResourceVersion, "settled configuration must not be rewritten")
+				require.Equal(t, before, ds, "reconciliation must not mutate the role template")
+			})
+		}
+	}
+}
+
+func TestBudgetOnlyUpdateWaitsForInformer(t *testing.T) {
+	lws := revisionLWS("target", testRolePrefill, 4, 4, time.Time{}, 4)
+	manager, stored, cached := newObservedTestManager(t, lws)
+	ds := newTestDisaggregatedSet()
+	desired := defaultedRolloutStrategy(&leaderworkersetv1.RolloutStrategy{
+		RollingUpdateConfiguration: &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(2)},
+	})
+	require.NoError(t, manager.scale(t.Context(), ds, lws, 4, desired))
+	written := readTestLWS(t, stored, lws)
+	require.EqualValues(t, 4, getLWSReplicas(written))
+	require.Equal(t, *desired, written.Spec.RolloutStrategy)
+	require.Equal(t, lws.Spec, readTestLWS(t, cached, lws).Spec, "cache has not observed the write")
+	require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending)
+	require.ErrorIs(t, manager.scale(t.Context(), ds, lws, 4, desired), errReplicaGroupsPending)
+
+	observed := deliverTestLWSUpdate(t, stored, cached, lws)
+	require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+	require.NoError(t, manager.scale(t.Context(), ds, observed, 4, desired))
+	require.Equal(t, written.ResourceVersion, readTestLWS(t, stored, lws).ResourceVersion, "settled budget needs no rewrite")
+}
+
+// Fake clients otherwise accept patches that the real LWS webhook rejects.
+func admittingLWSClient() client.WithWatch {
+	return fake.NewClientBuilder().WithScheme(testSchemeForUnit()).WithInterceptorFuncs(lwsAdmissionInterceptors()).Build()
+}
+
+func lwsAdmissionInterceptors() interceptor.Funcs {
+	w := &webhooks.LeaderWorkerSetWebhook{}
+	return interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if lws, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+				if err := w.Default(ctx, lws); err != nil {
+					return err
+				}
+				if _, err := w.ValidateCreate(ctx, lws); err != nil {
+					return err
+				}
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if lws, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+				old := &leaderworkersetv1.LeaderWorkerSet{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(lws), old); err != nil {
+					return err
+				}
+				if err := w.Default(ctx, lws); err != nil {
+					return err
+				}
+				if _, err := w.ValidateUpdate(ctx, old, lws); err != nil {
+					return err
+				}
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	}
+}
+
+func TestSubRoleRolloutBudgetUpdates(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name          string
+			before, after int
+			budget        leaderworkersetv1.RollingUpdateConfiguration
+		}{
+			{name: "resume zero", after: 1, budget: leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}},
+			{name: "percentage needs final count", before: 1, after: 10, budget: leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromString("10%")}},
+			{name: "pause zero", before: 1},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				children := make([]string, tc.before)
+				for i := range children {
+					children[i] = "a"
+				}
+				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				f.lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(tc.before)}
+				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), lwsAdmissionInterceptors())
+				role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a", Replicas: ptr.To(int32(tc.after))}}}
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &tc.budget
+				r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+				for range 10 {
+					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, map[string]int{"model": tc.after, "model/a": tc.after})
+					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+					f.native()
+				}
+				got := f.observe().LWS
+				require.EqualValues(t, tc.after, *got.Spec.Replicas)
+				require.Equal(t, tc.budget.MaxSurge, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge)
+				require.Equal(t, tc.budget.MaxUnavailable, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable)
+			})
+		}
+	}
+}
 
 var managerTestLabels = map[string]string{
 	disaggregatedsetv1.SetNameLabelKey:  "test-deployment",
 	disaggregatedsetv1.RoleLabelKey:     "prefill",
 	disaggregatedsetv1.RevisionLabelKey: "abc123",
+}
+
+func TestRolloutResumesZeroRoleWithUpdatedBudget(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, child := range []string{"", "a"} {
+			t.Run(string(identity)+"/"+child, func(t *testing.T) {
+				f := newSubRoleFixtureForIdentity(t, identity, 0)
+				role := disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model"}
+				if child == "" {
+					delete(f.lws.Annotations, subRoleReplicasAnnotation)
+					delete(f.lws.Annotations, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+				} else {
+					role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: child}}
+					setSubRoleJSON(f.lws, subRoleReplicasAnnotation, map[string]int{child: 0})
+					setSubRoleJSON(f.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{child: 1})
+				}
+				f.lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{}
+				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), lwsAdmissionInterceptors())
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}
+				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{role}
+				executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(10)}
+				for range 5 {
+					f.observe()
+					err := executor.scaleRevision(t.Context(), f.ds, f.revision("target"), []string{childRoleKey(role.Name, child)}, RoleReplicaState{1}, scaleUp)
+					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+				}
+				got := f.observe().LWS
+				require.EqualValues(t, 1, *got.Spec.Replicas)
+				require.Equal(t, intstr.FromInt(1), got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge)
+			})
+		}
+	}
+}
+
+func TestRolloutBudgetFallback(t *testing.T) {
+	percentage := leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromString("10%")}
+	surge := leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromString("1%")}
+	fallback := leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, child := range []string{"", "a"} {
+			for _, tc := range []struct {
+				name                      string
+				before                    int
+				counts                    []int
+				direction                 scaleDirection
+				current, desired, interim leaderworkersetv1.RollingUpdateConfiguration
+			}{
+				{name: "old percentage drains to zero", before: 10, counts: []int{9, 8, 7, 6, 5, 4, 3, 2, 1, 0}, direction: scaleDown, current: percentage, desired: surge, interim: fallback},
+				{name: "zero budgets resume in steps", counts: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, direction: scaleUp, desired: percentage, interim: fallback},
+				{name: "valid existing surge is retained", before: 1, counts: []int{2, 9, 10}, direction: scaleUp, current: surge, desired: percentage, interim: surge},
+			} {
+				t.Run(string(identity)+"/"+child+"/"+tc.name, func(t *testing.T) {
+					children := make([]string, tc.before)
+					for i := range children {
+						children[i] = "a"
+					}
+					f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+					role := disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model"}
+					if child == "" {
+						delete(f.lws.Annotations, subRoleReplicasAnnotation)
+						delete(f.lws.Annotations, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+					} else {
+						role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: child, Replicas: ptr.To[int32](10)}}
+						setSubRoleJSON(f.lws, subRoleReplicasAnnotation, map[string]int{child: tc.before})
+						setSubRoleJSON(f.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{child: 10})
+					}
+					f.lws.Spec.RolloutStrategy = *defaultedRolloutStrategy(&leaderworkersetv1.RolloutStrategy{RollingUpdateConfiguration: tc.current.DeepCopy()})
+					if identity == leaderworkersetv1.GroupIdentityOrdinal && tc.before > 0 {
+						f.lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](2)
+					}
+					require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+					f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), lwsAdmissionInterceptors())
+					role.Spec.Replicas = ptr.To[int32](10)
+					role.Spec.RolloutStrategy.RollingUpdateConfiguration = tc.desired.DeepCopy()
+					f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{role}
+					before := f.ds.DeepCopy()
+					executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
+					for _, count := range tc.counts {
+						// Subrole assignment may need several reconciles before the physical scale.
+						for range 8 {
+							err := executor.scaleRevision(t.Context(), f.ds, f.revision("revision"), []string{childRoleKey(role.Name, child)}, RoleReplicaState{count}, tc.direction)
+							require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+							f.native()
+						}
+						got := f.observe().LWS
+						require.EqualValues(t, count, *got.Spec.Replicas)
+						want := defaultedRolloutStrategy(&leaderworkersetv1.RolloutStrategy{RollingUpdateConfiguration: tc.interim.DeepCopy()})
+						if identity == leaderworkersetv1.GroupIdentityOrdinal && tc.before > 0 {
+							want.RollingUpdateConfiguration.Partition = ptr.To[int32](2)
+						}
+						if tc.direction == scaleUp && count == 10 {
+							want = defaultedRolloutStrategy(&role.Spec.RolloutStrategy)
+						}
+						require.Equal(t, *want, got.Spec.RolloutStrategy, "replicas=%d", count)
+					}
+					require.Equal(t, before, f.ds, "repair only the child's budget, not the planner's policy")
+				})
+			}
+		}
+	}
 }
 
 func buildManagerTestLWS(annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
