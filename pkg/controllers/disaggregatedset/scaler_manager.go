@@ -184,7 +184,7 @@ func (m *ScalerManager) Reconcile(
 		role := childRoleKey(s.Labels[disaggregatedsetv1.RoleLabelKey], s.Labels[disaggregatedsetv1.SubRoleLabelKey])
 		if !externalRoles[role] {
 			log.Info("Deleting scaler for role no longer External", "scaler", s.Name, "role", role)
-			if err := m.client.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
+			if err := m.client.Delete(ctx, s, client.Preconditions{UID: ptr.To(s.UID)}); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("delete scaler %s: %w", s.Name, err)
 			}
 			m.record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonScalerDeleted, "Delete",

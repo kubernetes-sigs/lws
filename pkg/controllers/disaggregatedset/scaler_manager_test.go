@@ -19,12 +19,14 @@ package disaggregatedset
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -151,6 +153,37 @@ func TestScalerManagerReconcileDeletesOrphaned(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, apierrorsIsNotFound(cl.Get(context.TODO(), types.NamespacedName{Name: "myds-old-role", Namespace: "default"}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{})))
+}
+
+func TestScalerManagerCleanupRejectsReplacement(t *testing.T) {
+	ds := newDSWithRoles("model", staticRole("prefill"))
+	old := &disaggregatedsetv1.DisaggregatedSetRoleScaler{ObjectMeta: metav1.ObjectMeta{
+		Name: "model-prefill", Namespace: ds.Namespace, UID: "old-scaler",
+		Labels:          map[string]string{disaggregatedsetv1.SetNameLabelKey: ds.Name, disaggregatedsetv1.RoleLabelKey: "prefill"},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))},
+	}}
+	replacement := old.DeepCopy()
+	replacement.UID, replacement.OwnerReferences = "replacement", nil
+	cl := fake.NewClientBuilder().WithScheme(wrappers.DisaggregatedSetTestScheme()).WithObjects(replacement).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+				list.(*disaggregatedsetv1.DisaggregatedSetRoleScalerList).Items = []disaggregatedsetv1.DisaggregatedSetRoleScaler{*old}
+				return nil // The cache still contains the previously owned object.
+			},
+			Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				// The fake client does not enforce UID preconditions; model the API server's rejection.
+				options := (&client.DeleteOptions{}).ApplyOptions(opts)
+				require.NotNil(t, options.Preconditions)
+				require.Equal(t, old.UID, ptr.Deref(options.Preconditions.UID, ""))
+				return apierrors.NewConflict(disaggregatedsetv1.Resource("disaggregatedsetrolescalers"), obj.GetName(), fmt.Errorf("UID precondition failed"))
+			},
+		}).Build()
+	_, err := NewScalerManager(cl, events.NewFakeRecorder(5)).Reconcile(t.Context(), ds, nil)
+	require.True(t, apierrors.IsConflict(err), "stale cleanup must conflict: %v", err)
+	got := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(replacement), got))
+	require.Equal(t, replacement.UID, got.UID)
+	require.Empty(t, got.OwnerReferences)
 }
 
 func TestScalerManagerReconcileRefusesForeignScaler(t *testing.T) {

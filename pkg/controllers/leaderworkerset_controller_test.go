@@ -18,13 +18,16 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +45,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -52,6 +56,105 @@ import (
 type fakeEventRecorder struct{}
 
 func (fakeEventRecorder) Eventf(regarding runtime.Object, related runtime.Object, eventtype, reason, action, note string, args ...interface{}) {
+}
+
+func TestParallelWorkerCleanupOwnership(t *testing.T) {
+	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		scenarios := []string{"owned", "unowned", "missing leader", "replaced leader", "wrong owner kind", "wrong owner version", "missing workload", "replaced workload", "foreign LWS", "read error", "replacement during delete"}
+		if identity == leaderworkerset.GroupIdentityHash {
+			scenarios = append(scenarios, "replaced replica set")
+		}
+		for _, scenario := range scenarios {
+			t.Run(string(identity)+"/"+scenario, func(t *testing.T) {
+				scheme := runtime.NewScheme()
+				require.NoError(t, leaderworkerset.AddToScheme(scheme))
+				require.NoError(t, appsv1.AddToScheme(scheme))
+				require.NoError(t, corev1.AddToScheme(scheme))
+				lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default", UID: "lws"}}
+				lws.Spec.GroupIdentity = identity
+				workloadMeta := metav1.ObjectMeta{Name: lws.Name, Namespace: lws.Namespace, UID: "leaders", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))}}
+				var workload client.Object = &appsv1.StatefulSet{ObjectMeta: workloadMeta}
+				leaderOwner := metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))
+				objects := []client.Object{lws}
+				if identity == leaderworkerset.GroupIdentityHash {
+					workload = &appsv1.Deployment{ObjectMeta: workloadMeta}
+					rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "model-rs", Namespace: lws.Namespace, UID: "rs", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("Deployment"))}}}
+					objects = append(objects, rs)
+					leaderOwner = metav1.NewControllerRef(rs, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
+					if scenario == "replaced replica set" {
+						rs.UID = "replacement"
+					}
+				}
+				leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model-0", Namespace: lws.Namespace, UID: "leader", OwnerReferences: []metav1.OwnerReference{*leaderOwner}}}
+				workers := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+					Name: leader.Name, Namespace: lws.Namespace, UID: "workers",
+					Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				}}
+				switch scenario {
+				case "unowned":
+					workers.OwnerReferences = nil
+				case "replaced leader":
+					leader.UID = "replacement"
+				case "wrong owner kind":
+					workers.OwnerReferences[0].Kind = "ReplicaSet"
+				case "wrong owner version":
+					workers.OwnerReferences[0].APIVersion = "other.example/v1"
+				case "replaced workload":
+					workload.SetUID("replacement")
+				case "foreign LWS":
+					workload.GetOwnerReferences()[0].UID = "another-lws"
+				}
+				objects = append(objects, workers)
+				if scenario != "missing workload" {
+					objects = append(objects, workload)
+				}
+				if scenario != "missing leader" {
+					objects = append(objects, leader)
+				}
+				cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if scenario == "read error" {
+							return fmt.Errorf("owner lookup failed")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if scenario == "replacement during delete" {
+							require.NoError(t, c.Delete(ctx, workers))
+							replacement := workers.DeepCopy()
+							replacement.UID, replacement.OwnerReferences = "replacement", nil
+							replacement.ResourceVersion = ""
+							require.NoError(t, c.Create(ctx, replacement))
+							// The fake client does not enforce UID preconditions.
+							options := (&client.DeleteOptions{}).ApplyOptions(opts)
+							require.NotNil(t, options.Preconditions)
+							require.Equal(t, workers.UID, ptr.Deref(options.Preconditions.UID, ""))
+							return apierrors.NewConflict(appsv1.Resource("statefulsets"), obj.GetName(), fmt.Errorf("UID precondition failed"))
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).Build()
+				r := NewLeaderWorkerSetReconciler(cl, scheme, events.NewFakeRecorder(5))
+				err := r.deleteWorkerStatefulSets(t.Context(), lws)
+				switch scenario {
+				case "read error":
+					require.ErrorContains(t, err, "owner lookup failed")
+				case "replacement during delete":
+					require.True(t, apierrors.IsConflict(err), "stale cleanup must conflict: %v", err)
+				default:
+					require.NoError(t, err)
+				}
+				var remaining appsv1.StatefulSetList
+				require.NoError(t, cl.List(t.Context(), &remaining, client.MatchingLabels{leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker}))
+				if scenario == "owned" {
+					require.Empty(t, remaining.Items)
+				} else {
+					require.Len(t, remaining.Items, 1, "unverified or replaced workers must survive")
+				}
+			})
+		}
+	}
 }
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
@@ -2182,31 +2285,29 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		lws.Finalizers = []string{"test-finalizer"}
 		lws.DeletionTimestamp = &now
 		lws.Spec.PodTerminationPolicy = leaderworkerset.ParallelPodTerminationPolicy
-
-		workerSts1 := &appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sample-0",
-				Namespace: "default",
-				Labels: map[string]string{
-					leaderworkerset.SetNameLabelKey: "test-sample",
-					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
-				},
-			},
-		}
-		workerSts2 := &appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-sample-1",
-				Namespace: "default",
-				Labels: map[string]string{
-					leaderworkerset.SetNameLabelKey: "test-sample",
-					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
-				},
-			},
+		lws.UID = "lws"
+		leaders := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+			Name: lws.Name, Namespace: lws.Namespace, UID: "leaders",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		objects := []client.Object{lws, leaders}
+		for i := range 2 {
+			name := fmt.Sprintf("%s-%d", lws.Name, i)
+			leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: lws.Namespace, UID: types.UID(name),
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leaders, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+			}}
+			workers := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: lws.Namespace, UID: types.UID(name + "-workers"),
+				Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+			}}
+			objects = append(objects, leader, workers)
 		}
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(lws, workerSts1, workerSts2).
+			WithObjects(objects...).
 			Build()
 
 		reconciler := NewLeaderWorkerSetReconciler(fakeClient, scheme, events.NewFakeRecorder(10), nil)
@@ -2216,7 +2317,7 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		}
 
 		var stsList appsv1.StatefulSetList
-		if err := fakeClient.List(ctx, &stsList, client.InNamespace("default")); err != nil {
+		if err := fakeClient.List(ctx, &stsList, client.InNamespace("default"), client.MatchingLabels{leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker}); err != nil {
 			t.Fatalf("List() error = %v", err)
 		}
 		if len(stsList.Items) != 0 {

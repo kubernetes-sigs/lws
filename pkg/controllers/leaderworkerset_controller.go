@@ -44,6 +44,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -132,6 +133,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -1453,11 +1455,53 @@ func (r *LeaderWorkerSetReconciler) deleteWorkerStatefulSets(ctx context.Context
 	propagation := metav1.DeletePropagationForeground
 	for i := range workerStsList.Items {
 		sts := &workerStsList.Items[i]
-		if sts.DeletionTimestamp == nil {
-			if err := r.Delete(ctx, sts, &client.DeleteOptions{PropagationPolicy: &propagation}); client.IgnoreNotFound(err) != nil {
-				return err
-			}
+		if sts.DeletionTimestamp != nil {
+			continue
+		}
+		// Labels narrow the search; the owner chain determines what we may delete.
+		owned, err := r.workerStatefulSetOwnedByLWS(ctx, sts, lws)
+		if err != nil {
+			return fmt.Errorf("checking owner of worker StatefulSet %s: %w", sts.Name, err)
+		}
+		if !owned {
+			continue
+		}
+		if err := r.Delete(ctx, sts, &client.DeleteOptions{PropagationPolicy: &propagation}, client.Preconditions{UID: ptr.To(sts.UID)}); client.IgnoreNotFound(err) != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// Follow the native owner chain, checking UIDs as well as names. If an owner is
+// already gone, leave its workers to garbage collection instead of guessing.
+func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Context, workers *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+	parents := []client.Object{&corev1.Pod{}, &appsv1.StatefulSet{}}
+	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		parents = []client.Object{&corev1.Pod{}, &appsv1.ReplicaSet{}, &appsv1.Deployment{}}
+	}
+	var child client.Object = workers
+	for _, parent := range parents {
+		ref := metav1.GetControllerOf(child)
+		if ref == nil || ref.UID == "" {
+			return false, nil
+		}
+		gvk, err := apiutil.GVKForObject(parent, r.Scheme)
+		if err != nil {
+			return false, err
+		}
+		if ref.APIVersion != gvk.GroupVersion().String() || ref.Kind != gvk.Kind {
+			return false, nil
+		}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: workers.Namespace, Name: ref.Name}, parent); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if parent.GetUID() != ref.UID {
+			return false, nil
+		}
+		child = parent
+	}
+	ref := metav1.GetControllerOf(child)
+	return ref != nil && ref.APIVersion == apiGVStr && ref.Kind == "LeaderWorkerSet" &&
+		ref.Name == lws.Name && lws.UID != "" && ref.UID == lws.UID, nil
 }
