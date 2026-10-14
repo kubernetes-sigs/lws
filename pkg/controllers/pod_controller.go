@@ -328,8 +328,17 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 
-	// Once size = 1, no need to create worker statefulSets.
-	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
+	// A protected old leader may have a different size from the live LWS.
+	// Use its stamped revision size, not the latest template's size-one shortcut.
+	groupSize := *groupLws.Spec.LeaderWorkerTemplate.Size
+	if stamped, ok := pod.Annotations[leaderworkerset.SizeAnnotationKey]; ok {
+		size, err := strconv.ParseInt(stamped, 10, 32)
+		if err != nil || size < 1 {
+			return ctrl.Result{}, fmt.Errorf("invalid leader group size %q", stamped)
+		}
+		groupSize = int32(size)
+	}
+	if groupSize == 1 {
 		return backoffResult, nil
 	}
 
@@ -525,6 +534,7 @@ func (r *PodReconciler) syncGroupReadyCondition(ctx context.Context, pod *corev1
 func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod, leaderWorkerSet leaderworkerset.LeaderWorkerSet) (bool, ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	policy := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartPolicy
+	groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
 	if policy != leaderworkerset.RecreateGroupOnPodRestart && policy != leaderworkerset.RecreateGroupAfterStart {
 		return false, ctrl.Result{}, nil
 	}
@@ -594,13 +604,18 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		return true, ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
+	if freshLWS.UID != leaderWorkerSet.UID || freshLWS.DeletionTimestamp != nil {
+		if podutils.LeaderPod(pod) {
+			return true, ctrl.Result{}, r.removeGroupRestartBudgetFinalizersForGroup(ctx, &leader)
+		}
+		return true, ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
+	}
 	leaderWorkerSet = freshLWS
-	// if the leader pod is being deleted, we don't need to send deletion requests
+	// Terminating or already exhausted groups must not be retained by a
+	// pending-Pod guard intended only to defer a new group restart.
 	if leader.DeletionTimestamp != nil {
 		return true, ctrl.Result{}, nil
 	}
-	// An exhausted group is terminated once and then held by Pod finalizers until
-	// explicit recovery or workload teardown.
 	if leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
 		deleted, err := r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
 		return deleted, ctrl.Result{}, err
@@ -613,10 +628,14 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	_, hasRecreateGroupAfterStartAnnotation := leaderWorkerSet.Annotations[leaderworkerset.RecreateGroupAfterStartAnnotationKey]
 	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
 	if recreateAfterStart && !isRecreatePending {
-		// Old groups keep their original size during a rollout that changes it.
-		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-			groupSize = size
+		// Resolve the current group's leader stamp, including worker-triggered
+		// restarts. Keep the revision-specific size when no stamp is present.
+		if stamped, ok := leader.Annotations[leaderworkerset.SizeAnnotationKey]; ok {
+			size, err := strconv.ParseInt(stamped, 10, 32)
+			if err != nil || size < 1 {
+				return false, ctrl.Result{}, fmt.Errorf("invalid leader group size %q", stamped)
+			}
+			groupSize = int(size)
 		}
 		startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
 		if err != nil {
