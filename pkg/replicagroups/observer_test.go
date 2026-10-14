@@ -143,73 +143,52 @@ func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int
 	return f
 }
 
-func TestScalingObservedDoesNotRequireReadiness(t *testing.T) {
+func TestScalingObservation(t *testing.T) {
+	shortfall := func(f *fixture) {
+		f.scale(3)
+		if f.replicaSet != nil {
+			f.replicaSet.Status.Replicas = 2
+		} else {
+			f.workload.(*appsv1.StatefulSet).Status.Replicas = 2
+		}
+	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		for _, tc := range []struct {
-			name   string
-			change func(*fixture)
-			want   bool
+			name               string
+			change             func(*fixture)
+			scaling, deletions bool
 		}{
-			{"steady", func(*fixture) {}, true},
+			{"steady", func(*fixture) {}, true, true},
 			{"Pending leaders, no workers under LeaderReady", func(f *fixture) {
 				f.lws.Spec.StartupPolicy = leaderworkersetv1.LeaderReadyStartupPolicy
 				f.workerSets, f.workers = nil, nil
 				for _, pod := range f.leaders {
 					pod.Status = corev1.PodStatus{Phase: corev1.PodPending}
 				}
-			}, true},
+			}, true, true},
 			{"loading leaders", func(f *fixture) {
 				for _, pod := range f.leaders {
 					pod.Status.Conditions = nil
 				}
-			}, true},
-			{"LWS not acknowledged", func(f *fixture) { f.lws.Generation++ }, false},
-			{"native controller not acknowledged", func(f *fixture) { f.workload.SetGeneration(4) }, false},
-			{"native scale not applied", func(f *fixture) { f.lws.Spec.Replicas = ptr.To[int32](1) }, false},
-			{"missing new leader", func(f *fixture) { f.leaders = f.leaders[:1] }, false},
-			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false},
-			{"deletion observed but not finished", func(f *fixture) { f.scale(1); holdTermination(f.leaders[1]) }, true},
-			{"deleted group still needed", func(f *fixture) { holdTermination(f.leaders[1]) }, false},
-			{"terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed }, false},
+			}, true, true},
+			{"LWS not acknowledged", func(f *fixture) { f.lws.Generation++ }, false, false},
+			{"native controller not acknowledged", func(f *fixture) { f.workload.SetGeneration(4) }, false, false},
+			{"native scale not applied", func(f *fixture) { f.lws.Spec.Replicas = ptr.To[int32](1) }, false, false},
+			{"missing new leader", func(f *fixture) { f.leaders = f.leaders[:1] }, false, false},
+			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false, false},
+			{"deletion observed but not finished", func(f *fixture) { f.scale(1); holdTermination(f.leaders[1]) }, true, true},
+			{"deleted group still needed", func(f *fixture) { holdTermination(f.leaders[1]) }, false, false},
+			{"terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed }, false, false},
+			{"confirmed shortfall", shortfall, false, true},
+			{"Pods lag native status", func(f *fixture) { shortfall(f); f.leaders = f.leaders[:1] }, false, false},
 		} {
 			t.Run(fmt.Sprintf("%s/%s", identity, tc.name), func(t *testing.T) {
 				f := newFixture(identity, 2, 2)
 				tc.change(f)
 				snapshot, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
 				require.NoError(t, err)
-				require.Equal(t, tc.want, snapshot.ScalingObserved())
-			})
-		}
-	}
-}
-
-func TestDeletionsObservedDuringCreationShortfall(t *testing.T) {
-	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
-		for _, tc := range []struct {
-			name   string
-			change func(*fixture)
-			want   bool
-		}{
-			{"confirmed shortfall", func(*fixture) {}, true},
-			{"Pods lag native status", func(f *fixture) { f.leaders = f.leaders[:1] }, false},
-			{"LWS not acknowledged", func(f *fixture) { f.lws.Generation++ }, false},
-			{"native not acknowledged", func(f *fixture) { f.workload.SetGeneration(4) }, false},
-			{"native target mismatch", func(f *fixture) { f.lws.Spec.Replicas = ptr.To[int32](4) }, false},
-			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false},
-		} {
-			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
-				f := newFixture(identity, 3, 1)
-				f.leaders = f.leaders[:2]
-				if f.replicaSet != nil {
-					f.replicaSet.Status.Replicas = 2
-				} else {
-					f.workload.(*appsv1.StatefulSet).Status.Replicas = 2
-				}
-				tc.change(f)
-				snapshot, err := Observe(t.Context(), newReader(t, f.objects()...), f.lws)
-				require.NoError(t, err)
-				require.False(t, snapshot.ScalingObserved())
-				require.Equal(t, tc.want, snapshot.DeletionsObserved())
+				require.Equal(t, tc.scaling, snapshot.ScalingObserved())
+				require.Equal(t, tc.deletions, snapshot.DeletionsObserved())
 			})
 		}
 	}
