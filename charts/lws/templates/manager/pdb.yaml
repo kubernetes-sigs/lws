@@ -1,0 +1,26 @@
+{{- if and .Values.pdb .Values.pdb.enabled (gt (int .Values.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lws.fullname" . }}-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: controller-manager
+    {{- include "lws.labels" . | nindent 4 }}
+    {{- include "lws.instanceLabel" . | nindent 4 }}
+spec:
+  {{- if ne .Values.pdb.maxUnavailable nil }}
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  {{- else if ne .Values.pdb.minAvailable nil }}
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  {{- else }}
+  minAvailable: 1
+  {{- end }}
+  {{- with .Values.pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      {{- include "lws.selectorLabels" . | nindent 6 }}
+{{- end }}{{- /* if .Values.pdb.enabled && replicaCount > 1 */}}

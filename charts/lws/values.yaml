@@ -15,11 +15,27 @@ enableCertManager: false
 # ClusterRoles and the validating webhook. The CRD (under crds/), the
 # bundled controller, and its manager RBAC are always installed.
 enableDisaggregatedSet: false
+# replicaCount above 1 runs standby managers: leader election keeps a single
+# active reconciler, while every replica serves the webhooks.
 replicaCount: 1
 serviceAccount:
   # name of the controller manager ServiceAccount. Defaults to
   # <fullname>-controller-manager when empty.
   name: ""
+# PodDisruptionBudget for the manager Deployment, rendered only when
+# replicaCount is greater than 1.
+# Ref: https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+pdb:
+  # Enable PodDisruptionBudget.
+  enabled: true
+  # Minimum pods that must remain available after eviction (int or quoted percent).
+  minAvailable: 1
+  # Maximum pods that may be unavailable (int or quoted percent). Rendered only
+  # when set, and takes precedence over minAvailable.
+  maxUnavailable: null
+  # When manager pods that are not Ready may be evicted: AlwaysAllow or
+  # IfHealthyBudget. Set to null to use the cluster default (IfHealthyBudget).
+  unhealthyPodEvictionPolicy: AlwaysAllow
 imagePullSecrets: []
 # Customize controlerManager
 image:

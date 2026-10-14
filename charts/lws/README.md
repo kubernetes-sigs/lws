@@ -134,8 +134,12 @@ The following table lists the configurable parameters of the LWS chart and their
 | `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
 | `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
-| `replicaCount`                             | Number of manager replicas                     | `1`                                                 |
+| `replicaCount`                             | Number of manager replicas (leader election keeps one active) | `1`                                  |
 | `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
+| `pdb.enabled`                              | Create a PodDisruptionBudget for the manager (only when `replicaCount` > 1) | `true`                 |
+| `pdb.minAvailable`                         | Minimum manager pods available after eviction  | `1`                                                 |
+| `pdb.maxUnavailable`                       | Maximum manager pods unavailable; takes precedence over `minAvailable` | `null`                      |
+| `pdb.unhealthyPodEvictionPolicy`           | Eviction policy for manager pods that are not Ready (`AlwaysAllow` or `IfHealthyBudget`); omitted when `null` | `AlwaysAllow` |
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
 | `image.manager.repository`                 | Repository for manager image                   | `registry.k8s.io/lws/lws`                           |
 | `image.manager.tag`                        | Tag for manager image                          | `main`                                              |
