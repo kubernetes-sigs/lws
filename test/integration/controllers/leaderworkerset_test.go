@@ -2637,6 +2637,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					// Update size to 4.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						testing.UpdateSize(ctx, k8sClient, lws, 4)
+						// Wait for the resized template before simulating leader Pod updates;
+						// otherwise the readiness helper can copy the previous revision.
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
 						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
 					},
 					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
