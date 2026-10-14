@@ -36,11 +36,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
@@ -820,6 +822,77 @@ func TestObserveValidatesExpectedIdentity(t *testing.T) {
 		require.Error(t, err)
 		require.Nil(t, snapshot)
 	}
+}
+
+type sourceTestCache struct {
+	cache.Cache
+	observe func() error
+}
+
+func (*sourceTestCache) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (c *sourceTestCache) GetInformer(context.Context, client.Object, ...cache.InformerGetOption) (cache.Informer, error) {
+	return nil, c.observe()
+}
+
+func TestObserverSource(t *testing.T) {
+	for _, sourceFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint("source-first=", sourceFirst), func(t *testing.T) {
+			queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			t.Cleanup(queue.ShutDown)
+			o := &Observer{}
+			source := o.Source(func(lws *leaderworkersetv1.LeaderWorkerSet) (reconcile.Request, bool) {
+				return reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}, lws.Name != "unrelated"
+			})
+			busy := &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "busy", Namespace: "ns"}}
+			idle := busy.DeepCopy()
+			idle.Name = "idle"
+			stopped := errors.New("observer stopped")
+			o.cache = &sourceTestCache{observe: func() error {
+				for range 2048 {
+					o.notify(busy)
+				}
+				o.notify(idle) // Must not disappear behind the burst.
+				o.notify(&leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "unrelated"}})
+				return stopped
+			}}
+			require.True(t, o.NeedLeaderElection())
+			connect := func() { require.NoError(t, source.Start(t.Context(), queue)) }
+			if sourceFirst {
+				connect()
+			}
+			finished := make(chan error, 1)
+			go func() { finished <- o.Start(t.Context()) }()
+			if !sourceFirst {
+				connect()
+			}
+			select {
+			case err := <-finished:
+				require.ErrorIs(t, err, stopped, "manager must receive observer errors")
+			case <-time.After(time.Second):
+				t.Fatal("observer did not start after queue publication")
+			}
+			require.Equal(t, 2, queue.Len(), "workqueue deduplicates without dropping another request")
+			for _, name := range []string{"busy", "idle"} {
+				request, shutdown := queue.Get()
+				require.False(t, shutdown)
+				require.Equal(t, name, request.Name)
+				queue.Done(request)
+			}
+			o.notify(idle) // A new event wakes an otherwise idle consumer.
+			require.Equal(t, 1, queue.Len())
+		})
+	}
+	t.Run("cancel before source startup", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		o := &Observer{}
+		o.Source(nil)
+		require.NoError(t, o.Start(ctx), "cancellation must not start the cache without its queue")
+	})
 }
 
 type listCheckingCache struct {

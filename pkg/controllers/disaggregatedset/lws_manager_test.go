@@ -19,7 +19,6 @@ package disaggregatedset
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -46,9 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -1862,60 +1859,38 @@ func TestPendingWritesForgetOnlyTheirParent(t *testing.T) {
 	require.Empty(t, o.writes)
 }
 
-func TestObserverEvents(t *testing.T) {
-	for _, sourceFirst := range []bool{false, true} {
-		t.Run(fmt.Sprint("source-first=", sourceFirst), func(t *testing.T) {
-			queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[ctrl.Request]())
-			t.Cleanup(queue.ShutDown)
-			changes := &observerEvents{ready: make(chan struct{})}
-			ds := testManagerDS("busy")
-			busy := &leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Namespace: ds.Namespace, OwnerReferences: []metav1.OwnerReference{ownerRefFor(ds)}}}
-			idle := busy.DeepCopy()
-			idle.OwnerReferences[0].Name = "idle"
-			stopped := errors.New("observer stopped")
-			changes.observer = manager.RunnableFunc(func(context.Context) error {
-				for range 2048 {
-					changes.enqueue(busy)
-				}
-				changes.enqueue(idle) // Must not disappear behind the burst.
-				return stopped
-			})
-			require.True(t, changes.NeedLeaderElection())
-			connect := func() { require.NoError(t, source.Func(changes.connect).Start(t.Context(), queue)) }
-			if sourceFirst {
-				connect()
+func TestDisaggregatedSetRequest(t *testing.T) {
+	ds := testManagerDS("parent")
+	for _, tc := range []struct {
+		name string
+		edit func(*metav1.OwnerReference)
+		want bool
+	}{
+		{"owned", func(*metav1.OwnerReference) {}, true},
+		{"wrong kind", func(o *metav1.OwnerReference) { o.Kind = "Other" }, false},
+		{"wrong API", func(o *metav1.OwnerReference) { o.APIVersion = "other/v1" }, false},
+		{"not controller", func(o *metav1.OwnerReference) { o.Controller = ptr.To(false) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owner := ownerRefFor(ds)
+			tc.edit(&owner)
+			request, ok := disaggregatedSetRequest(&leaderworkersetv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Namespace: ds.Namespace, OwnerReferences: []metav1.OwnerReference{owner}}})
+			require.Equal(t, tc.want, ok)
+			if ok {
+				require.Equal(t, client.ObjectKeyFromObject(ds), request.NamespacedName)
 			}
-			finished := make(chan error, 1)
-			go func() { finished <- changes.Start(t.Context()) }()
-			if !sourceFirst {
-				connect()
-			}
-			select {
-			case err := <-finished:
-				require.ErrorIs(t, err, stopped, "manager must receive observer errors")
-			case <-time.After(time.Second):
-				t.Fatal("observer did not start after queue publication")
-			}
-			require.Equal(t, 2, queue.Len(), "workqueue deduplicates without dropping another parent")
-			for _, name := range []string{"busy", "idle"} {
-				request, shutdown := queue.Get()
-				require.False(t, shutdown)
-				require.Equal(t, name, request.Name)
-				queue.Done(request)
-			}
-			changes.enqueue(idle) // A new event wakes an otherwise idle parent.
-			require.Equal(t, 1, queue.Len())
 		})
 	}
-	t.Run("cancel before source startup", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		changes := &observerEvents{ready: make(chan struct{}), observer: manager.RunnableFunc(func(context.Context) error {
-			t.Fatal("cancelled observer must not start without its queue")
-			return nil
-		})}
-		require.NoError(t, changes.Start(ctx))
-	})
+}
+
+type notificationQueue struct {
+	workqueue.TypedRateLimitingInterface[ctrl.Request]
+	added chan struct{}
+}
+
+func (q *notificationQueue) Add(request ctrl.Request) {
+	q.TypedRateLimitingInterface.Add(request)
+	q.added <- struct{}{}
 }
 
 type observationTransport struct {
@@ -1950,19 +1925,20 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 	scheme := testSchemeForUnit()
 	writer, err := client.NewWithWatch(config, client.Options{Scheme: scheme})
 	require.NoError(t, err)
-	start := func(t *testing.T, callbacks ...func(*leaderworkersetv1.LeaderWorkerSet)) (*LeaderWorkerSetManager, *observationTransport, func()) {
+	start := func(t *testing.T, queue workqueue.TypedRateLimitingInterface[ctrl.Request]) (*LeaderWorkerSetManager, *observationTransport, func()) {
 		cfg := rest.CopyConfig(config)
 		trace := &observationTransport{}
 		cfg.WrapTransport = func(rt http.RoundTripper) http.RoundTripper { trace.RoundTripper = rt; return trace }
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
 		require.NoError(t, err)
 		pending := testPendingWrites(nil)
-		o, err := replicagroups.NewObserver(mgr, func(lws *leaderworkersetv1.LeaderWorkerSet) {
-			for _, callback := range callbacks {
-				callback(lws)
-			}
-		})
+		o, err := replicagroups.NewObserver(mgr)
 		require.NoError(t, err)
+		if queue == nil {
+			queue = workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[ctrl.Request]())
+			t.Cleanup(queue.ShutDown)
+		}
+		require.NoError(t, o.Source(disaggregatedSetRequest).Start(t.Context(), queue))
 		require.True(t, o.NeedLeaderElection())
 		ctx, cancel := context.WithCancel(t.Context())
 		finished := make(chan error, 1)
@@ -2012,7 +1988,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			manager := NewLeaderWorkerSetManager(writer)
 			manager.pending = testPendingWrites(nil)
 			if watchFirst {
-				manager, _, _ = start(t)
+				manager, _, _ = start(t, nil)
 			}
 			persisted, response := make(chan struct{}), make(chan struct{})
 			releaseResponse := sync.OnceFunc(func() { close(response) })
@@ -2053,7 +2029,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			releaseResponse()
 			require.NoError(t, <-finished)
 			if !watchFirst {
-				fresh, _, _ := start(t)
+				fresh, _, _ := start(t, nil)
 				manager.reader, manager.pending.Reader = fresh.reader, fresh.reader
 			}
 			require.Empty(t, manager.pending.writes)
@@ -2085,20 +2061,15 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "test", Image: "test.invalid/image"}}},
 		}
 		require.NoError(t, writer.Create(t.Context(), pod))
-		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[ctrl.Request]())
+		queue := &notificationQueue{
+			TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[ctrl.Request]()),
+			added:                      make(chan struct{}, 3),
+		}
 		t.Cleanup(queue.ShutDown)
-		changes := &observerEvents{ready: make(chan struct{})}
-		require.NoError(t, source.Func(changes.connect).Start(t.Context(), queue))
-		notified := make(chan struct{}, 3)
-		start(t, func(current *leaderworkersetv1.LeaderWorkerSet) {
-			if current.UID == lws.UID {
-				changes.enqueue(current)
-				notified <- struct{}{}
-			}
-		})
+		start(t, queue)
 		wait := func() {
 			select {
-			case <-notified:
+			case <-queue.added:
 			case <-time.After(5 * time.Second):
 				t.Fatal("missing informer notification")
 			}
@@ -2121,7 +2092,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
 			manager.pending = testPendingWrites(nil)
 			if watchStarted {
-				manager, _, _ = start(t)
+				manager, _, _ = start(t, nil)
 			}
 			ds := newTestDisaggregatedSet()
 			role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
@@ -2140,7 +2111,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			require.Zero(t, getLWSReplicas(created))
 			require.NoError(t, writer.Delete(t.Context(), created))
 			if !watchStarted {
-				fresh, _, _ := start(t)
+				fresh, _, _ := start(t, nil)
 				manager.reader, manager.pending.Reader = fresh.reader, fresh.reader
 			}
 			o := manager.reader
@@ -2237,7 +2208,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				}
 			}
 			acknowledge(2)
-			manager, trace, stop := start(t)
+			manager, trace, stop := start(t, nil)
 			o := manager.reader
 			for _, object := range objects {
 				cached := object.DeepCopyObject().(client.Object)
@@ -2325,7 +2296,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			stop()
 			// A restart loses local receipts; a cold, ordered bootstrap must still
 			// see the pending deletion left by the previous process.
-			manager, _, _ = start(t)
+			manager, _, _ = start(t, nil)
 			o = manager.reader
 			require.ErrorIs(t, observe(), errReplicaGroupsPending)
 			require.NoError(t, writer.Delete(t.Context(), victim))

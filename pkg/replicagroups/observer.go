@@ -35,9 +35,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -51,15 +54,16 @@ type Observer struct {
 	cache   cache.Cache
 	ready   chan struct{}
 	changed func(*leaderworkersetv1.LeaderWorkerSet)
+	// Set by Source before startup; nil for a read-only observer.
+	queueReady <-chan struct{}
 }
 
 const setNameIndex = "replicagroups.setName"
 
 // NewObserver constructs the shared reader; register it with mgr.Add before
-// starting the manager. changed wakes a consumer when an LWS or descendant
-// changes, passing a read-only cached LWS. Consumers still own write tracking
-// and their rollout budgets, and must copy the LWS before any mutation.
-func NewObserver(mgr manager.Manager, changed func(*leaderworkersetv1.LeaderWorkerSet)) (*Observer, error) {
+// starting the manager. Use Source to enqueue changes in a controller.
+// Consumers still own write tracking and their rollout budgets.
+func NewObserver(mgr manager.Manager) (*Observer, error) {
 	selector, err := labels.Parse(leaderworkersetv1.SetNameLabelKey)
 	if err != nil {
 		return nil, err
@@ -78,7 +82,25 @@ func NewObserver(mgr manager.Manager, changed func(*leaderworkersetv1.LeaderWork
 	if err != nil {
 		return nil, err
 	}
-	return &Observer{cache: c, ready: make(chan struct{}), changed: changed}, nil
+	return &Observer{cache: c, ready: make(chan struct{})}, nil
+}
+
+// Source maps read-only LWS notifications to controller requests. Configure it
+// once before starting the manager. The observer waits for the queue before
+// replaying initial events; direct Add calls deduplicate bursts without loss.
+// Returning false from request ignores an LWS unrelated to the consumer.
+func (o *Observer) Source(request func(*leaderworkersetv1.LeaderWorkerSet) (reconcile.Request, bool)) source.Source {
+	ready := make(chan struct{})
+	o.queueReady = ready
+	return source.Func(func(_ context.Context, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) error {
+		o.changed = func(lws *leaderworkersetv1.LeaderWorkerSet) {
+			if key, ok := request(lws); ok {
+				queue.Add(key)
+			}
+		}
+		close(ready)
+		return nil
+	})
 }
 
 // A reflector's legacy initial LIST uses RV=0 (possibly stale). Bootstrap must
@@ -100,6 +122,13 @@ func consistentInitialInformer(lw toolscache.ListerWatcher, object runtime.Objec
 func (*Observer) NeedLeaderElection() bool { return true }
 
 func (o *Observer) Start(ctx context.Context) error {
+	if o.queueReady != nil {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-o.queueReady:
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	finished := make(chan error, 1)

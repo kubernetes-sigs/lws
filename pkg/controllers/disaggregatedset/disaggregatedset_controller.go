@@ -30,13 +30,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -586,37 +583,12 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(
 	return nil
 }
 
-// observerEvents starts the leader-only observer after its controller queue is
-// available. Initial informer replay cannot race queue publication or lose an
-// event; the workqueue deduplicates bursts without a bounded intermediate buffer.
-type observerEvents struct {
-	observer manager.Runnable
-	ready    chan struct{}
-	queue    workqueue.TypedRateLimitingInterface[ctrl.Request]
-}
-
-func (*observerEvents) NeedLeaderElection() bool { return true }
-
-func (e *observerEvents) Start(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-e.ready:
-		return e.observer.Start(ctx)
-	}
-}
-
-func (e *observerEvents) connect(_ context.Context, queue workqueue.TypedRateLimitingInterface[ctrl.Request]) error {
-	e.queue = queue
-	close(e.ready)
-	return nil
-}
-
-func (e *observerEvents) enqueue(lws *leaderworkersetv1.LeaderWorkerSet) {
+func disaggregatedSetRequest(lws *leaderworkersetv1.LeaderWorkerSet) (ctrl.Request, bool) {
 	owner := metav1.GetControllerOf(lws)
-	if owner != nil && owner.Kind == "DisaggregatedSet" && owner.APIVersion == disaggregatedsetv1.GroupVersion.String() {
-		e.queue.Add(ctrl.Request{NamespacedName: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}})
+	if owner == nil || owner.Kind != "DisaggregatedSet" || owner.APIVersion != disaggregatedsetv1.GroupVersion.String() {
+		return ctrl.Request{}, false
 	}
+	return ctrl.Request{NamespacedName: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name}}, true
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -624,13 +596,11 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.LWSManager == nil {
 		r.LWSManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}
-	changes := &observerEvents{ready: make(chan struct{})}
-	observer, err := replicagroups.NewObserver(mgr, changes.enqueue)
+	observer, err := replicagroups.NewObserver(mgr)
 	if err != nil {
 		return err
 	}
-	changes.observer = observer
-	if err := mgr.Add(changes); err != nil {
+	if err := mgr.Add(observer); err != nil {
 		return err
 	}
 	r.LWSManager.reader = observer
@@ -645,7 +615,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
-		WatchesRawSource(source.Func(changes.connect)).
+		WatchesRawSource(observer.Source(disaggregatedSetRequest)).
 		Named("disaggregatedset").
 		Complete(r)
 }
