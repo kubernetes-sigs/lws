@@ -1528,9 +1528,39 @@ func TestWriteReceiptsWaitForTheWholeSlice(t *testing.T) {
 		}
 	}
 	require.Empty(t, o.writes)
+	seed = r.seedForRole(t.Context(), ds) // The pending result ended the previous reconcile.
 	count, err := seed(testRolePrefill)
 	require.NoError(t, err)
 	require.EqualValues(t, 3, count)
+}
+
+func TestScalerSeedsShareOneLazyObservation(t *testing.T) {
+	ds := newTestDisaggregatedSet()
+	a := revisionLWS("current", testRolePrefill, 2, 2, time.Time{}, 2)
+	b := revisionLWS("current", testRoleDecode, 3, 3, time.Time{}, 3)
+	setSubRoleJSON(b, subRoleReplicasAnnotation, map[string]int{"a": 1, "b": 2})
+	base := newTestClient(a, b)
+	lists := 0
+	reader := interceptor.NewClient(base, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		lists++
+		return c.List(ctx, list, opts...)
+	}})
+	r := &DisaggregatedSetReconciler{LWSManager: NewLeaderWorkerSetManager(reader)}
+	seed := r.seedForRole(t.Context(), ds)
+	require.Zero(t, lists, "existing scalers need no seed observation")
+	for role, want := range map[string]int32{testRolePrefill: 2, testRoleDecode: 3, "decode/a": 1, "decode/b": 2, "missing": 1} {
+		got, err := seed(role)
+		require.NoError(t, err)
+		require.Equal(t, want, got, role)
+	}
+	require.Equal(t, 1, lists)
+	current := readTestLWS(t, base, a)
+	current.Spec.Replicas = ptr.To[int32](6)
+	require.NoError(t, base.Update(t.Context(), current))
+	got, err := r.seedForRole(t.Context(), ds)(testRolePrefill)
+	require.NoError(t, err)
+	require.EqualValues(t, 6, got, "the next reconcile takes a fresh snapshot")
+	require.Equal(t, 2, lists)
 }
 
 func TestWriteReceiptRecovery(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -257,17 +258,18 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 // zero (KEDA, HPA with the gate flipped) can still take the role down to 0
 // after attach.
 func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) func(string) (int32, error) {
-	return func(role string) (int32, error) {
+	// All missing scalers in this reconcile use one lazily loaded snapshot.
+	load := sync.OnceValues(func() (map[string]int32, error) {
 		// Only called for a missing scaler. Do not freeze an initial target
 		// from a cache that has not yet observed our preceding workload writes.
 		if r.LWSManager.pending != nil {
 			if err := r.LWSManager.pending.observed(ctx, ds.UID, ""); err != nil {
-				return 0, err
+				return nil, err
 			}
 		}
 		all, err := r.LWSManager.ListAll(ctx, ds, "")
 		if err != nil {
-			return 0, fmt.Errorf("list LWS for scaler seed: %w", err)
+			return nil, fmt.Errorf("list LWS for scaler seed: %w", err)
 		}
 		sums := make(map[string]int32)
 		configs := disaggregatedsetutils.GetRoleConfigs(ds)
@@ -276,7 +278,7 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 			sums[role] += int32(getLWSReplicas(lws))
 			counts, err := subRoleCounts(lws, subRoleReplicasAnnotation)
 			if err != nil {
-				return 0, err
+				return nil, err
 			}
 			if len(counts) == 0 {
 				if config := configs[role]; config != nil && len(config.SubRoles) > 0 {
@@ -294,6 +296,13 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 				key := childRoleKey(role, child)
 				sums[key] += int32(count)
 			}
+		}
+		return sums, nil
+	})
+	return func(role string) (int32, error) {
+		sums, err := load()
+		if err != nil {
+			return 0, err
 		}
 		if count, found := sums[role]; found {
 			return count, nil
