@@ -43,8 +43,8 @@ Alternatively, you can use the charts available at `oci://registry.k8s.io/lws/ch
 
 ```bash
 kubectl get deploy -n lws-system
-NAME                          READY   UP-TO-DATE   AVAILABLE   AGE
-lws-system-controller-manager   1/1     1            1           14s
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
+lws-controller-manager   1/1     1            1           14s
 ```
 
 ##### Cert Manager
@@ -134,19 +134,24 @@ The following table lists the configurable parameters of the LWS chart and their
 | `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
 | `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
+| `replicaCount`                             | Number of manager replicas                     | `1`                                                 |
+| `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
-| `image.manager.repository`                 | Repository for manager image                   | `us-central1-docker.pkg.dev/k8s-staging-images/lws` |
+| `image.manager.repository`                 | Repository for manager image                   | `registry.k8s.io/lws/lws`                           |
 | `image.manager.tag`                        | Tag for manager image                          | `main`                                              |
-| `image.manager.pullPolicy`                 | Pull policy for manager image                  | `IfNotPresent`                                      |
+| `image.manager.pullPolicy`                 | Pull policy for manager image                  | `Always`                                            |
 | `podAnnotations`                           | Annotations for pods                           | `{}`                                                |
 | `podSecurityContext.runAsNonRoot`          | Run pod as non-root user                       | `true`                                              |
 | `securityContext.allowPrivilegeEscalation` | Allow privilege escalation in security context | `false`                                             |
+| `securityContext.readOnlyRootFilesystem`   | Mount the container root filesystem read-only  | `true`                                              |
 | `securityContext.capabilities.drop`        | Drop all capabilities in security context      | `["ALL"]`                                           |
 | `service.type`                             | Type of lws controller service                 | `ClusterIP`                                         |
 | `service.port`                             | Webhook server target port                     | `9443`                                              |
 | `resources.requests.cpu`                   | CPU request for resources                      | `1`                                                 |
 | `resources.requests.memory`                | Memory request for resources                   | `1Gi`                                               |
+| `priorityClassName`                        | PriorityClass for the manager pods             | `""`                                                |
 | `nodeSelector`                             | Node selector                                  | `{}`                                                |
-| `tolerations`                              | Tolerations                                    | `{}`                                                |
+| `tolerations`                              | Tolerations                                    | `[]`                                                |
 | `affinity`                                 | Affinity                                       | `{}`                                                |
 | `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |
+| `featureGates`                             | Alpha LWS feature gates, e.g. `{WorkloadAwareScheduling: true}` | `{}`                               |

@@ -122,8 +122,15 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
 	assert.Equal(t, disaggregatedsetv1.RevisionHashVersion, revisionHashVersion(&got))
 
-	_, err = reconciler.Reconcile(ctx, request)
+	result, err := reconciler.Reconcile(ctx, request)
 	require.NoError(t, err, "child reconciliation should succeed")
+	require.NotZero(t, result.RequeueAfter, "empty creations must request the pass that grows them")
+	require.NoError(t, fakeClient.List(ctx, &initialLWSList))
+	for _, lws := range initialLWSList.Items {
+		assert.Zero(t, *lws.Spec.Replicas, "creation cannot start Pods from an unobserved request")
+	}
+	_, err = reconciler.Reconcile(ctx, request)
+	require.NoError(t, err, "observed children can now scale to the current target")
 
 	newRevision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
@@ -345,8 +352,10 @@ func TestSlicesCreateOneSetPerSlice(t *testing.T) {
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
 
-	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
-	require.NoError(t, err, "Reconcile should succeed")
+	for range 2 { // Create empty children, then scale from their observed state.
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+		require.NoError(t, err, "Reconcile should succeed")
+	}
 
 	revision := disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles)
 	lwsManager := controller.NewLeaderWorkerSetManager(fakeClient)
@@ -619,7 +628,11 @@ func TestStatusUsesScalerTargetForExternalRoles(t *testing.T) {
 	prefillLWS, err := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 0, revision, testControllerRolePrefill))
 	require.NoError(t, err)
 	require.NotNil(t, prefillLWS)
-	require.EqualValues(t, 1, *prefillLWS.Spec.Replicas, "a fresh External role's LWS should be created at the scaler-seeded target (1), not the ignored inline replicas (5)")
+	require.Zero(t, *prefillLWS.Spec.Replicas)
+	_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(disaggregatedSet)})
+	require.NoError(t, err)
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(prefillLWS), prefillLWS))
+	require.EqualValues(t, 1, *prefillLWS.Spec.Replicas, "a fresh External role must scale to the scaler-seeded target (1), not the ignored inline replicas (5)")
 
 	// Simulate the LWS reporting itself fully ready/updated at that scaler-driven target.
 	prefillLWS.Status.Replicas, prefillLWS.Status.ReadyReplicas, prefillLWS.Status.UpdatedReplicas = 1, 1, 1

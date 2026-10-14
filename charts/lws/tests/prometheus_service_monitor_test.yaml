@@ -1,0 +1,62 @@
+suite: Prometheus ServiceMonitor (enablePrometheus)
+templates:
+  - templates/prometheus/monitor.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: renders nothing when disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: scrapes the metrics endpoint over HTTPS when enabled
+    set:
+      enablePrometheus: true
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.name
+          value: lws-controller-manager-metrics-monitor
+      - equal:
+          path: spec.endpoints[0].port
+          value: https
+      - equal:
+          path: spec.endpoints[0].scheme
+          value: https
+
+  - it: adds serviceMonitor.extraLabels
+    set:
+      enablePrometheus: true
+      serviceMonitor:
+        extraLabels:
+          release: kube-prometheus-stack
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: kube-prometheus-stack
+
+  - it: skips TLS verification without cert-manager
+    set:
+      enablePrometheus: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].tlsConfig
+          value:
+            insecureSkipVerify: true
+
+  - it: verifies the metrics certificate with cert-manager
+    set:
+      enablePrometheus: true
+      enableCertManager: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].tlsConfig
+          value:
+            serverName: lws-controller-manager-metrics-service.lws-system.svc
+            insecureSkipVerify: false
+            ca:
+              secret:
+                name: lws-metrics-server-cert
+                key: ca.crt

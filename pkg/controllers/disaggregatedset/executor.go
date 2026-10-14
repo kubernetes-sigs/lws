@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
@@ -50,7 +51,7 @@ const (
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	unschedulablePodGracePeriod       = time.Minute
-	rolloutIdleRequeueAfter           = 10 * time.Second
+	idleRolloutRetry                  = 10 * time.Second
 )
 
 type RollingUpdateExecutor struct {
@@ -148,7 +149,7 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 			continue
 		}
 		initialReplicas := desiredReplicasByRole[roleName]
-		if err := executor.LWSManager.Create(ctx, disaggregatedSet, roleConfigs[roleName], slice, revision, 0, initialReplicas); err != nil {
+		if err := executor.LWSManager.Create(ctx, disaggregatedSet, roleConfigs[roleName], slice, revision, initialReplicas, desiredSubRoles(roleConfigs[roleName], desiredReplicasByRole)); err != nil {
 			return false, err
 		}
 		created = true
@@ -163,9 +164,10 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 //  3. Ask the planner about old revisions in preference order.
 //  4. Apply the first executable plan without changing its meaning.
 //
-// LWS updates trigger prompt progress; blocked rollouts use a slower fallback
-// for elapsed grace periods or changes not reflected in LWS status. The rollout
-// is complete only after old Specs reach zero and the target revision is Ready.
+// Informer events trigger prompt progress; idle retries only check elapsed grace
+// periods or recover a missed wakeup. Every retry rechecks observations and budgets;
+// elapsed retry time never authorizes a change. The rollout is complete only
+// after old Specs reach zero and the target revision is Ready.
 // The returned complete flag reports that terminal state to the caller.
 func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	ctx context.Context,
@@ -189,7 +191,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	if specComplete {
 		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
-			return ctrl.Result{RequeueAfter: rolloutIdleRequeueAfter}, false, nil
+			return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
@@ -221,7 +223,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		reason := "no feasible replica change is currently available within the rollout constraints"
 		log.Info("Rolling update is temporarily blocked; waiting for state to change", "reason", reason)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRevisionDrainBlocked, "Wait", "Waiting to retire an old revision: %s", reason)
-		return ctrl.Result{RequeueAfter: rolloutIdleRequeueAfter}, false, nil
+		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
 
 	if err := executor.applyRolloutStep(ctx, disaggregatedSet, targetRevision, inputs, selectedRevision, selectedState, selectedStep); err != nil {
@@ -734,12 +736,19 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 	action := "Scaling " + string(direction)
 
 	children := subRoleTargets(roleNames, targets)
+	roleConfigs := disaggregatedsetutils.GetRoleConfigs(ds)
 	log := logf.FromContext(ctx)
 	for i, name := range roleNames {
 		parent, child := roleParts(name)
 		lws := revision.Roles[parent]
 		if lws == nil || (child != "") != (lws.Annotations[subRoleReplicasAnnotation] != "") {
 			continue
+		}
+		var strategy *leaderworkersetv1.RolloutStrategy
+		if config := roleConfigs[parent]; direction == scaleUp && config != nil {
+			// Only the target grows. Refresh its live budgets so a role created
+			// at zero with zero/zero budgets can resume; leave old revisions alone.
+			strategy = &config.Spec.RolloutStrategy
 		}
 		if child != "" {
 			if counts, found := children[parent]; found {
@@ -760,7 +769,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 				if maps.Equal(before, current) {
 					continue
 				}
-				state, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current})
+				state, err := executor.LWSManager.syncSubRoles(ctx, ds, lws, subRoleUpdate{target: current, rolloutStrategy: strategy})
 				if err != nil {
 					// Accepted targets can proceed independently. Missing observations,
 					// label repairs and unrelated metadata writes still require a retry.
@@ -791,7 +800,7 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 		}
 
 		log.Info(action, "lws", lws.Name, "from_spec", currentSpec, "to", desiredSpec)
-		if err := executor.LWSManager.Scale(ctx, ds, lws, desiredSpec); err != nil {
+		if err := executor.LWSManager.scale(ctx, ds, lws, desiredSpec, strategy); err != nil {
 			return fmt.Errorf("failed to scale %s: %w", lws.Name, err)
 		}
 		executor.Record.Eventf(ds, nil, corev1.EventTypeNormal, eventReason,
@@ -846,8 +855,10 @@ func validateStepStructure(state RolloutState, step *UpdateStep) error {
 	if len(step.Past) != len(state.Config) || len(step.New) != len(state.Config) {
 		return fmt.Errorf("target lengths do not match role count")
 	}
-	if bounded := boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, step.Past, state.ActiveOld.RequiredRoles); !slices.Equal(bounded, step.Past) {
-		return fmt.Errorf("old targets leave required roles incomplete")
+	if !state.allowsRevisionOutage(state.ActiveOld.RevisionState) {
+		if bounded := boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, step.Past, state.ActiveOld.RequiredRoles); !slices.Equal(bounded, step.Past) {
+			return fmt.Errorf("old targets leave required roles incomplete")
+		}
 	}
 	return nil
 }

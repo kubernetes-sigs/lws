@@ -23,11 +23,17 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,13 +47,14 @@ import (
 
 type LeaderWorkerSetManager struct {
 	client           client.Client
-	apiReader        client.Reader
+	reader           client.Reader
+	pending          *pendingWrites
 	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
-	manager := &LeaderWorkerSetManager{client: c, apiReader: c}
-	manager.observeReadiness = manager.observeLiveReadiness
+	manager := &LeaderWorkerSetManager{client: c, reader: c}
+	manager.observeReadiness = manager.observeCachedReadiness
 	return manager
 }
 
@@ -63,6 +70,17 @@ type replicaReadiness struct {
 
 // Child keys use LWS-name/child; ordinary keys retain the physical LWS name.
 type rolloutReadiness map[string]replicaReadiness
+
+// Check each physical workload before assigning children or planning a slice.
+func (manager *LeaderWorkerSetManager) observeRolloutReadiness(ctx context.Context, old disaggregatedsetutils.RevisionRolesList, target disaggregatedsetutils.RevisionRoles) (rolloutReadiness, error) {
+	var workloads []*leaderworkersetv1.LeaderWorkerSet
+	for _, revision := range append(slices.Clone(old), target) {
+		for _, lws := range revision.Roles {
+			workloads = append(workloads, lws)
+		}
+	}
+	return manager.observeReadiness(ctx, workloads)
+}
 
 func (readiness rolloutReadiness) role(revision disaggregatedsetutils.RevisionRoles, name string) replicaReadiness {
 	parent, child := roleParts(name)
@@ -171,27 +189,27 @@ func observeSubRoleReadiness(state *subRoleState, observed rolloutReadiness) {
 	observed[s.LWS.Name] = replicaReadiness{raw: raw}
 }
 
-// observeLiveReadiness adapts shared group observations to readiness and scheduling facts.
-// sets must come from this reconciliation's live GetRevisionRolesList. Scale
-// independently checks live identity and Spec before writing a planned change.
+// observeCachedReadiness adapts shared group observations to readiness and scheduling facts.
+// sets come from the same informer as discovery. The controller waits for write
+// receipts and native scale acknowledgement before planning another step.
 // Unknown observations must retry, not look like zero serving capacity: that
-// could lower the planner's no-worsening floor. Unacknowledged native decisions
-// still expose raw readiness, but withhold retained credit for another drain.
-func (manager *LeaderWorkerSetManager) observeLiveReadiness(ctx context.Context, sets []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error) {
+// could lower the planner's no-worsening floor.
+func (manager *LeaderWorkerSetManager) observeCachedReadiness(ctx context.Context, sets []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error) {
 	result := make(rolloutReadiness, len(sets))
 	if len(sets) == 0 {
 		return result, nil
 	}
-	// Observe descendants of this slice's live LWS without listing the LWS again.
-	// A broken group in another slice must not block this one.
-	snapshots, err := replicagroups.ObserveLive(ctx, manager.apiReader, sets)
-	if err != nil {
-		return nil, err
-	}
 	for _, lws := range sets {
-		snapshot := snapshots[lws.UID]
-		if snapshot == nil || snapshot.LWS.UID != lws.UID || !snapshot.LWS.DeletionTimestamp.IsZero() {
+		snapshot, err := replicagroups.Observe(ctx, manager.reader, lws)
+		if err != nil {
+			return nil, err
+		}
+		if snapshot == nil || snapshot.LWS.Generation != lws.Generation ||
+			!lws.DeletionTimestamp.IsZero() || !snapshot.LWS.DeletionTimestamp.IsZero() {
 			return nil, fmt.Errorf("LeaderWorkerSet %s: %w", lws.Name, errReplicaGroupsPending)
+		}
+		if manager.pending != nil && !snapshot.DeletionsObserved() {
+			return nil, fmt.Errorf("waiting for native scaling of %s: %w", lws.Name, errReplicaGroupsPending)
 		}
 		availability := snapshot.Availability()
 		result[lws.Name] = replicaReadiness{
@@ -246,13 +264,17 @@ func (manager *LeaderWorkerSetManager) Create(
 	role *disaggregatedsetv1.DisaggregatedRoleSpec,
 	slice int,
 	revision string,
-	startingReplicas, initialReplicas int,
+	initialReplicas int,
+	initialSubRoles map[string]int,
 ) error {
 	// The reconciler selects the hash generation. Recomputing here would assign
 	// current-version names and labels to children of a legacy DisaggregatedSet.
 	lwsName := disaggregatedsetutils.GenerateName(disaggregatedSet.Name, slice, revision, role.Name)
 	labels := disaggregatedsetutils.GenerateLabels(disaggregatedSet.Name, slice, revision, role.Name)
-	replicas := int32(startingReplicas)
+	// Create never starts Pods: an ambiguous request may commit after the user
+	// changes the desired revision. Growth is a separate conditional update,
+	// selected from the current plan after the informer observes this object.
+	replicas := int32(0)
 
 	// Copy the spec and override replicas.
 	lwsSpec := role.Spec
@@ -291,10 +313,16 @@ func (manager *LeaderWorkerSetManager) Create(
 		},
 		Spec: lwsSpec,
 	}
-	// startingReplicas is the initial Spec value. initialReplicas is the revision's
-	// intended size, which may be larger when a rollout starts the LWS at zero.
+	// Preserve the revision's intended size even though it starts empty.
 	setInitialReplicasAnnotation(leaderWorkerSet, initialReplicas)
+	if len(initialSubRoles) > 0 {
+		setSubRoleJSON(leaderWorkerSet, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, initialSubRoles)
+	}
+	leaderWorkerSet.Annotations[observationReceiptAnnotation] = unscaledReceiptPrefix + uuid.NewString()
 
+	// No receipt expectation or captured retry is needed for an empty LWS. A delayed
+	// creation cannot spend a rollout budget; the next reconcile follows the
+	// latest desired revision, including if this object has already disappeared.
 	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create LeaderWorkerSet %s: %w", lwsName, err)
@@ -307,7 +335,10 @@ func (manager *LeaderWorkerSetManager) Create(
 		// some unrelated trigger causes another reconcile. Returning an error
 		// requeues instead.
 		existing := &leaderworkersetv1.LeaderWorkerSet{}
-		if getErr := manager.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: disaggregatedSet.Namespace}, existing); getErr != nil {
+		if getErr := manager.reader.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: disaggregatedSet.Namespace}, existing); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				return errReplicaGroupsPending
+			}
 			return fmt.Errorf("failed to get existing LeaderWorkerSet %s after create conflict: %w", lwsName, getErr)
 		}
 		if !metav1.IsControlledBy(existing, disaggregatedSet) {
@@ -315,19 +346,40 @@ func (manager *LeaderWorkerSetManager) Create(
 		}
 		return nil
 	}
+	if manager.pending != nil && leaderWorkerSet.UID != "" {
+		// This successful creation supplied a new UID: no previous leader
+		// could have left a conditional request against it. Skip takeover,
+		// but growth must still use the object read from the informer.
+		manager.pending.mu.Lock()
+		if manager.pending.initialized == nil {
+			manager.pending.initialized = make(map[types.UID]client.ObjectKey)
+		}
+		manager.pending.initialized[leaderWorkerSet.UID] = client.ObjectKeyFromObject(disaggregatedSet)
+		manager.pending.mu.Unlock()
+	}
 
 	log := logf.FromContext(ctx)
-	log.Info("Created LWS", "name", lwsName, "role", role.Name, "revision", revision, "replicas", startingReplicas)
+	log.Info("Created empty LWS", "name", lwsName, "role", role.Name, "revision", revision)
 	return nil
 }
 
-// Scale applies an observed scale intent only while its object, Spec and layout still
-// match. Status-only updates are harmless; a replaced object or changed Spec
-// needs a new plan. The optimistic patch also guards changes after the live Get.
+// Scale reads only the informer. The resource-version precondition rejects an
+// obsolete write at the API server, including a status-only conflict. Retrying
+// from a later observation is preferable to refreshing through a live GET.
 func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int) error {
+	return manager.scale(ctx, ds, observed, replicas, nil)
+}
+
+func (manager *LeaderWorkerSetManager) scale(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, observed *leaderworkersetv1.LeaderWorkerSet, replicas int, strategy *leaderworkersetv1.RolloutStrategy) error {
+	if strategy != nil && int(getLWSReplicas(observed)) == replicas {
+		candidate := observed.DeepCopy()
+		if !setRolloutStrategy(candidate, strategy) {
+			return nil // A steady-state no-op needs no further reads or writes.
+		}
+	}
 	name := observed.Name
 	leaderWorkerSet := &leaderworkersetv1.LeaderWorkerSet{}
-	if err := manager.apiReader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
+	if err := manager.reader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, leaderWorkerSet); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s for scaling: %w", name, err)
 	}
 	if !metav1.IsControlledBy(leaderWorkerSet, ds) {
@@ -340,18 +392,68 @@ func (manager *LeaderWorkerSetManager) Scale(ctx context.Context, ds *disaggrega
 			errors.New("LeaderWorkerSet changed since scale observation"))
 	}
 
-	currentReplicas := int(getLWSReplicas(leaderWorkerSet))
-	if currentReplicas == replicas {
+	before := leaderWorkerSet.DeepCopy()
+	leaderWorkerSet.Spec.Replicas = ptr.To(int32(replicas))
+	setRolloutStrategy(leaderWorkerSet, strategy)
+	if equality.Semantic.DeepEqual(before.Spec, leaderWorkerSet.Spec) {
 		return nil
 	}
-	replicas32 := int32(replicas)
-	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	leaderWorkerSet.Spec.Replicas = &replicas32
-	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
+	patch := client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})
+	if err := manager.mutate(ctx, leaderWorkerSet, false, func(ctx context.Context) error {
+		return manager.client.Patch(ctx, leaderWorkerSet, patch)
+	}); err != nil {
 		return fmt.Errorf("failed to scale LeaderWorkerSet %s: %w", name, err)
 	}
 
 	return nil
+}
+
+// Apply the desired budgets when valid at the next replica count; otherwise keep
+// the current ones. Even an old revision (desired == nil) may need a repair:
+// maxUnavailable=10% rounds down to zero when shrinking from ten replicas to nine.
+// Use maxUnavailable=1 only if neither strategy allows the child to scale.
+func setRolloutStrategy(lws *leaderworkersetv1.LeaderWorkerSet, desired *leaderworkersetv1.RolloutStrategy) bool {
+	replicas := int(getLWSReplicas(lws))
+	if desired != nil {
+		strategy := defaultedRolloutStrategy(desired)
+		if isRolloutStrategyValidForReplicas(strategy, replicas) {
+			if equality.Semantic.DeepEqual(defaultedRolloutStrategy(&lws.Spec.RolloutStrategy), strategy) {
+				return false
+			}
+			lws.Spec.RolloutStrategy = *strategy
+			return true
+		}
+	}
+	current := defaultedRolloutStrategy(&lws.Spec.RolloutStrategy)
+	if isRolloutStrategyValidForReplicas(current, replicas) {
+		return false
+	}
+	current.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(1)
+	lws.Spec.RolloutStrategy = *current
+	return true
+}
+
+func isRolloutStrategyValidForReplicas(strategy *leaderworkersetv1.RolloutStrategy, replicas int) bool {
+	config := strategy.RollingUpdateConfiguration
+	surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, replicas, true)
+	unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, replicas, false)
+	return surgeErr == nil && unavailableErr == nil && (replicas == 0 || surge != 0 || unavailable != 0)
+}
+
+func defaultedRolloutStrategy(desired *leaderworkersetv1.RolloutStrategy) *leaderworkersetv1.RolloutStrategy {
+	strategy := desired.DeepCopy()
+	if strategy.Type == "" {
+		strategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+	}
+	if strategy.RollingUpdateConfiguration == nil {
+		strategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}
+	}
+	// Match the API default so omitted partition does not cause repeated patches.
+	config := strategy.RollingUpdateConfiguration
+	if config.Partition == nil {
+		config.Partition = ptr.To[int32](0)
+	}
+	return strategy
 }
 
 // SyncGroupReplacementPolicy patches leaderWorkerSet so its
@@ -375,7 +477,9 @@ func (manager *LeaderWorkerSetManager) SyncGroupReplacementPolicy(ctx context.Co
 	// Reject stale observations, including a same-name replacement owned by someone else.
 	patch := client.MergeFromWithOptions(leaderWorkerSet.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	leaderWorkerSet.Spec.GroupReplacementPolicy = desired
-	if err := manager.client.Patch(ctx, leaderWorkerSet, patch); err != nil {
+	if err := manager.mutate(ctx, leaderWorkerSet, false, func(ctx context.Context) error {
+		return manager.client.Patch(ctx, leaderWorkerSet, patch)
+	}); err != nil {
 		return fmt.Errorf("failed to set groupReplacementPolicy on LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
 	}
 	return nil
@@ -389,7 +493,7 @@ func (manager *LeaderWorkerSetManager) SyncGroupReplacementPolicy(ctx context.Co
 // read or mutate as if it were this DisaggregatedSet's own.
 func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, name string) (*leaderworkersetv1.LeaderWorkerSet, error) {
 	lws := &leaderworkersetv1.LeaderWorkerSet{}
-	err := manager.client.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, lws)
+	err := manager.reader.Get(ctx, types.NamespacedName{Name: name, Namespace: ds.Namespace}, lws)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
@@ -405,7 +509,7 @@ func (manager *LeaderWorkerSetManager) Get(ctx context.Context, ds *disaggregate
 // listPods returns Pods belonging to one LeaderWorkerSet.
 func (manager *LeaderWorkerSetManager) listPods(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet) ([]corev1.Pod, error) {
 	pods := &corev1.PodList{}
-	if err := manager.client.List(ctx, pods,
+	if err := manager.reader.List(ctx, pods,
 		client.InNamespace(lws.Namespace),
 		client.MatchingLabels{leaderworkersetv1.SetNameLabelKey: lws.Name},
 	); err != nil {
@@ -433,10 +537,6 @@ func (manager *LeaderWorkerSetManager) ListAll(ctx context.Context, disaggregate
 // from a same-named DisaggregatedSet that was deleted and recreated — cannot be
 // mistaken for one of this DisaggregatedSet's own replicas.
 func (manager *LeaderWorkerSetManager) list(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
-	return manager.listWithReader(ctx, manager.client, disaggregatedSet, role, options...)
-}
-
-func (manager *LeaderWorkerSetManager) listWithReader(ctx context.Context, reader client.Reader, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role string, options ...client.ListOption) ([]*leaderworkersetv1.LeaderWorkerSet, error) {
 	lwsObjList := &leaderworkersetv1.LeaderWorkerSetList{}
 
 	labels := client.MatchingLabels{disaggregatedsetv1.SetNameLabelKey: disaggregatedSet.Name}
@@ -446,7 +546,7 @@ func (manager *LeaderWorkerSetManager) listWithReader(ctx context.Context, reade
 
 	listOptions := []client.ListOption{client.InNamespace(disaggregatedSet.Namespace), labels}
 	listOptions = append(listOptions, options...)
-	if err := reader.List(ctx, lwsObjList, listOptions...); err != nil {
+	if err := manager.reader.List(ctx, lwsObjList, listOptions...); err != nil {
 		return nil, fmt.Errorf("failed to list LeaderWorkerSets for %s/%s: %w", disaggregatedSet.Namespace, disaggregatedSet.Name, err)
 	}
 
@@ -496,10 +596,12 @@ func (manager *LeaderWorkerSetManager) GetForRole(ctx context.Context, ds *disag
 // itself. The UID precondition keeps a same-named replacement created since the
 // caller read this object from being deleted instead.
 func (manager *LeaderWorkerSetManager) deleteInForeground(ctx context.Context, leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) error {
-	if err := manager.client.Delete(ctx, leaderWorkerSet,
-		client.PropagationPolicy(metav1.DeletePropagationForeground),
-		client.Preconditions{UID: ptr.To(leaderWorkerSet.UID)},
-	); err != nil {
+	if err := manager.mutate(ctx, leaderWorkerSet, true, func(ctx context.Context) error {
+		return manager.client.Delete(ctx, leaderWorkerSet,
+			client.PropagationPolicy(metav1.DeletePropagationForeground),
+			client.Preconditions{UID: ptr.To(leaderWorkerSet.UID), ResourceVersion: ptr.To(leaderWorkerSet.ResourceVersion)},
+		)
+	}); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -519,13 +621,23 @@ func getLWSReplicas(leaderWorkerSet *leaderworkersetv1.LeaderWorkerSet) int32 {
 // retainedRolloutRoleNames includes current roles and every role whose budget
 // must survive while old workloads drain, including removed children.
 func (m *LeaderWorkerSetManager) retainedRolloutRoleNames(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) ([]string, error) {
-	// Only a live, ownership-filtered list can safely prune history. Retain even
-	// zero-Spec LWS until deletion, and never erase history due to informer lag.
-	workloads, err := m.listWithReader(ctx, m.apiReader, ds, "")
+	// Keep history while writes are outstanding; stale absence must not prune
+	// a role or child that still has capacity in an older revision.
+	roles := sets.New(rolloutRoleNames(ds)...)
+	if m.pending != nil {
+		if err := m.pending.observed(ctx, ds.UID, ""); err != nil {
+			if !errors.Is(err, errReplicaGroupsPending) {
+				return nil, err
+			}
+			for role := range rememberedMaxUnavailable(ds) {
+				roles.Insert(role)
+			}
+		}
+	}
+	workloads, err := m.list(ctx, ds, "")
 	if err != nil {
 		return nil, err
 	}
-	roles := sets.New(rolloutRoleNames(ds)...)
 	for _, lws := range workloads {
 		parent := lws.Labels[disaggregatedsetv1.RoleLabelKey]
 		if lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] == "" {
@@ -553,9 +665,9 @@ func (manager *LeaderWorkerSetManager) GetRevisionRolesList(
 	ctx context.Context,
 	disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string,
 ) (disaggregatedsetutils.RevisionRolesList, *disaggregatedsetutils.RevisionRoles, error) {
-	// Pair live Pod observations with live scale intents. A cached Spec from
-	// before our previous drain would otherwise spend the same capacity twice.
-	lwsList, err := manager.listWithReader(ctx, manager.apiReader, disaggregatedSet, "", client.MatchingLabels{
+	// The per-slice write barrier prevents an older Spec from spending the
+	// previous step's capacity twice while the informer catches up.
+	lwsList, err := manager.list(ctx, disaggregatedSet, "", client.MatchingLabels{
 		disaggregatedsetv1.SliceLabelKey: strconv.Itoa(slice),
 	})
 	if err != nil {
@@ -618,7 +730,7 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 ) error {
 	current := &leaderworkersetv1.LeaderWorkerSet{}
 	key := types.NamespacedName{Name: leaderWorkerSet.Name, Namespace: ds.Namespace}
-	if err := manager.apiReader.Get(ctx, key, current); err != nil {
+	if err := manager.reader.Get(ctx, key, current); err != nil {
 		return fmt.Errorf("failed to get LeaderWorkerSet %s: %w", leaderWorkerSet.Name, err)
 	}
 	if !metav1.IsControlledBy(current, ds) {
@@ -632,11 +744,244 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 	if currentValue == nil || *currentValue != replicas {
 		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		setInitialReplicasAnnotation(current, replicas)
-		if err := manager.client.Patch(ctx, current, patch); err != nil {
+		if err := manager.mutate(ctx, current, false, func(ctx context.Context) error {
+			return manager.client.Patch(ctx, current, patch)
+		}); err != nil {
 			return fmt.Errorf("failed to update initial-replicas annotation on %s: %w", current.Name, err)
+		}
+		if manager.pending != nil {
+			if err := manager.pending.observed(ctx, ds.UID, current.Labels[disaggregatedsetv1.SliceLabelKey]); err != nil {
+				return err
+			}
 		}
 	}
 
-	setInitialReplicasAnnotation(leaderWorkerSet, replicas)
+	current.DeepCopyInto(leaderWorkerSet)
 	return nil
+}
+
+func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet, deleting bool, apply func(context.Context) error) error {
+	if getLWSReplicas(lws) > 0 && strings.HasPrefix(lws.Annotations[observationReceiptAnnotation], unscaledReceiptPrefix) {
+		// End bootstrap in the same conditional write that first starts Pods,
+		// including callers without receipt tracking (e.g. unit-test clients).
+		delete(lws.Annotations, observationReceiptAnnotation)
+	}
+	if manager.pending == nil {
+		return apply(ctx)
+	}
+	return manager.pending.mutate(ctx, lws, deleting, apply)
+}
+
+// prepareSlice invalidates conditional LWS requests left in flight by a previous
+// process. A cold cache includes committed writes, but not future commits. Before
+// planning, change each existing LWS's resource version with a metadata-only
+// receipt and observe it. Either an old request wins first (our patch conflicts),
+// or our patch wins and the old request can no longer apply.
+// This protects LWS mutations, not writes to their descendants; native scaling
+// must still be observed before granting availability credit.
+func (manager *LeaderWorkerSetManager) prepareSlice(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, slice int) error {
+	o := manager.pending
+	if o == nil {
+		return nil
+	}
+	if err := o.observed(ctx, ds.UID, strconv.Itoa(slice)); err != nil {
+		return err
+	}
+	workloads, err := manager.ListForSlice(ctx, ds, slice, "")
+	if err != nil {
+		return err
+	}
+	wrote := false
+	for _, lws := range workloads {
+		o.mu.Lock()
+		_, initialized := o.initialized[lws.UID]
+		o.mu.Unlock()
+		if initialized || !lws.DeletionTimestamp.IsZero() {
+			continue
+		}
+		patch := client.MergeFromWithOptions(lws.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if err := manager.mutate(ctx, lws, false, func(ctx context.Context) error {
+			return manager.client.Patch(ctx, lws, patch)
+		}); err != nil {
+			return err
+		}
+		wrote = true
+	}
+	if wrote {
+		return fmt.Errorf("waiting to observe slice takeover: %w", errReplicaGroupsPending)
+	}
+	return nil
+}
+
+// A receipt identifies our write without waiting to see one exact resource
+// version that a watch is allowed to coalesce away.
+const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
+
+// Keep the bootstrap bit in the existing receipt, not a second annotation.
+// Metadata writes and takeover preserve it; the first positive scale clears it.
+const unscaledReceiptPrefix = "unscaled:"
+
+func isUnscaledCreation(lws *leaderworkersetv1.LeaderWorkerSet) bool {
+	return getLWSReplicas(lws) == 0 && strings.HasPrefix(lws.Annotations[observationReceiptAnnotation], unscaledReceiptPrefix)
+}
+
+// pendingWrites remembers conditional mutations until the informer observes them.
+// Every such write in a slice must be observed before its next rollout step.
+// Creation is untracked because new LWS objects always start at zero replicas.
+type pendingWrites struct {
+	client.Reader
+	mu     sync.Mutex
+	writes map[client.ObjectKey]*pendingWrite
+	// UIDs created here or whose writes were observed; restart repeats takeover.
+	// The parent key allows cleanup when a DisaggregatedSet disappears.
+	initialized map[types.UID]client.ObjectKey
+}
+
+type pendingWrite struct {
+	owner   types.UID
+	parent  client.ObjectKey
+	slice   string
+	uid     types.UID
+	receipt string
+	deleted bool
+	// Version read from this informer and used as the mutation precondition.
+	baseVersion string
+	// Replaying the same conditional mutation resolves an ambiguous transport
+	// error. We never turn a timeout into permission to forget a possible write.
+	retry func(context.Context) error
+}
+
+func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet, deleting bool, apply func(context.Context) error) error {
+	owner := metav1.GetControllerOf(lws)
+	if owner == nil {
+		return errors.New("observed writes require a controller-owned LeaderWorkerSet")
+	}
+	key := client.ObjectKeyFromObject(lws)
+	o.mu.Lock()
+	previous, exists := o.writes[key]
+	var previousWrite pendingWrite
+	if exists {
+		previousWrite = *previous
+	}
+	o.mu.Unlock()
+	if exists {
+		if err := o.checkWrite(ctx, key, previousWrite); err != nil {
+			return err
+		}
+	}
+	written := &pendingWrite{
+		owner: owner.UID, parent: client.ObjectKey{Namespace: lws.Namespace, Name: owner.Name},
+		slice: lws.Labels[disaggregatedsetv1.SliceLabelKey], uid: lws.UID,
+		deleted: deleting, baseVersion: lws.ResourceVersion,
+	}
+	if !deleting {
+		if lws.Annotations == nil {
+			lws.Annotations = make(map[string]string)
+		}
+		written.receipt = uuid.NewString()
+		if isUnscaledCreation(lws) {
+			written.receipt = unscaledReceiptPrefix + written.receipt
+		}
+		lws.Annotations[observationReceiptAnnotation] = written.receipt
+	}
+	// Record before the request, including when its outcome is not known.
+	o.mu.Lock()
+	o.writes[key] = written
+	o.mu.Unlock()
+	err := apply(ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if apierrors.IsConflict(err) || apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apierrors.IsAlreadyExists(err) || apierrors.IsNotFound(err) {
+		delete(o.writes, key) // This request definitively did not mutate the object.
+	} else if err != nil {
+		written.retry = apply
+	}
+	return err
+}
+
+// Once the parent has disappeared from its informer, it cannot authorize more
+// rollout steps. Release its ledger entries instead of leaking them forever.
+func (o *pendingWrites) forget(parent client.ObjectKey) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for key, written := range o.writes {
+		if written.parent == parent {
+			delete(o.writes, key)
+		}
+	}
+	for uid, owner := range o.initialized {
+		if owner == parent {
+			delete(o.initialized, uid)
+		}
+	}
+}
+
+// observed checks a whole slice, not just the next LWS to change. Otherwise a
+// delayed update to A could authorize another deletion in B using A's old credit.
+func (o *pendingWrites) observed(ctx context.Context, owner types.UID, slice string) error {
+	o.mu.Lock()
+	writes := make(map[client.ObjectKey]pendingWrite)
+	for key, written := range o.writes {
+		if written.owner == owner && (slice == "" || written.slice == slice) {
+			writes[key] = *written
+		}
+	}
+	o.mu.Unlock()
+	for key, written := range writes {
+		if err := o.checkWrite(ctx, key, written); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *pendingWrites) checkWrite(ctx context.Context, key client.ObjectKey, written pendingWrite) error {
+	lws := &leaderworkersetv1.LeaderWorkerSet{}
+	err := o.Get(ctx, key, lws)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	// An object previously read from this informer cannot disappear or change
+	// UID without being deleted. Creates need no receipts: they start empty.
+	seen := apierrors.IsNotFound(err) || lws.UID != written.uid || !lws.DeletionTimestamp.IsZero()
+	receiptObserved := err == nil && !written.deleted && lws.DeletionTimestamp.IsZero() &&
+		lws.UID == written.uid && lws.Annotations[observationReceiptAnnotation] == written.receipt
+	seen = seen || receiptObserved
+	// This informer supplied baseVersion. A different version of the same UID
+	// means an unapplied conditional request can no longer succeed. Resolve the
+	// ambiguous outcome and replan; do not replay it against a newer version.
+	obsolete := written.retry != nil && written.baseVersion != "" && err == nil &&
+		lws.UID == written.uid && lws.ResourceVersion != written.baseVersion
+	if seen || obsolete {
+		o.mu.Lock()
+		if current := o.writes[key]; current != nil && current.receipt == written.receipt && current.uid == written.uid {
+			delete(o.writes, key)
+			if receiptObserved {
+				if o.initialized == nil {
+					o.initialized = make(map[types.UID]client.ObjectKey)
+				}
+				o.initialized[lws.UID] = written.parent
+			} else if seen {
+				delete(o.initialized, written.uid)
+			}
+		}
+		o.mu.Unlock()
+		return nil
+	}
+	if written.retry != nil {
+		// A conflict may mean the first request succeeded. Retain the
+		// expectation until the informer supplies evidence, not until a timer expires.
+		err := written.retry(ctx)
+		if err != nil && !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err == nil {
+			o.mu.Lock()
+			if current := o.writes[key]; current != nil && current.receipt == written.receipt {
+				current.retry = nil // Accepted; only the watch is outstanding now.
+			}
+			o.mu.Unlock()
+		}
+	}
+	return fmt.Errorf("waiting to observe write to %s: %w", key, errReplicaGroupsPending)
 }

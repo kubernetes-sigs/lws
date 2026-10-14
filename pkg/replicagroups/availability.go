@@ -50,55 +50,18 @@ type Availability struct {
 // Already terminating leaders must not be reserved a second time. Neither
 // active counts nor Ready counts are taken from asynchronous status counters.
 func (s *Snapshot) Availability() Availability {
-	lws := s.LWS
-	replicas := ptr.Deref(lws.Spec.Replicas, 1)
+	targets, start, acknowledged := s.replicaTargets()
+	replicas := ptr.Deref(s.LWS.Spec.Replicas, 1)
+	hash := s.LWS.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash
 	result := Availability{}
-	// LWS acknowledgement is needed as well as native-controller acknowledgements:
-	// a child still at 3 must not look current during an unapplied 3 -> 2 -> 3 ABA.
-	acknowledged := lws.DeletionTimestamp.IsZero() && lws.Status.ObservedGeneration >= lws.Generation
-	targets := make(map[types.UID]int32)
-	start := 0
-	hash := lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash
-	if hash {
-		deployment := s.LeaderDeployment
-		if deployment == nil {
-			return result
-		}
-		acknowledged = acknowledged && deployment.DeletionTimestamp.IsZero() &&
-			ptr.Deref(deployment.Spec.Replicas, 1) == replicas &&
-			deployment.Status.ObservedGeneration >= deployment.Generation
-		issued := int32(0)
-		for _, rs := range s.ReplicaSets {
-			target := ptr.Deref(rs.Spec.Replicas, 1)
-			if !rs.DeletionTimestamp.IsZero() {
-				target = 0
-			}
-			targets[rs.UID] = target
-			issued += target
-			acknowledged = acknowledged && rs.Status.ObservedGeneration >= rs.Generation
-		}
-		// Deployment status only acknowledges writes to ReplicaSets, not their
-		// Pod deletions. Verify the actual Pod controllers and their targets too.
-		acknowledged = acknowledged && issued == replicas
-	} else {
-		sts := s.LeaderStatefulSet
-		if sts == nil {
-			return result
-		}
-		acknowledged = acknowledged && sts.DeletionTimestamp.IsZero() &&
-			ptr.Deref(sts.Spec.Replicas, 1) == replicas &&
-			sts.Status.ObservedGeneration >= sts.Generation
-		targets[sts.UID] = replicas
-		if sts.Spec.Ordinals != nil {
-			start = int(sts.Spec.Ordinals.Start)
-		}
+	if targets == nil {
+		return result
 	}
-
 	active, ready := make(map[types.UID]int32), make(map[types.UID]int32)
 	for _, group := range s.Groups {
 		leader := group.Leader
 		owner := metav1.GetControllerOf(leader)
-		if leader.DeletionTimestamp.IsZero() && leader.Status.Phase != corev1.PodSucceeded && leader.Status.Phase != corev1.PodFailed {
+		if activePod(leader) {
 			active[owner.UID]++
 		}
 		if !group.Ready {
@@ -126,4 +89,111 @@ func (s *Snapshot) Availability() Availability {
 	}
 	result.RetainedReadyReplicas = min(replicas, result.RetainedReadyReplicas)
 	return result
+}
+
+func (s *Snapshot) replicaTargets() (map[types.UID]int32, int, bool) {
+	lws := s.LWS
+	replicas := ptr.Deref(lws.Spec.Replicas, 1)
+	// LWS acknowledgement is needed as well as native-controller acknowledgements:
+	// a child still at 3 must not look current during an unapplied 3 -> 2 -> 3 ABA.
+	acknowledged := lws.DeletionTimestamp.IsZero() && lws.Status.ObservedGeneration >= lws.Generation
+	targets := make(map[types.UID]int32)
+	start := 0
+	hash := lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash
+	if hash {
+		deployment := s.LeaderDeployment
+		if deployment == nil {
+			return nil, 0, false
+		}
+		acknowledged = acknowledged && deployment.DeletionTimestamp.IsZero() &&
+			ptr.Deref(deployment.Spec.Replicas, 1) == replicas &&
+			deployment.Status.ObservedGeneration >= deployment.Generation
+		issued := int32(0)
+		for _, rs := range s.ReplicaSets {
+			target := ptr.Deref(rs.Spec.Replicas, 1)
+			if !rs.DeletionTimestamp.IsZero() {
+				target = 0
+			}
+			targets[rs.UID] = target
+			issued += target
+			acknowledged = acknowledged && rs.Status.ObservedGeneration >= rs.Generation
+		}
+		// Deployment status only acknowledges writes to ReplicaSets, not their
+		// Pod deletions. Verify the actual Pod controllers and their targets too.
+		acknowledged = acknowledged && issued == replicas
+	} else {
+		sts := s.LeaderStatefulSet
+		if sts == nil {
+			return nil, 0, false
+		}
+		acknowledged = acknowledged && sts.DeletionTimestamp.IsZero() &&
+			ptr.Deref(sts.Spec.Replicas, 1) == replicas &&
+			sts.Status.ObservedGeneration >= sts.Generation
+		targets[sts.UID] = replicas
+		if sts.Spec.Ordinals != nil {
+			start = int(sts.Spec.Ordinals.Start)
+		}
+	}
+
+	return targets, start, acknowledged
+}
+
+// ScalingObserved reports that native controllers acknowledged the LWS scale
+// and this observation contains their requested Pod cohort. Pending/unready
+// Pods count; model readiness and physical disappearance of terminating groups
+// are not required. Callers must separately wait for their LWS write receipts.
+func (s *Snapshot) ScalingObserved() bool {
+	return s.scalingObserved(false)
+}
+
+// DeletionsObserved also allows acknowledged creation shortfalls. This lets a
+// caller cancel missing growth without waiting for unwanted Pods to be created.
+// Missing Pods alone are not proof: native status must agree with the observed
+// cohort, otherwise a lagging Pod cache could hide unobserved deletion victims.
+// Availability still determines which Ready groups can fund another drain.
+func (s *Snapshot) DeletionsObserved() bool {
+	return s.scalingObserved(true)
+}
+
+func (s *Snapshot) scalingObserved(allowMissing bool) bool {
+	targets, start, acknowledged := s.replicaTargets()
+	if !acknowledged {
+		return false
+	}
+	active := make(map[types.UID]int32)
+	for _, group := range s.Groups {
+		leader := group.Leader
+		if !activePod(leader) {
+			continue
+		}
+		owner := metav1.GetControllerOf(leader)
+		active[owner.UID]++
+		if s.LWS.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash &&
+			(group.Ordinal < start || group.Ordinal >= start+int(ptr.Deref(s.LWS.Spec.Replicas, 1))) {
+			return false
+		}
+		// Workers may deliberately wait for leader readiness (LeaderReady
+		// startup). They affect availability, not whether scaling was observed.
+	}
+	for uid, target := range targets {
+		if active[uid] > target || !allowMissing && active[uid] < target {
+			return false
+		}
+	}
+	// Only a shortfall needs this extra evidence. StatefulSet status includes
+	// terminating and terminal Pods; ReplicaSet status counts active Pods.
+	if sts := s.LeaderStatefulSet; sts != nil && active[sts.UID] < targets[sts.UID] &&
+		sts.Status.Replicas != int32(len(s.Groups)) {
+		return false
+	}
+	for _, rs := range s.ReplicaSets {
+		if active[rs.UID] < targets[rs.UID] && rs.Status.Replicas != active[rs.UID] {
+			return false
+		}
+	}
+	return true
+}
+
+func activePod(pod *corev1.Pod) bool {
+	return pod.DeletionTimestamp.IsZero() && pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
 }

@@ -1,0 +1,18 @@
+title: LeaderWorkerSet Placement Policy
+kep-number: 1064
+authors:
+  - "aliceco01"
+status: provisional
+creation-date: 2026-10-06
+reviewers:
+  - ahg-g
+  - kannon92
+approvers:
+  - ahg-g
+
+see-also:
+  - "/keps/666-gang-scheduling-in-lws"
+  - "/keps/848-disaggregatedset-placement-policy"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

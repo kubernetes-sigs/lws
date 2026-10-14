@@ -1,0 +1,18 @@
+suite: cert-manager certificates (enableCertManager)
+templates:
+  - templates/certmanager/certificate.yaml
+  - templates/certmanager/certificatemetrics.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: renders nothing when disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders the webhook and metrics certificates with a self-signed Issuer when enabled
+    set:
+      enableCertManager: true
+    asserts:
+      - matchSnapshot: {}
