@@ -119,7 +119,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// preventing a Static→External change from accidentally requesting zero.
 	// External roles get generated scalers; scalers for roles that are no longer
 	// External are deleted. Static roles do not need a scaler.
-	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, r.seedForRole(ctx, disaggregatedSet))
+	scalers, err := r.ScalerManager.Reconcile(ctx, disaggregatedSet, r.seedForRole(ctx, disaggregatedSet, revision))
 	if errors.Is(err, errReplicaGroupsPending) {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
@@ -257,7 +257,9 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 // HPAScaleToZero feature gate is enabled. Autoscalers that support scale-from-
 // zero (KEDA, HPA with the gate flipped) can still take the role down to 0
 // after attach.
-func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet) func(string) (int32, error) {
+// An unstarted current LWS uses its recorded intent only when no revision of
+// that role is running in its slice. Drained and deliberately zero targets stay zero.
+func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, revision string) func(string) (int32, error) {
 	// All missing scalers in this reconcile use one lazily loaded snapshot.
 	load := sync.OnceValues(func() (map[string]int32, error) {
 		// Only called for a missing scaler. Do not freeze an initial target
@@ -273,20 +275,40 @@ func (r *DisaggregatedSetReconciler) seedForRole(ctx context.Context, ds *disagg
 		}
 		sums := make(map[string]int32)
 		configs := disaggregatedsetutils.GetRoleConfigs(ds)
+		type sliceRole struct{ slice, role string }
+		running := make(map[sliceRole]bool)
+		for _, lws := range all {
+			if getLWSReplicas(lws) > 0 {
+				running[sliceRole{lws.Labels[disaggregatedsetv1.SliceLabelKey], lws.Labels[disaggregatedsetv1.RoleLabelKey]}] = true
+			}
+		}
 		for _, lws := range all {
 			role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
-			sums[role] += int32(getLWSReplicas(lws))
+			replicas := getLWSReplicas(lws)
 			counts, err := subRoleCounts(lws, subRoleReplicasAnnotation)
 			if err != nil {
 				return nil, err
 			}
+			// Bootstrap intent is not extra capacity alongside a running old
+			// revision, nor permission to revive a previously drained workload.
+			if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision && isUnscaledCreation(lws) &&
+				!running[sliceRole{lws.Labels[disaggregatedsetv1.SliceLabelKey], role}] {
+				if initial, ok := disaggregatedsetutils.GetInitialReplicas(lws); ok {
+					replicas = initial
+				}
+				counts, err = subRoleCounts(lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+				if err != nil {
+					return nil, err
+				}
+			}
+			sums[role] += replicas
 			if len(counts) == 0 {
 				if config := configs[role]; config != nil && len(config.SubRoles) > 0 {
 					defaults := map[string]int{}
 					for _, child := range config.SubRoles {
 						defaults[child.Name] = int(ptr.Deref(child.Replicas, 1))
 					}
-					counts = fitSubRoles(defaults, int(getLWSReplicas(lws)))
+					counts = fitSubRoles(defaults, int(replicas))
 				}
 			}
 			for child, count := range counts {
@@ -466,7 +488,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// Create an empty LWS first. Only a subsequent observed object can be
 	// conditionally scaled to the latest desired size.
 	if existing == nil {
-		if err := r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas)); err != nil {
+		if err := r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas), desiredSubRoles(config, desiredReplicasByRole)); err != nil {
 			return err
 		}
 		if desiredReplicas > 0 {

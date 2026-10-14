@@ -23,6 +23,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -262,6 +263,7 @@ func (manager *LeaderWorkerSetManager) Create(
 	slice int,
 	revision string,
 	initialReplicas int,
+	initialSubRoles map[string]int,
 ) error {
 	// The reconciler selects the hash generation. Recomputing here would assign
 	// current-version names and labels to children of a legacy DisaggregatedSet.
@@ -311,8 +313,12 @@ func (manager *LeaderWorkerSetManager) Create(
 	}
 	// Preserve the revision's intended size even though it starts empty.
 	setInitialReplicasAnnotation(leaderWorkerSet, initialReplicas)
+	if len(initialSubRoles) > 0 {
+		setSubRoleJSON(leaderWorkerSet, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, initialSubRoles)
+	}
+	leaderWorkerSet.Annotations[observationReceiptAnnotation] = unscaledReceiptPrefix + uuid.NewString()
 
-	// No write receipt or captured retry is needed for an empty LWS. A delayed
+	// No receipt expectation or captured retry is needed for an empty LWS. A delayed
 	// creation cannot spend a rollout budget; the next reconcile follows the
 	// latest desired revision, including if this object has already disappeared.
 	if err := manager.client.Create(ctx, leaderWorkerSet); err != nil {
@@ -695,6 +701,11 @@ func (manager *LeaderWorkerSetManager) UpdateInitialReplicas(
 }
 
 func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderworkersetv1.LeaderWorkerSet, deleting bool, apply func(context.Context) error) error {
+	if getLWSReplicas(lws) > 0 && strings.HasPrefix(lws.Annotations[observationReceiptAnnotation], unscaledReceiptPrefix) {
+		// End bootstrap in the same conditional write that first starts Pods,
+		// including callers without receipt tracking (e.g. unit-test clients).
+		delete(lws.Annotations, observationReceiptAnnotation)
+	}
 	if manager.pending == nil {
 		return apply(ctx)
 	}
@@ -745,6 +756,14 @@ func (manager *LeaderWorkerSetManager) prepareSlice(ctx context.Context, ds *dis
 // A receipt identifies our write without waiting to see one exact resource
 // version that a watch is allowed to coalesce away.
 const observationReceiptAnnotation = "disaggregatedset.x-k8s.io/observation-receipt"
+
+// Keep the bootstrap bit in the existing receipt, not a second annotation.
+// Metadata writes and takeover preserve it; the first positive scale clears it.
+const unscaledReceiptPrefix = "unscaled:"
+
+func isUnscaledCreation(lws *leaderworkersetv1.LeaderWorkerSet) bool {
+	return getLWSReplicas(lws) == 0 && strings.HasPrefix(lws.Annotations[observationReceiptAnnotation], unscaledReceiptPrefix)
+}
 
 // pendingWrites remembers conditional mutations until the informer observes them.
 // Every such write in a slice must be observed before its next rollout step.
@@ -800,6 +819,9 @@ func (o *pendingWrites) mutate(ctx context.Context, lws *leaderworkersetv1.Leade
 			lws.Annotations = make(map[string]string)
 		}
 		written.receipt = uuid.NewString()
+		if isUnscaledCreation(lws) {
+			written.receipt = unscaledReceiptPrefix + written.receipt
+		}
 		lws.Annotations[observationReceiptAnnotation] = written.receipt
 	}
 	// Record before the request, including when its outcome is not known.

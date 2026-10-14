@@ -578,7 +578,7 @@ func TestSubRoleScaleWaitsForInformerObservations(t *testing.T) {
 	for range 3 {
 		_, err = r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), f.ds, 0, "target", nil)
 		require.ErrorIs(t, err, errReplicaGroupsPending, "unseen assignment intent blocks the whole slice")
-		_, err = r.seedForRole(t.Context(), f.ds)("model/a")
+		_, err = r.seedForRole(t.Context(), f.ds, "target")("model/a")
 		require.ErrorIs(t, err, errReplicaGroupsPending, "a scaler must not freeze the old child count")
 		roles, err := f.manager.retainedRolloutRoleNames(t.Context(), f.ds)
 		require.NoError(t, err)
@@ -854,7 +854,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, nil)
 		require.NoError(t, err) // Should not error, creation is idempotent
 	})
 
@@ -874,7 +874,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, nil)
 		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
@@ -884,7 +884,7 @@ func TestManagerCreate(t *testing.T) {
 			Build()
 
 		manager := NewLeaderWorkerSetManager(fakeClient)
-		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3)
+		err := manager.Create(context.Background(), testDeploy, testRole, 0, testRevision, 3, nil)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -905,7 +905,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Annotations = map[string]string{"note": "val"}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, revision, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1, nil)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -930,7 +930,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 1, revision, 2)
+		err := manager.Create(context.Background(), ds, role, 1, revision, 2, nil)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -968,7 +968,7 @@ func TestManagerCreate(t *testing.T) {
 		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-		err := manager.Create(context.Background(), ds, role, 0, revision, 1)
+		err := manager.Create(context.Background(), ds, role, 0, revision, 1, nil)
 		require.NoError(t, err)
 
 		var lws leaderworkersetv1.LeaderWorkerSet
@@ -1293,7 +1293,7 @@ func TestManagerCreateGroupIdentityPassthrough(t *testing.T) {
 	role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
 	revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
 
-	require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2))
+	require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2, nil))
 
 	lwsName := disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name)
 	lws, err := manager.Get(context.Background(), ds, lwsName)
@@ -1514,7 +1514,7 @@ func TestWriteReceiptsWaitForTheWholeSlice(t *testing.T) {
 	require.NoError(t, o.observed(t.Context(), ds.UID, "1"), "another slice is independent")
 	require.NoError(t, o.observed(t.Context(), types.UID("another-owner"), "0"))
 	r := &DisaggregatedSetReconciler{LWSManager: manager}
-	seed := r.seedForRole(t.Context(), ds)
+	seed := r.seedForRole(t.Context(), ds, "current")
 	_, err := seed(testRolePrefill)
 	require.ErrorIs(t, err, errReplicaGroupsPending, "a new scaler must not freeze a stale count")
 	for i, lws := range []*leaderworkersetv1.LeaderWorkerSet{a, b} {
@@ -1529,7 +1529,7 @@ func TestWriteReceiptsWaitForTheWholeSlice(t *testing.T) {
 		}
 	}
 	require.Empty(t, o.writes)
-	seed = r.seedForRole(t.Context(), ds) // The pending result ended the previous reconcile.
+	seed = r.seedForRole(t.Context(), ds, "current") // The pending result ended the previous reconcile.
 	count, err := seed(testRolePrefill)
 	require.NoError(t, err)
 	require.EqualValues(t, 3, count)
@@ -1547,7 +1547,7 @@ func TestScalerSeedsShareOneLazyObservation(t *testing.T) {
 		return c.List(ctx, list, opts...)
 	}})
 	r := &DisaggregatedSetReconciler{LWSManager: NewLeaderWorkerSetManager(reader)}
-	seed := r.seedForRole(t.Context(), ds)
+	seed := r.seedForRole(t.Context(), ds, "current")
 	require.Zero(t, lists, "existing scalers need no seed observation")
 	for role, want := range map[string]int32{testRolePrefill: 2, testRoleDecode: 3, "decode/a": 1, "decode/b": 2, "missing": 1} {
 		got, err := seed(role)
@@ -1558,10 +1558,98 @@ func TestScalerSeedsShareOneLazyObservation(t *testing.T) {
 	current := readTestLWS(t, base, a)
 	current.Spec.Replicas = ptr.To[int32](6)
 	require.NoError(t, base.Update(t.Context(), current))
-	got, err := r.seedForRole(t.Context(), ds)(testRolePrefill)
+	got, err := r.seedForRole(t.Context(), ds, "current")(testRolePrefill)
 	require.NoError(t, err)
 	require.EqualValues(t, 6, got, "the next reconcile takes a fresh snapshot")
 	require.Equal(t, 2, lists)
+}
+
+func TestScalerSeedDistinguishesBootstrapFromDrainedCapacity(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, children := range []bool{false, true} {
+			for _, stage := range []string{"created", "takeover", "policy write", "rejected growth", "grown then zero", "zero intent", "old empty", "running old", "other slice", "unmarked zero"} {
+				t.Run(fmt.Sprintf("%s/children=%t/%s", identity, children, stage), func(t *testing.T) {
+					ds, role := testManagerDSWithRole("bootstrap")
+					role.Spec.GroupIdentity = identity
+					initial, initialChildren := 4, map[string]int(nil)
+					if stage == "zero intent" {
+						initial = 0
+					}
+					if children {
+						role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}
+						initialChildren = fitSubRoles(map[string]int{"a": 1, "b": 3}, initial)
+					}
+					base := newTestClient()
+					manager := NewLeaderWorkerSetManager(base)
+					manager.pending = testPendingWrites(base)
+					require.NoError(t, manager.Create(t.Context(), ds, role, 0, "current", initial, initialChildren))
+					current, err := manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
+					require.NoError(t, err)
+					current.UID = "created-uid" // The fake client does not assign UIDs.
+					require.NoError(t, base.Update(t.Context(), current))
+					want, wantA, wantB := int32(initial), int32(min(initial, 1)), int32(max(initial-1, 0))
+					switch stage {
+					case "takeover":
+						require.ErrorIs(t, manager.prepareSlice(t.Context(), ds, 0), errReplicaGroupsPending)
+						require.NoError(t, manager.prepareSlice(t.Context(), ds, 0))
+					case "policy write":
+						require.NoError(t, manager.SyncGroupReplacementPolicy(t.Context(), current, leaderworkersetv1.GroupReplacementImmediate))
+					case "rejected growth":
+						manager.client = interceptor.NewClient(base, interceptor.Funcs{Patch: func(_ context.Context, _ client.WithWatch, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
+							return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), current.Name, errors.New("concurrent write"))
+						}})
+						require.True(t, apierrors.IsConflict(manager.Scale(t.Context(), ds, current, 4)))
+						require.True(t, isUnscaledCreation(readTestLWS(t, base, current)), "rejected growth cannot retire bootstrap intent")
+					case "grown then zero":
+						for _, replicas := range []int{4, 0} {
+							current = readTestLWS(t, base, current)
+							if children {
+								state := &subRoleState{lws: current, issued: fitSubRoles(initialChildren, replicas), initial: initialChildren}
+								require.ErrorIs(t, manager.saveSubRoles(t.Context(), state), errReplicaGroupsPending)
+							} else {
+								require.NoError(t, manager.Scale(t.Context(), ds, current, replicas))
+							}
+							require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+						}
+						want, wantA, wantB = 0, 0, 0
+						require.False(t, isUnscaledCreation(readTestLWS(t, base, current)), "bootstrap cannot return after the first growth")
+					case "old empty", "unmarked zero":
+						if stage == "old empty" {
+							current.Labels[disaggregatedsetv1.RevisionLabelKey] = "old"
+						} else {
+							delete(current.Annotations, observationReceiptAnnotation)
+						}
+						require.NoError(t, base.Update(t.Context(), current))
+						want, wantA, wantB = 0, 0, 0
+					case "running old", "other slice":
+						old := current.DeepCopy()
+						old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
+						old.Labels[disaggregatedsetv1.RevisionLabelKey] = "old"
+						old.Spec.Replicas = ptr.To[int32](2)
+						if stage == "other slice" {
+							old.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+							want, wantA, wantB = 6, 2, 4
+						} else {
+							want, wantA, wantB = 2, 1, 1
+						}
+						require.NoError(t, base.Create(t.Context(), old))
+					}
+					// A restart discards all local state; only persisted intent counts.
+					r := &DisaggregatedSetReconciler{LWSManager: NewLeaderWorkerSetManager(base)}
+					seed := r.seedForRole(t.Context(), ds, "current")
+					wants := map[string]int32{role.Name: want}
+					if children {
+						wants[role.Name+"/a"], wants[role.Name+"/b"] = wantA, wantB
+					}
+					for name, expected := range wants {
+						got, err := seed(name)
+						require.NoError(t, err)
+						require.Equal(t, expected, got, name)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestWriteReceiptRecovery(t *testing.T) {
@@ -1699,7 +1787,7 @@ func TestWriteReceiptRetiresDeletedChild(t *testing.T) {
 			case "disappeared":
 				role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: testRolePrefill}
 				role.Spec = lws.Spec
-				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "old", 4))
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "old", 4, nil))
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
 				require.Zero(t, getLWSReplicas(current), "recreation cannot start Pods before a fresh plan")
 				require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
@@ -1759,7 +1847,7 @@ func TestCreateDefersGrowthUntilObserved(t *testing.T) {
 				}})
 				manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
 				manager.reader, manager.pending = cached, testPendingWrites(cached)
-				err := manager.Create(t.Context(), ds, role, 0, "obsolete", 4)
+				err := manager.Create(t.Context(), ds, role, 0, "obsolete", 4, nil)
 				if outcome == "deleted before observation" {
 					require.NoError(t, err)
 				} else {
@@ -1771,7 +1859,7 @@ func TestCreateDefersGrowthUntilObserved(t *testing.T) {
 
 				// The user selects another revision and replica count while the
 				// informer is still empty. Even a later original commit stays empty.
-				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "latest", 2))
+				require.NoError(t, manager.Create(t.Context(), ds, role, 0, "latest", 2, nil))
 				if outcome == "late commit" {
 					require.NoError(t, base.Create(t.Context(), delayed))
 				}
@@ -1804,7 +1892,7 @@ func TestEmptyCreationRequeuesUntilObserved(t *testing.T) {
 			} else {
 				require.Zero(t, result.RequeueAfter, "a zero target needs no growth")
 			}
-			require.ErrorIs(t, manager.Create(t.Context(), ds, role, 0, "current", desired), errReplicaGroupsPending,
+			require.ErrorIs(t, manager.Create(t.Context(), ds, role, 0, "current", desired, nil), errReplicaGroupsPending,
 				"AlreadyExists plus a lagging cache is a normal observation wait")
 			require.Empty(t, manager.pending.initialized, "AlreadyExists must not mark an unobserved UID initialized")
 		})
@@ -1820,7 +1908,7 @@ func TestCreateSubRolesStartEmpty(t *testing.T) {
 			base := newTestClient()
 			manager := NewLeaderWorkerSetManager(base)
 			manager.pending = testPendingWrites(base)
-			require.NoError(t, manager.Create(t.Context(), ds, role, 0, "current", 6))
+			require.NoError(t, manager.Create(t.Context(), ds, role, 0, "current", 6, nil))
 			current, err := manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
 			require.NoError(t, err)
 			current.UID = "created-child"
@@ -2030,9 +2118,10 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				},
 			})
 			ctx := t.Context()
-			require.NoError(t, manager.Create(ctx, ds, role, 0, revision, 4))
+			require.NoError(t, manager.Create(ctx, ds, role, 0, revision, 4, nil))
 			require.NoError(t, writer.Get(ctx, key, current))
 			require.Zero(t, getLWSReplicas(current))
+			require.True(t, isUnscaledCreation(current))
 			uid := current.UID
 			if tc.deleteBeforeCheck {
 				require.NoError(t, writer.Delete(ctx, current))
@@ -2044,7 +2133,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			if tc.deleteBeforeCheck {
 				require.Eventually(t, func() bool { return apierrors.IsNotFound(manager.reader.Get(ctx, key, current)) }, 5*time.Second, 10*time.Millisecond)
 				require.NoError(t, manager.pending.observed(ctx, ds.UID, "0"), "a deleted creation must not block a fully current cache")
-				require.NoError(t, manager.Create(ctx, ds, role, 0, revision, 4))
+				require.NoError(t, manager.Create(ctx, ds, role, 0, revision, 4, nil))
 				require.Eventually(t, func() bool { return manager.reader.Get(ctx, key, current) == nil && current.UID != uid }, 5*time.Second, 10*time.Millisecond)
 			}
 			require.Empty(t, manager.pending.writes)
@@ -2060,6 +2149,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			}
 			require.NoError(t, manager.reader.Get(ctx, key, current))
 			require.EqualValues(t, 2, getLWSReplicas(current), "growth uses the latest desired size, not the four from creation")
+			require.False(t, isUnscaledCreation(current), "growth atomically retires the bootstrap marker")
 			require.NoError(t, writer.Delete(ctx, current))
 		})
 	}
