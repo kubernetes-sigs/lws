@@ -21,6 +21,8 @@ matches the default manifest:
           control-plane: controller-manager
       template:
         metadata:
+          annotations:
+            kubectl.kubernetes.io/default-container: manager
           labels:
             app.kubernetes.io/instance: lws
             app.kubernetes.io/name: lws

@@ -16,11 +16,11 @@ spec:
       {{- include "lws.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
         kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         control-plane: controller-manager
         {{- include "lws.selectorLabels" . | nindent 8 }}
@@ -32,7 +32,7 @@ spec:
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      serviceAccountName: {{ include "lws.fullname" . }}-controller-manager
+      serviceAccountName: {{ include "lws.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: 10
