@@ -1,0 +1,90 @@
+suite: controller manager PodDisruptionBudget
+templates:
+  - templates/manager/pdb.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: renders nothing by default with a single replica
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders nothing when disabled
+    set:
+      pdb.enabled: false
+      replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: keeps one pod available by default with multiple replicas
+    set:
+      replicaCount: 2
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: lws-controller-manager
+      - equal:
+          path: metadata.namespace
+          value: lws-system
+      - equal:
+          path: spec
+          value:
+            minAvailable: 1
+            unhealthyPodEvictionPolicy: AlwaysAllow
+            selector:
+              matchLabels:
+                control-plane: controller-manager
+                app.kubernetes.io/name: lws
+                app.kubernetes.io/instance: lws
+
+  - it: uses the configured unhealthyPodEvictionPolicy
+    set:
+      pdb.unhealthyPodEvictionPolicy: IfHealthyBudget
+      replicaCount: 2
+    asserts:
+      - equal:
+          path: spec.unhealthyPodEvictionPolicy
+          value: IfHealthyBudget
+
+  - it: omits unhealthyPodEvictionPolicy when null
+    set:
+      pdb.unhealthyPodEvictionPolicy: null
+      replicaCount: 2
+    asserts:
+      - notExists:
+          path: spec.unhealthyPodEvictionPolicy
+
+  - it: uses the configured minAvailable
+    set:
+      pdb.minAvailable: 50%
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 50%
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: prefers maxUnavailable over minAvailable
+    set:
+      pdb.maxUnavailable: 1
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: renders maxUnavailable of zero
+    set:
+      pdb.maxUnavailable: 0
+      replicaCount: 2
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 0
