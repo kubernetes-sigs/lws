@@ -308,6 +308,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(ptr.Deref(lws.Spec.Replicas, 1)), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1))...)
 	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws)...)
+	allErrs = append(allErrs, ValidateRollingUpdateBudget(
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
+		ptr.Deref(lws.Spec.Replicas, 1),
+		specPath.Child("rolloutStrategy", "rollingUpdateConfiguration"),
+	)...)
 	if rollout := lws.Spec.RolloutStrategy.RollingUpdateConfiguration; rollout != nil && rollout.Partition != nil {
 		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
 		allErrs = append(allErrs, validateNonnegativeField(int64(*rollout.Partition), partitionPath)...)
@@ -340,18 +345,13 @@ func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSet
 }
 
 // ValidateLeaderWorkerSetTemplate validates static constraints shared by LWS
-// objects and embedded templates. Callers validate replica limits, object
-// metadata, scheduler support, and update transitions separately.
+// objects and embedded templates. Callers validate replica limits, rollout
+// budgets, object metadata, scheduler support, and update transitions separately.
 func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	var allErrs field.ErrorList
 	if ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
 	}
-	allErrs = append(allErrs, ValidateRollingUpdateBudget(
-		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
-		ptr.Deref(lws.Spec.Replicas, 1),
-		specPath.Child("rolloutStrategy", "rollingUpdateConfiguration"),
-	)...)
 	allErrs = append(allErrs, ValidateSubGroupPolicy(specPath, &lws.Spec)...)
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 		if value, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {

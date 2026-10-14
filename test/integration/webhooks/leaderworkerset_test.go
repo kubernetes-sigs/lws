@@ -53,6 +53,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 	type testDefaultingCase struct {
 		makeLeaderWorkerSet func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper
 		getExpectedLWS      func(lws *leaderworkerset.LeaderWorkerSet) *wrappers.LeaderWorkerSetWrapper
+		dsTemplateError     string
 	}
 	ginkgo.DescribeTable("test defaulting",
 		func(tc *testDefaultingCase) {
@@ -61,7 +62,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			// Create LeaderWorkerSet object.
 			ginkgo.By("creating LeaderWorkerSet ")
 			lws := tc.makeLeaderWorkerSet(ns).Obj()
-			expectDisaggregatedSetTemplateAdmission(ctx, lws)
+			expectDisaggregatedSetTemplateAdmission(ctx, lws, tc.dsTemplateError)
 			gomega.Expect(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
 
 			var fetchedLWS leaderworkerset.LeaderWorkerSet
@@ -166,6 +167,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 		}),
 		ginkgo.Entry("apply default rollout strategy", &testDefaultingCase{
+			dsTemplateError: "rolloutStrategy.type",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RolloutStrategy(leaderworkerset.RolloutStrategy{}) // unset rollout strategy
 			},
@@ -180,6 +182,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 		}),
 		ginkgo.Entry("wouldn't apply default rollout strategy when configured", &testDefaultingCase{
+			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -227,10 +230,12 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 	)
 
 	type testValidationCase struct {
-		makeLeaderWorkerSet   func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper
-		lwsCreationShouldFail bool
-		updateLeaderWorkerSet func(lws *leaderworkerset.LeaderWorkerSet)
-		updateShouldFail      bool
+		makeLeaderWorkerSet    func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper
+		lwsCreationShouldFail  bool
+		updateLeaderWorkerSet  func(lws *leaderworkerset.LeaderWorkerSet)
+		updateShouldFail       bool
+		dsTemplateError        string
+		dsUpdatedTemplateError string
 	}
 	ginkgo.DescribeTable("test creation and update",
 		func(tc *testValidationCase) {
@@ -239,7 +244,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			// Create LeaderWorkerSet object.
 			ginkgo.By("creating leaderworkerset")
 			lws := tc.makeLeaderWorkerSet(ns).Obj()
-			expectDisaggregatedSetTemplateAdmission(ctx, lws)
+			expectDisaggregatedSetTemplateAdmission(ctx, lws, tc.dsTemplateError)
 
 			// Verify lws created successfully.
 			ginkgo.By("checking that leaderworkerset creation succeeds")
@@ -254,7 +259,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 
 			if tc.updateLeaderWorkerSet != nil {
 				tc.updateLeaderWorkerSet(&fetchedLWS)
-				expectDisaggregatedSetTemplateAdmission(ctx, &fetchedLWS)
+				expectDisaggregatedSetTemplateAdmission(ctx, &fetchedLWS, tc.dsUpdatedTemplateError)
 				// Verify leaderworkerset created successfully.
 				if tc.updateShouldFail {
 					gomega.Expect(k8sClient.Update(ctx, &fetchedLWS)).Should(gomega.Not(gomega.Succeed()))
@@ -270,48 +275,56 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid replicas and size should fail", &testValidationCase{
+			dsTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(100000).Size(1000000)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid size should fail", &testValidationCase{
+			dsTemplateError: "leaderWorkerTemplate.size",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(2).Size(-1)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid replicas should fail", &testValidationCase{
+			dsTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).Replica(-1)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with replicas greater than 1000000 should fail", &testValidationCase{
+			dsTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).Replica(1000001)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid startpolicy should fail", &testValidationCase{
+			dsTemplateError: "startupPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).StartupPolicy("invalidValue")
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid subGroupSize should fail", &testValidationCase{
+			dsTemplateError: "subGroupPolicy.subGroupSize",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).SubGroupSize(-1)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with subGroupSize larger than size should fail", &testValidationCase{
+			dsTemplateError: "subGroupPolicy.subGroupSize",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(2).SubGroupSize(3)
 			},
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation where (subGroupSize-1) is not divisible by 1 and SubGroupPolicyTypeLeaderExcluded should fail", &testValidationCase{
+			dsTemplateError: "subGroupPolicy.subGroupSize",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Size(4).SubGroupSize(2).SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)
 			},
@@ -327,6 +340,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update with invalid replicas should fail (larger than maxInt32)", &testValidationCase{
+			dsUpdatedTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(100000).Size(1)
 			},
@@ -336,6 +350,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: true,
 		}),
 		ginkgo.Entry("update with invalid replicas should fail (number is negative)", &testValidationCase{
+			dsUpdatedTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
 			},
@@ -345,6 +360,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: true,
 		}),
 		ginkgo.Entry("update with invalid startpolicy should fail", &testValidationCase{
+			dsUpdatedTemplateError: "startupPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).StartupPolicy(leaderworkerset.LeaderReadyStartupPolicy)
 			},
@@ -391,6 +407,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update with invalid replicas should fail (larger than 1000000)", &testValidationCase{
+			dsUpdatedTemplateError: "spec.roles[0].spec.replicas",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(1)
 			},
@@ -439,6 +456,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("subdomainPolicy can be updated to nil", &testValidationCase{
+			dsUpdatedTemplateError: "networkConfig.subdomainPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name)
 			},
@@ -454,6 +472,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("set restart policy should fail when value is invalid", &testValidationCase{
+			dsTemplateError: "restartPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.LeaderWorkerTemplate.RestartPolicy = "invalidValue"
@@ -462,6 +481,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("set invalid rolloutStrategyType should be failed", &testValidationCase{
+			dsTemplateError: "rolloutStrategy.type",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.Type = "invalidValue"
@@ -478,6 +498,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("set maxUnavailable greater than 100% should be failed", &testValidationCase{
+			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("200%")
@@ -486,6 +507,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("set maxUnavailable less than 0 should be failed", &testValidationCase{
+			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(-1)
@@ -502,6 +524,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("set maxSurge greater than 100% should be failed", &testValidationCase{
+			dsTemplateError: "maxSurge",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromString("200%")
@@ -510,6 +533,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("set maxSurge less than 0 should be failed", &testValidationCase{
+			dsTemplateError: "maxSurge",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(-1)
@@ -518,6 +542,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("set maxUnavailable and maxSurge both to 0 should be failed", &testValidationCase{
+			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
@@ -545,6 +570,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to non-zero should be failed", &testValidationCase{
+			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
@@ -554,6 +580,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with negative partition should fail", &testValidationCase{
+			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](-1)
@@ -562,6 +589,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with partition greater than replicas should succeed", &testValidationCase{
+			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(3)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](5)
@@ -570,6 +598,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with partition equal to replicas should succeed", &testValidationCase{
+			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(3)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](3)
@@ -586,6 +615,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("update partition should succeed", &testValidationCase{
+			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -595,6 +625,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update partition to negative should fail", &testValidationCase{
+			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -604,6 +635,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: true,
 		}),
 		ginkgo.Entry("update partition to greater than replicas should succeed", &testValidationCase{
+			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -613,6 +645,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update partition to equal replicas should succeed", &testValidationCase{
+			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -643,6 +676,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with maxGroupRestarts and None restart policy should fail", &testValidationCase{
+			dsTemplateError: "maxGroupRestarts",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.NoneRestartPolicy).MaxGroupRestarts(1)
 			},
@@ -668,6 +702,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update keeping maxGroupRestarts while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
+			dsUpdatedTemplateError: "maxGroupRestarts",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1)
 			},
@@ -703,6 +738,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with restartBackoff and None restart policy should fail", &testValidationCase{
+			dsTemplateError: "restartBackoff",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.NoneRestartPolicy).
@@ -711,6 +747,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid restartBackoff (base <= 0) should fail", &testValidationCase{
+			dsTemplateError: "restartBackoff",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
@@ -719,6 +756,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with invalid restartBackoff (base > cap) should fail", &testValidationCase{
+			dsTemplateError: "restartBackoff",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
@@ -739,6 +777,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update keeping restartBackoff while changing restart policy away from RecreateGroupOnPodRestart should fail", &testValidationCase{
+			dsUpdatedTemplateError: "restartBackoff",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).
@@ -762,6 +801,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("creation with invalid podTerminationPolicy should fail", &testValidationCase{
+			dsTemplateError: "podTerminationPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy("InvalidPolicy")
 			},
@@ -792,6 +832,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update podTerminationPolicy to invalid value should fail", &testValidationCase{
+			dsUpdatedTemplateError: "podTerminationPolicy",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).PodTerminationPolicy(leaderworkerset.SequentialPodTerminationPolicy)
 			},
@@ -803,15 +844,18 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 	)
 })
 
-func expectDisaggregatedSetTemplateAdmission(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) {
+func expectDisaggregatedSetTemplateAdmission(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, wantError string) {
 	ginkgo.GinkgoHelper()
-	ginkgo.By("checking that an admitted DisaggregatedSet template can create its LWS")
+	ginkgo.By("checking expected DisaggregatedSet admission and generated LWS admission")
 	disagg := disaggregatedSetTemplate(lws)
-	if err := k8sClient.Create(ctx, disagg, client.DryRunAll); err != nil {
-		// DS may reject fields it does not support, but infrastructure errors must fail.
+	err := k8sClient.Create(ctx, disagg, client.DryRunAll)
+	if wantError != "" {
+		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(gomega.BeTrue(), "unexpected DS admission error: %v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(wantError))
 		return
 	}
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "DS must accept this supported role template")
 	expectGeneratedLeaderWorkerSets(ctx, disagg)
 }
 

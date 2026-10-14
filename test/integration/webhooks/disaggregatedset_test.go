@@ -30,11 +30,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -430,6 +434,9 @@ var _ = ginkgo.Describe("DisaggregatedSet static role template validation", func
 		ginkgo.Entry("requires subgroup policy for exclusive topology", func(l *leaderworkerset.LeaderWorkerSet) {
 			l.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
 		}, "metadata.annotations"),
+		ginkgo.Entry("requires subgroup policy for an empty exclusive topology annotation", func(l *leaderworkerset.LeaderWorkerSet) {
+			l.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: ""}
+		}, "metadata.annotations"),
 		ginkgo.Entry("admits defaulted size and replicas", func(l *leaderworkerset.LeaderWorkerSet) {
 			l.Spec.LeaderWorkerTemplate.Size = nil
 			l.Spec.Replicas = nil
@@ -460,7 +467,9 @@ var _ = ginkgo.Describe("DisaggregatedSet static role template validation", func
 		role := &disagg.Spec.Roles[1]
 		role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](3)
 		role.Spec.Replicas = ptr.To[int32](0)
-		role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{}
+		role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromInt32(-1),
+		}
 		create := disagg.DeepCopy()
 		create.ResourceVersion = ""
 		create.Name = "external-create"
@@ -548,14 +557,26 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 			gomega.Expect(err).To(gomega.HaveOccurred())
 			gomega.Expect(err.Error()).To(gomega.ContainSubstring("spec.roles[2].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize"))
 
-			if ds.Spec.Roles[1].Labels["invalid key"] != "" {
+			if ds.Spec.Roles[1].Labels["invalid key"] != "" || ds.Spec.Roles[1].Annotations["invalid key"] != "" {
 				ds.Spec.Roles[1].Labels, ds.Spec.Roles[1].Annotations = nil, nil
+				gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+			}
+			for _, annotations := range []map[string]string{
+				{"example.com/note": "added"},
+				{"example.com/note": "changed"},
+				nil,
+			} {
+				ds.Spec.Roles[1].Annotations = annotations
 				gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
 			}
 			// Partitioned roles ignore the parent target, including large values.
 			if len(ds.Spec.Roles[1].SubRoles) > 0 {
 				slices.Reverse(ds.Spec.Roles[1].SubRoles)
 				ds.Spec.Roles[1].Spec.Replicas = ptr.To[int32](1000000)
+				gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+				ds.Spec.Roles[1].SubRoles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingStatic}
+				gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+				ds.Spec.Roles[1].SubRoles[0].Scaling = nil
 				gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
 			}
 			for i := range ds.Spec.Roles {
@@ -586,13 +607,14 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 			ds.Spec.Roles[0].Annotations = map[string]string{"invalid key": "value"}
 		}, "metadata.annotations"),
 		ginkgo.Entry("indivisible subgroups", func(ds *disaggregatedset.DisaggregatedSet) {
+			ds.Spec.Roles[0].Annotations = map[string]string{"invalid key": "value"}
 			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](5)
 			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
 			ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = nil
 		}, "subGroupPolicy.subGroupSize"),
 		ginkgo.Entry("External zero budgets", func(ds *disaggregatedset.DisaggregatedSet) {
 			ds.Spec.Roles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
-			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](0)
+			ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](4)
 			ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{}
 		}, "rollingUpdateConfiguration.maxUnavailable"),
 		ginkgo.Entry("excessive physical pod count", func(ds *disaggregatedset.DisaggregatedSet) {
@@ -605,6 +627,32 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
 		}, "subGroupPolicy.subGroupSize"),
 	)
+
+	ginkgo.It("deletes a positive legacy External role without repair or scale-to-zero", func() {
+		ds := newDisaggregatedSet()
+		ds.Spec.Roles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
+		ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](4)
+		ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{}
+		createLegacyDisaggregatedSet(ds, "rollingUpdateConfiguration.maxUnavailable")
+		manager := disaggregatedsetcontroller.NewScalerManager(k8sClient, events.NewFakeRecorder(10))
+		scalers, err := manager.Reconcile(ctx, ds, func(string) int32 { return 4 })
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(scalers[ds.Spec.Roles[0].Name].Spec.Replicas).To(gomega.Equal(int32(4)))
+		originalSpec := ds.Spec.DeepCopy()
+		gomega.Expect(k8sClient.Delete(ctx, ds)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ds), ds)).To(gomega.Succeed())
+		gomega.Expect(ds.DeletionTimestamp).NotTo(gomega.BeNil())
+		gomega.Expect(ds.Spec).To(gomega.Equal(*originalSpec))
+		ds.Finalizers = nil
+		gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ds), &disaggregatedset.DisaggregatedSet{})
+			if err != nil {
+				gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue())
+			}
+			return apierrors.IsNotFound(err)
+		}).Should(gomega.BeTrue())
+	})
 
 	ginkgo.It("requires changed or renamed legacy templates to become valid", func() {
 		ds := newDisaggregatedSet()
@@ -646,6 +694,7 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 		for _, mutate := range []func(*disaggregatedset.DisaggregatedRoleSpec){
 			func(r *disaggregatedset.DisaggregatedRoleSpec) { r.SubRoles[0].Name = "renamed" },
 			func(r *disaggregatedset.DisaggregatedRoleSpec) { r.SubRoles[0].Replicas = ptr.To[int32](2) },
+			func(r *disaggregatedset.DisaggregatedRoleSpec) { r.SubRoles[0].Replicas = ptr.To[int32](0) },
 			func(r *disaggregatedset.DisaggregatedRoleSpec) {
 				r.SubRoles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
 			},
@@ -666,21 +715,85 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 		}
 	})
 
-	ginkgo.It("revalidates percentage budgets on positive replica changes", func() {
+	ginkgo.DescribeTable("revalidates percentage budgets on positive replica changes",
+		func(subRoles bool) {
+			ds := newDisaggregatedSet()
+			for i := range ds.Spec.Roles {
+				role := &ds.Spec.Roles[i]
+				role.Spec.Replicas = ptr.To[int32](2)
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+					MaxUnavailable: intstr.FromString("50%"),
+				}
+				if subRoles {
+					role.SubRoles = []disaggregatedset.DisaggregatedSubRoleSpec{{Name: "hot"}, {Name: "cold"}}
+				}
+			}
+			gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
+			for i := range ds.Spec.Roles {
+				if subRoles {
+					ds.Spec.Roles[i].SubRoles[0].Replicas = ptr.To[int32](0)
+				} else {
+					ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](1)
+				}
+			}
+			err := k8sClient.Update(ctx, ds, client.DryRunAll)
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("rollingUpdateConfiguration.maxUnavailable"))
+			for i := range ds.Spec.Roles {
+				ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](0)
+				for j := range ds.Spec.Roles[i].SubRoles {
+					ds.Spec.Roles[i].SubRoles[j].Replicas = ptr.To[int32](0)
+				}
+			}
+			gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+		},
+		ginkgo.Entry("role replicas", false),
+		ginkgo.Entry("sub-role aggregate replicas", true),
+	)
+
+	ginkgo.It("preserves live replicas when switching a Static role to External", func() {
 		ds := newDisaggregatedSet()
+		ds.Annotations = map[string]string{disaggregatedset.RevisionHashVersionAnnotationKey: disaggregatedset.RevisionHashVersion}
 		for i := range ds.Spec.Roles {
-			ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](2)
+			ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](4)
 			ds.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
 				MaxUnavailable: intstr.FromString("50%"),
 			}
 		}
 		gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
-		for i := range ds.Spec.Roles {
-			ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](1)
+		recorder := events.NewFakeRecorder(100)
+		manager := disaggregatedsetcontroller.NewLeaderWorkerSetManager(k8sClient)
+		reconciler := &disaggregatedsetcontroller.DisaggregatedSetReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(), Record: recorder,
+			LWSManager: manager, ScalerManager: disaggregatedsetcontroller.NewScalerManager(k8sClient, recorder),
 		}
-		err := k8sClient.Update(ctx, ds, client.DryRunAll)
-		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("rollingUpdateConfiguration.maxUnavailable"))
+		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
+		_, err := reconciler.Reconcile(ctx, request)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		roleName := ds.Spec.Roles[0].Name
+		childName := disaggregatedsetutils.GenerateName(ds.Name, 0, disaggregatedsetutils.ComputeRevision(ds.Spec.Roles), roleName)
+		child := &leaderworkerset.LeaderWorkerSet{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName, Namespace: ds.Namespace}, child)).To(gomega.Succeed())
+		gomega.Expect(ptr.Deref(child.Spec.Replicas, 0)).To(gomega.Equal(int32(4)))
+		childUID := child.UID
+
+		gomega.Expect(k8sClient.Get(ctx, request.NamespacedName, ds)).To(gomega.Succeed())
+		ds.Spec.Roles[0].Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
+		gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+		_, err = reconciler.Reconcile(ctx, request)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		scaler := &disaggregatedset.DisaggregatedSetRoleScaler{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: disaggregatedsetcontroller.ScalerName(ds.Name, roleName), Namespace: ds.Namespace,
+		}, scaler)).To(gomega.Succeed())
+		gomega.Expect(scaler.Spec.Replicas).To(gomega.Equal(int32(4)))
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(child), child)).To(gomega.Succeed())
+		gomega.Expect(child.UID).To(gomega.Equal(childUID))
+		gomega.Expect(ptr.Deref(child.Spec.Replicas, 0)).To(gomega.Equal(int32(4)))
+		unavailable, err := intstr.GetScaledValueFromIntOrPercent(
+			&child.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(scaler.Spec.Replicas), false)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(unavailable).To(gomega.Equal(2))
 	})
 })
 

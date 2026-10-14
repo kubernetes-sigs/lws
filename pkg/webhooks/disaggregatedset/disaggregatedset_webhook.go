@@ -104,11 +104,6 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 		if !unchanged {
 			allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: role.ObjectMeta, Spec: role.Spec}
-			lws.Spec.Replicas = validationReplicasForRole(role)
-			if role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {
-				// The scaler controls replicas; the role's inline value is ignored.
-				lws.Spec.Replicas = ptr.To[int32](1)
-			}
 			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws)...)
 		}
 		if len(role.SubRoles) > 0 {
@@ -181,7 +176,13 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 // scale-to-zero. Positive replica changes, new roles, and changed cross-field
 // inputs still require validation. Comparisons never default the stored template.
 func unchangedRoleTemplate(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
-	if oldRole == nil || !apiequality.Semantic.DeepEqual(role.Annotations, oldRole.Annotations) {
+	if oldRole == nil {
+		return false
+	}
+	key := leaderworkerset.SubGroupExclusiveKeyAnnotationKey
+	value, found := role.Annotations[key]
+	oldValue, oldFound := oldRole.Annotations[key]
+	if found != oldFound || value != oldValue {
 		return false
 	}
 	external := role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal
@@ -199,6 +200,11 @@ func unchangedRoleTemplate(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
 		if !apiequality.Semantic.DeepEqual(role.Scaling, oldRole.Scaling) {
 			return false
 		}
+		totalReplicas := *validationReplicasForRole(*role)
+		oldTotalReplicas := *validationReplicasForRole(*oldRole)
+		if totalReplicas != oldTotalReplicas && totalReplicas != 0 {
+			return false
+		}
 		// Parent replicas are ignored for partitioned roles. Match children by
 		// name so reordering and stopping existing pools can preserve legacy data.
 		oldChildren := make(map[string]disaggv1.DisaggregatedSubRoleSpec, len(oldRole.SubRoles))
@@ -212,6 +218,12 @@ func unchangedRoleTemplate(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
 			}
 			if replicas := ptr.Deref(child.Replicas, 1); replicas != ptr.Deref(oldChild.Replicas, 1) && replicas != 0 {
 				return false
+			}
+			if child.Scaling != nil && (child.Scaling.Mode == "" || child.Scaling.Mode == disaggv1.RoleScalingStatic) {
+				child.Scaling = nil
+			}
+			if oldChild.Scaling != nil && (oldChild.Scaling.Mode == "" || oldChild.Scaling.Mode == disaggv1.RoleScalingStatic) {
+				oldChild.Scaling = nil
 			}
 			child.Replicas, oldChild.Replicas = nil, nil
 			if !apiequality.Semantic.DeepEqual(child, oldChild) {
@@ -410,6 +422,10 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 				"partition is not supported by DisaggregatedSet; rolling updates are managed across roles by the DisaggregatedSet controller",
 			))
 		}
+
+		// Preserve DS's replica inputs; resolving External targets is separate.
+		replicas := ptr.Deref(validationReplicasForRole(role), 0)
+		allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 	}
 
 	return allErrs

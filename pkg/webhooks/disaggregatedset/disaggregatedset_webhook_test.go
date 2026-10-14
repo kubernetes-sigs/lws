@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -770,6 +771,8 @@ func TestValidateCreate(t *testing.T) {
 
 func TestValidateRolloutReplicaDefaults(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
+	// Preserve DS's existing handling of omitted and zero template replicas.
+	// Integration tests cover the API server's replica defaults.
 	for _, tc := range []struct {
 		name           string
 		replicas       *int32
@@ -779,11 +782,12 @@ func TestValidateRolloutReplicaDefaults(t *testing.T) {
 	}{
 		{name: "static zero", replicas: ptr.To[int32](0)},
 		{name: "static positive", replicas: ptr.To[int32](1), wantError: true},
-		{name: "static default", wantError: true},
+		{name: "static default"},
 		{name: "static default with valid budget", maxUnavailable: 1},
-		{name: "external zero", replicas: ptr.To[int32](0), external: true, wantError: true},
+		{name: "external zero", replicas: ptr.To[int32](0), external: true},
 		{name: "external zero with valid budget", replicas: ptr.To[int32](0), external: true, maxUnavailable: 1},
-		{name: "external default", external: true, wantError: true},
+		{name: "external default", external: true},
+		{name: "external positive", replicas: ptr.To[int32](1), external: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obj := wrappers.BuildDisaggregatedSet("test", "default").
@@ -1043,6 +1047,173 @@ func TestValidateUpdate(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "must not be 0 when `maxSurge` is 0")
 	})
+
+	t.Run("role annotations preserve legacy templates", func(t *testing.T) {
+		subgroupKey := leaderworkerset.SubGroupExclusiveKeyAnnotationKey
+		for _, tc := range []struct {
+			name                        string
+			oldAnnotations, annotations map[string]string
+			wantError                   string
+		}{
+			{
+				name:        "add unrelated annotation",
+				annotations: map[string]string{"example.com/note": "new"},
+			},
+			{
+				name:           "change unrelated annotation",
+				oldAnnotations: map[string]string{"example.com/note": "old"},
+				annotations:    map[string]string{"example.com/note": "new"},
+			},
+			{
+				name:           "remove unrelated annotation",
+				oldAnnotations: map[string]string{"example.com/note": "old"},
+			},
+			{
+				name:           "remove invalid annotation",
+				oldAnnotations: map[string]string{"invalid key": "old"},
+			},
+			{
+				name:        "reject new invalid annotation",
+				annotations: map[string]string{"invalid key": "new"},
+				wantError:   "spec.roles[0].metadata.annotations",
+			},
+			{
+				name:           "preserve unchanged subgroup annotation",
+				oldAnnotations: map[string]string{subgroupKey: "rack"},
+				annotations:    map[string]string{subgroupKey: "rack", "example.com/note": "new"},
+			},
+			{
+				name:           "revalidate changed subgroup annotation",
+				oldAnnotations: map[string]string{subgroupKey: "rack"},
+				annotations:    map[string]string{subgroupKey: "zone"},
+				wantError:      "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize",
+			},
+			{
+				name:        "revalidate added empty subgroup annotation",
+				annotations: map[string]string{subgroupKey: ""},
+				wantError:   "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize",
+			},
+			{
+				name:           "revalidate removed empty subgroup annotation",
+				oldAnnotations: map[string]string{subgroupKey: ""},
+				wantError:      "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				oldObj := validObj.DeepCopy()
+				role := &oldObj.Spec.Roles[0]
+				role.Annotations = tc.oldAnnotations
+				role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](5)
+				role.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
+				updated := oldObj.DeepCopy()
+				updated.Spec.Roles[0].Annotations = tc.annotations
+				original, before := oldObj.DeepCopy(), updated.DeepCopy()
+				_, err := webhook.ValidateUpdate(ctx, oldObj, updated)
+				require.Equal(t, original, oldObj)
+				require.Equal(t, before, updated)
+				if tc.wantError != "" {
+					require.ErrorContains(t, err, tc.wantError)
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	})
+
+	t.Run("sub-role scaling semantics", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			old, new  *disaggv1.RoleScaling
+			wantError bool
+		}{
+			{name: "omitted to Static", new: &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingStatic}},
+			{name: "Static to omitted", old: &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingStatic}},
+			{name: "empty to omitted", old: &disaggv1.RoleScaling{}},
+			{name: "omitted to External", new: &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}, wantError: true},
+			{name: "External to omitted", old: &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}, wantError: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				oldObj := validObj.DeepCopy()
+				role := &oldObj.Spec.Roles[0]
+				role.SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "hot", Scaling: tc.old}, {Name: "cold"}}
+				role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](5)
+				role.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
+				updated := oldObj.DeepCopy()
+				updated.Spec.Roles[0].SubRoles[0].Scaling = tc.new
+				original, before := oldObj.DeepCopy(), updated.DeepCopy()
+				_, err := webhook.ValidateUpdate(ctx, oldObj, updated)
+				require.Equal(t, original, oldObj)
+				require.Equal(t, before, updated)
+				if tc.wantError {
+					require.ErrorContains(t, err, "subGroupPolicy.subGroupSize")
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	})
+
+	t.Run("sub-role replica changes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			oldReplicas [2]*int32
+			replicas    [2]*int32
+			wantError   bool
+		}{
+			{
+				name:        "partial scale to zero invalidates parent budget",
+				oldReplicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](1)},
+				replicas:    [2]*int32{ptr.To[int32](0), ptr.To[int32](1)},
+				wantError:   true,
+			},
+			{
+				name:      "partial scale to zero uses defaulted targets",
+				replicas:  [2]*int32{ptr.To[int32](0), nil},
+				wantError: true,
+			},
+			{
+				name:        "partial scale to zero preserves valid parent budget",
+				oldReplicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](2)},
+				replicas:    [2]*int32{ptr.To[int32](0), ptr.To[int32](2)},
+			},
+			{
+				name:        "all sub-roles scale to zero",
+				oldReplicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](1)},
+				replicas:    [2]*int32{ptr.To[int32](0), ptr.To[int32](0)},
+			},
+			{
+				name:     "defaulted targets are unchanged",
+				replicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](1)},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				oldObj := validObj.DeepCopy()
+				role := &oldObj.Spec.Roles[0]
+				role.SubRoles = []disaggv1.DisaggregatedSubRoleSpec{
+					{Name: "hot", Replicas: tc.oldReplicas[0]},
+					{Name: "cold", Replicas: tc.oldReplicas[1]},
+				}
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+					MaxUnavailable: intstr.FromString("50%"),
+				}
+				_, err := webhook.ValidateCreate(ctx, oldObj)
+				require.NoError(t, err)
+				updated := oldObj.DeepCopy()
+				for i := range updated.Spec.Roles[0].SubRoles {
+					updated.Spec.Roles[0].SubRoles[i].Replicas = tc.replicas[i]
+				}
+				original, before := oldObj.DeepCopy(), updated.DeepCopy()
+				_, err = webhook.ValidateUpdate(ctx, oldObj, updated)
+				require.Equal(t, original, oldObj)
+				require.Equal(t, before, updated)
+				if tc.wantError {
+					require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	})
 }
 
 func TestValidateDelete(t *testing.T) {
@@ -1055,12 +1226,61 @@ func TestValidateDelete(t *testing.T) {
 
 	_, err := webhook.ValidateDelete(ctx, obj)
 	require.NoError(t, err)
+
+	for _, subRoles := range []bool{false, true} {
+		t.Run(fmt.Sprintf("finalizer cleanup preserves legacy templates subRoles=%t", subRoles), func(t *testing.T) {
+			oldObj := wrappers.BuildDisaggregatedSet("legacy", "default").WithRole("prefill", 4, "nginx").Obj()
+			oldObj.Finalizers = []string{"example.com/cleanup"}
+			now := metav1.Now()
+			oldObj.DeletionTimestamp = &now
+			role := &oldObj.Spec.Roles[0]
+			external := &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+			if subRoles {
+				role.SubRoles = []disaggv1.DisaggregatedSubRoleSpec{{Name: "hot"}, {Name: "cold", Scaling: external}}
+			} else {
+				role.Scaling = external
+			}
+			role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](5)
+			role.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](3)}
+			updated := oldObj.DeepCopy()
+			updated.Finalizers = nil
+			_, err := webhook.ValidateDelete(ctx, oldObj)
+			require.NoError(t, err)
+			_, err = webhook.ValidateUpdate(ctx, oldObj, updated)
+			require.NoError(t, err)
+			require.Equal(t, oldObj.Spec, updated.Spec)
+
+			updated.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.27"
+			_, err = webhook.ValidateUpdate(ctx, oldObj, updated)
+			require.ErrorContains(t, err, "subGroupPolicy.subGroupSize")
+		})
+	}
 }
 
 func TestValidateExternalScalingRules(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	ctx := context.Background()
 	external := &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+
+	t.Run("preserves budget validation when switching Static to External", func(t *testing.T) {
+		oldObj := wrappers.BuildDisaggregatedSet("test", "default").WithRole("prefill", 4, "nginx").Obj()
+		oldObj.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+			MaxUnavailable: intstr.FromString("50%"),
+		}
+		_, err := webhook.ValidateCreate(ctx, oldObj)
+		require.NoError(t, err)
+		updated := oldObj.DeepCopy()
+		updated.Spec.Roles[0].Scaling = external
+		original, before := oldObj.DeepCopy(), updated.DeepCopy()
+		_, err = webhook.ValidateUpdate(ctx, oldObj, updated)
+		require.NoError(t, err)
+		require.Equal(t, original, oldObj)
+		require.Equal(t, before, updated)
+
+		updated.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(0)
+		_, err = webhook.ValidateUpdate(ctx, oldObj, updated)
+		require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
+	})
 
 	t.Run("warns when External + replicas > 1", func(t *testing.T) {
 		obj := &disaggv1.DisaggregatedSet{
