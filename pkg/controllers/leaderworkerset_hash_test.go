@@ -19,12 +19,53 @@ package controllers
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+func TestLeaderDeploymentZeroReplicaBudgets(t *testing.T) {
+	zero, one := intstr.FromInt32(0), intstr.FromInt32(1)
+	zeroPercent, tenPercent := intstr.FromString("0%"), intstr.FromString("10%")
+	for _, tc := range []struct {
+		name                     string
+		replicas                 int
+		surge, unavailable, want intstr.IntOrString
+	}{
+		{"integer zeros", 0, zero, zero, one},
+		{"percentage zeros", 0, zeroPercent, zeroPercent, one},
+		{"mixed zeros", 0, zero, zeroPercent, one},
+		{"other mixed zeros", 0, zeroPercent, zero, one},
+		{"positive percentage surge", 0, tenPercent, zero, zero},
+		{"positive percentage unavailable", 0, zero, tenPercent, tenPercent},
+		{"positive integer unavailable", 0, zero, intstr.FromInt32(2), intstr.FromInt32(2)},
+		{"positive integer surge", 0, one, zero, zero},
+		{"running workload", 1, one, zero, zero},
+		{"do not repair invalid nonzero workload", 1, zero, zero, zero},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(tc.replicas).Size(2).Obj()
+			lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+			lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = tc.surge
+			lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = tc.unavailable
+			before := lws.DeepCopy()
+			deployment, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget := deployment.Spec.Strategy.RollingUpdate
+			if *deployment.Spec.Replicas != int32(tc.replicas) || *budget.MaxSurge != tc.surge || *budget.MaxUnavailable != tc.want {
+				t.Fatalf("replicas/surge/unavailable = %d/%v/%v, want %d/%v/%v", *deployment.Spec.Replicas, *budget.MaxSurge, *budget.MaxUnavailable, tc.replicas, tc.surge, tc.want)
+			}
+			if diff := cmp.Diff(before, lws); diff != "" {
+				t.Fatalf("must not change the LWS settings (-before +after):\n%s", diff)
+			}
+		})
+	}
+}
 
 func TestLeaderDeploymentApplyConfig(t *testing.T) {
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").

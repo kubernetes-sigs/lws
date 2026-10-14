@@ -293,6 +293,18 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	}
 
 	deploymentLabels, deploymentAnnotations := leaderMetadata(lws, revisionKey)
+	rollingUpdate := lws.Spec.RolloutStrategy.RollingUpdateConfiguration
+	maxUnavailable := rollingUpdate.MaxUnavailable
+	if *lws.Spec.Replicas == 0 {
+		// LWS permits two zero budgets at zero replicas; Deployments do not.
+		// Resolve at 100 to distinguish zero from positive percentages. Only
+		// the empty Deployment gets a fallback, never the LWS's own settings.
+		surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&rollingUpdate.MaxSurge, 100, true)
+		unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, 100, false)
+		if surgeErr == nil && unavailableErr == nil && surge == 0 && unavailable == 0 {
+			maxUnavailable = intstr.FromInt32(1)
+		}
+	}
 
 	deploymentConfig := appsapplyv1.Deployment(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.DeploymentSpec().
@@ -301,8 +313,8 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 			WithStrategy(appsapplyv1.DeploymentStrategy().
 				WithType(appsv1.RollingUpdateDeploymentStrategyType).
 				WithRollingUpdate(appsapplyv1.RollingUpdateDeployment().
-					WithMaxUnavailable(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable).
-					WithMaxSurge(lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge))).
+					WithMaxUnavailable(maxUnavailable).
+					WithMaxSurge(rollingUpdate.MaxSurge))).
 			WithSelector(metaapplyv1.LabelSelector().
 				WithMatchLabels(map[string]string{
 					leaderworkerset.SetNameLabelKey:     lws.Name,
