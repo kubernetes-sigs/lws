@@ -552,16 +552,34 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				DecodeUnavail:  intstr.FromInt(2),
 			},
 			{
-				Name:                   "singleton-role-uses-emergency-surge",
-				SourcePrefill:          1,
-				SourceDecode:           5,
-				TargetPrefill:          1,
-				TargetDecode:           5,
-				PrefillSurge:           intstr.FromInt(0),
-				DecodeSurge:            intstr.FromInt(0),
-				PrefillUnavail:         intstr.FromInt(1),
-				DecodeUnavail:          intstr.FromInt(1),
-				AllowEmergencyMaxSurge: true,
+				Name:           "singleton-role-drains-without-surge",
+				SourcePrefill:  1,
+				SourceDecode:   5,
+				TargetPrefill:  1,
+				TargetDecode:   5,
+				PrefillSurge:   intstr.FromInt(0),
+				DecodeSurge:    intstr.FromInt(0),
+				PrefillUnavail: intstr.FromInt(1),
+				DecodeUnavail:  intstr.FromInt(1),
+			},
+			{
+				Name:           "singleton-role-allows-100-percent-unavailable",
+				SourcePrefill:  1,
+				SourceDecode:   2,
+				TargetPrefill:  1,
+				TargetDecode:   2,
+				PrefillUnavail: intstr.FromString("100%"),
+				DecodeUnavail:  intstr.FromInt(1),
+			},
+			{
+				Name:          "singleton-role-preserves-complete-revision",
+				SourcePrefill: 1,
+				SourceDecode:  2,
+				TargetPrefill: 1,
+				TargetDecode:  2,
+				PrefillSurge:  intstr.FromInt(1),
+				DecodeSurge:   intstr.FromInt(1),
+				DecodeUnavail: intstr.FromInt(1),
 			},
 		}
 
@@ -1074,9 +1092,6 @@ type rolloutTestCase struct {
 	PrefillSurge, DecodeSurge     intstr.IntOrString
 	PrefillUnavail, DecodeUnavail intstr.IntOrString
 	StartupDelaySeconds           int
-	// This test-only flag acknowledges that the scenario may use the
-	// controller's automatic one-replica bootstrap surge.
-	AllowEmergencyMaxSurge bool
 }
 
 func runObservedRollout(deploymentName string, tc rolloutTestCase) []rolloutObservation {
@@ -1143,12 +1158,16 @@ func assertRolloutObservations(tc rolloutTestCase, observations []rolloutObserva
 
 	prefillSurge := rolloutSurge(tc.PrefillSurge, tc.PrefillUnavail, tc.TargetPrefill)
 	decodeSurge := rolloutSurge(tc.DecodeSurge, tc.DecodeUnavail, tc.TargetDecode)
-	if tc.AllowEmergencyMaxSurge {
-		prefillSurge++
-		decodeSurge++
-	}
 	prefillCeiling := max(tc.SourcePrefill, tc.TargetPrefill) + prefillSurge
 	decodeCeiling := max(tc.SourceDecode, tc.TargetDecode) + decodeSurge
+	prefillUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&tc.PrefillUnavail, tc.TargetPrefill, false)
+	Expect(err).NotTo(HaveOccurred())
+	decodeUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&tc.DecodeUnavail, tc.TargetDecode, false)
+	Expect(err).NotTo(HaveOccurred())
+	allowOutage := (tc.SourcePrefill > 0 && tc.TargetPrefill > 0 && prefillUnavailable >= tc.TargetPrefill) ||
+		(tc.SourceDecode > 0 && tc.TargetDecode > 0 && decodeUnavailable >= tc.TargetDecode)
+	prefillFloor := max(0, min(tc.SourcePrefill, tc.TargetPrefill)-prefillUnavailable)
+	decodeFloor := max(0, min(tc.SourceDecode, tc.TargetDecode)-decodeUnavailable)
 
 	for i, observation := range observations {
 		state := observation.Spec
@@ -1158,6 +1177,10 @@ func assertRolloutObservations(tc rolloutTestCase, observations []rolloutObserva
 			"prefill surge ceiling exceeded at state %s", state)
 		Expect(state.OldDecode+state.NewDecode).To(BeNumerically("<=", decodeCeiling),
 			"decode surge ceiling exceeded at state %s", state)
+		Expect(state.OldPrefill+state.NewPrefill).To(BeNumerically(">=", prefillFloor),
+			"too few prefill groups to satisfy its availability floor at state %s", state)
+		Expect(state.OldDecode+state.NewDecode).To(BeNumerically(">=", decodeFloor),
+			"too few decode groups to satisfy its availability floor at state %s", state)
 
 		if i > 0 {
 			previous := observations[i-1].Spec
@@ -1171,11 +1194,12 @@ func assertRolloutObservations(tc rolloutTestCase, observations []rolloutObserva
 				"new decode replicas decreased between %s and %s", previous, state)
 		}
 
-		// Retiring the two role LWS objects is not atomic, so one observation
+		// Unless a live required role permits an outage, the old revision must
+		// retire together. Retiring the two LWS objects is not atomic, so one observation
 		// may contain only half of the final retirement. The next distinct Spec
 		// state must finish it; the controller must not keep rolling one role
 		// while the other role is already gone.
-		if (state.OldPrefill == 0) != (state.OldDecode == 0) {
+		if !allowOutage && (state.OldPrefill == 0) != (state.OldDecode == 0) {
 			Expect(i+1).To(BeNumerically("<", len(observations)),
 				"old revision remained incomplete at state %s", state)
 			if i+1 < len(observations) {

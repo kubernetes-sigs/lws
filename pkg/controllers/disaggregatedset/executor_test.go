@@ -1068,22 +1068,60 @@ func TestReconcileExistingRolloutPrefersOrdinaryProgressOverBootstrapSurge(t *te
 	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 1})
 }
 
+func TestReconcileZeroFloorRolloutWithoutSpareCapacity(t *testing.T) {
+	for _, unavailable := range []intstr.IntOrString{intstr.FromInt(1), intstr.FromString("100%")} {
+		t.Run(unavailable.String(), func(t *testing.T) {
+			createdAt := time.Now()
+			objects := revisionLWSObjects("old", [2]int32{1, 2}, [2]int32{1, 2}, [2]int32{1, 2}, createdAt)
+			objects = append(objects, revisionLWSObjects("new", [2]int32{}, [2]int32{}, [2]int32{1, 2}, createdAt.Add(time.Hour))...)
+			fakeClient := newTestClient(objects...)
+			executor := newTestExecutor(fakeClient)
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 2}, [2]int{}, [2]int{1, 1})
+			ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = unavailable
+			complete := false
+			for tick := range 12 {
+				_, complete = reconcileExistingForTest(t, executor, ds, "new")
+				if tick == 0 {
+					assertRevisionReplicas(t, fakeClient, "old", [2]int32{0, 1})
+					assertRevisionReplicas(t, fakeClient, "new", [2]int32{})
+				}
+				var sets leaderworkersetv1.LeaderWorkerSetList
+				require.NoError(t, fakeClient.List(t.Context(), &sets))
+				requested := int32(0)
+				for _, set := range sets.Items {
+					requested += *set.Spec.Replicas
+				}
+				require.LessOrEqual(t, requested, int32(3), "no extra group may be requested")
+				if complete {
+					break
+				}
+				simulateAllReady(fakeClient)
+			}
+			require.True(t, complete)
+			assertRevisionReplicas(t, fakeClient, "old", [2]int32{})
+			assertRevisionReplicas(t, fakeClient, "new", [2]int32{1, 2})
+		})
+	}
+}
+
 func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	createdAt := time.Now()
 	objects := revisionLWSObjects(
-		"hashB", [2]int32{1, 4}, [2]int32{1, 4}, [2]int32{1, 5}, createdAt,
+		"hashB", [2]int32{2, 4}, [2]int32{1, 4}, [2]int32{2, 5}, createdAt,
 	)
 	objects = append(objects, revisionLWSObjects(
-		"hashC", [2]int32{0, 1}, [2]int32{0, 1}, [2]int32{1, 5}, createdAt.Add(time.Hour),
+		"hashC", [2]int32{0, 1}, [2]int32{0, 1}, [2]int32{2, 5}, createdAt.Add(time.Hour),
 	)...)
 	fakeClient := newTestClient(objects...)
 	recorder := events.NewFakeRecorder(10)
 	executor := &RollingUpdateExecutor{LWSManager: newTestLWSManager(fakeClient), Record: recorder}
-	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 5}, [2]int{}, [2]int{1, 1})
+	// Both roles retain positive floors. An unready old Prefill occupies
+	// the slot that would otherwise let its target start without bootstrap.
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 5}, [2]int{}, [2]int{1, 1})
 	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)
 	assert.Equal(t, time.Second, result.RequeueAfter)
-	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 4})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{2, 4})
 	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
 	require.Len(t, recorder.Events, 2)
 	eventsSeen := (<-recorder.Events) + (<-recorder.Events)
@@ -1097,7 +1135,7 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	result, complete = reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)
 	assert.Equal(t, 10*time.Second, result.RequeueAfter)
-	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{1, 4})
+	assertRevisionReplicas(t, fakeClient, "hashB", [2]int32{2, 4})
 	assertRevisionReplicas(t, fakeClient, "hashC", [2]int32{1, 1})
 	require.Len(t, recorder.Events, 1)
 	assert.Contains(t, <-recorder.Events, EventReasonRevisionDrainBlocked)
@@ -4375,11 +4413,14 @@ func TestSubRoleRolloutAppliesEveryParent(t *testing.T) {
 		bootstrap            bool
 	}{
 		{"growth and old drain", []int{2, 2}, []int{2, 2}, []int{0, 0}, []int{1, 1}, false},
-		{"bootstrap", []int{1, 5}, []int{1, 4}, []int{0, 1}, []int{0, 0}, true},
+		{"bootstrap", []int{2, 5}, []int{2, 4}, []int{0, 1}, []int{0, 0}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			old, target, executor := subRoleRolloutParents(t, tc.initial, tc.old, tc.target)
 			state := rolloutState(tc.initial, tc.old, tc.old, nil, nil, tc.target, tc.target, tc.initial, configs(tc.surge, []int{1, 1}))
+			if tc.bootstrap {
+				state.ActiveOld.RawReadyReplicas[0], state.ActiveOld.ReadyReplicas[0] = 1, 1
+			}
 			step := ComputeNextStep(state)
 			require.NotNil(t, step)
 			require.Equal(t, tc.bootstrap, step.Kind == BootstrapSurgeStep)

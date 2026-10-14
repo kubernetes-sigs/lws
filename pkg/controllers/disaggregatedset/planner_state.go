@@ -64,6 +64,19 @@ type RolloutState struct {
 	ScaleDownDuringRollout bool
 }
 
+// A live required role whose budget permits zero Ready groups explicitly
+// permits an outage of its revision. Other roles still keep their own Ready
+// group floors. Removed roles and a peer's readiness failure do not grant it.
+func (state RolloutState) allowsRevisionOutage(revision RevisionState) bool {
+	for i, required := range revision.RequiredRoles {
+		if required && state.Target.DesiredReplicas[i] > 0 &&
+			state.Config[i].MaxUnavailable >= state.Target.DesiredReplicas[i] {
+			return true
+		}
+	}
+	return false
+}
+
 // Keep the input, not another per-role copy of it. Only readiness summaries,
 // old-revision totals and replacement progress need calculating here.
 type rolloutSnapshot struct {
@@ -82,7 +95,7 @@ type oldRevisionTotals struct {
 
 type roleReadiness struct {
 	usable, rawUsable   int // Serving capacity: every required role is Ready.
-	perRole, rawPerRole int // Individual capacity: every required role has Spec.
+	perRole, rawPerRole int // Individual Ready groups, even in an incomplete revision.
 }
 
 func newRevisionState(size int) RevisionState {
@@ -211,7 +224,6 @@ func (ready roleReadiness) plus(other roleReadiness) roleReadiness {
 
 func summarizeReadiness(required []bool, spec, raw, retained RoleReplicaState) []roleReadiness {
 	serving, rawServing := allRequiredRolesPresent(required, retained), allRequiredRolesPresent(required, raw)
-	complete := allRequiredRolesPresent(required, spec)
 	result := make([]roleReadiness, len(spec))
 	for i := range result {
 		if serving {
@@ -220,9 +232,9 @@ func summarizeReadiness(required []bool, spec, raw, retained RoleReplicaState) [
 		if rawServing {
 			result[i].rawUsable = raw[i]
 		}
-		if complete {
-			result[i].perRole, result[i].rawPerRole = retained[i], raw[i]
-		}
+		// A permitted partial drain must not erase a surviving role's Ready
+		// groups from its budget, including after a later policy change.
+		result[i].perRole, result[i].rawPerRole = retained[i], raw[i]
 	}
 	return result
 }

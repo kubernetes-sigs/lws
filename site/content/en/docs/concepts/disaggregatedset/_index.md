@@ -54,6 +54,31 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 3. **Declarative** — The entire multi-role inference topology is expressed in a single YAML manifest, making it easy to version-control and apply via GitOps.
 
+## Rollout availability
+
+Each role's `maxUnavailable` limits how many of its groups can be unavailable.
+For fixed replica targets, its availability floor is
+`max(0, replicas - maxUnavailable)`. If a required role still present in the target
+has a floor of zero, the controller may remove its last old group without
+waiting for every role in that old revision to retire together. Other roles
+retain their own Ready-group floors, even while the old revision is incomplete.
+
+This can interrupt service: a revision needs a Ready group in every required
+role to serve traffic. For example, explicitly setting `maxUnavailable: 1`
+permits a singleton Prefill role to be entirely unavailable, just like `100%`.
+A fixed `1 Prefill / 2 Decode` update with explicit `maxSurge: 0` and
+`maxUnavailable: 1` on both roles can drain old `1P/2D` to `0P/1D`, start new `1P/1D`,
+then replace the remaining old Decode once the new Decode is Ready. Three
+equal-size group slots suffice. The old Decode continues to count against its
+own budget after Prefill is removed.
+
+When every required current role has a positive floor, the controller also
+preserves complete-revision serving capacity. A merely unhealthy peer does not
+waive that protection. Keeping a singleton role continuously available requires
+`maxUnavailable: 0` and a positive `maxSurge`, and can require spare capacity.
+Bootstrap recovery can also require an extra group; scheduler rejection never
+automatically lowers a positive availability floor to zero.
+
 ## Scaling during a rollout
 
 This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets. Changing replicas or the scaling policy does not create a new revision.

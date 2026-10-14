@@ -846,8 +846,10 @@ func validateStepStructure(state RolloutState, step *UpdateStep) error {
 	if len(step.Past) != len(state.Config) || len(step.New) != len(state.Config) {
 		return fmt.Errorf("target lengths do not match role count")
 	}
-	if bounded := boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, step.Past, state.ActiveOld.RequiredRoles); !slices.Equal(bounded, step.Past) {
-		return fmt.Errorf("old targets leave required roles incomplete")
+	if !state.allowsRevisionOutage(state.ActiveOld.RevisionState) {
+		if bounded := boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, step.Past, state.ActiveOld.RequiredRoles); !slices.Equal(bounded, step.Past) {
+			return fmt.Errorf("old targets leave required roles incomplete")
+		}
 	}
 	return nil
 }
