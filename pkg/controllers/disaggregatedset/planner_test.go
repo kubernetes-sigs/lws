@@ -1211,6 +1211,7 @@ func assertProgressWithinFractionalWindow(
 }
 
 func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
+	t.Parallel() // The seeded corpus and planner state are local to this test.
 	rng := rand.New(rand.NewSource(907))
 	rawReadyRNG := rand.New(rand.NewSource(908))
 	for scenario := range 60000 {
@@ -1280,6 +1281,7 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 
 func hasFeasibleMutation(state RolloutState) bool {
 	snapshot := snapshotForRolloutState(state)
+	oldBudget := snapshot.oldDrain()
 	phaseTargets := targetReplicasForActiveRevision(snapshot)
 	allowExcess := state.ScaleDownDuringRollout
 	for i, desired := range state.Target.DesiredReplicas {
@@ -1310,7 +1312,7 @@ func hasFeasibleMutation(state RolloutState) bool {
 			}
 			if (!state.allowsRevisionOutage(state.ActiveOld.RevisionState) &&
 				!slices.Equal(boundOldTargetsByRevisionCompleteness(state.ActiveOld.SpecReplicas, old, state.ActiveOld.RequiredRoles), old)) ||
-				!snapshot.oldDrain().preserves(old) ||
+				!oldBudget.preserves(old) ||
 				!withinWindow {
 				continue
 			}
