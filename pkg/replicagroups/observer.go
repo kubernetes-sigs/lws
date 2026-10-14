@@ -211,12 +211,25 @@ func (o *Observer) notify(value any) {
 	lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet)
 	if !ok {
 		name := object.GetLabels()[leaderworkersetv1.SetNameLabelKey]
+		var ownerUID types.UID
+		switch object.(type) {
+		case *appsv1.StatefulSet, *appsv1.Deployment:
+			// Leader workloads are directly owned by the LWS. Their owner
+			// remains authoritative when the routing label is missing or wrong.
+			owner := metav1.GetControllerOf(object)
+			if owner != nil && owner.Kind == "LeaderWorkerSet" && owner.APIVersion == leaderworkersetv1.GroupVersion.String() {
+				name, ownerUID = owner.Name, owner.UID
+			}
+		}
 		if name == "" {
 			return
 		}
 		lws = &leaderworkersetv1.LeaderWorkerSet{}
 		if err := o.cache.Get(context.Background(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, lws, client.UnsafeDisableDeepCopy); err != nil {
 			return
+		}
+		if ownerUID != "" && lws.UID != ownerUID {
+			return // A same-name replacement does not own this workload.
 		}
 	}
 	o.changed(lws)

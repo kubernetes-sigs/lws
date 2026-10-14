@@ -911,12 +911,37 @@ type notificationCache struct {
 	cache.Cache
 	parent *leaderworkersetv1.LeaderWorkerSet
 	query  *client.GetOptions
+	key    client.ObjectKey
 }
 
-func (c *notificationCache) Get(_ context.Context, _ client.ObjectKey, object client.Object, options ...client.GetOption) error {
+func (c *notificationCache) Get(_ context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	c.key = key
 	c.query = (&client.GetOptions{}).ApplyOptions(options)
 	*object.(*leaderworkersetv1.LeaderWorkerSet) = *c.parent
 	return nil
+}
+
+func TestLeaderNotificationsUseOwnerInsteadOfRoutingLabel(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, label := range []string{"", "wrong-lws", "role-a"} {
+			t.Run(string(identity)+"/"+label, func(t *testing.T) {
+				f := newFixture(identity, 1, 2)
+				c := &notificationCache{parent: f.lws}
+				calls := 0
+				o := &Observer{cache: c, changed: func(lws *leaderworkersetv1.LeaderWorkerSet) { calls++; require.Equal(t, f.lws.UID, lws.UID) }}
+				f.workload.SetLabels(map[string]string{leaderworkersetv1.SetNameLabelKey: label})
+				o.notify(f.workload)
+				require.Equal(t, 1, calls)
+				require.Equal(t, client.ObjectKeyFromObject(f.lws), c.key, "even a label naming another LWS must not redirect the event")
+				o.notify(f.workerSets[0])
+				require.Equal(t, 2, calls, "worker StatefulSets still route through their LWS label")
+				require.Equal(t, client.ObjectKeyFromObject(f.lws), c.key)
+				f.workload.GetOwnerReferences()[0].UID = "previous-owner"
+				o.notify(f.workload)
+				require.Equal(t, 2, calls, "a replaced LWS does not own the old leader workload")
+			})
+		}
+	}
 }
 
 func TestObserverNotificationUsesReadOnlyParent(t *testing.T) {
