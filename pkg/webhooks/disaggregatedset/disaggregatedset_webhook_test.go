@@ -31,6 +31,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
+	"sigs.k8s.io/lws/test/wrappers"
 )
 
 func TestValidateHashSubRoles(t *testing.T) {
@@ -767,6 +768,68 @@ func TestValidateCreate(t *testing.T) {
 	}
 }
 
+func TestValidateRolloutReplicaDefaults(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	for _, tc := range []struct {
+		name           string
+		replicas       *int32
+		external       bool
+		maxUnavailable int32
+		wantError      bool
+	}{
+		{name: "static zero", replicas: ptr.To[int32](0)},
+		{name: "static positive", replicas: ptr.To[int32](1), wantError: true},
+		{name: "static default", wantError: true},
+		{name: "static default with valid budget", maxUnavailable: 1},
+		{name: "external zero", replicas: ptr.To[int32](0), external: true, wantError: true},
+		{name: "external zero with valid budget", replicas: ptr.To[int32](0), external: true, maxUnavailable: 1},
+		{name: "external default", external: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := wrappers.BuildDisaggregatedSet("test", "default").
+				WithRole("prefill", 1, "nginx").
+				WithRole("decode", 1, "nginx").Obj()
+			for i := range obj.Spec.Roles {
+				role := &obj.Spec.Roles[i]
+				role.Spec.Replicas = tc.replicas
+				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+					MaxUnavailable: intstr.FromInt32(tc.maxUnavailable),
+				}
+				if tc.external {
+					role.Scaling = &disaggv1.RoleScaling{Mode: disaggv1.RoleScalingExternal}
+				}
+			}
+			original := obj.DeepCopy()
+			oldObj := obj.DeepCopy()
+			for i := range oldObj.Spec.Roles {
+				oldObj.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(1)
+			}
+			_, createErr := webhook.ValidateCreate(t.Context(), obj)
+			_, updateErr := webhook.ValidateUpdate(t.Context(), oldObj, obj)
+			require.Equal(t, original, obj, "validation must not default or rewrite the role")
+			for _, err := range []error{createErr, updateErr} {
+				if tc.wantError {
+					require.Error(t, err)
+					require.Contains(t, err.Error(), "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
+				} else {
+					require.NoError(t, err)
+				}
+			}
+			// Unchanged legacy budgets remain updateable when omitted
+			// replicas are returned with their API default.
+			updated := obj.DeepCopy()
+			if tc.replicas == nil {
+				for i := range updated.Spec.Roles {
+					updated.Spec.Roles[i].Spec.Replicas = ptr.To[int32](1)
+				}
+			}
+			_, err := webhook.ValidateUpdate(t.Context(), obj, updated)
+			require.NoError(t, err)
+			require.Equal(t, original, obj)
+		})
+	}
+}
+
 func TestValidateZeroReplicaRolloutStrategy(t *testing.T) {
 	webhook := &DisaggregatedSetWebhook{}
 	for _, fieldName := range []string{"maxSurge", "maxUnavailable"} {
@@ -861,9 +924,12 @@ func TestValidateSubRoleRolloutOverrides(t *testing.T) {
 				SubRoles: []disaggv1.DisaggregatedSubRoleSpec{child, {Name: "cold", Replicas: ptr.To[int32](3)}},
 			}}
 			obj.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = tc.parent
+			oldObj := obj.DeepCopy()
+			oldObj.Spec.Roles[0].SubRoles[0].MaxSurge = &one
+			oldObj.Spec.Roles[0].SubRoles[0].MaxUnavailable = &zero
 			webhook := &DisaggregatedSetWebhook{}
 			_, createErr := webhook.ValidateCreate(context.Background(), obj)
-			_, updateErr := webhook.ValidateUpdate(context.Background(), obj.DeepCopy(), obj)
+			_, updateErr := webhook.ValidateUpdate(context.Background(), oldObj, obj)
 			for _, err := range []error{createErr, updateErr} {
 				if tc.wantError != "" {
 					require.ErrorContains(t, err, "spec.roles[0].subRoles[0]."+tc.wantError)

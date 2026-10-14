@@ -306,64 +306,17 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	// Since the lws name is used as the name for headless service, it must be DNS-1035 compliant
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
-	// Ensure replicas and groups number are valid
-	replicas := *lws.Spec.Replicas
-	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(replicas), *lws.Spec.LeaderWorkerTemplate.Size)...)
-	if *lws.Spec.LeaderWorkerTemplate.Size < 1 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
+	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(ptr.Deref(lws.Spec.Replicas, 1)), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1))...)
+	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws)...)
+	if rollout := lws.Spec.RolloutStrategy.RollingUpdateConfiguration; rollout != nil && rollout.Partition != nil {
+		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
+		allErrs = append(allErrs, validateNonnegativeField(int64(*rollout.Partition), partitionPath)...)
 	}
-
-	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil {
-		maxUnavailable := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable
-		maxUnavailablePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable")
-		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
-		// This is aligned with Statefulset.
-		allErrs = append(allErrs, IsNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
-
-		maxSurge := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge
-		maxSurgePath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "maxSurge")
-		allErrs = append(allErrs, ValidatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
-		allErrs = append(allErrs, IsNotMoreThan100Percent(maxSurge, maxSurgePath)...)
-
-		if lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil {
-			// Validate partition value
-			partition := lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
-			partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
-			allErrs = append(allErrs, validateNonnegativeField(int64(*partition), partitionPath)...)
-		}
-
-		maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, int(replicas), false)
-		if err != nil {
-			allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
-		}
-		maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, int(replicas), true)
-		if err != nil {
-			allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
-		}
-		if maxUnavailableValue == 0 && maxSurgeValue == 0 && replicas != 0 {
-			// Both MaxSurge and MaxUnavailable cannot be zero.
-			allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "must not be 0 when `maxSurge` is 0"))
-		}
-	}
-
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		allErrs = append(allErrs, ValidateSubGroupPolicy(specPath, &lws.Spec)...)
-	} else {
-		if _, foundSubEpKey := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], "cannot have subgroup-exclusive-topology without subGroupSize set"))
-		}
-	}
-
-	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
-	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
-	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
 	if normalizeGroupIdentity(lws.Spec.GroupIdentity) == v1.GroupIdentityHash {
 		if maxLen := utilvalidation.DNS1035LabelMaxLength - HashNameSuffixLen(&lws.Spec); len(lws.Name) > maxLen {
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("name"), lws.Name, fmt.Sprintf("must be no more than %d characters with groupIdentity Hash", maxLen)))
 		}
 	}
-	allErrs = append(allErrs, ValidatePodTerminationPolicy(specPath, &lws.Spec)...)
-
 	return allErrs
 }
 
@@ -382,6 +335,61 @@ func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSet
 			spec.PodTerminationPolicy,
 			[]string{string(v1.SequentialPodTerminationPolicy), string(v1.ParallelPodTerminationPolicy)},
 		))
+	}
+	return allErrs
+}
+
+// ValidateLeaderWorkerSetTemplate validates static constraints shared by LWS
+// objects and embedded templates. Callers validate replica limits, object
+// metadata, scheduler support, and update transitions separately.
+func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	var allErrs field.ErrorList
+	if ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) < 1 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
+	}
+	allErrs = append(allErrs, ValidateRollingUpdateBudget(
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
+		ptr.Deref(lws.Spec.Replicas, 1),
+		specPath.Child("rolloutStrategy", "rollingUpdateConfiguration"),
+	)...)
+	allErrs = append(allErrs, ValidateSubGroupPolicy(specPath, &lws.Spec)...)
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		if value, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {
+			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), value, "cannot have subgroup-exclusive-topology without subGroupSize set"))
+		}
+	}
+	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidatePodTerminationPolicy(specPath, &lws.Spec)...)
+	return allErrs
+}
+
+// ValidateRollingUpdateBudget validates rollout budgets for a resolved replica count.
+func ValidateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, replicas int32, path *field.Path) field.ErrorList {
+	if rollout == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	maxUnavailablePath := path.Child("maxUnavailable")
+	maxSurgePath := path.Child("maxSurge")
+	allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollout.MaxUnavailable, maxUnavailablePath)...)
+	allErrs = append(allErrs, IsNotMoreThan100Percent(rollout.MaxUnavailable, maxUnavailablePath)...)
+	allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollout.MaxSurge, maxSurgePath)...)
+	allErrs = append(allErrs, IsNotMoreThan100Percent(rollout.MaxSurge, maxSurgePath)...)
+	if len(allErrs) > 0 || replicas == 0 {
+		return allErrs
+	}
+	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&rollout.MaxUnavailable, int(replicas), false)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, rollout.MaxUnavailable, "invalid value"))
+	}
+	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&rollout.MaxSurge, int(replicas), true)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(maxSurgePath, rollout.MaxSurge, "invalid value"))
+	}
+	if len(allErrs) == 0 && maxUnavailableValue == 0 && maxSurgeValue == 0 {
+		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, rollout.MaxUnavailable, "must not be 0 when `maxSurge` is 0"))
 	}
 	return allErrs
 }

@@ -22,12 +22,16 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -57,6 +61,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			// Create LeaderWorkerSet object.
 			ginkgo.By("creating LeaderWorkerSet ")
 			lws := tc.makeLeaderWorkerSet(ns).Obj()
+			expectDisaggregatedSetTemplateAdmission(ctx, lws)
 			gomega.Expect(k8sClient.Create(ctx, lws)).Should(gomega.Succeed())
 
 			var fetchedLWS leaderworkerset.LeaderWorkerSet
@@ -234,6 +239,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			// Create LeaderWorkerSet object.
 			ginkgo.By("creating leaderworkerset")
 			lws := tc.makeLeaderWorkerSet(ns).Obj()
+			expectDisaggregatedSetTemplateAdmission(ctx, lws)
 
 			// Verify lws created successfully.
 			ginkgo.By("checking that leaderworkerset creation succeeds")
@@ -248,6 +254,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 
 			if tc.updateLeaderWorkerSet != nil {
 				tc.updateLeaderWorkerSet(&fetchedLWS)
+				expectDisaggregatedSetTemplateAdmission(ctx, &fetchedLWS)
 				// Verify leaderworkerset created successfully.
 				if tc.updateShouldFail {
 					gomega.Expect(k8sClient.Update(ctx, &fetchedLWS)).Should(gomega.Not(gomega.Succeed()))
@@ -795,3 +802,45 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 		}),
 	)
 })
+
+func expectDisaggregatedSetTemplateAdmission(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) {
+	ginkgo.GinkgoHelper()
+	ginkgo.By("checking that an admitted DisaggregatedSet template can create its LWS")
+	disagg := disaggregatedSetTemplate(lws)
+	if err := k8sClient.Create(ctx, disagg, client.DryRunAll); err != nil {
+		// DS may reject fields it does not support, but infrastructure errors must fail.
+		gomega.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(gomega.BeTrue(), "unexpected DS admission error: %v", err)
+		return
+	}
+	expectGeneratedLeaderWorkerSets(ctx, disagg)
+}
+
+func disaggregatedSetTemplate(lws *leaderworkerset.LeaderWorkerSet) *disaggregatedset.DisaggregatedSet {
+	disagg := wrappers.BuildDisaggregatedSet("template-check", lws.Namespace).Obj()
+	for _, name := range []string{"prefill", "decode"} {
+		disagg.Spec.Roles = append(disagg.Spec.Roles, disaggregatedset.DisaggregatedRoleSpec{
+			Name: name,
+			LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: lws.Labels, Annotations: lws.Annotations},
+				Spec:       *lws.Spec.DeepCopy(),
+			},
+		})
+	}
+	return disagg
+}
+
+func expectGeneratedLeaderWorkerSets(ctx context.Context, disagg *disaggregatedset.DisaggregatedSet) {
+	ginkgo.GinkgoHelper()
+	manager := disaggregatedsetcontroller.NewLeaderWorkerSetManager(client.NewDryRunClient(k8sClient))
+	for i := range disagg.Spec.Roles {
+		role := &disagg.Spec.Roles[i]
+		replicas := int(ptr.Deref(role.Spec.Replicas, 1))
+		if role.Scaling != nil && role.Scaling.Mode == disaggregatedset.RoleScalingExternal {
+			replicas = 1
+		}
+		for _, startingReplicas := range []int{0, replicas} {
+			gomega.Expect(manager.Create(ctx, disagg, role, 0, "00000000", startingReplicas, replicas)).To(
+				gomega.Succeed(), "DS accepted a role template that its generated LWS rejects")
+		}
+	}
+}
