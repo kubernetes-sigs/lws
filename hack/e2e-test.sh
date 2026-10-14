@@ -365,7 +365,8 @@ function deploy_kwok {
 
 function run_performance_test {
     $KUBECTL rollout status deployment/lws-controller-manager -n "$LWS_NAMESPACE" --timeout=5m
-    local args=(--config "$PERFORMANCE_GENERATOR_CONFIG" --output-dir "$ARTIFACTS")
+    local args=(--config "$PERFORMANCE_GENERATOR_CONFIG" --output-dir "$ARTIFACTS" \
+        --lws-namespace "$LWS_NAMESPACE" --kubectl "$KUBECTL")
     if [ -n "$PERFORMANCE_RANGESPEC" ]; then
         args+=(--rangespec "$PERFORMANCE_RANGESPEC")
     fi

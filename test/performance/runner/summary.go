@@ -51,6 +51,19 @@ type PhaseSummary struct {
 	P90Ms           int64   `json:"p90Ms"`
 	P99Ms           int64   `json:"p99Ms"`
 	MaxMs           int64   `json:"maxMs"`
+	// Controller is unset when the run does not read the controller metrics.
+	Controller *ControllerUsage `json:"controller,omitempty"`
+}
+
+// ControllerUsage is what the LWS controller pods used during a phase, summed
+// over the pods.
+type ControllerUsage struct {
+	CPUSeconds float64 `json:"cpuSeconds"`
+	// PeakMemoryMiB is the highest resident memory, sampled every second.
+	PeakMemoryMiB float64 `json:"peakMemoryMiB"`
+	// APIRequests counts the requests the controller sent to the API server.
+	APIRequests         int64            `json:"apiRequests"`
+	APIRequestsByMethod map[string]int64 `json:"apiRequestsByMethod,omitempty"`
 }
 
 func summarizePhase(name string, latencies []time.Duration, wallTime time.Duration, groups, pods int64) PhaseSummary {
@@ -99,17 +112,23 @@ func writeSummary(path string, summary *Summary) error {
 
 // measurements returns what a range spec can bound, by name.
 func (p PhaseSummary) measurements() map[string]float64 {
-	return map[string]float64{
+	m := map[string]float64{
 		"wallTimeMs": float64(p.WallTimeMs),
 		"p50Ms":      float64(p.P50Ms),
 		"p90Ms":      float64(p.P90Ms),
 		"p99Ms":      float64(p.P99Ms),
 		"maxMs":      float64(p.MaxMs),
 	}
+	if c := p.Controller; c != nil {
+		m["controller.cpuSeconds"] = c.CPUSeconds
+		m["controller.peakMemoryMiB"] = c.PeakMemoryMiB
+		m["controller.apiRequests"] = float64(c.APIRequests)
+	}
+	return m
 }
 
 // RangeSpec sets upper bounds for the measurements of each phase, for example
-// {create: {wallTimeMs: 60000, p90Ms: 30000}}.
+// {create: {wallTimeMs: 60000, controller.apiRequests: 5000}}.
 type RangeSpec struct {
 	Phases map[string]map[string]float64 `json:"phases"`
 }

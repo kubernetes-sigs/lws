@@ -14,8 +14,9 @@ not inference throughput.
   its nodes Running and Ready, so thousands of pods need no kubelets and no
   images.
 - **Runner** (`runner/`): generates LeaderWorkerSets from a generator config,
-  runs the phases below, and writes `summary.yaml`. With a range spec it fails
-  when a measurement is above its limit.
+  runs the phases below, reads the controller metrics, and writes
+  `summary.yaml`. With a range spec it fails when a measurement is above its
+  limit.
 - **Configs** (`configs/`): `baseline` is the workload the limits are set for:
   many small LeaderWorkerSets and a few large ones, in both group identity
   modes. `smoke` has 20 small ones, for checking the harness itself.
@@ -38,11 +39,16 @@ After each phase the runner checks that every LeaderWorkerSet has exactly
 - `p50Ms`, `p90Ms`, `p99Ms` and `maxMs`: latency over the LeaderWorkerSets, each
   from the moment the runner sent its write. The runner polls an informer cache
   every 100ms, which is the resolution, and adds no load to the API server.
+- `controller`: CPU seconds, peak resident memory and API requests by method of
+  the controller pods during the phase, from `process_cpu_seconds_total`,
+  `process_resident_memory_bytes` and `rest_client_requests_total`. The runner
+  reads the metrics endpoint of each pod through `kubectl port-forward`, with a
+  token of the controller service account, like the e2e metrics test.
 
 The range spec sets upper bounds per phase, by the names above, for example
-`wallTimeMs` or `p90Ms`. A bound on a phase or a measurement the run did not
-produce fails the check as well. The numbers depend on the machine, so compare
-runs from the same environment.
+`wallTimeMs`, `p90Ms` or `controller.apiRequests`. A bound on a phase or a
+measurement the run did not produce fails the check as well. The numbers depend
+on the machine, so compare runs from the same environment.
 
 ## Usage
 
@@ -99,6 +105,5 @@ scale:                       # scaling phases, run in order after creation
 ## Not covered yet
 
 - Rolling updates, group recreation after a member failure, and deletion.
-- Controller CPU and memory, and API request counts.
 - A periodic CI job. The limits in `configs/baseline/rangespec.yaml` stay loose
   until that job has produced enough runs to set them from data.

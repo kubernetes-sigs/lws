@@ -14,8 +14,9 @@ limitations under the License.
 */
 
 // The runner generates LeaderWorkerSets in a cluster that runs the LWS
-// controller, times how long creating and scaling them takes, and writes the
-// result as summary.yaml. See test/performance/README.md.
+// controller, times how long creating and scaling them takes, reads what the
+// controller used meanwhile, and writes the result as summary.yaml. See
+// test/performance/README.md.
 package main
 
 import (
@@ -51,7 +52,7 @@ const (
 	// pollInterval is the resolution of the latencies. The runner polls an
 	// informer cache, which adds no load to the API server.
 	pollInterval = 100 * time.Millisecond
-	// readyTimeout bounds the wait for the LWS webhooks.
+	// readyTimeout bounds the wait for the LWS webhooks and controller leader.
 	readyTimeout = 2 * time.Minute
 )
 
@@ -59,6 +60,8 @@ var (
 	configPath    = flag.String("config", "", "path of the generator config")
 	rangeSpecPath = flag.String("rangespec", "", "path of the range spec to check the summary against; empty skips the check")
 	outputDir     = flag.String("output-dir", ".", "directory summary.yaml is written to")
+	lwsNamespace  = flag.String("lws-namespace", "lws-system", "namespace of the LWS controller, whose metrics are read; empty skips them")
+	kubectl       = flag.String("kubectl", "kubectl", "kubectl binary, used to port-forward to the controller metrics")
 	qps           = flag.Float64("qps", 100, "client QPS of the runner, high enough that the runner is not the bottleneck")
 )
 
@@ -85,6 +88,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if *lwsNamespace != "" {
+		if r.metrics, err = startControllerMetrics(ctx, r.client, *kubectl, *lwsNamespace); err != nil {
+			return err
+		}
+		defer r.metrics.stop()
+	}
 	summary, runErr := r.run(ctx)
 	// Write what was measured even when a later phase failed.
 	if len(summary.Phases) > 0 {
@@ -110,6 +119,8 @@ type runner struct {
 	// informers on the workload namespace.
 	client client.Client
 	cache  client.Reader
+	// metrics is nil when the run does not read the controller metrics.
+	metrics *controllerMetrics
 	// replicas is the current target of each LeaderWorkerSet, by name.
 	replicas map[string]int32
 }
@@ -182,13 +193,20 @@ func (r *runner) run(ctx context.Context) (*Summary, error) {
 	return summary, nil
 }
 
-// waitForController waits until the LWS webhooks admit a LeaderWorkerSet. They
-// can lag behind the rollout of the controller, and that wait must not count
-// as latency.
+// waitForController waits until the LWS webhooks admit a LeaderWorkerSet and,
+// when the run reads the controller metrics, a controller pod is the leader.
+// Both can lag behind the rollout of the controller, and that wait must not
+// count as latency.
 func (r *runner) waitForController(ctx context.Context) error {
 	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, readyTimeout, true, func(ctx context.Context) (bool, error) {
 		lastErr = r.client.Create(ctx, r.cfg.buildLeaderWorkerSet(r.cfg.Classes[0], 0), client.DryRunAll)
+		if lastErr == nil && r.metrics != nil {
+			var s sample
+			if s, lastErr = r.metrics.scrape(ctx); lastErr == nil && !s.leader {
+				lastErr = errors.New("no controller pod holds the leader lease")
+			}
+		}
 		return lastErr == nil, nil
 	})
 	if err != nil {
@@ -201,6 +219,13 @@ func (r *runner) waitForController(ctx context.Context) error {
 // creating the LeaderWorkerSets that do not exist yet, and waits until each
 // has reached its target.
 func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, error) {
+	var before sample
+	if r.metrics != nil {
+		var err error
+		if before, err = r.metrics.begin(ctx); err != nil {
+			return PhaseSummary{}, err
+		}
+	}
 	started := map[string]time.Time{}
 	var groups, pods int64
 	begin := time.Now()
@@ -251,7 +276,11 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 	if err != nil {
 		return PhaseSummary{}, fmt.Errorf("phase %s: %w (%d LeaderWorkerSets did not reach their target)", phase.Name, err, len(started))
 	}
-	return summarizePhase(phase.Name, latencies, time.Since(begin), groups, pods), nil
+	result := summarizePhase(phase.Name, latencies, time.Since(begin), groups, pods)
+	if r.metrics != nil {
+		result.Controller, err = r.metrics.end(ctx, before)
+	}
+	return result, err
 }
 
 // reachedTarget reports whether the controller has observed the current spec
