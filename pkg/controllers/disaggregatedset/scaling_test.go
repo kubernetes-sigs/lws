@@ -95,6 +95,7 @@ func TestMovingTargetKeepsRemovedRoleCoordination(t *testing.T) {
 }
 
 func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
+	t.Parallel() // Each rollout builds its own fake client and executor.
 	type layout struct {
 		name               string
 		initial, current   [][]int32
@@ -1231,6 +1232,7 @@ func TestScalingDuringRolloutFiveEditsReachPhysicalExcess(t *testing.T) {
 }
 
 func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
+	t.Parallel() // Its RNG, executor and simulated workloads are not shared.
 	executor := newTestExecutor(newTestClient())
 	for _, seed := range []int64{4041023, 9071105, 11371023} {
 		rng := rand.New(rand.NewSource(seed))

@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,8 +79,12 @@ func testSchemeForUnit() *runtime.Scheme {
 	return scheme
 }
 
+// These clients use only registered types. Share the read-only scheme, never
+// their object trackers; callers needing extra registrations use testSchemeForUnit.
+var sharedTestClientScheme = sync.OnceValue(testSchemeForUnit)
+
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
-	scheme := testSchemeForUnit()
+	scheme := sharedTestClientScheme()
 	recorder := events.NewFakeRecorder(100)
 	return &DisaggregatedSetReconciler{
 		Client:        fakeClient,
@@ -124,7 +129,7 @@ func newTestLWSManager(c client.Client) *LeaderWorkerSetManager {
 func newTestClient(objects ...client.Object) client.WithWatch {
 	// Reuse the built-in type registry instead of rebuilding it on every
 	// simulated rollout tick. Keep the default converters and a fresh tracker.
-	return fake.NewClientBuilder().WithScheme(testSchemeForUnit()).
+	return fake.NewClientBuilder().WithScheme(sharedTestClientScheme()).
 		WithTypeConverters(clientgoapplyconfigurations.NewTypeConverter(clientgoscheme.Scheme), managedfields.NewDeducedTypeConverter()).
 		WithObjects(objects...).WithStatusSubresource(statusSubresourceObjects()...).Build()
 }
@@ -3232,18 +3237,25 @@ func (f *subRoleFixture) scale(target map[string]int) error {
 func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	s := f.observe()
 	n := int(getLWSReplicas(s.LWS))
+	// Settled ticks still reconcile groups, but need no unchanged API writes.
 	if f.identity == leaderworkersetv1.GroupIdentityHash {
 		// Simulate native writes through the backing fake, independently of any
 		// DS write spy. Tests can deliberately override the deletion-cost choice.
 		c := f.nativeClient
-		s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
-		require.NoError(f.t, c.Update(f.t.Context(), s.LeaderDeployment))
-		s.LeaderDeployment.Status.ObservedGeneration = s.LeaderDeployment.Generation
-		require.NoError(f.t, c.Status().Update(f.t.Context(), s.LeaderDeployment))
+		if replicas := s.LeaderDeployment.Spec.Replicas; replicas == nil || *replicas != int32(n) {
+			s.LeaderDeployment.Spec.Replicas = ptr.To(int32(n))
+			require.NoError(f.t, c.Update(f.t.Context(), s.LeaderDeployment))
+		}
+		if s.LeaderDeployment.Status.ObservedGeneration != s.LeaderDeployment.Generation {
+			s.LeaderDeployment.Status.ObservedGeneration = s.LeaderDeployment.Generation
+			require.NoError(f.t, c.Status().Update(f.t.Context(), s.LeaderDeployment))
+		}
 		require.Len(f.t, s.ReplicaSets, 1, "the fixture simulates one active ReplicaSet")
 		rs := s.ReplicaSets[0]
-		rs.Spec.Replicas = ptr.To(int32(n))
-		require.NoError(f.t, c.Update(f.t.Context(), rs))
+		if rs.Spec.Replicas == nil || *rs.Spec.Replicas != int32(n) {
+			rs.Spec.Replicas = ptr.To(int32(n))
+			require.NoError(f.t, c.Update(f.t.Context(), rs))
+		}
 		groups := activeSubRoleGroups(s)
 		slices.SortStableFunc(groups, func(a, b replicagroups.Group) int {
 			if wrong := cmp.Compare(slices.Index(wrongVictims, b.Leader.UID), slices.Index(wrongVictims, a.Leader.UID)); wrong != 0 {
@@ -3265,12 +3277,16 @@ func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 			f.createGroup(rs, f.nextHash, "")
 			f.nextHash++
 		}
-		rs.Status.ObservedGeneration, rs.Status.Replicas = rs.Generation, int32(n)
-		require.NoError(f.t, c.Status().Update(f.t.Context(), rs))
+		if rs.Status.ObservedGeneration != rs.Generation || rs.Status.Replicas != int32(n) {
+			rs.Status.ObservedGeneration, rs.Status.Replicas = rs.Generation, int32(n)
+			require.NoError(f.t, c.Status().Update(f.t.Context(), rs))
+		}
 		return
 	}
-	s.LeaderStatefulSet.Spec.Replicas = ptr.To(int32(n))
-	require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderStatefulSet))
+	if s.LeaderStatefulSet.Spec.Replicas == nil || *s.LeaderStatefulSet.Spec.Replicas != int32(n) {
+		s.LeaderStatefulSet.Spec.Replicas = ptr.To(int32(n))
+		require.NoError(f.t, f.manager.client.Update(f.t.Context(), s.LeaderStatefulSet))
+	}
 	for _, group := range s.Groups {
 		if group.Ordinal >= f.start+n {
 			require.NoError(f.t, f.manager.client.Delete(f.t.Context(), group.Leader))
@@ -3282,8 +3298,10 @@ func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 		}
 	}
 	s = f.observe()
-	s.LeaderStatefulSet.Status.Replicas = int32(len(activeSubRoleGroups(s)))
-	require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), s.LeaderStatefulSet))
+	if replicas := int32(len(activeSubRoleGroups(s))); s.LeaderStatefulSet.Status.Replicas != replicas {
+		s.LeaderStatefulSet.Status.Replicas = replicas
+		require.NoError(f.t, f.manager.client.Status().Update(f.t.Context(), s.LeaderStatefulSet))
+	}
 }
 
 func assertHashSubRoleCounts(t *testing.T, f *subRoleFixture, want map[string]int) {
