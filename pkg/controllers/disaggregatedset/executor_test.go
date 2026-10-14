@@ -84,7 +84,7 @@ func testSchemeForUnit() *runtime.Scheme {
 var sharedTestClientScheme = sync.OnceValue(testSchemeForUnit)
 
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
-	scheme := testSchemeForUnit()
+	scheme := sharedTestClientScheme()
 	recorder := events.NewFakeRecorder(100)
 	return &DisaggregatedSetReconciler{
 		Client:        fakeClient,
