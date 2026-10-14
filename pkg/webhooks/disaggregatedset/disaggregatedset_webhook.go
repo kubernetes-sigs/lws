@@ -23,7 +23,9 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/util/intstr"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -52,14 +54,14 @@ var _ admission.Validator[*disaggv1.DisaggregatedSet] = &DisaggregatedSetWebhook
 
 // ValidateCreate implements admission.Validator for create operations.
 func (w *DisaggregatedSetWebhook) ValidateCreate(ctx context.Context, disagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
-	warnings, allErrs := w.validate(disagg)
+	warnings, allErrs := w.validate(disagg, nil)
 	allErrs = append(allErrs, w.validatePlacement(disagg)...)
 	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator for update operations.
 func (w *DisaggregatedSetWebhook) ValidateUpdate(ctx context.Context, oldDisagg, newDisagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
-	warnings, allErrs := w.validate(newDisagg)
+	warnings, allErrs := w.validate(newDisagg, oldDisagg)
 	allErrs = append(allErrs, w.validatePlacement(newDisagg)...)
 	return warnings, allErrs.ToAggregate()
 }
@@ -69,26 +71,43 @@ func (w *DisaggregatedSetWebhook) ValidateDelete(ctx context.Context, disagg *di
 	return nil, nil
 }
 
-func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admission.Warnings, field.ErrorList) {
+func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSet) (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
+
+	// Roles are a map-style list; reordering must preserve legacy templates.
+	oldRoles := make(map[string]*disaggv1.DisaggregatedRoleSpec)
+	if oldObj != nil {
+		for i := range oldObj.Spec.Roles {
+			role := &oldObj.Spec.Roles[i]
+			oldRoles[role.Name] = role
+		}
+	}
 
 	hasExternal := false
 	generatedScalerNames := make(map[string]*field.Path)
 	for i, role := range obj.Spec.Roles {
 		rolePath := rolesPath.Index(i)
-		allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
-		allErrs = append(allErrs, validateReservedSubRoleLabel(role, rolePath)...)
-		// Share child validation so invalid role templates fail at admission,
-		// not later when the controller creates the LWS.
-		allErrs = append(allErrs, webhooks.ValidateMaxGroupRestarts(rolePath.Child("spec"), &role.Spec)...)
-		allErrs = append(allErrs, webhooks.ValidateRestartBackoff(rolePath.Child("spec"), &role.Spec)...)
-		allErrs = append(allErrs, webhooks.ValidateGroupIdentity(rolePath.Child("spec"), &role.Spec)...)
-		allErrs = append(allErrs, webhooks.ValidatePodTerminationPolicy(rolePath.Child("spec"), &role.Spec)...)
-		allErrs = append(allErrs, webhooks.ValidateSubGroupPolicy(rolePath.Child("spec"), &role.Spec)...)
+		metadataPath := rolePath.Child("metadata")
+		oldRole := oldRoles[role.Name]
+		unchanged := unchangedRoleTemplate(&role, oldRole)
+		if oldRole == nil || !apiequality.Semantic.DeepEqual(role.Labels, oldRole.Labels) {
+			allErrs = append(allErrs, metav1validation.ValidateLabels(role.Labels, metadataPath.Child("labels"))...)
+		}
+		if oldRole == nil || !apiequality.Semantic.DeepEqual(role.Annotations, oldRole.Annotations) {
+			allErrs = append(allErrs, apivalidation.ValidateAnnotations(role.Annotations, metadataPath.Child("annotations"))...)
+		}
+		if !unchanged || !apiequality.Semantic.DeepEqual(role.Labels, oldRole.Labels) {
+			allErrs = append(allErrs, validateReservedSubRoleLabel(role, rolePath)...)
+		}
+		if !unchanged {
+			allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
+			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: role.ObjectMeta, Spec: role.Spec}
+			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws)...)
+		}
 		if len(role.SubRoles) > 0 {
-			if role.Scaling != nil {
+			if role.Scaling != nil && !unchanged {
 				allErrs = append(allErrs, field.Forbidden(rolePath.Child("scaling"), "parent scaling must be omitted when subRoles is present"))
 			}
 			if role.Spec.Replicas != nil && *role.Spec.Replicas > 1 {
@@ -97,7 +116,9 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 			var staticReplicas int64
 			for j, child := range role.SubRoles {
 				childPath := rolePath.Child("subRoles").Index(j)
-				allErrs = append(allErrs, validateSubRoleRolloutStrategy(&role, &child, childPath)...)
+				if !unchanged {
+					allErrs = append(allErrs, validateSubRoleRolloutStrategy(&role, &child, childPath)...)
+				}
 				if child.Scaling == nil || child.Scaling.Mode != disaggv1.RoleScalingExternal {
 					staticReplicas += int64(ptr.Deref(child.Replicas, 1))
 					continue
@@ -105,12 +126,16 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 				hasExternal = true
 				allErrs = append(allErrs, validateScalerName(obj.Name+"-"+role.Name+"-"+child.Name, child.Name, childPath.Child("name"), generatedScalerNames)...)
 			}
-			allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("subRoles"), staticReplicas, ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
+			if !unchanged {
+				allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("subRoles"), staticReplicas, ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
+			}
 			continue
 		}
 
 		if role.Scaling == nil || role.Scaling.Mode != disaggv1.RoleScalingExternal {
-			allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("spec", "replicas"), int64(ptr.Deref(role.Spec.Replicas, 1)), ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
+			if !unchanged {
+				allErrs = append(allErrs, webhooks.ValidateReplicaCount(rolePath.Child("spec", "replicas"), int64(ptr.Deref(role.Spec.Replicas, 1)), ptr.Deref(role.Spec.LeaderWorkerTemplate.Size, 1))...)
+			}
 			continue
 		}
 		hasExternal = true
@@ -135,9 +160,79 @@ func (w *DisaggregatedSetWebhook) validate(obj *disaggv1.DisaggregatedSet) (admi
 			"spec.slices > 1 is not supported while any role has scaling.mode: External (alpha restriction)"))
 	}
 
+	// Names are immutable. Rechecking a legacy name would prevent cleanup.
+	if obj.Name != "" && (oldObj == nil || obj.Name != oldObj.Name) {
+		if errs := utilvalidation.IsDNS1035Label(obj.Name); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), obj.Name,
+				"name is used as a prefix for generated LeaderWorkerSets: "+strings.Join(errs, "; ")))
+		}
+	}
 	allErrs = append(allErrs, w.validateGeneratedNames(obj)...)
 
 	return warnings, allErrs
+}
+
+// unchangedRoleTemplate preserves legacy templates during unrelated updates and
+// scale-to-zero. Positive replica changes, new roles, and changed cross-field
+// inputs still require validation. Comparisons never default the stored template.
+func unchangedRoleTemplate(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
+	if oldRole == nil {
+		return false
+	}
+	key := leaderworkerset.SubGroupExclusiveKeyAnnotationKey
+	value, found := role.Annotations[key]
+	oldValue, oldFound := oldRole.Annotations[key]
+	if found != oldFound || value != oldValue {
+		return false
+	}
+	external := role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal
+	oldExternal := oldRole.Scaling != nil && oldRole.Scaling.Mode == disaggv1.RoleScalingExternal
+	if external != oldExternal || len(role.SubRoles) != len(oldRole.SubRoles) {
+		return false
+	}
+	spec, oldSpec := role.Spec, oldRole.Spec
+	if len(role.SubRoles) == 0 {
+		replicas, oldReplicas := ptr.Deref(spec.Replicas, 1), ptr.Deref(oldSpec.Replicas, 1)
+		if !external && replicas != oldReplicas && replicas != 0 {
+			return false
+		}
+	} else {
+		if !apiequality.Semantic.DeepEqual(role.Scaling, oldRole.Scaling) {
+			return false
+		}
+		totalReplicas := *validationReplicasForRole(*role)
+		oldTotalReplicas := *validationReplicasForRole(*oldRole)
+		if totalReplicas != oldTotalReplicas && totalReplicas != 0 {
+			return false
+		}
+		// Parent replicas are ignored for partitioned roles. Match children by
+		// name so reordering and stopping existing pools can preserve legacy data.
+		oldChildren := make(map[string]disaggv1.DisaggregatedSubRoleSpec, len(oldRole.SubRoles))
+		for _, child := range oldRole.SubRoles {
+			oldChildren[child.Name] = child
+		}
+		for _, child := range role.SubRoles {
+			oldChild, found := oldChildren[child.Name]
+			if !found {
+				return false
+			}
+			if replicas := ptr.Deref(child.Replicas, 1); replicas != ptr.Deref(oldChild.Replicas, 1) && replicas != 0 {
+				return false
+			}
+			if child.Scaling != nil && (child.Scaling.Mode == "" || child.Scaling.Mode == disaggv1.RoleScalingStatic) {
+				child.Scaling = nil
+			}
+			if oldChild.Scaling != nil && (oldChild.Scaling.Mode == "" || oldChild.Scaling.Mode == disaggv1.RoleScalingStatic) {
+				oldChild.Scaling = nil
+			}
+			child.Replicas, oldChild.Replicas = nil, nil
+			if !apiequality.Semantic.DeepEqual(child, oldChild) {
+				return false
+			}
+		}
+	}
+	spec.Replicas, oldSpec.Replicas = nil, nil
+	return apiequality.Semantic.DeepEqual(spec, oldSpec)
 }
 
 func validateScalerName(name, value string, path *field.Path, generated map[string]*field.Path) field.ErrorList {
@@ -181,21 +276,12 @@ func validationReplicasForRole(role disaggv1.DisaggregatedRoleSpec) *int32 {
 	return ptr.To(int32(min(total, int64(math.MaxInt32))))
 }
 
-// validateGeneratedNames checks DNS-1035 syntax and the length of generated LWS
-// names and their derived names. The generated name format is:
+// validateGeneratedNames checks the length of generated LWS names and their
+// derived names. The generated name format is:
 //
 //	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
 func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
-	// The API server handles name presence. Its DNS-subdomain check is not
-	// sufficient here: the generated LWS name must be a DNS-1035 label.
-	if obj.Name != "" {
-		if errs := utilvalidation.IsDNS1035Label(obj.Name); len(errs) > 0 {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), obj.Name,
-				"name is used as a prefix for generated LeaderWorkerSets: "+strings.Join(errs, "; ")))
-		}
-	}
-
 	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
 	slices := int32(1)
 	if obj.Spec.Slices != nil {
@@ -337,9 +423,9 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 			))
 		}
 
-		// Validate that maxSurge and maxUnavailable are not both zero when replicas > 0.
-		// This mirrors the identical check in the LWS webhook (leaderworkerset_webhook.go).
-		allErrs = append(allErrs, validateRoleMaxSurgeUnavailable(ruc, validationReplicasForRole(role), rucPath)...)
+		// Preserve DS's replica inputs; resolving External targets is separate.
+		replicas := ptr.Deref(validationReplicasForRole(role), 0)
+		allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 	}
 
 	return allErrs
@@ -358,57 +444,5 @@ func validateSubRoleRolloutStrategy(role *disaggv1.DisaggregatedRoleSpec, child 
 		// reject only a universally-zero pair, not rounding at a guessed target.
 		replicas = ptr.To[int32](100)
 	}
-	return validateRoleMaxSurgeUnavailable(&config, replicas, path)
-}
-
-// validateRoleMaxSurgeUnavailable rejects the combination maxSurge=0 + maxUnavailable=0
-// for roles with at least one replica, matching the validation already present in the
-// LWS webhook. Percentage values (e.g. "0%") are resolved via GetScaledValueFromIntOrPercent
-// so they are caught as well.
-func validateRoleMaxSurgeUnavailable(ruc *leaderworkerset.RollingUpdateConfiguration, replicas *int32, rucPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-
-	maxUnavailable := ruc.MaxUnavailable
-	maxUnavailablePath := rucPath.Child("maxUnavailable")
-
-	maxSurge := ruc.MaxSurge
-	maxSurgePath := rucPath.Child("maxSurge")
-
-	// Individual field validation (non-negative, ≤ 100%).
-	allErrs = append(allErrs, webhooks.ValidatePositiveIntOrPercent(maxUnavailable, maxUnavailablePath)...)
-	allErrs = append(allErrs, webhooks.IsNotMoreThan100Percent(maxUnavailable, maxUnavailablePath)...)
-	allErrs = append(allErrs, webhooks.ValidatePositiveIntOrPercent(maxSurge, maxSurgePath)...)
-	allErrs = append(allErrs, webhooks.IsNotMoreThan100Percent(maxSurge, maxSurgePath)...)
-
-	if len(allErrs) > 0 {
-		// Skip the combined check if individual fields are already invalid.
-		return allErrs
-	}
-
-	// Zero-replica roles may use two zero budgets, but each budget must still
-	// be valid so the generated LWS can pass admission.
-	if replicas == nil || *replicas == 0 {
-		return nil
-	}
-	replicaCount := int(*replicas)
-
-	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, replicaCount, false)
-	if err != nil {
-		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, maxUnavailable, "invalid value"))
-		return allErrs
-	}
-	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&maxSurge, replicaCount, true)
-	if err != nil {
-		allErrs = append(allErrs, field.Invalid(maxSurgePath, maxSurge, "invalid value"))
-		return allErrs
-	}
-
-	if maxUnavailableValue == 0 && maxSurgeValue == 0 {
-		allErrs = append(allErrs, field.Invalid(
-			maxUnavailablePath,
-			maxUnavailable,
-			"must not be 0 when `maxSurge` is 0",
-		))
-	}
-	return allErrs
+	return webhooks.ValidateRollingUpdateBudget(&config, *replicas, path)
 }
