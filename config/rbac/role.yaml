@@ -120,7 +120,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
 - apiGroups:
   - disaggregatedset.x-k8s.io
   resources:

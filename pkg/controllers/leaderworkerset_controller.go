@@ -66,6 +66,7 @@ type LeaderWorkerSetReconciler struct {
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
 
+	apiReader             client.Reader // ReplicaSet lookups must not start a cluster-wide informer.
 	revisionEqualityCache *lru.Cache
 }
 
@@ -133,7 +134,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -463,6 +464,7 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Conte
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
@@ -1493,7 +1495,11 @@ func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Cont
 		if ref.APIVersion != gvk.GroupVersion().String() || ref.Kind != gvk.Kind {
 			return false, nil
 		}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: workers.Namespace, Name: ref.Name}, parent); err != nil {
+		reader := client.Reader(r.Client)
+		if _, isReplicaSet := parent.(*appsv1.ReplicaSet); isReplicaSet {
+			reader = r.apiReader
+		}
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: workers.Namespace, Name: ref.Name}, parent); err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
 		if parent.GetUID() != ref.UID {
