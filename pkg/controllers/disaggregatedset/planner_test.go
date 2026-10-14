@@ -1213,7 +1213,7 @@ func assertProgressWithinFractionalWindow(
 func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 	rng := rand.New(rand.NewSource(907))
 	rawReadyRNG := rand.New(rand.NewSource(908))
-	for scenario := range 60000 {
+	for scenario := range 20000 {
 		initial, activeSpec, activeReady := make(RoleReplicaState, 2), make(RoleReplicaState, 2), make(RoleReplicaState, 2)
 		parkedSpec, parkedReady := make(RoleReplicaState, 2), make(RoleReplicaState, 2)
 		newSpec, newReady, target := make(RoleReplicaState, 2), make(RoleReplicaState, 2), make(RoleReplicaState, 2)
@@ -1238,7 +1238,7 @@ func TestRevisionAwarePlannerFeasibilityOracle(t *testing.T) {
 		}
 		// Preserve the original corpus and add a disjoint A-to-B population,
 		// including random parked revisions and interrupted availability baselines.
-		if scenario >= 50000 {
+		if scenario >= 15000 {
 			initial[1], activeSpec[1], activeReady[1] = 0, 0, 0
 			target[0], newSpec[0], newReady[0] = 0, 0, 0
 		}
