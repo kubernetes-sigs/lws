@@ -23,7 +23,7 @@ files:
         onFileCondition: '.metadata.name == "manager-rolebinding"'
       - type: UPDATE
         key: .metadata.name
-        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+        value: '"{{ include \"lws.serviceAccountName\" . }}"'
         onFileCondition: '.metadata.name == "controller-manager"'
       - type: UPDATE
         key: .metadata.name
@@ -47,7 +47,7 @@ files:
         onFileCondition: '.roleRef.name == "leader-election-role"'
       - type: UPDATE
         key: .subjects.[].name
-        value: '"{{ include \"lws.fullname\" . }}-controller-manager"'
+        value: '"{{ include \"lws.serviceAccountName\" . }}"'
         onFileCondition: '.kind == "ClusterRoleBinding" or .kind == "RoleBinding"'
       - type: UPDATE
         key: .subjects.[].namespace

@@ -16,6 +16,10 @@ enableCertManager: false
 # bundled controller, and its manager RBAC are always installed.
 enableDisaggregatedSet: false
 replicaCount: 1
+serviceAccount:
+  # name of the controller manager ServiceAccount. Defaults to
+  # <fullname>-controller-manager when empty.
+  name: ""
 imagePullSecrets: []
 # Customize controlerManager
 image:

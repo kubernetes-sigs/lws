@@ -1,0 +1,32 @@
+suite: Prometheus Role and RoleBinding (enablePrometheus)
+templates:
+  - templates/prometheus/role.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: renders nothing when disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: grants Prometheus read access to the release namespace when enabled
+    set:
+      enablePrometheus: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Role
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: lws-prometheus-k8s
+        documentIndex: 0
+      - isKind:
+          of: RoleBinding
+        documentIndex: 1
+      - equal:
+          path: roleRef.name
+          value: lws-prometheus-k8s
+        documentIndex: 1

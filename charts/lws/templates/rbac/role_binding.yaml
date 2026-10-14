@@ -29,5 +29,5 @@ roleRef:
   name: '{{ include "lws.fullname" . }}-manager-role'
 subjects:
   - kind: ServiceAccount
-    name: '{{ include "lws.fullname" . }}-controller-manager'
+    name: '{{ include "lws.serviceAccountName" . }}'
     namespace: '{{ .Release.Namespace }}'

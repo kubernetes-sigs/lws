@@ -19,7 +19,30 @@ tests:
           path: spec.replicas
           value: 3
 
+  # serviceAccountName
+
+  - it: runs as the controller manager service account
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: lws-controller-manager
+
+  - it: derives the service account name from fullnameOverride
+    set:
+      fullnameOverride: custom
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-controller-manager
+
   # podAnnotations
+
+  - it: sets the default-container annotation by default
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            kubectl.kubernetes.io/default-container: manager
 
   - it: renders pod annotations together with the default-container annotation
     set:
