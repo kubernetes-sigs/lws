@@ -167,7 +167,7 @@ type DisaggregatedSubRoleSpec struct {
 	// MaxSurge overrides the parent's rollout surge budget for this sub-role.
 	// Accepts a non-negative integer or a percentage up to 100%, rounded up
 	// against this sub-role's replica target. Omitted values inherit the parent;
-	// with no parent rollout configuration, the default is 1. Zero is explicit.
+	// with no parent rollout configuration, the default is 0.
 	// +optional
 	// +kubebuilder:validation:XIntOrString
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
@@ -175,7 +175,7 @@ type DisaggregatedSubRoleSpec struct {
 	// MaxUnavailable overrides the parent's rollout unavailability budget for
 	// this sub-role. Accepts a non-negative integer or a percentage up to 100%,
 	// rounded down against this sub-role's replica target. Omitted values inherit
-	// the parent; with no parent rollout configuration, the default is 0.
+	// the parent; with no parent rollout configuration, the default is 1. Zero is explicit.
 	// +optional
 	// +kubebuilder:validation:XIntOrString
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`

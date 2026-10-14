@@ -258,7 +258,7 @@ Percentage rollout budgets resolve per child (surge up, unavailability down), re
 ordinary defaults and zero/zero fallback. A zero sub-role does not force siblings to zero.
 Each child may override `maxSurge`, `maxUnavailable`, or both; an omitted field inherits
 the corresponding parent value. Without a parent rollout configuration, defaults are
-surge 1 and unavailability 0. Budget-only edits change rollout pacing in place, not the
+surge 0 and unavailability 1. Budget-only edits change rollout pacing in place, not the
 revision or Pod templates. For example:
 
 ```yaml

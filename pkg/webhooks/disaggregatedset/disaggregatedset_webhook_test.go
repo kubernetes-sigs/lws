@@ -833,8 +833,8 @@ func TestValidateSubRoleRolloutOverrides(t *testing.T) {
 		wantError          string
 	}{
 		{name: "inherit existing small-child budgets", parent: parent},
-		{name: "inherit default surge", unavailable: &zero},
-		{name: "explicit zero overrides default surge", surge: &zero, wantError: "maxUnavailable"},
+		{name: "inherit default unavailable", surge: &zero},
+		{name: "explicit zero overrides default unavailable", unavailable: &zero, wantError: "maxUnavailable"},
 		{name: "override both", surge: &zero, unavailable: &one},
 		{name: "inherit unavailable", parent: parent, surge: &one},
 		{name: "partial inherited pair rounds to zero", parent: parent, unavailable: &quarter, wantError: "maxUnavailable"},

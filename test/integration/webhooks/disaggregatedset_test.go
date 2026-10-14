@@ -24,6 +24,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -359,4 +361,43 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		ginkgo.Entry("rejects invalid child rollout budgets", "invalid rollout override", "subRoles[0].maxSurge"),
 		ginkgo.Entry("rejects child rollout budgets that cannot progress", "zero rollout override", "subRoles[0].maxUnavailable"),
 	)
+})
+
+var _ = ginkgo.Describe("disaggregatedset rollout defaults", func() {
+	ginkgo.It("persists the CRD rollout defaults on roles that omit rolloutStrategy", func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ns-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+		disagg := wrappers.BuildDisaggregatedSet("rollout-defaults", ns.Name).
+			WithRole("prefill", 1, "nginx:1.14.2").
+			WithRole("decode", 1, "nginx:1.14.2").Obj()
+		for i := range disagg.Spec.Roles {
+			disagg.Spec.Roles[i].Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+		}
+		// The typed client serializes an empty RolloutStrategy as {"type": ""}, which the
+		// enum rejects. Send the manifest the way a YAML author would, without the key.
+		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(disagg)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		roles, _, err := unstructured.NestedSlice(content, "spec", "roles")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		for _, role := range roles {
+			unstructured.RemoveNestedField(role.(map[string]interface{}), "spec", "rolloutStrategy")
+		}
+		gomega.Expect(unstructured.SetNestedSlice(content, roles, "spec", "roles")).To(gomega.Succeed())
+		manifest := &unstructured.Unstructured{Object: content}
+		manifest.SetGroupVersionKind(disaggregatedset.GroupVersion.WithKind("DisaggregatedSet"))
+		gomega.Expect(k8sClient.Create(ctx, manifest)).To(gomega.Succeed())
+
+		persisted := &disaggregatedset.DisaggregatedSet{}
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: ns.Name}, persisted)).To(gomega.Succeed())
+		gomega.Expect(persisted.Spec.Roles).To(gomega.HaveLen(2))
+		for _, role := range persisted.Spec.Roles {
+			gomega.Expect(role.Spec.RolloutStrategy.Type).To(gomega.Equal(leaderworkerset.RollingUpdateStrategyType), role.Name)
+			gomega.Expect(role.Spec.RolloutStrategy.RollingUpdateConfiguration).To(gomega.Equal(&leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			}), role.Name)
+		}
+	})
 })

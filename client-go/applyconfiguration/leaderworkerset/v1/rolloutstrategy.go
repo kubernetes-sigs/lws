@@ -30,6 +30,8 @@ type RolloutStrategyApplyConfiguration struct {
 	// type defines the rollout strategy, it can only be “RollingUpdate” for now.
 	Type *leaderworkersetv1.RolloutStrategyType `json:"type,omitempty"`
 	// rollingUpdateConfiguration defines the parameters to be used when type is RollingUpdateStrategyType.
+	// It defaults to an object whose fields take their own defaults: maxUnavailable 1,
+	// maxSurge 0 and partition 0.
 	RollingUpdateConfiguration *RollingUpdateConfigurationApplyConfiguration `json:"rollingUpdateConfiguration,omitempty"`
 }
 

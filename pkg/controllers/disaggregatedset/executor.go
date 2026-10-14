@@ -629,7 +629,8 @@ func extractRollingUpdateConfig(
 	for i, name := range allRoleNames {
 		// Removed roles retain larger saved budgets, but can always release one
 		// group. Current roles below keep their explicitly configured policy.
-		config[i] = RollingUpdateConfig{MaxSurge: 1, MaxUnavailable: max(1, remembered[name])}
+		config[i] = defaultRollingUpdateConfig
+		config[i].MaxUnavailable = max(config[i].MaxUnavailable, remembered[name])
 		roleIndex[name] = i
 	}
 
@@ -645,13 +646,20 @@ func extractRollingUpdateConfig(
 			unavail, _ := intstr.GetScaledValueFromIntOrPercent(&rc.MaxUnavailable, replicas, false)
 			cfg := RollingUpdateConfig{MaxSurge: surge, MaxUnavailable: unavail}
 			if surge == 0 && unavail == 0 {
-				cfg.MaxSurge = 1
+				// Both zero makes no progress possible. The webhook rejects it at
+				// admission, but a percentage can round down to 0 after a scale-down.
+				cfg = defaultRollingUpdateConfig
 			}
 			config[roleIndex[name]] = cfg
 		}
 	}
 	return config
 }
+
+// defaultRollingUpdateConfig applies to a role without a rollingUpdateConfiguration.
+// It matches the LeaderWorkerSet default, so a rollout never needs capacity beyond
+// the role's replicas.
+var defaultRollingUpdateConfig = RollingUpdateConfig{MaxSurge: 0, MaxUnavailable: 1}
 
 func buildStepLogArgs(roleNames []string, step *UpdateStep) []interface{} {
 	args := make([]interface{}, 0, len(roleNames)*4)

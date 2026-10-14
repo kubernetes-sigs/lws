@@ -46,7 +46,8 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// leaderWorkerTemplate defines the template for leader/worker pods
 	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`
 	// rolloutStrategy defines the strategy that will be applied to update replicas
-	// when a revision is made to the leaderWorkerTemplate.
+	// when a revision is made to the leaderWorkerTemplate. It defaults to a
+	// RollingUpdate strategy whose configuration takes its own defaults.
 	RolloutStrategy *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
 	// startupPolicy determines the startup policy for the worker statefulset.
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
