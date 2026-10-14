@@ -466,7 +466,13 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// Create an empty LWS first. Only a subsequent observed object can be
 	// conditionally scaled to the latest desired size.
 	if existing == nil {
-		return r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas))
+		if err := r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas)); err != nil {
+			return err
+		}
+		if desiredReplicas > 0 {
+			return errReplicaGroupsPending
+		}
+		return nil
 	}
 	counts := desiredSubRoles(config, desiredReplicasByRole)
 	// Outside rollout, membership, issued target and effective baseline all follow desired.

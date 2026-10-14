@@ -122,8 +122,9 @@ func TestFreshDeploymentNoRollingUpdate(t *testing.T) {
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &got))
 	assert.Equal(t, disaggregatedsetv1.RevisionHashVersion, revisionHashVersion(&got))
 
-	_, err = reconciler.Reconcile(ctx, request)
+	result, err := reconciler.Reconcile(ctx, request)
 	require.NoError(t, err, "child reconciliation should succeed")
+	require.NotZero(t, result.RequeueAfter, "empty creations must request the pass that grows them")
 	require.NoError(t, fakeClient.List(ctx, &initialLWSList))
 	for _, lws := range initialLWSList.Items {
 		assert.Zero(t, *lws.Spec.Replicas, "creation cannot start Pods from an unobserved request")

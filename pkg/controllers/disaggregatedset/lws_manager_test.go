@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -1790,6 +1791,26 @@ func TestCreateDefersGrowthUntilObserved(t *testing.T) {
 	}
 }
 
+func TestEmptyCreationRequeuesUntilObserved(t *testing.T) {
+	for _, desired := range []int{0, 4} {
+		t.Run(fmt.Sprint(desired), func(t *testing.T) {
+			ds, role := testManagerDSWithRole("empty-create")
+			manager, _, _ := newObservedTestManager(t)
+			r := &DisaggregatedSetReconciler{LWSManager: manager}
+			result, err := r.reconcileCurrentRevision(t.Context(), ds, 0, "current", nil, map[string]int{role.Name: desired})
+			require.NoError(t, err)
+			if desired > 0 {
+				require.Equal(t, time.Second, result.RequeueAfter)
+			} else {
+				require.Zero(t, result.RequeueAfter, "a zero target needs no growth")
+			}
+			require.ErrorIs(t, manager.Create(t.Context(), ds, role, 0, "current", desired), errReplicaGroupsPending,
+				"AlreadyExists plus a lagging cache is a normal observation wait")
+			require.Empty(t, manager.pending.initialized, "AlreadyExists must not mark an unobserved UID initialized")
+		})
+	}
+}
+
 func TestCreateSubRolesStartEmpty(t *testing.T) {
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
@@ -2027,9 +2048,8 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				require.Eventually(t, func() bool { return manager.reader.Get(ctx, key, current) == nil && current.UID != uid }, 5*time.Second, 10*time.Millisecond)
 			}
 			require.Empty(t, manager.pending.writes)
-			require.ErrorIs(t, manager.prepareSlice(ctx, ds, 0), errReplicaGroupsPending)
-			require.Eventually(t, func() bool { return manager.pending.observed(ctx, ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond)
-			require.NoError(t, manager.prepareSlice(ctx, ds, 0), "the observed UID can complete ordinary takeover")
+			require.Contains(t, manager.pending.initialized, current.UID)
+			require.NoError(t, manager.prepareSlice(ctx, ds, 0), "a successful creation needs no redundant takeover write")
 			r := &DisaggregatedSetReconciler{LWSManager: manager}
 			for range 3 {
 				require.NoError(t, manager.reader.Get(ctx, key, current))

@@ -328,12 +328,26 @@ func (manager *LeaderWorkerSetManager) Create(
 		// requeues instead.
 		existing := &leaderworkersetv1.LeaderWorkerSet{}
 		if getErr := manager.reader.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: disaggregatedSet.Namespace}, existing); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				return errReplicaGroupsPending
+			}
 			return fmt.Errorf("failed to get existing LeaderWorkerSet %s after create conflict: %w", lwsName, getErr)
 		}
 		if !metav1.IsControlledBy(existing, disaggregatedSet) {
 			return fmt.Errorf("LeaderWorkerSet %s exists but is not controlled by DisaggregatedSet %s; refusing to adopt it", lwsName, disaggregatedSet.Name)
 		}
 		return nil
+	}
+	if manager.pending != nil && leaderWorkerSet.UID != "" {
+		// This successful creation supplied a new UID: no previous leader
+		// could have left a conditional request against it. Skip takeover,
+		// but growth must still use the object read from the informer.
+		manager.pending.mu.Lock()
+		if manager.pending.initialized == nil {
+			manager.pending.initialized = make(map[types.UID]client.ObjectKey)
+		}
+		manager.pending.initialized[leaderWorkerSet.UID] = client.ObjectKeyFromObject(disaggregatedSet)
+		manager.pending.mu.Unlock()
 	}
 
 	log := logf.FromContext(ctx)
@@ -739,7 +753,7 @@ type pendingWrites struct {
 	client.Reader
 	mu     sync.Mutex
 	writes map[client.ObjectKey]*pendingWrite
-	// UIDs whose writes this process has observed; restart repeats takeover.
+	// UIDs created here or whose writes were observed; restart repeats takeover.
 	// The parent key allows cleanup when a DisaggregatedSet disappears.
 	initialized map[types.UID]client.ObjectKey
 }
