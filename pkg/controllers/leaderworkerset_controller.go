@@ -1455,13 +1455,15 @@ func (r *LeaderWorkerSetReconciler) deleteWorkerStatefulSets(ctx context.Context
 		return err
 	}
 	propagation := metav1.DeletePropagationForeground
+	// This list is namespace-scoped. Reuse owner lookups only for this cleanup pass.
+	replicaSets := make(map[string]*appsv1.ReplicaSet)
 	for i := range workerStsList.Items {
 		sts := &workerStsList.Items[i]
 		if sts.DeletionTimestamp != nil {
 			continue
 		}
 		// Labels narrow the search; the owner chain determines what we may delete.
-		owned, err := r.workerStatefulSetOwnedByLWS(ctx, sts, lws)
+		owned, err := r.workerStatefulSetOwnedByLWS(ctx, sts, lws, replicaSets)
 		if err != nil {
 			return fmt.Errorf("checking owner of worker StatefulSet %s: %w", sts.Name, err)
 		}
@@ -1477,7 +1479,7 @@ func (r *LeaderWorkerSetReconciler) deleteWorkerStatefulSets(ctx context.Context
 
 // Follow the native owner chain, checking UIDs as well as names. If an owner is
 // already gone, leave its workers to garbage collection instead of guessing.
-func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Context, workers *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet) (bool, error) {
+func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Context, workers *appsv1.StatefulSet, lws *leaderworkerset.LeaderWorkerSet, replicaSets map[string]*appsv1.ReplicaSet) (bool, error) {
 	parents := []client.Object{&corev1.Pod{}, &appsv1.StatefulSet{}}
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
 		parents = []client.Object{&corev1.Pod{}, &appsv1.ReplicaSet{}, &appsv1.Deployment{}}
@@ -1495,11 +1497,24 @@ func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Cont
 		if ref.APIVersion != gvk.GroupVersion().String() || ref.Kind != gvk.Kind {
 			return false, nil
 		}
-		reader := client.Reader(r.Client)
-		if _, isReplicaSet := parent.(*appsv1.ReplicaSet); isReplicaSet {
-			reader = r.apiReader
-		}
-		if err := reader.Get(ctx, client.ObjectKey{Namespace: workers.Namespace, Name: ref.Name}, parent); err != nil {
+		key := client.ObjectKey{Namespace: workers.Namespace, Name: ref.Name}
+		if rs, isReplicaSet := parent.(*appsv1.ReplicaSet); isReplicaSet {
+			cached, found := replicaSets[ref.Name]
+			if !found {
+				if err := r.apiReader.Get(ctx, key, rs); err != nil {
+					if !apierrors.IsNotFound(err) {
+						return false, err
+					}
+					rs = nil // Remember missing owners too, until the next cleanup pass.
+				}
+				cached = rs
+				replicaSets[ref.Name] = cached
+			}
+			if cached == nil {
+				return false, nil
+			}
+			parent = cached
+		} else if err := r.Get(ctx, key, parent); err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
 		if parent.GetUID() != ref.UID {

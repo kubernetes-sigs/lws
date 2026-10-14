@@ -178,6 +178,72 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 	}
 }
 
+func TestParallelWorkerCleanupReusesReplicaSets(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default", UID: "lws"}}
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: lws.Name, Namespace: lws.Namespace, UID: "deployment",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+	}}
+	rsA := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "rs-a", Namespace: lws.Namespace, UID: "rs-a",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+	}}
+	rsB := rsA.DeepCopy()
+	rsB.Name, rsB.UID = "rs-b", "rs-b"
+	ownerA := *metav1.NewControllerRef(rsA, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
+	ownerB := *metav1.NewControllerRef(rsB, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
+	staleOwner := ownerA
+	staleOwner.UID = "old-rs-a"
+	objects := []client.Object{lws, deployment, rsA} // rs-b is initially missing.
+	for i, owner := range []metav1.OwnerReference{ownerA, ownerA, staleOwner, ownerB, ownerB} {
+		name := fmt.Sprintf("model-%d", i)
+		leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: lws.Namespace, UID: types.UID(name), OwnerReferences: []metav1.OwnerReference{owner},
+		}}
+		workers := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: lws.Namespace, UID: types.UID(name + "-workers"),
+			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+		}}
+		objects = append(objects, leader, workers)
+	}
+	storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	cl := interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			_, isReplicaSet := obj.(*appsv1.ReplicaSet)
+			require.False(t, isReplicaSet, "ReplicaSet lookup must bypass the manager cache")
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := NewLeaderWorkerSetReconciler(cl, scheme, events.NewFakeRecorder(5))
+	reads := map[string]int{}
+	r.apiReader = interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			require.IsType(t, &appsv1.ReplicaSet{}, obj)
+			reads[key.Name]++
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	require.NoError(t, r.deleteWorkerStatefulSets(t.Context(), lws))
+	require.Equal(t, map[string]int{"rs-a": 1, "rs-b": 1}, reads, "read each owner once, including missing owners")
+	var remaining appsv1.StatefulSetList
+	require.NoError(t, storage.List(t.Context(), &remaining))
+	require.Len(t, remaining.Items, 3, "workers with a stale or missing owner must survive")
+
+	// A new pass must refresh both successful and missing lookups, not retain a cache.
+	require.NoError(t, storage.Create(t.Context(), rsB))
+	require.NoError(t, r.deleteWorkerStatefulSets(t.Context(), lws))
+	require.Equal(t, map[string]int{"rs-a": 2, "rs-b": 2}, reads)
+	require.NoError(t, storage.List(t.Context(), &remaining))
+	require.Len(t, remaining.Items, 1)
+	require.Equal(t, "model-2", remaining.Items[0].Name, "a reused ReplicaSet must still match each leader's owner UID")
+}
+
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	lws1 := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
